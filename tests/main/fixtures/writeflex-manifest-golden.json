@@ -1,0 +1,1863 @@
+{
+  "withoutScraps": {
+    "appId": "writeflex",
+    "workspaceRoot": "/tmp/writeflex-golden",
+    "systemPromptPreamble": "You are WriteFlex's in-app writing agent. The human writes; you keep house.\nBe conservative: make the SMALLEST change that fixes a real error, and do not rewrite for style, tone, or flow unless the writer explicitly asks. When the writer limits the scope of a request — 'spelling only', 'just proofread', 'only the second paragraph' — stay strictly inside it and change nothing else, even if you notice other issues; mention them in your reply instead of editing them.\nProse changes — anything a reader would notice in the rendered document, including heading text — must go through prose.edit. Stage MANY small edits, one prose.edit per SENTENCE or short phrase you change (its oldText must not span more than one sentence), each categorised as typo, grammar, wording, structure, clarity, tone, or other as a last-resort fallback when none of those fit. Rewriting a paragraph is several prose.edit calls, one per changed sentence — a copy-edit pass is dozens of small edits, a typo here, a wording tweak there, NEVER one big replacement and NEVER a whole section as a single edit. Judge the boundaries of each distinct change and stage them separately so the writer can accept/reject each on its own. prose.edit calls are staged for the writer to review; never expect them to apply immediately.\nAdding NEW text is prose.insert, never prose.edit. prose.edit REPLACES existing unique text; to write into an empty or near-empty file, add a paragraph, or place a new passage, use prose.insert with the exact unique text to follow as insertAfter, or an empty insertAfter to append at the end (also how you fill a blank file). Never invent an oldText that is not actually in the file just to satisfy prose.edit — that edit cannot be shown in the document and is a bug.\nPrefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations; it validates inner markup before staging and owns any required fences.\nPrefer frontmatter.set over prose edits for document metadata. Use it to set or add keys; pass lists as arrays.\nRelocations are prose.move, not delete plus insert: provide the exact unique block as text and the exact unique destination anchor as insertAfter. A move is categorised as structure and remains one reviewable operation.\nYou can correct your OWN staged work: every staged call's result names its suggestion id, and suggestions.retract(id) withdraws it. If an edit you staged this turn was wrong or over-reached, or the writer asks you to undo a change you proposed, retract it — do NOT stack another edit on top to paper over it. To amend a staged edit, retract it and then stage the corrected version.\nWidgets. A widget is an interactive HTML page (a calculator, chart, simulation, quiz, any interactive thing) that runs live inside the document as a block. It is one self-contained HTML file inside the Workspace, referred to from the text by one line of its own, with blank lines around it, outside code, lists and quotes: `[Simulation: assets/compound-interest.html]` (path relative to the document's folder). Typed or pasted HTML in the text is only ever shown as text, so an embed line is the only way to make something run. When the writer asks for a calculator, chart, simulation or any interactive X in a document, make a widget: use widgets.create (you write the whole page; WriteFlex saves it in assets/ beside the document and adds the line). Other widget verbs: widgets.list reads the document's widgets (ordinal, line, path, whether it resolves); widgets.insert embeds an HTML file that already exists in the Workspace; widgets.remove takes one embed line out (the file stays). widgets.create, widgets.insert and widgets.remove are proposals: the writer accepts or discards them, and nothing is written until they accept; for widgets.create the writer is shown the new file's path and full source first. Widget rules: one file with inline CSS and JavaScript and a <title>; no network of any kind (no http(s): or //host addresses, no fetch, XMLHttpRequest, WebSocket or import, no external scripts, fonts, stylesheets or images; data: and blob: URLs only). The widget runs sealed: its frame has no network and it cannot read or change the document, other files, storage or the app. A page that obviously reaches for the network is refused straight away with the reason, but that check only catches the obvious cases; it is the sealed frame that keeps a widget offline, so a page that gets past the check still has no network and just does not work. Size: the block sizes to its content, so keep it compact (a widget taller than about seven tenths of the editor scrolls inside its block); give controls visible labels. Keyboard: typing belongs to the document until the writer clicks into the widget, which then takes the keyboard; Esc, or a click in the text, hands it back, so a widget must also make sense with no keyboard focus. Do not change the sealing or try to work around it.\nHousekeeping — new files, renames/moves — applies immediately under snapshot and audit.\nNever overwrite an existing file wholesale: propose prose.edit changes instead.\nThe hidden Writer situation context describes the open piece, selection, mode and session. When the writer does not name a file, act on that piece. Briefly name the file you acted on.\nAll paths are relative to the Workspace root. Keep final replies brief and say what changed or what was staged.",
+    "capabilities": [
+      {
+        "name": "files.list",
+        "label": "list files",
+        "risk": "read",
+        "description": "List every Markdown file in the Workspace (relative paths).",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        },
+        "execute": "[function]"
+      },
+      {
+        "name": "files.read",
+        "label": "read file",
+        "risk": "read",
+        "description": "Read a Markdown file from the Workspace, including reference material the writer keeps under research/ (the Sources pane) — read it there for context before drafting.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path"
+            }
+          }
+        },
+        "execute": "[function]"
+      },
+      {
+        "name": "folio.create_manifest",
+        "label": "create Folio manifest",
+        "risk": "write",
+        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative folder to make a Folio (\"\" for the root)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "frontmatter.normalise",
+        "label": "normalise frontmatter",
+        "risk": "write",
+        "description": "Canonicalise and reorder an EXISTING frontmatter block only; never use this to add or set metadata keys. Use frontmatter.set for metadata changes.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path with existing frontmatter"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "frontmatter.set",
+        "label": "set frontmatter",
+        "risk": "write",
+        "description": "Set or add document metadata (frontmatter) keys; lists as arrays. Example: { path: \"draft.md\", set: { status: \"draft\", tags: [\"essay\", \"review\"] } }. STAGED for review.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "set"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path"
+            },
+            "set": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              },
+              "description": "Frontmatter key → scalar or list value"
+            },
+            "summary": {
+              "type": "string",
+              "description": "Short reason for the metadata change"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "housekeeping.create_file",
+        "label": "create file",
+        "risk": "write",
+        "description": "Create a NEW Markdown file with complete content. Fails if the file already exists — never use this to overwrite.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "content"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative path for the new file, usually ending in .md"
+            },
+            "content": {
+              "type": "string",
+              "description": "Complete Markdown content"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "housekeeping.rename_file",
+        "label": "rename file",
+        "risk": "write",
+        "description": "Rename or move a Markdown file inside the Workspace.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "newPath"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Current relative path"
+            },
+            "newPath": {
+              "type": "string",
+              "description": "New relative path or bare name (stays in the same folder)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "notes.create",
+        "label": "create agent note",
+        "risk": "write",
+        "description": "Write a note ABOUT a Workspace document — a review, comments, feedback — as a new file the app files under agent-notes/ beside that document, with frontmatter marking it agent-authored (author, kind, source document, skill). You never choose the path: give the document, a short kind and the note body. Never use housekeeping.create_file for notes about a document.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sourceDocument": {
+              "type": "string",
+              "description": "Relative path of the Workspace document the note is about"
+            },
+            "kind": {
+              "type": "string",
+              "description": "Short kind of note, e.g. review, comments, feedback (default notes)"
+            },
+            "title": {
+              "type": "string",
+              "description": "Note title; defaults to “<Kind> of <document>”"
+            },
+            "body": {
+              "type": "string",
+              "description": "The note as Markdown"
+            }
+          },
+          "required": [
+            "sourceDocument",
+            "body"
+          ]
+        },
+        "execute": "[function]",
+        "preview": "[function]",
+        "touchedPaths": "[function]"
+      },
+      {
+        "name": "objects.insert",
+        "label": "propose object insertion",
+        "risk": "write",
+        "description": "Propose a validated Markdown object, staged for review; prefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations. Supply INNER markup only; this capability owns fences. table: `| A | B |\\n| --- | --- |\\n| 1 | 2 |`. mermaid: `flowchart LR\\n  A --> B`. markmap: `- Root\\n  - Child`. SVG: `<svg viewBox=\"0 0 10 10\"><rect/></svg>`. SVG is untrusted and is sanitised before every render.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "kind",
+            "content"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to insert into"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "table"
+                },
+                {
+                  "type": "string",
+                  "const": "mermaid"
+                },
+                {
+                  "type": "string",
+                  "const": "markmap"
+                },
+                {
+                  "type": "string",
+                  "const": "svg"
+                }
+              ]
+            },
+            "content": {
+              "type": "string",
+              "description": "Inner object markup only, without fences"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text to follow; omit or use an empty string to append"
+            },
+            "summary": {
+              "type": "string",
+              "description": "One short sentence describing the object"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "label": "compare two parts",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir",
+            "a",
+            "b"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative report folder (\"\" for the Workspace root)"
+            },
+            "a": {
+              "type": "string",
+              "description": "Workspace-relative path of the first file, inside dir"
+            },
+            "b": {
+              "type": "string",
+              "description": "Workspace-relative path of the second file, inside dir"
+            }
+          }
+        },
+        "name": "plan.compare_parts",
+        "description": "Compare two near-identical Markdown files in a report folder — typically a sync conflict copy such as `00_intro-Studio Mac.md` beside `00_intro.md`. Returns their similarity, both word counts and modification times, which side is larger, and the passages (blocks: every typed line is its own passage) that only ONE side has, in document order, each marked with the side (a or b) that has it. Reads only; say what only the copy has before proposing anything.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose running order",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir",
+            "changes"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative report folder (\"\" for the Workspace root)"
+            },
+            "changes": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "insert"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "gloss": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title",
+                      "to"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "remove"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "path"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "adopt"
+                      },
+                      "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path of a stray file in the folder"
+                      },
+                      "at": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "materialise"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title",
+                      "role"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "setRole"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                ]
+              },
+              "minItems": 1,
+              "description": "The changes, applied in order"
+            },
+            "summary": {
+              "type": "string",
+              "description": "One or two sentences the card shows under the order: why this order"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "plan.propose",
+        "description": "Propose changes to a report folder's running order as ONE proposal the writer accepts, edits or discards. Nothing is written when you call this: the writer sees the proposed order with each change marked, and Accept applies every change as one undoable step. There is no other way to change a running order. Name parts by their running-order title (as plan.read gives it). Changes apply in the order listed; `at` and `to` are 0-based places in the order as it stands at that point. insert: add a part (an unwritten one, or a file in the folder by its title). move: put a part at place `to`. remove: take a part out of the order (its file stays; nothing is deleted). adopt: add a stray file (by path, from plan.read's strays). materialise: write an unwritten part out into a new file. setRole: set a part's role (section, vignette, appendix or summary). If the folder has no Index Note, accepting creates it first. Call plan.read first.",
+        "execute": "[function]"
+      },
+      {
+        "label": "read report plan",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative report folder (\"\" for the Workspace root)"
+            }
+          }
+        },
+        "name": "plan.read",
+        "description": "Read a report folder's plan: its running order (each part's title, gloss, role, workspace-relative file or null for an unwritten part, word count, and whether the file exists), the Markdown files under the Folio's content_root that are NOT in the running order (strays), and whether the folder has an Index Note. Reads only; start any work on a report as a whole here.",
+        "execute": "[function]"
+      },
+      {
+        "name": "prose.edit",
+        "label": "propose prose edit",
+        "risk": "write",
+        "description": "Propose ONE contiguous prose edit to an existing file as an exact text replacement. Staged for the writer to accept or reject. Each prose.edit must change at most ONE sentence or a short phrase — its oldText should not span more than one sentence. Rewriting a paragraph is therefore SEVERAL prose.edit calls, one per sentence you actually change, leaving the sentences you do not touch out of the edits entirely. A copy-edit pass is dozens of these small edits — a typo here, a wording tweak there — NEVER one big replacement, and NEVER the whole document or a whole section as a single edit. The writer accepts or rejects each one on its own, so keep them small and independent.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "oldText",
+            "newText",
+            "category",
+            "summary"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to edit"
+            },
+            "oldText": {
+              "type": "string",
+              "description": "Exact current text to replace; must be unique in the file"
+            },
+            "newText": {
+              "type": "string",
+              "description": "Replacement text"
+            },
+            "category": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "typo"
+                },
+                {
+                  "type": "string",
+                  "const": "grammar"
+                },
+                {
+                  "type": "string",
+                  "const": "wording"
+                },
+                {
+                  "type": "string",
+                  "const": "structure"
+                },
+                {
+                  "type": "string",
+                  "const": "clarity"
+                },
+                {
+                  "type": "string",
+                  "const": "tone"
+                },
+                {
+                  "type": "string",
+                  "const": "other"
+                }
+              ],
+              "description": "Writer-facing edit category assigned by the agent; use `other` only when none of the specific categories fit."
+            },
+            "summary": {
+              "type": "string",
+              "description": "One short sentence describing the edit"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "prose.insert",
+        "label": "propose prose insertion",
+        "risk": "write",
+        "description": "Propose NEW prose to ADD to an existing file — content that does not replace anything. This is the ONLY way to add text: use it to write into an empty or near-empty document, to add a paragraph, or to place a passage at a specific point. prose.edit REPLACES existing unique text and cannot express an insertion, so never fabricate an oldText just to add content — use prose.insert. `text` is the new prose; `insertAfter` is the exact unique existing text the new content should follow, or an EMPTY string to append at the end of the document (an empty string is also how you fill a blank file). Staged for the writer to accept or reject, and shown inline in the document as pending inserted text.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "insertAfter",
+            "text",
+            "category",
+            "summary"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to insert into"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the new content should follow; use an empty string to append at the end of the document (and to fill an empty file)"
+            },
+            "text": {
+              "type": "string",
+              "description": "The new prose to insert"
+            },
+            "category": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "typo"
+                },
+                {
+                  "type": "string",
+                  "const": "grammar"
+                },
+                {
+                  "type": "string",
+                  "const": "wording"
+                },
+                {
+                  "type": "string",
+                  "const": "structure"
+                },
+                {
+                  "type": "string",
+                  "const": "clarity"
+                },
+                {
+                  "type": "string",
+                  "const": "tone"
+                },
+                {
+                  "type": "string",
+                  "const": "other"
+                }
+              ],
+              "description": "Writer-facing edit category assigned by the agent; use `other` only when none of the specific categories fit."
+            },
+            "summary": {
+              "type": "string",
+              "description": "One short sentence describing the insertion"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "prose.move",
+        "label": "propose prose move",
+        "risk": "write",
+        "description": "Propose ONE contiguous prose move inside an existing Markdown file. Use this when text should be relocated rather than rewritten: it stages as a single move Change, never as delete plus insert. `text` is the exact unique block to relocate; `insertAfter` is the exact unique destination anchor that the block should land after, and it must not overlap the moved text.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "text",
+            "insertAfter",
+            "summary"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to edit"
+            },
+            "text": {
+              "type": "string",
+              "description": "Exact current block to relocate; must be unique in the file"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique destination anchor; the moved block lands after this text"
+            },
+            "summary": {
+              "type": "string",
+              "description": "One short sentence describing the move"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose attaching a source",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir",
+            "piece",
+            "source"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative collection folder (\"\" for the Workspace root)"
+            },
+            "piece": {
+              "type": "string",
+              "description": "The piece's workspace-relative path"
+            },
+            "source": {
+              "type": "string",
+              "description": "The research note's workspace-relative path, e.g. \"essays/research/hall-1976.md\""
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "sources.attach",
+        "description": "Propose attaching ONE source — a Markdown note in a research/ folder of the collection — to ONE piece of that collection. Nothing is written when you call this: the writer sees the proposal and accepts or discards it. Accepting adds one line naming the note (its path from the piece's folder) to the piece's frontmatter `sources:` list, creating the key if absent; nothing else in the file changes and no file moves. A source the list already names is refused.",
+        "execute": "[function]"
+      },
+      {
+        "label": "list a piece's sources",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "The piece's workspace-relative path"
+            }
+          }
+        },
+        "name": "sources.list",
+        "description": "List ONE piece's sources: its frontmatter `sources:` list merged with the sources its text cites. Each entry is marked listed, cited (with a count) or both. Wikilinks to research notes always count as citations; author–year citations (\"Hall 1976\", \"(Bartlett, 1932)\") count only when the research note carries author and year in its frontmatter, and one that fits more than one note is reported as ambiguous and not counted. The result says when author–year matching was unavailable. Reads only: to add a cited-but-unlisted source, call sources.attach.",
+        "execute": "[function]"
+      },
+      {
+        "label": "list checkbox items",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path (a piece, or a note under agent-notes/)"
+            }
+          }
+        },
+        "name": "tasks.list",
+        "description": "List the checkbox items of a piece or an agent note — list items written `- [ ]` or `1. [ ]`, ticked ones `[x]` — as the open items and the done items, each with its 1-based line and its words. Use it to answer \"what's left?\": for an agent review, read the review's own note under agent-notes/ (the writer ticks points there as they deal with them). Reads only.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose ticking a checkbox",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "line"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path holding the box"
+            },
+            "line": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The 1-based line of the box, as tasks.list gives it"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "tasks.toggle",
+        "description": "Propose ticking — or unticking — ONE checkbox item in a piece or an agent note, by its 1-based line from tasks.list. Nothing is written when you call this: the writer sees the proposal and accepts or discards it; you never tick a box yourself. One call per box; say in your reply which boxes you proposed and why.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose making a widget",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "fileName",
+            "html",
+            "title"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the document that gets the widget"
+            },
+            "fileName": {
+              "type": "string",
+              "description": "File name for the widget, ending .html (saved in assets/ beside the document)"
+            },
+            "html": {
+              "type": "string",
+              "description": "The complete self-contained HTML page"
+            },
+            "title": {
+              "type": "string",
+              "description": "Short title; the caption shown under the widget"
+            },
+            "position": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "start"
+                },
+                {
+                  "type": "string",
+                  "const": "end"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              ],
+              "description": "\"start\", \"end\" (default), or the ordinal of the widget to follow"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "widgets.create",
+        "description": "Propose a NEW interactive widget: you write one self-contained HTML page, WriteFlex saves it as a file in the assets/ folder beside the document (a free name, never overwriting) and puts its embed line `[Simulation: assets/<file>]` into the document, as one proposal the writer accepts or discards; the writer is shown the new file's path and its full source before deciding, and discarding writes nothing. `html` is a complete page with inline CSS and JS and a <title>. A widget runs in a sealed frame with no network and no other files, so write it to need neither (no http(s):, //host, fetch, XMLHttpRequest, WebSocket, import, external scripts, fonts or images; data: and blob: only). A page that obviously reaches for the network is refused straight away with the reason; that check is a convenience and catches only the obvious cases, and a page that slips past it still gets no network and will simply not work. Keep it compact: the block sizes to its content. `path` is a Markdown document in the Workspace; `fileName` is a plain name ending .html (it is cleaned up); `title` is the caption and is added if the page has no <title>; `position` is \"start\", \"end\" (default) or the ordinal of an existing widget to follow. Use this when asked for a calculator, chart, simulation or any interactive thing in a document. To embed an HTML file that already exists use widgets.insert.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose inserting a widget",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "file"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to insert into"
+            },
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path of the HTML file to embed"
+            },
+            "position": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "start"
+                },
+                {
+                  "type": "string",
+                  "const": "end"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              ],
+              "description": "\"start\", \"end\" (default), or the ordinal of the widget to follow"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "widgets.insert",
+        "description": "Propose adding an interactive widget to a document: one line, `[Simulation: <path from the document's folder>]`, on its own with blank lines around it. `file` is the workspace-relative path of an HTML file inside the open Workspace (a refusal otherwise; web addresses are refused). `position` is \"start\" (after any frontmatter), \"end\" (the default), or the 1-based ordinal of an existing widget (from widgets.list) to place it directly after. Nothing is written when you call this: the writer sees the proposal and accepts or discards it. The HTML file is never created or changed.",
+        "execute": "[function]"
+      },
+      {
+        "label": "list widgets",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path"
+            }
+          }
+        },
+        "name": "widgets.list",
+        "description": "List the interactive widgets a document embeds — lines written alone as `[Simulation: file.html]` — each with its 1-based ordinal in the document, its source line, the path as typed, and whether it resolves: ok with the file's workspace-relative path, or refused as missing, outside-workspace, not-html or web-address (`[Embed: …]` lines are web addresses and are not supported). Reads only.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose removing a widget",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "ordinal"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path"
+            },
+            "ordinal": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The widget's ordinal, as widgets.list gives it"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "widgets.remove",
+        "description": "Propose removing one widget line from a document, by its 1-based ordinal from widgets.list. Only the embed line goes; the HTML file stays. Nothing is written when you call this: the writer accepts or discards the proposal.",
+        "execute": "[function]"
+      }
+    ]
+  },
+  "withScraps": {
+    "appId": "writeflex",
+    "workspaceRoot": "/tmp/writeflex-golden",
+    "systemPromptPreamble": "You are WriteFlex's in-app writing agent. The human writes; you keep house.\nBe conservative: make the SMALLEST change that fixes a real error, and do not rewrite for style, tone, or flow unless the writer explicitly asks. When the writer limits the scope of a request — 'spelling only', 'just proofread', 'only the second paragraph' — stay strictly inside it and change nothing else, even if you notice other issues; mention them in your reply instead of editing them.\nProse changes — anything a reader would notice in the rendered document, including heading text — must go through prose.edit. Stage MANY small edits, one prose.edit per SENTENCE or short phrase you change (its oldText must not span more than one sentence), each categorised as typo, grammar, wording, structure, clarity, tone, or other as a last-resort fallback when none of those fit. Rewriting a paragraph is several prose.edit calls, one per changed sentence — a copy-edit pass is dozens of small edits, a typo here, a wording tweak there, NEVER one big replacement and NEVER a whole section as a single edit. Judge the boundaries of each distinct change and stage them separately so the writer can accept/reject each on its own. prose.edit calls are staged for the writer to review; never expect them to apply immediately.\nAdding NEW text is prose.insert, never prose.edit. prose.edit REPLACES existing unique text; to write into an empty or near-empty file, add a paragraph, or place a new passage, use prose.insert with the exact unique text to follow as insertAfter, or an empty insertAfter to append at the end (also how you fill a blank file). Never invent an oldText that is not actually in the file just to satisfy prose.edit — that edit cannot be shown in the document and is a bug.\nPrefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations; it validates inner markup before staging and owns any required fences.\nPrefer frontmatter.set over prose edits for document metadata. Use it to set or add keys; pass lists as arrays.\nRelocations are prose.move, not delete plus insert: provide the exact unique block as text and the exact unique destination anchor as insertAfter. A move is categorised as structure and remains one reviewable operation.\nYou can correct your OWN staged work: every staged call's result names its suggestion id, and suggestions.retract(id) withdraws it. If an edit you staged this turn was wrong or over-reached, or the writer asks you to undo a change you proposed, retract it — do NOT stack another edit on top to paper over it. To amend a staged edit, retract it and then stage the corrected version.\nWidgets. A widget is an interactive HTML page (a calculator, chart, simulation, quiz, any interactive thing) that runs live inside the document as a block. It is one self-contained HTML file inside the Workspace, referred to from the text by one line of its own, with blank lines around it, outside code, lists and quotes: `[Simulation: assets/compound-interest.html]` (path relative to the document's folder). Typed or pasted HTML in the text is only ever shown as text, so an embed line is the only way to make something run. When the writer asks for a calculator, chart, simulation or any interactive X in a document, make a widget: use widgets.create (you write the whole page; WriteFlex saves it in assets/ beside the document and adds the line). Other widget verbs: widgets.list reads the document's widgets (ordinal, line, path, whether it resolves); widgets.insert embeds an HTML file that already exists in the Workspace; widgets.remove takes one embed line out (the file stays). widgets.create, widgets.insert and widgets.remove are proposals: the writer accepts or discards them, and nothing is written until they accept; for widgets.create the writer is shown the new file's path and full source first. Widget rules: one file with inline CSS and JavaScript and a <title>; no network of any kind (no http(s): or //host addresses, no fetch, XMLHttpRequest, WebSocket or import, no external scripts, fonts, stylesheets or images; data: and blob: URLs only). The widget runs sealed: its frame has no network and it cannot read or change the document, other files, storage or the app. A page that obviously reaches for the network is refused straight away with the reason, but that check only catches the obvious cases; it is the sealed frame that keeps a widget offline, so a page that gets past the check still has no network and just does not work. Size: the block sizes to its content, so keep it compact (a widget taller than about seven tenths of the editor scrolls inside its block); give controls visible labels. Keyboard: typing belongs to the document until the writer clicks into the widget, which then takes the keyboard; Esc, or a click in the text, hands it back, so a widget must also make sense with no keyboard focus. Do not change the sealing or try to work around it.\nHousekeeping — new files, renames/moves — applies immediately under snapshot and audit.\nNever overwrite an existing file wholesale: propose prose.edit changes instead.\nThe hidden Writer situation context describes the open piece, selection, mode and session. When the writer does not name a file, act on that piece. Briefly name the file you acted on.\nAll paths are relative to the Workspace root. Keep final replies brief and say what changed or what was staged.",
+    "capabilities": [
+      {
+        "name": "files.list",
+        "label": "list files",
+        "risk": "read",
+        "description": "List every Markdown file in the Workspace (relative paths).",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        },
+        "execute": "[function]"
+      },
+      {
+        "name": "files.read",
+        "label": "read file",
+        "risk": "read",
+        "description": "Read a Markdown file from the Workspace, including reference material the writer keeps under research/ (the Sources pane) — read it there for context before drafting.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path"
+            }
+          }
+        },
+        "execute": "[function]"
+      },
+      {
+        "name": "folio.create_manifest",
+        "label": "create Folio manifest",
+        "risk": "write",
+        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative folder to make a Folio (\"\" for the root)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "frontmatter.normalise",
+        "label": "normalise frontmatter",
+        "risk": "write",
+        "description": "Canonicalise and reorder an EXISTING frontmatter block only; never use this to add or set metadata keys. Use frontmatter.set for metadata changes.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path with existing frontmatter"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "frontmatter.set",
+        "label": "set frontmatter",
+        "risk": "write",
+        "description": "Set or add document metadata (frontmatter) keys; lists as arrays. Example: { path: \"draft.md\", set: { status: \"draft\", tags: [\"essay\", \"review\"] } }. STAGED for review.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "set"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path"
+            },
+            "set": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              },
+              "description": "Frontmatter key → scalar or list value"
+            },
+            "summary": {
+              "type": "string",
+              "description": "Short reason for the metadata change"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "housekeeping.create_file",
+        "label": "create file",
+        "risk": "write",
+        "description": "Create a NEW Markdown file with complete content. Fails if the file already exists — never use this to overwrite.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "content"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative path for the new file, usually ending in .md"
+            },
+            "content": {
+              "type": "string",
+              "description": "Complete Markdown content"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "housekeeping.rename_file",
+        "label": "rename file",
+        "risk": "write",
+        "description": "Rename or move a Markdown file inside the Workspace.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "newPath"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Current relative path"
+            },
+            "newPath": {
+              "type": "string",
+              "description": "New relative path or bare name (stays in the same folder)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "notes.create",
+        "label": "create agent note",
+        "risk": "write",
+        "description": "Write a note ABOUT a Workspace document — a review, comments, feedback — as a new file the app files under agent-notes/ beside that document, with frontmatter marking it agent-authored (author, kind, source document, skill). You never choose the path: give the document, a short kind and the note body. Never use housekeeping.create_file for notes about a document.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "sourceDocument": {
+              "type": "string",
+              "description": "Relative path of the Workspace document the note is about"
+            },
+            "kind": {
+              "type": "string",
+              "description": "Short kind of note, e.g. review, comments, feedback (default notes)"
+            },
+            "title": {
+              "type": "string",
+              "description": "Note title; defaults to “<Kind> of <document>”"
+            },
+            "body": {
+              "type": "string",
+              "description": "The note as Markdown"
+            }
+          },
+          "required": [
+            "sourceDocument",
+            "body"
+          ]
+        },
+        "execute": "[function]",
+        "preview": "[function]",
+        "touchedPaths": "[function]"
+      },
+      {
+        "name": "objects.insert",
+        "label": "propose object insertion",
+        "risk": "write",
+        "description": "Propose a validated Markdown object, staged for review; prefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations. Supply INNER markup only; this capability owns fences. table: `| A | B |\\n| --- | --- |\\n| 1 | 2 |`. mermaid: `flowchart LR\\n  A --> B`. markmap: `- Root\\n  - Child`. SVG: `<svg viewBox=\"0 0 10 10\"><rect/></svg>`. SVG is untrusted and is sanitised before every render.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "kind",
+            "content"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to insert into"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "table"
+                },
+                {
+                  "type": "string",
+                  "const": "mermaid"
+                },
+                {
+                  "type": "string",
+                  "const": "markmap"
+                },
+                {
+                  "type": "string",
+                  "const": "svg"
+                }
+              ]
+            },
+            "content": {
+              "type": "string",
+              "description": "Inner object markup only, without fences"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text to follow; omit or use an empty string to append"
+            },
+            "summary": {
+              "type": "string",
+              "description": "One short sentence describing the object"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "label": "compare two parts",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir",
+            "a",
+            "b"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative report folder (\"\" for the Workspace root)"
+            },
+            "a": {
+              "type": "string",
+              "description": "Workspace-relative path of the first file, inside dir"
+            },
+            "b": {
+              "type": "string",
+              "description": "Workspace-relative path of the second file, inside dir"
+            }
+          }
+        },
+        "name": "plan.compare_parts",
+        "description": "Compare two near-identical Markdown files in a report folder — typically a sync conflict copy such as `00_intro-Studio Mac.md` beside `00_intro.md`. Returns their similarity, both word counts and modification times, which side is larger, and the passages (blocks: every typed line is its own passage) that only ONE side has, in document order, each marked with the side (a or b) that has it. Reads only; say what only the copy has before proposing anything.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose running order",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir",
+            "changes"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative report folder (\"\" for the Workspace root)"
+            },
+            "changes": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "insert"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "gloss": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title",
+                      "to"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "move"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "remove"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "path"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "adopt"
+                      },
+                      "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path of a stray file in the folder"
+                      },
+                      "at": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "materialise"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "op",
+                      "title",
+                      "role"
+                    ],
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "const": "setRole"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                ]
+              },
+              "minItems": 1,
+              "description": "The changes, applied in order"
+            },
+            "summary": {
+              "type": "string",
+              "description": "One or two sentences the card shows under the order: why this order"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "plan.propose",
+        "description": "Propose changes to a report folder's running order as ONE proposal the writer accepts, edits or discards. Nothing is written when you call this: the writer sees the proposed order with each change marked, and Accept applies every change as one undoable step. There is no other way to change a running order. Name parts by their running-order title (as plan.read gives it). Changes apply in the order listed; `at` and `to` are 0-based places in the order as it stands at that point. insert: add a part (an unwritten one, or a file in the folder by its title). move: put a part at place `to`. remove: take a part out of the order (its file stays; nothing is deleted). adopt: add a stray file (by path, from plan.read's strays). materialise: write an unwritten part out into a new file. setRole: set a part's role (section, vignette, appendix or summary). If the folder has no Index Note, accepting creates it first. Call plan.read first.",
+        "execute": "[function]"
+      },
+      {
+        "label": "read report plan",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative report folder (\"\" for the Workspace root)"
+            }
+          }
+        },
+        "name": "plan.read",
+        "description": "Read a report folder's plan: its running order (each part's title, gloss, role, workspace-relative file or null for an unwritten part, word count, and whether the file exists), the Markdown files under the Folio's content_root that are NOT in the running order (strays), and whether the folder has an Index Note. Reads only; start any work on a report as a whole here.",
+        "execute": "[function]"
+      },
+      {
+        "name": "prose.edit",
+        "label": "propose prose edit",
+        "risk": "write",
+        "description": "Propose ONE contiguous prose edit to an existing file as an exact text replacement. Staged for the writer to accept or reject. Each prose.edit must change at most ONE sentence or a short phrase — its oldText should not span more than one sentence. Rewriting a paragraph is therefore SEVERAL prose.edit calls, one per sentence you actually change, leaving the sentences you do not touch out of the edits entirely. A copy-edit pass is dozens of these small edits — a typo here, a wording tweak there — NEVER one big replacement, and NEVER the whole document or a whole section as a single edit. The writer accepts or rejects each one on its own, so keep them small and independent.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "oldText",
+            "newText",
+            "category",
+            "summary"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to edit"
+            },
+            "oldText": {
+              "type": "string",
+              "description": "Exact current text to replace; must be unique in the file"
+            },
+            "newText": {
+              "type": "string",
+              "description": "Replacement text"
+            },
+            "category": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "typo"
+                },
+                {
+                  "type": "string",
+                  "const": "grammar"
+                },
+                {
+                  "type": "string",
+                  "const": "wording"
+                },
+                {
+                  "type": "string",
+                  "const": "structure"
+                },
+                {
+                  "type": "string",
+                  "const": "clarity"
+                },
+                {
+                  "type": "string",
+                  "const": "tone"
+                },
+                {
+                  "type": "string",
+                  "const": "other"
+                }
+              ],
+              "description": "Writer-facing edit category assigned by the agent; use `other` only when none of the specific categories fit."
+            },
+            "summary": {
+              "type": "string",
+              "description": "One short sentence describing the edit"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "prose.insert",
+        "label": "propose prose insertion",
+        "risk": "write",
+        "description": "Propose NEW prose to ADD to an existing file — content that does not replace anything. This is the ONLY way to add text: use it to write into an empty or near-empty document, to add a paragraph, or to place a passage at a specific point. prose.edit REPLACES existing unique text and cannot express an insertion, so never fabricate an oldText just to add content — use prose.insert. `text` is the new prose; `insertAfter` is the exact unique existing text the new content should follow, or an EMPTY string to append at the end of the document (an empty string is also how you fill a blank file). Staged for the writer to accept or reject, and shown inline in the document as pending inserted text.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "insertAfter",
+            "text",
+            "category",
+            "summary"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to insert into"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the new content should follow; use an empty string to append at the end of the document (and to fill an empty file)"
+            },
+            "text": {
+              "type": "string",
+              "description": "The new prose to insert"
+            },
+            "category": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "typo"
+                },
+                {
+                  "type": "string",
+                  "const": "grammar"
+                },
+                {
+                  "type": "string",
+                  "const": "wording"
+                },
+                {
+                  "type": "string",
+                  "const": "structure"
+                },
+                {
+                  "type": "string",
+                  "const": "clarity"
+                },
+                {
+                  "type": "string",
+                  "const": "tone"
+                },
+                {
+                  "type": "string",
+                  "const": "other"
+                }
+              ],
+              "description": "Writer-facing edit category assigned by the agent; use `other` only when none of the specific categories fit."
+            },
+            "summary": {
+              "type": "string",
+              "description": "One short sentence describing the insertion"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "prose.move",
+        "label": "propose prose move",
+        "risk": "write",
+        "description": "Propose ONE contiguous prose move inside an existing Markdown file. Use this when text should be relocated rather than rewritten: it stages as a single move Change, never as delete plus insert. `text` is the exact unique block to relocate; `insertAfter` is the exact unique destination anchor that the block should land after, and it must not overlap the moved text.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "text",
+            "insertAfter",
+            "summary"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to edit"
+            },
+            "text": {
+              "type": "string",
+              "description": "Exact current block to relocate; must be unique in the file"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique destination anchor; the moved block lands after this text"
+            },
+            "summary": {
+              "type": "string",
+              "description": "One short sentence describing the move"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "scraps.add",
+        "label": "add scrap",
+        "risk": "write",
+        "description": "File a cutting into the writer’s Scraps under an origin file. Housekeeping — applies immediately under snapshot.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "origin",
+            "text"
+          ],
+          "properties": {
+            "origin": {
+              "type": "string",
+              "description": "The origin file’s workspace-relative path"
+            },
+            "text": {
+              "type": "string",
+              "description": "The scrap text"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "execute": "[function]"
+      },
+      {
+        "name": "scraps.list",
+        "label": "list scraps",
+        "risk": "read",
+        "description": "List the writer’s scraps (cuttings set aside), optionally filtered to one origin file’s scraps.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "origin": {
+              "type": "string",
+              "description": "Filter to one file’s scraps (its workspace-relative path)"
+            }
+          }
+        },
+        "execute": "[function]"
+      },
+      {
+        "label": "propose an idea from an offcut",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir",
+            "origin",
+            "id",
+            "name"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative collection folder (\"\" for the Workspace root)"
+            },
+            "origin": {
+              "type": "string",
+              "description": "The scrap's origin file, as scraps.list gives it"
+            },
+            "id": {
+              "type": "string",
+              "description": "The scrap's id, as scraps.list gives it"
+            },
+            "name": {
+              "type": "string",
+              "description": "The idea's name, e.g. \"High and low context, everywhere\""
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scraps.promote",
+        "description": "Propose turning ONE scrap (an offcut, from scraps.list) into an idea for a collection. Nothing is written when you call this: the writer sees the proposal and accepts or discards it. Accepting adds one wikilink line, `- [[<name as a file name>]]`, under `## Ideas` in the collection's tracker note (its Index Note, `_<folder>_INDEX.md`, created if absent) with the scrap's text quoted beneath it, and removes the scrap from its scraps file. Name the idea as the piece it could become.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose attaching a source",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "dir",
+            "piece",
+            "source"
+          ],
+          "properties": {
+            "dir": {
+              "type": "string",
+              "description": "Workspace-relative collection folder (\"\" for the Workspace root)"
+            },
+            "piece": {
+              "type": "string",
+              "description": "The piece's workspace-relative path"
+            },
+            "source": {
+              "type": "string",
+              "description": "The research note's workspace-relative path, e.g. \"essays/research/hall-1976.md\""
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "sources.attach",
+        "description": "Propose attaching ONE source — a Markdown note in a research/ folder of the collection — to ONE piece of that collection. Nothing is written when you call this: the writer sees the proposal and accepts or discards it. Accepting adds one line naming the note (its path from the piece's folder) to the piece's frontmatter `sources:` list, creating the key if absent; nothing else in the file changes and no file moves. A source the list already names is refused.",
+        "execute": "[function]"
+      },
+      {
+        "label": "list a piece's sources",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "The piece's workspace-relative path"
+            }
+          }
+        },
+        "name": "sources.list",
+        "description": "List ONE piece's sources: its frontmatter `sources:` list merged with the sources its text cites. Each entry is marked listed, cited (with a count) or both. Wikilinks to research notes always count as citations; author–year citations (\"Hall 1976\", \"(Bartlett, 1932)\") count only when the research note carries author and year in its frontmatter, and one that fits more than one note is reported as ambiguous and not counted. The result says when author–year matching was unavailable. Reads only: to add a cited-but-unlisted source, call sources.attach.",
+        "execute": "[function]"
+      },
+      {
+        "label": "list checkbox items",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path (a piece, or a note under agent-notes/)"
+            }
+          }
+        },
+        "name": "tasks.list",
+        "description": "List the checkbox items of a piece or an agent note — list items written `- [ ]` or `1. [ ]`, ticked ones `[x]` — as the open items and the done items, each with its 1-based line and its words. Use it to answer \"what's left?\": for an agent review, read the review's own note under agent-notes/ (the writer ticks points there as they deal with them). Reads only.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose ticking a checkbox",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "line"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path holding the box"
+            },
+            "line": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The 1-based line of the box, as tasks.list gives it"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "tasks.toggle",
+        "description": "Propose ticking — or unticking — ONE checkbox item in a piece or an agent note, by its 1-based line from tasks.list. Nothing is written when you call this: the writer sees the proposal and accepts or discards it; you never tick a box yourself. One call per box; say in your reply which boxes you proposed and why.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose making a widget",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "fileName",
+            "html",
+            "title"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the document that gets the widget"
+            },
+            "fileName": {
+              "type": "string",
+              "description": "File name for the widget, ending .html (saved in assets/ beside the document)"
+            },
+            "html": {
+              "type": "string",
+              "description": "The complete self-contained HTML page"
+            },
+            "title": {
+              "type": "string",
+              "description": "Short title; the caption shown under the widget"
+            },
+            "position": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "start"
+                },
+                {
+                  "type": "string",
+                  "const": "end"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              ],
+              "description": "\"start\", \"end\" (default), or the ordinal of the widget to follow"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "widgets.create",
+        "description": "Propose a NEW interactive widget: you write one self-contained HTML page, WriteFlex saves it as a file in the assets/ folder beside the document (a free name, never overwriting) and puts its embed line `[Simulation: assets/<file>]` into the document, as one proposal the writer accepts or discards; the writer is shown the new file's path and its full source before deciding, and discarding writes nothing. `html` is a complete page with inline CSS and JS and a <title>. A widget runs in a sealed frame with no network and no other files, so write it to need neither (no http(s):, //host, fetch, XMLHttpRequest, WebSocket, import, external scripts, fonts or images; data: and blob: only). A page that obviously reaches for the network is refused straight away with the reason; that check is a convenience and catches only the obvious cases, and a page that slips past it still gets no network and will simply not work. Keep it compact: the block sizes to its content. `path` is a Markdown document in the Workspace; `fileName` is a plain name ending .html (it is cleaned up); `title` is the caption and is added if the page has no <title>; `position` is \"start\", \"end\" (default) or the ordinal of an existing widget to follow. Use this when asked for a calculator, chart, simulation or any interactive thing in a document. To embed an HTML file that already exists use widgets.insert.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose inserting a widget",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "file"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path to insert into"
+            },
+            "file": {
+              "type": "string",
+              "description": "Workspace-relative path of the HTML file to embed"
+            },
+            "position": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "start"
+                },
+                {
+                  "type": "string",
+                  "const": "end"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              ],
+              "description": "\"start\", \"end\" (default), or the ordinal of the widget to follow"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "widgets.insert",
+        "description": "Propose adding an interactive widget to a document: one line, `[Simulation: <path from the document's folder>]`, on its own with blank lines around it. `file` is the workspace-relative path of an HTML file inside the open Workspace (a refusal otherwise; web addresses are refused). `position` is \"start\" (after any frontmatter), \"end\" (the default), or the 1-based ordinal of an existing widget (from widgets.list) to place it directly after. Nothing is written when you call this: the writer sees the proposal and accepts or discards it. The HTML file is never created or changed.",
+        "execute": "[function]"
+      },
+      {
+        "label": "list widgets",
+        "risk": "read",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path"
+            }
+          }
+        },
+        "name": "widgets.list",
+        "description": "List the interactive widgets a document embeds — lines written alone as `[Simulation: file.html]` — each with its 1-based ordinal in the document, its source line, the path as typed, and whether it resolves: ok with the file's workspace-relative path, or refused as missing, outside-workspace, not-html or web-address (`[Embed: …]` lines are web addresses and are not supported). Reads only.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose removing a widget",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "ordinal"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path"
+            },
+            "ordinal": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The widget's ordinal, as widgets.list gives it"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "widgets.remove",
+        "description": "Propose removing one widget line from a document, by its 1-based ordinal from widgets.list. Only the embed line goes; the HTML file stays. Nothing is written when you call this: the writer accepts or discards the proposal.",
+        "execute": "[function]"
+      }
+    ]
+  }
+}

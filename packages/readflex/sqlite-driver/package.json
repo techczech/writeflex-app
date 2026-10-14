@@ -1,0 +1,24 @@
+{
+  "name": "@readflex/sqlite-driver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./bun": {
+      "types": "./dist/bun.d.ts",
+      "import": "./dist/bun.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    }
+  },
+  "scripts": {
+    "build": "bun build src/index.ts src/bun.ts --outdir dist --target bun --format esm --external bun:sqlite && bun build src/node.ts --outdir dist --target node --format esm --external node:sqlite && tsc src/index.ts src/bun.ts src/node.ts --declaration --emitDeclarationOnly --outDir dist --target ES2022 --module ESNext --moduleResolution Bundler --strict --skipLibCheck --types bun"
+  },
+  "license": "MIT"
+}

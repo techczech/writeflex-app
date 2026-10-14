@@ -1,0 +1,18 @@
+<div class="reader-selection-prompt" id="wf-reader-selection-prompt" hidden>
+  <button type="button">Add note</button>
+</div>
+<aside class="notes-drawer" id="wf-reader-notes-drawer" data-writeflex-reader-drawer aria-label="Reader notes" aria-hidden="true">
+  <div class="drawer-head">
+    <h2>Reader notes</h2>
+    <button class="drawer-close" id="wf-reader-notes-close" type="button" aria-label="Close notes">×</button>
+  </div>
+  <p class="reader-storage-note">Notes stay in this browser until you save them.</p>
+  <div id="wf-reader-notes-list"></div>
+  <p class="reader-empty-note" id="wf-reader-notes-empty">Highlight text in the document to add a note.</p>
+  <div class="reader-export-actions">
+    <button type="button" id="wf-reader-notes-markdown">Save notes as Markdown</button>
+  </div>
+</aside>
+<script data-writeflex-reader-notes-runtime>
+{{runtime}}
+</script>

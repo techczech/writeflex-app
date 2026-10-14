@@ -1,0 +1,465 @@
+// Where each command is offered: the Place data (ADR-0043; terms in CONTEXT.md). It sits beside the
+// task groups (command-task-groups.ts) and is read the same way: the status-bar chip, Actions here
+// (⌘K) and the keyboard sheet's "Here" section all list a place's commands from this one table,
+// through `actionsAt` in commands/place.ts. Pure data, so main can import it without CodeMirror.
+//
+// How a caret or a selected row becomes a place is commands/place.ts; the rules are written there.
+//
+// Every command declares one of three things:
+//   - a list of places: it is offered in Actions here at those places;
+//   - EVERYWHERE: it is offered at every place (no command uses this yet; the drawing leaves the
+//     commands that work anywhere, such as Undo and Fold All Headings, to "All commands…");
+//   - NOT_BY_PLACE: it is reached through "All commands…" and the palette only.
+// tests/main/command-places.test.ts fails for a command with no declaration and for a stale id.
+//
+// Three kinds of row never take places of their own:
+//   - a sheet row that mirrors a command (`sheet.*` with a source command) has no row here; it
+//     takes its source command's declaration and is never counted beside it;
+//   - a key-only sheet row cannot be run from a panel, so it is NOT_BY_PLACE. The one exception is
+//     "Insert object" (sheet.Editing.12): it is the drawing's Insert row, which opens the list of
+//     things to insert, and it is offered at every place in the editor so ⌘K then Return still
+//     reaches that list wherever it does today;
+//   - the ten `insert.*` objects are the rows of that Insert list, not rows of Actions here.
+//
+// Design source for the three drawn places: HERE_HEADING, HERE_PARAGRAPH and HERE_FILE in
+// docs/design/2026-10-06-onboarding-and-command-discovery/build-mockup-onboarding-hifi-v2.mjs.
+// The rest follows the drawing's rule: a command is listed where its target is the thing at the
+// caret or the selected row.
+
+/** The closed list of places. The order is the order the chip's labels are documented in, no more. */
+export const PLACES = [
+  'heading',
+  'heading-top',
+  'paragraph',
+  'list-item',
+  'task-item',
+  'quotation',
+  'table',
+  'code-block',
+  'link',
+  'image',
+  'selection',
+  'metadata',
+  'empty-document',
+  'file',
+  'folder',
+  'focused-folder',
+  'outline-row',
+] as const
+export type Place = typeof PLACES[number]
+
+/**
+ * What the chip, the panel's corner and the sheet's "Here" line call each place. Two pairs share a
+ * label because the writer is in the same kind of place and only one command differs: a level-1
+ * heading cannot be raised (the drawing: "Place depends on the heading's level"), and the folder
+ * the Files pane is focused on offers Clear focus where any other folder offers Focus.
+ */
+export const PLACE_LABELS: Readonly<Record<Place, string>> = {
+  heading: 'On a heading',
+  'heading-top': 'On a heading',
+  paragraph: 'In a paragraph',
+  'list-item': 'In a list item',
+  'task-item': 'On a task item',
+  quotation: 'In a quotation',
+  table: 'In a table',
+  'code-block': 'In a code block',
+  link: 'On a link',
+  image: 'On an image',
+  selection: 'With a selection',
+  metadata: 'In the metadata',
+  'empty-document': 'In an empty document',
+  file: 'On a file',
+  folder: 'On a folder',
+  'focused-folder': 'On a folder',
+  'outline-row': 'On an outline row',
+}
+
+export const EVERYWHERE = 'everywhere' as const
+export const NOT_BY_PLACE = 'not-by-place' as const
+export type PlaceDeclaration = readonly Place[] | typeof EVERYWHERE | typeof NOT_BY_PLACE
+
+const HEADINGS = ['heading', 'heading-top'] as const satisfies readonly Place[]
+const LIST_ITEMS = ['list-item', 'task-item'] as const satisfies readonly Place[]
+/** Running text a line of which can be formatted, duplicated or joined. */
+const PROSE = ['paragraph', ...LIST_ITEMS, 'quotation'] as const satisfies readonly Place[]
+/** The rendered objects that have an Edit, Copy source and Delete of their own. */
+const OBJECTS = ['table', 'code-block', 'image'] as const satisfies readonly Place[]
+const FOLDERS = ['folder', 'focused-folder'] as const satisfies readonly Place[]
+/** Every place the caret can be in. The Files pane and Outline rows are not among them. */
+export const EDITOR_PLACES = [...HEADINGS, ...PROSE, ...OBJECTS, 'link', 'selection', 'metadata', 'empty-document'] as const satisfies readonly Place[]
+
+/** The drawing's Insert row: the one key-only sheet row that is offered by place. */
+export const INSERT_OBJECT_ROW = 'sheet.Editing.12'
+/** The Insert row is listed first, under a group of its own with tthe account holder's name (state 18). */
+export const INSERT_GROUP = 'Insert'
+
+const DRAWN_HEADING = ['fold.current', 'outline.moveBlockUp', 'outline.moveBlockDown', 'outline.moveSubtreeUp', 'outline.moveSubtreeDown', 'outline.selectCurrentSection', 'outline.deleteCurrentSection', 'heading.decrease', 'heading.increase', 'outline.raiseSubtreeLevel', 'outline.lowerSubtreeLevel', 'outline.previousHeading', 'outline.nextHeading', 'outline.makeParagraph'] as const
+/**
+ * The rows the drawing shows at a place, in the order it shows them inside each task group (states
+ * 18, 19 and 22). A row listed here keeps this order; a row the drawing does not show follows them.
+ */
+export const DRAWN_ORDER: Readonly<Partial<Record<Place, readonly string[]>>> = {
+  heading: DRAWN_HEADING,
+  'heading-top': DRAWN_HEADING,
+  paragraph: ['edit.bold', 'edit.italic', 'edit.link', 'edit.mark', 'block.quote', 'edit.duplicateLine', 'edit.joinLines', 'list.bullet', 'outline.moveBlockUp', 'outline.moveBlockDown', 'outline.makeHeadingAtSurroundingLevel', 'outline.makeHeadingOneLevelDeeper'],
+  // Not drawn: the rows ticket 02 listed keep their order; the move commands the owner added follow, the delete last.
+  'outline-row': ['outline.selectCurrentSection', 'heading.decrease', 'heading.increase', 'outline.newHeadingBefore', 'outline.newSubheading', 'outline.expandAll', 'outline.collapseAll', 'outline.showLevel1', 'outline.showLevel2', 'outline.showLevel3', 'outline.showLevel4', 'outline.showLevel5', 'outline.showLevel6', 'outline.showAllLevels', 'outline.toggleWordCounts'],
+  file: ['file.open', 'file.rename', 'file.move', 'file.duplicate', 'file.pin', 'file.reveal', 'file.copyPath', 'file.trash', 'file.export'],
+}
+
+/** Commands that delete or remove. Among the rows the drawing does not show, these come last in their group. */
+export const DELETING_COMMANDS: ReadonlySet<string> = new Set(['outline.deleteCurrentSection', 'block.delete', 'table.delete', 'file.trash', 'folder.trash'])
+
+export const commandPlaces: Readonly<Record<string, PlaceDeclaration>> = {
+  // 1 Write
+  'edit.strikethrough': [...PROSE, 'selection'],
+  'sheet.Editing.4': NOT_BY_PLACE,
+  'sheet.Editing.5': NOT_BY_PLACE,
+  'sheet.Editing.12': EDITOR_PLACES,
+  'sheet.Editing.13': NOT_BY_PLACE,
+  'sheet.Editing.14': NOT_BY_PLACE,
+  'sheet.Editing.15': NOT_BY_PLACE,
+  'edit.selectBodyExceptMetadata': NOT_BY_PLACE,
+  'edit.bold': [...PROSE, 'selection'],
+  'edit.italic': [...PROSE, 'selection'],
+  'edit.link': [...PROSE, 'selection', 'link'],
+  'edit.mark': [...PROSE, 'selection'],
+  'edit.toggleComment': [...PROSE, ...HEADINGS, 'selection'],
+  'edit.selectNextOccurrence': ['selection'],
+  'edit.duplicateLine': NOT_BY_PLACE,
+  'block.duplicate': PROSE,
+  'edit.inlineCode': [...PROSE, 'selection'],
+  'edit.clearFormatting': [...PROSE, 'selection'],
+  'turn.taskList': ['paragraph', 'selection'],
+  'turn.codeBlock': ['paragraph', 'selection'],
+  'turn.table': ['paragraph', 'selection'],
+  'edit.joinLines': NOT_BY_PLACE,
+  'text.upperCase': ['selection'],
+  'text.lowerCase': ['selection'],
+  'text.titleCase': ['selection'],
+  'metadata.edit': ['metadata'],
+  'edit.undo': NOT_BY_PLACE,
+  'edit.redo': NOT_BY_PLACE,
+  'outline.indentListItem': LIST_ITEMS,
+  'outline.outdentListItem': LIST_ITEMS,
+  'selection.lineStart': NOT_BY_PLACE,
+  'selection.lineEnd': NOT_BY_PLACE,
+  'selection.documentStart': NOT_BY_PLACE,
+  'selection.documentEnd': NOT_BY_PLACE,
+  'block.toText': OBJECTS,
+  'block.toCode': OBJECTS,
+  'block.toMermaid': ['code-block'],
+  'block.toMarkmap': ['code-block'],
+  'block.toTable': ['code-block'],
+  'outline.toMindMap': [...LIST_ITEMS, 'selection'],
+  'list.bullet': ['paragraph', ...LIST_ITEMS, 'selection', 'empty-document'],
+  'edit.toggleCheckbox': ['task-item'],
+  'list.ordered': ['paragraph', ...LIST_ITEMS, 'selection', 'empty-document'],
+  'list.type.lettered': LIST_ITEMS,
+  'list.type.roman': LIST_ITEMS,
+  'list.type.numbered': LIST_ITEMS,
+  'list.type.bullet': LIST_ITEMS,
+  'list.type.checkboxes': LIST_ITEMS,
+  'block.quote': ['paragraph', 'quotation', 'selection'],
+  'outline.makeParagraph': [...HEADINGS, ...LIST_ITEMS, 'quotation'],
+  'insert.table': NOT_BY_PLACE,
+  'insert.metadata': NOT_BY_PLACE,
+  'insert.image': NOT_BY_PLACE,
+  'insert.widget': NOT_BY_PLACE,
+  'insert.code': NOT_BY_PLACE,
+  'insert.mermaid': NOT_BY_PLACE,
+  'insert.markmap': NOT_BY_PLACE,
+  'insert.svg': NOT_BY_PLACE,
+  'insert.divider': NOT_BY_PLACE,
+  'insert.footnote': [...PROSE, 'selection'],
+  'block.edit': OBJECTS,
+  'block.copy': [...OBJECTS, 'metadata'],
+  'block.delete': [...OBJECTS, 'metadata', ...PROSE],
+  'table.alignLeft': ['table'],
+  'table.alignCentre': ['table'],
+  'table.alignRight': ['table'],
+  'table.insertLeft': ['table'],
+  'table.insertRight': ['table'],
+  'table.delete': ['table'],
+  // 2 Shape the document
+  'sheet.Navigation.20': NOT_BY_PLACE,
+  'sheet.Editing.16': NOT_BY_PLACE,
+  'fold.current': HEADINGS,
+  'fold.all': NOT_BY_PLACE,
+  'fold.none': NOT_BY_PLACE,
+  'navigation.nextBlock': NOT_BY_PLACE,
+  'navigation.previousBlock': NOT_BY_PLACE,
+  'outline.moveBlockUp': [...PROSE, ...OBJECTS, 'outline-row'],
+  'outline.moveBlockDown': [...PROSE, ...OBJECTS, 'outline-row'],
+  'outline.moveSubtreeUp': HEADINGS,
+  'outline.moveSubtreeDown': HEADINGS,
+  'heading.decrease': ['heading', 'outline-row'],
+  'heading.increase': [...HEADINGS, 'outline-row'],
+  'outline.raiseSubtreeLevel': NOT_BY_PLACE,
+  'outline.lowerSubtreeLevel': NOT_BY_PLACE,
+  'outline.newHeadingBefore': [...HEADINGS, 'outline-row'],
+  'outline.newSubheading': [...HEADINGS, 'outline-row'],
+  'outline.rowMenu': NOT_BY_PLACE,
+  'outline.expandAll': ['outline-row'],
+  'outline.collapseAll': ['outline-row'],
+  'outline.showLevel1': ['outline-row'],
+  'outline.showLevel2': ['outline-row'],
+  'outline.showLevel3': ['outline-row'],
+  'outline.showLevel4': ['outline-row'],
+  'outline.showLevel5': ['outline-row'],
+  'outline.showLevel6': ['outline-row'],
+  'outline.showAllLevels': ['outline-row'],
+  'outline.toggleWordCounts': ['outline-row'],
+  'outline.makeHeadingAtSurroundingLevel': ['paragraph', 'selection'],
+  'outline.makeHeadingOneLevelDeeper': ['paragraph', 'selection'],
+  'outline.previousHeading': NOT_BY_PLACE,
+  'outline.nextHeading': NOT_BY_PLACE,
+  'outline.deleteCurrentSection': [...HEADINGS, 'outline-row'],
+  'outline.selectCurrentSection': ['outline-row'],
+  'outline.makeHeadingLevel1': ['empty-document'],
+  'outline.makeHeadingLevel2': ['empty-document'],
+  'outline.makeHeadingLevel3': ['empty-document'],
+  'outline.makeHeadingLevel4': ['empty-document'],
+  'outline.makeHeadingLevel5': ['empty-document'],
+  'outline.makeHeadingLevel6': ['empty-document'],
+  'view.outline': NOT_BY_PLACE,
+  // 3 Stay focused
+  'view.typewriter': NOT_BY_PLACE,
+  'session.start': NOT_BY_PLACE,
+  'session.end': NOT_BY_PLACE,
+  'session.adjustTarget': NOT_BY_PLACE,
+  'goal.set': NOT_BY_PLACE,
+  'view.distractionFree': NOT_BY_PLACE,
+  'focus.open': NOT_BY_PLACE,
+  'focus.fade': NOT_BY_PLACE,
+  'focus.sentence': NOT_BY_PLACE,
+  'focus.segment': NOT_BY_PLACE,
+  'focus.breakup': NOT_BY_PLACE,
+  'focus.anchored': NOT_BY_PLACE,
+  'focus.lineFocus': NOT_BY_PLACE,
+  'focus.ruler': NOT_BY_PLACE,
+  'lineFocus.size1': NOT_BY_PLACE,
+  'lineFocus.size3': NOT_BY_PLACE,
+  'lineFocus.size5': NOT_BY_PLACE,
+  'ruler.covers.thin': NOT_BY_PLACE,
+  'ruler.covers.1': NOT_BY_PLACE,
+  'ruler.covers.3': NOT_BY_PLACE,
+  'ruler.covers.5': NOT_BY_PLACE,
+  'ruler.covers.below': NOT_BY_PLACE,
+  'ruler.opacity.lighter': NOT_BY_PLACE,
+  'ruler.opacity.darker': NOT_BY_PLACE,
+  'lineOverlay.followByHand': NOT_BY_PLACE,
+  'lineOverlay.followTypewriter': NOT_BY_PLACE,
+  'fixedLine.topThird': NOT_BY_PLACE,
+  'fixedLine.middle': NOT_BY_PLACE,
+  'fixedLine.lowerThird': NOT_BY_PLACE,
+  // 4 Listen
+  'readAloud.start': [...PROSE, ...HEADINGS, 'link', 'selection'],
+  'readAloud.pauseResume': NOT_BY_PLACE,
+  'readAloud.stop': NOT_BY_PLACE,
+  'readAloud.faster': NOT_BY_PLACE,
+  'readAloud.slower': NOT_BY_PLACE,
+  'readAloud.nextSentence': NOT_BY_PLACE,
+  'readAloud.previousSentence': NOT_BY_PLACE,
+  'readAloud.nextParagraph': NOT_BY_PLACE,
+  'readAloud.previousParagraph': NOT_BY_PLACE,
+  'readAloud.returnToReading': NOT_BY_PLACE,
+  'readAloud.chooseVoice': NOT_BY_PLACE,
+  'readAloudHighlight.terracotta': NOT_BY_PLACE,
+  'readAloudHighlight.amber': NOT_BY_PLACE,
+  'readAloudHighlight.green': NOT_BY_PLACE,
+  'readAloudHighlight.blue': NOT_BY_PLACE,
+  'readAloudHighlight.lilac': NOT_BY_PLACE,
+  'readAloudHighlight.grey': NOT_BY_PLACE,
+  // 5 Review and versions
+  'sheet.Files.1': NOT_BY_PLACE,
+  'sheet.Navigation.19': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.4': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.5': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.6': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.14': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.15': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.16': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.17': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.18': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.19': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.20': NOT_BY_PLACE,
+  'writer.newSession': NOT_BY_PLACE,
+  'writer.acceptSession': NOT_BY_PLACE,
+  'change.revertToActive': NOT_BY_PLACE,
+  'change.sendOriginalToScratchpad': NOT_BY_PLACE,
+  'review.nextChange': NOT_BY_PLACE,
+  'review.previousChange': NOT_BY_PLACE,
+  'review.acceptAndNext': NOT_BY_PLACE,
+  'view.hideStrikes': NOT_BY_PLACE,
+  'view.hideInserts': NOT_BY_PLACE,
+  'file.nameVersion': NOT_BY_PLACE,
+  'app.review': NOT_BY_PLACE,
+  'app.versions': NOT_BY_PLACE,
+  // 6 Find and manage files
+  'sheet.Files.0': NOT_BY_PLACE,
+  'sheet.Files.2': NOT_BY_PLACE,
+  'sheet.Files.3': NOT_BY_PLACE,
+  'sheet.Files.4': NOT_BY_PLACE,
+  'sheet.Files.5': NOT_BY_PLACE,
+  'sheet.Files.6': NOT_BY_PLACE,
+  'sheet.Files.7': NOT_BY_PLACE,
+  'sheet.Files.8': NOT_BY_PLACE,
+  'sheet.Files.9': NOT_BY_PLACE,
+  'sheet.Files.10': NOT_BY_PLACE,
+  'sheet.Navigation.1': NOT_BY_PLACE,
+  'sheet.Navigation.2': NOT_BY_PLACE,
+  'sheet.Navigation.3': NOT_BY_PLACE,
+  'sheet.Navigation.4': NOT_BY_PLACE,
+  'sheet.Navigation.5': NOT_BY_PLACE,
+  'sheet.Navigation.10': NOT_BY_PLACE,
+  'sheet.Navigation.13': NOT_BY_PLACE,
+  'sheet.Navigation.17': NOT_BY_PLACE,
+  'sheet.Navigation.18': NOT_BY_PLACE,
+  'navigation.nextTab': NOT_BY_PLACE,
+  'navigation.previousTab': NOT_BY_PLACE,
+  'navigation.nextPanelTab': NOT_BY_PLACE,
+  'navigation.previousPanelTab': NOT_BY_PLACE,
+  'navigation.nextFolderFile': NOT_BY_PLACE,
+  'navigation.previousFolderFile': NOT_BY_PLACE,
+  'view.openTabs': NOT_BY_PLACE,
+  'navigation.linkTrailBack': NOT_BY_PLACE,
+  'navigation.linkTrailForward': NOT_BY_PLACE,
+  'tab.pin': NOT_BY_PLACE,
+  'view.focusFolder': NOT_BY_PLACE,
+  'view.clearFolderFocus': NOT_BY_PLACE,
+  'files.filter': NOT_BY_PLACE,
+  'file.clearDocument': NOT_BY_PLACE,
+  'idea.materialise': ['link'],
+  'navigation.followWikilink': ['link'],
+  'idea.insertWikilink': NOT_BY_PLACE,
+  'view.files': NOT_BY_PLACE,
+  'app.quickOpen': NOT_BY_PLACE,
+  'app.search': NOT_BY_PLACE,
+  'archive.search': NOT_BY_PLACE,
+  'workspace.pin': NOT_BY_PLACE,
+  'workspace.unpin': NOT_BY_PLACE,
+  'file.open': ['file'],
+  'file.rename': ['file'],
+  'file.move': ['file'],
+  'file.duplicate': ['file'],
+  'file.pin': ['file'],
+  'file.reveal': ['file'],
+  'file.copyPath': ['file'],
+  'file.trash': ['file'],
+  'folder.newFile': FOLDERS,
+  'folder.newFolder': FOLDERS,
+  'folder.rename': FOLDERS,
+  'folder.reveal': FOLDERS,
+  'folder.trash': FOLDERS,
+  'folder.focus': ['folder'],
+  'folder.clearFocus': ['focused-folder'],
+  // 7 Collect and plan
+  'sheet.App.1': NOT_BY_PLACE,
+  'collection.openBoard': NOT_BY_PLACE,
+  'collection.openDashboard': NOT_BY_PLACE,
+  'board.makeIdeaFromOffcut': NOT_BY_PLACE,
+  'board.toggleOffcuts': NOT_BY_PLACE,
+  'board.undoMaterialStep': NOT_BY_PLACE,
+  'board.toggleSources': NOT_BY_PLACE,
+  'board.attachSource': NOT_BY_PLACE,
+  'piece.listSources': NOT_BY_PLACE,
+  'plan.open': NOT_BY_PLACE,
+  'folio.movePieceUp': NOT_BY_PLACE,
+  'folio.movePieceDown': NOT_BY_PLACE,
+  'folio.addToRunningOrder': NOT_BY_PLACE,
+  'folio.addAllToRunningOrder': NOT_BY_PLACE,
+  'folio.undoLastChange': NOT_BY_PLACE,
+  'folio.previousPiece': NOT_BY_PLACE,
+  'folio.nextPiece': NOT_BY_PLACE,
+  'plan.addPart': NOT_BY_PLACE,
+  'plan.adoptPart': NOT_BY_PLACE,
+  'plan.moveUp': NOT_BY_PLACE,
+  'plan.moveDown': NOT_BY_PLACE,
+  'plan.materialise': NOT_BY_PLACE,
+  'plan.removePart': NOT_BY_PLACE,
+  'collection.toggleRail': NOT_BY_PLACE,
+  'collection.focusRail': NOT_BY_PLACE,
+  'collection.insertAsQuery': NOT_BY_PLACE,
+  'collection.toggleFolderPiece': NOT_BY_PLACE,
+  'collection.toggleCounted': NOT_BY_PLACE,
+  'idea.capture': NOT_BY_PLACE,
+  'readingRoom.toggle': NOT_BY_PLACE,
+  'readingRoom.document': NOT_BY_PLACE,
+  'readingRoom.highlights': NOT_BY_PLACE,
+  'readingRoom.syncHighlights': NOT_BY_PLACE,
+  'readingRoom.searchShelf': NOT_BY_PLACE,
+  'citation.insertReference': NOT_BY_PLACE,
+  'insert.reference': NOT_BY_PLACE,
+  // 8 Work with the agent
+  'sheet.Agent & Scratchpad.3': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.7': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.21': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.22': NOT_BY_PLACE,
+  'skill.run.copy-edit': NOT_BY_PLACE,
+  'skill.run.review': NOT_BY_PLACE,
+  'skill.run.clean-up': NOT_BY_PLACE,
+  'skill.run.report-structure': NOT_BY_PLACE,
+  'skills.openThread': NOT_BY_PLACE,
+  'threads.new': NOT_BY_PLACE,
+  'threads.switcher': NOT_BY_PLACE,
+  'threads.closeCurrent': NOT_BY_PLACE,
+  'agent.manageAccounts': NOT_BY_PLACE,
+  'skills.manage': NOT_BY_PLACE,
+  'app.agent': NOT_BY_PLACE,
+  'agent.askHere': [...PROSE, ...HEADINGS, 'link', 'table', 'code-block', 'image', 'selection', 'empty-document'],
+  'agent.switchModel': NOT_BY_PLACE,
+  'agent.setThinking': NOT_BY_PLACE,
+  'agent.refreshModels': NOT_BY_PLACE,
+  'app.scratchpad': NOT_BY_PLACE,
+  'folder.helpWithReport': FOLDERS,
+  // 9 Share and export
+  'copy.rich': NOT_BY_PLACE,
+  'copy.markdown': NOT_BY_PLACE,
+  'copy.plain': NOT_BY_PLACE,
+  'export.document': NOT_BY_PLACE,
+  'exportPresets.apply': NOT_BY_PLACE,
+  'exportPresets.update': NOT_BY_PLACE,
+  'exportPresets.saveAs': NOT_BY_PLACE,
+  'exportPresets.manage': NOT_BY_PLACE,
+  'exportPresets.rename': NOT_BY_PLACE,
+  'exportPresets.delete': NOT_BY_PLACE,
+  'exportPresets.moveUp': NOT_BY_PLACE,
+  'exportPresets.moveDown': NOT_BY_PLACE,
+  'file.export': ['file'],
+  // 10 Set up WriteFlex
+  'sheet.Navigation.16': NOT_BY_PLACE,
+  'sheet.Editing.11': NOT_BY_PLACE,
+  'sheet.Agent & Scratchpad.10': NOT_BY_PLACE,
+  'sheet.View.0': NOT_BY_PLACE,
+  'sheet.View.1': NOT_BY_PLACE,
+  'sheet.View.2': NOT_BY_PLACE,
+  'sheet.View.3': NOT_BY_PLACE,
+  'view.actionBar': NOT_BY_PLACE,
+  'view.configureActionBar': NOT_BY_PLACE,
+  'sounds.typing': NOT_BY_PLACE,
+  'sounds.ambient': NOT_BY_PLACE,
+  'appearance.darkTheme': NOT_BY_PLACE,
+  'appearance.lightTheme': NOT_BY_PLACE,
+  'statusbar.disclosure': NOT_BY_PLACE,
+  'app.commandPalette': NOT_BY_PLACE,
+  'app.settings': NOT_BY_PLACE,
+  'app.about': NOT_BY_PLACE,
+  'guide.open': NOT_BY_PLACE,
+  'example.restore': NOT_BY_PLACE,
+  'app.shortcuts': NOT_BY_PLACE,
+  'view.clean': NOT_BY_PLACE,
+  'view.markup': NOT_BY_PLACE,
+  'view.raw': NOT_BY_PLACE,
+}
+
+/** The declaration of a command that has a row of its own. Throws for an id with none, so a new command cannot ship undeclared. */
+export const placesOf = (id: string): PlaceDeclaration => {
+  const declaration = commandPlaces[id]
+  if (!declaration) throw new Error(`Command declares no places: ${id} (add it to commands/command-places.ts)`)
+  return declaration
+}
+
+/** True when a declaration offers its command at `place`. */
+export const offeredAt = (declaration: PlaceDeclaration, place: Place): boolean =>
+  declaration === EVERYWHERE || (declaration !== NOT_BY_PLACE && declaration.includes(place))

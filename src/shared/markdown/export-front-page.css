@@ -1,0 +1,25 @@
+.front-page{position:relative;display:grid;align-content:center;min-height:100vh;padding:clamp(40px,9vh,120px) clamp(24px,6vw,96px);}
+.front-page-inner{max-width:980px;}
+.front-page-title{margin:0;font-family:Georgia,"Times New Roman",serif;letter-spacing:-.025em;line-height:1.02;}
+.front-page .standfirst{max-width:760px;font-family:Georgia,"Times New Roman",serif;line-height:1.5;}
+.front-page .meta-row{display:flex;flex-wrap:wrap;gap:9px;}
+.front-page-enter{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:flex-start;padding:0 clamp(24px,6vw,96px) clamp(28px,6vh,72px);color:inherit;text-decoration:none;}
+.front-page-enter-label{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:999px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;font-size:12.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
+.front-page-enter-label::after{content:"\2193";font-size:14px;}
+.front-page-enter:focus-visible{outline:3px solid #0f766e;outline-offset:-6px;}
+.front-page-anchor{display:block;height:0;overflow:hidden;}
+.wf-design-a .front-page{border-bottom:1px solid var(--line);background:linear-gradient(180deg,#ffffff,rgba(251,250,247,0) 78%);}
+.wf-design-a .front-page-title{color:#18202a;font-size:clamp(44px,7vw,88px);font-weight:600;}
+.wf-design-a .front-page .standfirst{margin:26px 0 0;color:#405066;font-size:clamp(19px,2.2vw,24px);}
+.wf-design-a .front-page .meta-row{margin-top:34px;}
+.wf-design-a .front-page-enter-label{border:1px solid var(--line);background:rgba(255,255,255,.82);color:#0b55b7;}
+.wf-design-b .front-page{border-bottom:4px solid var(--nav);background:#172630;color:#e7efee;}
+.wf-design-b .front-page-title{color:#fffdf6;font-size:clamp(46px,7.4vw,94px);font-weight:500;letter-spacing:-.03em;}
+.wf-design-b .front-page .standfirst{margin:24px 0 0;color:#bed2d0;font-size:clamp(19px,2.2vw,24px);}
+.wf-design-b .front-page .meta-row{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;justify-content:flex-start;gap:0 44px;margin-top:38px;padding:0;}
+.wf-design-b .front-page .chip{flex:0 0 auto;min-width:170px;}
+.wf-design-b .front-page .chip{padding:9px 0;border-bottom:1px solid rgba(255,255,255,.22);color:#cfdddc;font-size:12px;}
+.wf-design-b .front-page .chip:first-child{border-top:1px solid rgba(255,255,255,.22);}
+.wf-design-b .front-page .chip strong{display:block;color:#8fc0b9;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;}
+.wf-design-b .front-page-enter-label{border:1px solid rgba(255,255,255,.3);background:rgba(255,255,255,.06);color:#a6dcd3;}
+@media print{.front-page{min-height:0;break-after:page;padding:2mm 8mm 8mm!important;border-bottom:1px solid #bbb!important;background:#fff!important;color:#111!important;}.front-page-title{color:#111!important;font-size:34pt!important;}.front-page .standfirst{color:#333!important;}.front-page .chip{min-width:0!important;padding-right:20px!important;border:0!important;color:#333!important;}.front-page .chip strong{color:#111!important;}.front-page-enter,.front-page-anchor{display:none!important;}.hero{display:none!important;}.shell{display:block;}.sidebar{display:block!important;position:static!important;height:auto!important;overflow:visible!important;margin:0!important;padding:0 8mm!important;border:0!important;background:#fff!important;color:#111!important;break-before:page;break-after:page;}.sidebar-title{margin:0 0 2mm!important;color:#111!important;font-family:Georgia,"Times New Roman",serif;font-size:20pt!important;}.toc-label{margin:0 0 4mm!important;color:#555!important;font-size:9pt!important;letter-spacing:.1em;}#toc{counter-reset:toc;}#toc .nav-link{counter-increment:toc;display:block!important;margin:0!important;padding:1.5mm 0!important;border:0!important;background:none!important;color:#111!important;font-size:11pt!important;text-decoration:none;}#toc .nav-link::before{content:counter(toc,decimal-leading-zero) "\2002\2002";color:#666!important;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9pt;}#toc .nav-link.level-2{padding-left:6mm!important;}#toc .nav-link.level-3{padding-left:12mm!important;}#toc .nav-link.level-4,#toc .nav-link.level-5{padding-left:18mm!important;}#toc .nav-link.piece-link{font-weight:700;}}

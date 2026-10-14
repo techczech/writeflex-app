@@ -1,0 +1,16 @@
+{
+  "name": "@readflex/zotero-paths",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --format esm && tsc src/index.ts --declaration --emitDeclarationOnly --outDir dist --target ES2022 --module ESNext --moduleResolution Bundler --strict --skipLibCheck --types bun"
+  },
+  "license": "MIT"
+}

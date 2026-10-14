@@ -1,0 +1,49 @@
+{
+  "name": "@bridle/core",
+  "version": "0.14.4",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./providers": {
+      "types": "./dist/providers.d.ts",
+      "import": "./dist/providers.js",
+      "default": "./dist/providers.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "bin"
+  ],
+  "scripts": {
+    "build:helper": "cargo build --release --manifest-path native/runner-sandbox/Cargo.toml --target x86_64-pc-windows-msvc && node -e \"const fs=require('fs');fs.mkdirSync('bin',{recursive:true});fs.copyFileSync('native/runner-sandbox/target/x86_64-pc-windows-msvc/release/bridle-runner-sandbox.exe','bin/bridle-runner-sandbox.exe')\"",
+    "build:js": "bun build ./src/index.ts --outdir dist --target node --format esm --packages external && bun build ./src/providers.ts --outdir dist --target browser --format esm --packages external",
+    "build:types": "tsc -p tsconfig.build.json && bun run scripts/fix-dts-extensions.ts",
+    "build": "bun run build:js && bun run build:types"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.80.2",
+    "@earendil-works/pi-ai": "0.83.0",
+    "@earendil-works/pi-coding-agent": "0.83.0",
+    "sharp": "0.35.3",
+    "typebox": "1.1.38",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "typescript": "6.0.3"
+  },
+  "peerDependencies": {
+    "@bridle/contract": "file:../contract"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

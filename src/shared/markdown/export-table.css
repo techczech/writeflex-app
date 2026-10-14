@@ -1,0 +1,109 @@
+/* Tables in an exported HTML file: formatting for every table, and the look of the search, sort and
+   column-filter controls the page script adds to large tables. Locked 2026-10-13.
+   A builder lifts this file as it is. It assumes the exporter wraps each table in
+   <div class="wf-table-region"> and leaves the table's own markup (inline cell styles, border
+   attribute) as the exporter writes it today; the !important rules are the ones that must win over
+   those inline styles. The author's own column alignment (an inline text-align) is never overridden. */
+.wf-table-region,.wf-table-bar{--wt-ink:#18202a;--wt-muted:#4a5b6f;--wt-line:#dbe2ea;--wt-rule:#eaeff5;--wt-head:#f4f7fb;--wt-accent:#0f766e;--wt-ring:rgba(15,118,110,.45);--wt-field:#cdd6e0}
+.wf-table-region{margin:0 0 1.6em;max-width:100%;overflow-x:auto}
+.wf-table-region>table{border-collapse:separate!important;border-spacing:0;border:1px solid var(--wt-line)!important;border-radius:8px;margin:0!important;max-width:none;font-size:14px;line-height:1.4;color:var(--wt-ink);font-variant-numeric:tabular-nums}
+.wf-table-region>table>caption{caption-side:top;text-align:left;padding:0 0 10px;font-size:13px;font-weight:650;color:#34465a}
+.wf-table-region th,.wf-table-region td{border:0!important;border-bottom:1px solid var(--wt-rule)!important;padding:10px 12px!important;vertical-align:middle!important;background:#fff!important;text-align:left}
+.wf-table-region thead th{background:var(--wt-head)!important;border-bottom:1px solid #c5d0dc!important;padding:11px 12px!important;font-size:11px;font-weight:720!important;letter-spacing:.05em;text-transform:uppercase;color:var(--wt-muted);white-space:nowrap}
+.wf-table-region tbody:last-child tr:last-child>*{border-bottom:0!important}
+.wf-table-region thead tr:first-child>:first-child{border-top-left-radius:7px}
+.wf-table-region thead tr:first-child>:last-child{border-top-right-radius:7px}
+.wf-table-region tbody:last-child tr:last-child>:first-child{border-bottom-left-radius:7px}
+.wf-table-region tbody:last-child tr:last-child>:last-child{border-bottom-right-radius:7px}
+.wf-table-region tbody td:first-child{font-weight:560}
+.wf-table-region tbody tr:hover>td{background:#f7fafe!important}
+.wf-table-region code{font-size:.92em}
+/* set by the script from the column's detected type */
+.wf-table-region .wf-num{text-align:right;white-space:nowrap}
+.wf-table-region .wf-date{white-space:nowrap;color:var(--wt-muted)}
+/* in a full-width table, width:1% keeps number and date columns as narrow as their content, so spare width goes to the text columns */
+.wf-table-region.wf-controls .wf-num,.wf-table-region.wf-controls .wf-date{width:1%}
+.wf-table-region .wf-pill{display:inline-flex;align-items:center;gap:7px;padding:2px 10px 2px 8px;border-radius:999px;background:#f1f4f8;font-size:13px;color:#34465a;white-space:nowrap}
+.wf-table-region .wf-pill::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--wf-dot,#8a99ab);flex:none}
+/* with the script running: a table that fits is not a scroll box, so its header sticks to the window;
+   a table wider than its column scrolls inside its own box and its header sticks to that box */
+.wf-table-region.wf-js{overflow:visible}
+.wf-table-region.wf-js.wf-wide{overflow:auto;max-height:78vh;border-radius:8px}
+.wf-table-region.wf-js.wf-wide thead th,.wf-table-region.wf-js.wf-wide thead td{border-radius:0}
+.wf-table-region.wf-wide:focus-visible{outline:3px solid var(--wt-ring);outline-offset:2px}
+.wf-table-region.wf-js thead{position:sticky;top:0;z-index:2}
+.wf-table-region.wf-controls>table{width:100%}
+
+/* the line above a large table: caption, search, row count, clear */
+.wf-table-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;margin:1.6em 0 10px;font-family:inherit}
+.wf-table-bar .wf-cap{flex:1 1 240px;font-size:13px;font-weight:650;color:#34465a}
+.wf-table-bar .wf-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px}
+.wf-table-bar .wf-count{font-size:13px;color:var(--wt-muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.wf-table-bar .wf-count b{color:var(--wt-ink);font-weight:650}
+.wf-table-bar+.wf-table-region{margin-top:0}
+.wf-search{display:inline-flex;align-items:center;gap:7px;width:230px;height:32px;padding:0 10px;border:1px solid var(--wt-field);border-radius:8px;background:#fff;color:var(--wt-muted)}
+.wf-search:focus-within{border-color:var(--wt-accent);box-shadow:0 0 0 3px rgba(15,118,110,.22)}
+.wf-search svg{width:14px;height:14px;flex:none}
+.wf-search input{all:unset;box-sizing:border-box;flex:1;min-width:0;font-family:inherit;font-size:13.5px;line-height:1.2;color:var(--wt-ink)}
+.wf-search input::placeholder{color:#66768a}
+.wf-search input::-webkit-search-cancel-button,.wf-search input::-webkit-search-decoration{-webkit-appearance:none;display:none}
+.wf-clear{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;height:30px;padding:0 10px;border:1px solid var(--wt-field);border-radius:8px;background:#fff;color:#0b4f4a;font-family:inherit;font-size:13px;font-weight:600;line-height:1;cursor:pointer;white-space:nowrap}
+.wf-clear:hover{background:var(--wt-head);border-color:#b7c3d1}
+.wf-clear:focus-visible{outline:3px solid var(--wt-ring);outline-offset:1px}
+.wf-clear[hidden]{display:none}
+.wf-vh{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
+
+/* sortable headers */
+.wf-table-region thead th.wf-sortable{padding:0!important}
+.wf-sort{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:6px;width:100%;padding:11px 12px;cursor:pointer;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit;white-space:nowrap}
+th.wf-num .wf-sort{justify-content:flex-end}
+.wf-sort:hover{color:var(--wt-ink);background:rgba(15,118,110,.07)}
+.wf-sort:focus-visible{outline:3px solid var(--wt-ring);outline-offset:-3px;border-radius:6px;background:rgba(15,118,110,.07)}
+.wf-sort svg{width:11px;height:13px;flex:none;overflow:visible}
+.wf-sort svg path{fill:currentColor;opacity:.3}
+th[aria-sort="ascending"] .wf-sort svg .wf-up,th[aria-sort="descending"] .wf-sort svg .wf-down{opacity:1;fill:var(--wt-accent)}
+th[aria-sort="ascending"] .wf-sort,th[aria-sort="descending"] .wf-sort{color:#0b4f4a}
+/* a header that holds a link keeps its content; the sort button is the arrows alone, after it */
+th.wf-sortable.wf-split{padding:11px 4px 11px 12px!important}
+th.wf-split .wf-sort{display:inline-flex;width:auto;padding:4px 6px;margin-left:2px;vertical-align:middle;border-radius:6px}
+
+/* the filter row */
+.wf-table-region tr.wf-filters td{background:#fbfcfe!important;border-bottom:1px solid #c5d0dc!important;padding:7px 10px!important;font-weight:400}
+.wf-fcell{display:flex;align-items:center;gap:5px}
+.wf-fcell input,.wf-fcell select{all:unset;box-sizing:border-box;width:100%;min-width:0;height:28px;padding:0 8px;border:1px solid var(--wt-field);border-radius:6px;background:#fff;font-family:inherit;font-size:13px;font-weight:400;line-height:16px;letter-spacing:0;text-transform:none;font-variant-numeric:tabular-nums;color:var(--wt-ink)}
+.wf-fcell input.wf-text{min-width:120px}
+.wf-fcell select{min-width:104px;padding:5px 22px 5px 8px;cursor:pointer;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;
+  background-image:linear-gradient(45deg,transparent 50%,#4a5b6f 50%),linear-gradient(135deg,#4a5b6f 50%,transparent 50%);background-position:calc(100% - 13px) 12px,calc(100% - 8px) 12px;background-size:5px 5px;background-repeat:no-repeat}
+.wf-fcell input::placeholder{color:#66768a}
+.wf-fcell input:focus-visible,.wf-fcell select:focus-visible{border-color:var(--wt-accent);box-shadow:0 0 0 3px rgba(15,118,110,.3)}
+.wf-fcell.wf-on input,.wf-fcell.wf-on select{border-color:rgba(15,118,110,.6);background-color:#eef7f6}
+.wf-fcell input[aria-invalid="true"]{border-color:#b42318;background-color:#fef3f2}
+.wf-fcell.wf-range{justify-content:flex-end}
+.wf-fcell.wf-range input{text-align:right;padding:0 6px;flex:0 0 56px;width:56px}
+.wf-fcell .wf-dash{color:#66768a;font-size:12px}
+
+/* no row matches */
+.wf-table-region tr.wf-nomatch td{padding:30px 14px!important;text-align:center;color:var(--wt-muted);font-size:14px;font-weight:400}
+.wf-table-region tr.wf-nomatch b{color:var(--wt-ink);font-weight:650;margin-right:10px}
+.wf-table-region tr[hidden]{display:none}
+
+@media (max-width:700px){
+  .wf-table-bar .wf-tools{flex:1 1 100%}
+  .wf-search{flex:1 1 100%;width:auto}
+}
+@media print{
+  /* added to the locked file: with no caption the line above the table holds only controls, so it prints as a blank gap */
+  .wf-table-bar:not(:has(.wf-cap)){display:none!important}
+  .wf-table-bar .wf-tools,.wf-sort svg,.wf-table-region tr.wf-filters,.wf-table-region tr.wf-nomatch{display:none!important}
+  .wf-table-region tr[hidden]:not(.wf-nomatch){display:table-row!important}
+  .wf-table-region,.wf-table-region.wf-js.wf-wide{overflow:visible!important;max-height:none!important}
+  .wf-table-region.wf-js thead{position:static}
+  .wf-table-region>table{font-size:9.5pt;break-inside:auto!important}
+  .wf-table-region thead{display:table-header-group}
+  .wf-table-region tr{break-inside:avoid}
+  .wf-table-region>table{border-color:#bbb!important;border-radius:0}
+  .wf-table-region th,.wf-table-region td{background:#fff!important;border-bottom:1px solid #bbb!important;padding:5px 8px!important;border-radius:0!important}
+  .wf-table-region thead th{background:#f0f0f0!important;border-bottom:1.5px solid #666!important;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .wf-sort{padding:5px 8px}
+  .wf-table-region .wf-pill{padding:0;background:none}.wf-table-region .wf-pill::before{display:none}
+}

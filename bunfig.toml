@@ -1,0 +1,8 @@
+[install]
+minimumReleaseAge = 604800
+
+# Bun's runner greedily matches *.spec.ts / *.test.ts anywhere; the Playwright
+# e2e suite under tests/e2e uses those extensions too. Scope Bun discovery to the
+# main-process unit tests so `bun test` never tries to load a Playwright spec.
+[test]
+root = "tests/main"

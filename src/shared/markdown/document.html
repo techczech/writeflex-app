@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{{title}}</title>
+<style>{{styles}}</style>
+</head>
+<body class="wf-design-{{design}}">{{front-page}}
+<div class="shell">
+<aside class="sidebar" aria-label="Document contents">
+<h2 class="sidebar-title">{{sidebar-title}}</h2>
+<p class="toc-label">Contents</p>
+<nav id="toc">
+{{sidebar}}
+</nav>
+</aside>
+<main class="main">
+{{document-header}}
+<article class="content">
+{{body}}
+</article>
+</main>
+</div>{{reader-notes}}
+</body>
+</html>

@@ -1,0 +1,82 @@
+/* Design tokens — ported verbatim from the locked mockup's :root
+   (docs/design/writeflex-main-window/mockup/writeflex-mockup-v4.html, ADR-0009).
+   Names and values are the spec; change only via a new design ruling. */
+:root{
+  --ink:#1d1d1f; --ink-2:#55555b; --ink-3:#87878d; --ink-4:#a8a8ad;
+  --line:rgba(0,0,0,.10); --line-soft:rgba(0,0,0,.06);
+  --bg-toolbar:#f6f6f5; --bg-side:#f4f4f2; --bg-pane:#ffffff; --bg-sunk:#faf9f7;
+  --pill:#e9e9e6; --hover:rgba(0,0,0,.045);
+  --accent:#2e6be6; --accent-soft:rgba(46,107,230,.10);
+  --review:#1f8a76; --review-bg:rgba(31,138,118,.10);
+  --green:#2e9e5b; --danger:#c4432e; --danger-soft:rgba(196,67,46,.09);
+  /* The mockup referenced favourites via var(--amber,#b97d10) without a :root entry; this pins
+     that intended token to the fallback the mockup shipped — the pinned Star fill in the sidebar. */
+  --amber:#b97d10; --amber-soft:rgba(185,125,16,.12);
+  /* Collections 0.6 status/provenance palette (ADR-0023 locked mockup). */
+  --s-idea:#b97d10; --s-idea-bg:rgba(185,125,16,.12);
+  --s-note:#7a5af0; --s-note-bg:rgba(122,90,240,.12);
+  --s-prog:#2e6be6; --s-prog-bg:rgba(46,107,230,.11);
+  --s-edit:#1f8a76; --s-edit-bg:rgba(31,138,118,.13);
+  --s-ready:#2e9e5b; --s-ready-bg:rgba(46,158,91,.13);
+  --s-pub:#8a8a90; --s-pub-bg:rgba(0,0,0,.05);
+  --collection-agent:#7a5af0; --collection-agent-bg:rgba(122,90,240,.10);
+  --ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --prose:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  --r:10px;
+  /* Task 17 additions (settings ruling): tokens the mockup expressed as literals, lifted so the
+     dark theme can restate them. Light values are byte-equal to the literals they replace. */
+  --bg-elev:#ffffff;          /* elevated cards/sheets/inputs — the mockup's bare #fff */
+  --prose-ink:#26262a;        /* .doc body text — the editor buffer's prose colour */
+  --switch-track:#d6d6d3;     /* .switch .knob off-state track */
+  /* Editor settings (Task 17, Appearance/Editor sections): the locked defaults, overridden inline
+     on <html> when `editor.proseSize` / `editor.lineWidth` are explicitly set. */
+  --prose-size:18.5px;
+  --prose-measure:660px;
+  /* Change Ledger vocabulary (ADR-0010/0011) — ported verbatim from the locked mockup
+     reports/design/change-ledger/directions-v3.html. One colour per Edit Class and per Provenance;
+     these are the ledger's own semantic palette, distinct from the app's brand accent. */
+  --content:#7a4bd6; --content-soft:#ece4fb;
+  --copy:#3f7f6f;    --copy-soft:#dfeee9;
+  --move:#b5852a;    --move-soft:#f4e9d0;
+  --house:#8b8578;   --house-soft:#eceae3;
+  --you:#2f6db0; --you-soft:#dde8f4;
+  --agent:#9a5b2e; --agent-soft:#f0e2d5;
+  --reviewer:#6a6f4b; --reviewer-soft:#e7e8d9;
+  --prov-agent:var(--agent); --prov-you:var(--you); --prov-reviewer:var(--reviewer);
+}
+
+/* Dark theme (Task 17, the Appearance option — ADR taste rule: the option must exist; Light stays
+   the default face). No mockup frame exists for dark, so this block is DERIVED from the locked
+   light tokens: same hue relationships, inverted value ladder, accent/green/danger lifted for
+   contrast on dark panes. A usability review look item until the user has eyeballed it live. */
+[data-theme="dark"]{
+  --ink:#e7e7ea; --ink-2:#a6a6ae; --ink-3:#92929b; --ink-4:#5f5f68;
+  --line:rgba(255,255,255,.13); --line-soft:rgba(255,255,255,.07);
+  --bg-toolbar:#242427; --bg-side:#212124; --bg-pane:#1a1a1e; --bg-sunk:#202024;
+  --pill:#333338; --hover:rgba(255,255,255,.06);
+  --accent:#5f8ef2; --accent-soft:rgba(95,142,242,.18);
+  --review:#55b6a2; --review-bg:rgba(85,182,162,.17);
+  --green:#43b271; --danger:#e0674f; --danger-soft:rgba(224,103,79,.16);
+  --amber:#d2a04a; --amber-soft:rgba(210,160,74,.16);
+  --s-idea:#d2a04a; --s-idea-bg:rgba(210,160,74,.16);
+  --s-note:#a58cf5; --s-note-bg:rgba(165,140,245,.17);
+  --s-prog:#6f9af4; --s-prog-bg:rgba(111,154,244,.16);
+  --s-edit:#55b6a2; --s-edit-bg:rgba(85,182,162,.17);
+  --s-ready:#65c88c; --s-ready-bg:rgba(101,200,140,.16);
+  --s-pub:#a2a2aa; --s-pub-bg:rgba(255,255,255,.08);
+  --collection-agent:#a58cf5; --collection-agent-bg:rgba(165,140,245,.17);
+  --bg-elev:#242428;
+  --prose-ink:#d9d9de;
+  --switch-track:#4a4a52;
+  /* Change Ledger vocabulary on dark — DERIVED from the light tokens: same hues, lifted for contrast
+     on dark panes, soft backgrounds re-based as low-alpha tints. A usability review look item like the rest of dark. */
+  --content:#b79bf0; --content-soft:rgba(122,75,214,.24);
+  --copy:#6fb3a0;    --copy-soft:rgba(63,127,111,.24);
+  --move:#d5ab5e;    --move-soft:rgba(181,133,42,.24);
+  --house:#a8a297;   --house-soft:rgba(139,133,120,.22);
+  --you:#6ea3df; --you-soft:rgba(110,163,223,.24);
+  --agent:#c58a5c; --agent-soft:rgba(197,138,92,.24);
+  --reviewer:#aeb47d; --reviewer-soft:rgba(174,180,125,.24);
+  --prov-agent:var(--agent); --prov-you:var(--you); --prov-reviewer:var(--reviewer);
+}

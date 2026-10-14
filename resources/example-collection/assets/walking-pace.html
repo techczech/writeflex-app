@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Walking pace</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 14px 18px 16px; font: 14px/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #2b2a27; background: #faf8f3; }
+  h1 { margin: 0 0 10px; font-size: 15px; font-weight: 650; }
+  .row { display: grid; grid-template-columns: 92px 1fr 74px; align-items: center; gap: 12px; margin: 6px 0; }
+  label { color: #5c5a53; }
+  output { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  input[type=range] { width: 100%; accent-color: #b5532f; }
+  .result { margin-top: 12px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .time { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; color: #b5532f; }
+  .track { margin-top: 10px; height: 10px; border-radius: 5px; background: #e7e2d6; overflow: hidden; }
+  .bar { height: 100%; width: 0; background: #b5532f; transition: width .12s ease-out; }
+  .presets { margin-left: auto; display: flex; gap: 6px; }
+  button { font: inherit; font-size: 12.5px; padding: 3px 10px; border: 1px solid #cfc8b8; border-radius: 6px; background: #fff; color: #2b2a27; cursor: pointer; }
+  button:hover { background: #f1ede2; }
+  .note { margin-top: 8px; font-size: 12.5px; color: #6b685e; }
+</style>
+</head>
+<body>
+<h1>How long is the walk?</h1>
+<div class="row"><label for="distance">Distance</label><input id="distance" type="range" min="1" max="12" step="0.5" value="7"><output id="distanceOut"></output></div>
+<div class="row"><label for="pace">Pace</label><input id="pace" type="range" min="1.5" max="4" step="0.1" value="2.5"><output id="paceOut"></output></div>
+<div class="result">
+  <span class="time" id="time"></span>
+  <span id="verdict"></span>
+  <span class="presets"><button type="button" id="road">The road, 4 miles</button><button type="button" id="long">The long way, 7 miles</button></span>
+</div>
+<div class="track" aria-hidden="true"><div class="bar" id="bar"></div></div>
+<div class="note">Allow a stop at each stile. This page runs on its own: it reads nothing and sends nothing.</div>
+<script>
+(function () {
+  var distance = document.getElementById('distance');
+  var pace = document.getElementById('pace');
+  function update() {
+    var miles = parseFloat(distance.value);
+    var mph = parseFloat(pace.value);
+    var minutes = Math.round(miles / mph * 60);
+    var h = Math.floor(minutes / 60);
+    var m = minutes % 60;
+    document.getElementById('distanceOut').textContent = miles + ' miles';
+    document.getElementById('paceOut').textContent = mph.toFixed(1) + ' mph';
+    document.getElementById('time').textContent = h + ' h ' + (m < 10 ? '0' : '') + m + ' min';
+    document.getElementById('verdict').textContent = minutes <= 120 ? 'Home for lunch.' : minutes <= 210 ? 'Take the flask.' : 'Take the flask and the waterproof.';
+    document.getElementById('bar').style.width = Math.min(100, minutes / 480 * 100) + '%';
+  }
+  distance.addEventListener('input', update);
+  pace.addEventListener('input', update);
+  document.getElementById('road').addEventListener('click', function () { distance.value = 4; update(); });
+  document.getElementById('long').addEventListener('click', function () { distance.value = 7; update(); });
+  update();
+})();
+</script>
+</body>
+</html>

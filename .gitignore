@@ -1,0 +1,11 @@
+node_modules/
+out/
+release/
+dist/
+packages/*/*/dist/
+packages/*/*/bin/
+packages/*/*/native/**/target/
+.DS_Store
+.env*
+test-results/
+playwright-report/

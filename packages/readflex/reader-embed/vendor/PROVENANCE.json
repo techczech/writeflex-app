@@ -1,0 +1,20 @@
+{
+  "extractionDate": "2026-07-26",
+  "files": {
+    "lib/prop-types.js": "5a24e9b72f5d33eee14cbe2035717a7c92fbb51727bbf9a9944f4ed1ed6ef7e0",
+    "lib/react-dom.js": "35f4f974f4b2bcd44da73963347f8952e341f83909e4498227d4e26b98f66f0d",
+    "lib/react.js": "d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd",
+    "reader/115.js": "ec750a30062022365ac6da6fd311bb11f6efd8b47fb75d41beaa4d3b9f4a9065",
+    "reader/317.js": "c11d2bbc89d09c1529b52c829d233f9652c024f7d612b55caec96e83fe3bdfdb",
+    "reader/903.js": "0746f84770d147b73f475e2569be51db4b898e54e739e826b074fd28ea445411",
+    "reader/read-aloud-first-run.html": "e64861d84687edbabf0ff0597f3a135b97b1221aaec947c1b9807cb520103d72",
+    "reader/read-aloud-first-run.js": "e5b65e2bb507f0dd79ec7fc8ef267fb1d06ef22758604d76c520c87d27188464",
+    "reader/read-aloud-voices.html": "740c3f87163a3de965b9d7e9eed278b88cfe3d751f0a5031a392aedf86d83203",
+    "reader/read-aloud-voices.js": "ac8d2b57a41540f615fe3cad606f36a838c3e8a951ab43bfd95996c1e5a76082",
+    "reader/reader.css": "1099a281031f65ea17a5f592e081d3ace0d06b9e842f6bd4fb09f4d312ac6dd3",
+    "reader/reader.html": "1c5af8d8ab93de6415cdcdee2d750644e34b1fc1a216ab262c76e1f45707382b",
+    "reader/reader.js": "d6a46c25268329186b814b4ae25d1425e0162f4c490250597c94dc902de4fe8b"
+  },
+  "zoteroVersion": "10.0",
+  "source": "https://github.com/zotero/reader"
+}
