@@ -27,6 +27,8 @@ pub struct FilesystemPolicy {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourcePolicy {
+    // camelCase would give "memoryMb"; the TS request writes "memoryMB".
+    #[serde(rename = "memoryMB")]
     pub memory_mb: u64,
     pub wallclock_sec: u32,
     pub max_processes: u32,
@@ -53,6 +55,8 @@ pub struct Grants {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
+    // camelCase would give "memoryMb"; the TS request writes "memoryMB".
+    #[serde(rename = "memoryMB")]
     pub memory_mb: u64,
     pub wallclock_sec: u32,
     pub max_processes: u32,

@@ -14,6 +14,7 @@ mod win {
     use super::*;
     use crate::acl::AclRestorer;
     use std::ffi::c_void;
+    use std::fs::File;
     use std::io::{self, Read, Write};
     use std::mem::{size_of, zeroed};
     use std::os::windows::io::{FromRawHandle, RawHandle};
@@ -22,39 +23,40 @@ mod win {
     use std::time::{SystemTime, UNIX_EPOCH};
     use windows::core::{w, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
-        CloseHandle, GetLastError, BOOL, HANDLE, PSID, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, GetLastError, LocalFree, SetHandleInformation, ERROR_ALREADY_EXISTS, HANDLE,
+        HANDLE_FLAGS, HANDLE_FLAG_INHERIT, HLOCAL, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
-    use windows::Win32::Security::Authorization::{
+    use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows::Win32::Security::Isolation::{
         CreateAppContainerProfile, DeleteAppContainerProfile,
-        DeriveAppContainerSidFromAppContainerName, FreeSid,
+        DeriveAppContainerSidFromAppContainerName,
     };
     use windows::Win32::Security::{
-        ConvertStringSidToSidW, CreateRestrictedToken, DuplicateTokenEx, SetTokenInformation,
-        TokenIntegrityLevel, TokenPrimary, CREATE_RESTRICTED_TOKEN_FLAGS, DISABLE_MAX_PRIVILEGE,
-        SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SECURITY_IMPERSONATION_LEVEL,
-        SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
-        TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_TYPE, WRITE_RESTRICTED,
+        CreateRestrictedToken, DuplicateTokenEx, FreeSid, GetLengthSid, SecurityImpersonation,
+        SetTokenInformation, TokenIntegrityLevel, TokenPrimary, DISABLE_MAX_PRIVILEGE, PSID,
+        SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT,
+        TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        WRITE_RESTRICTED,
     };
-    use windows::Win32::System::Environment::CREATE_UNICODE_ENVIRONMENT;
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     };
+    use windows::Win32::System::Pipes::CreatePipe;
     use windows::Win32::System::Threading::{
-        CreatePipe, CreateProcessAsUserW, DeleteProcThreadAttributeList, GetCurrentProcess,
-        GetExitCodeProcess, InitializeProcThreadAttributeList, OpenProcessToken, ResumeThread,
+        CreateProcessAsUserW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
+        InitializeProcThreadAttributeList, OpenProcessToken, ResumeThread, TerminateProcess,
         UpdateProcThreadAttribute, WaitForSingleObject, CREATE_SUSPENDED,
-        EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_CREATION_FLAGS,
-        PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES,
-        STARTUPINFOEXW,
+        CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
+        LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
     };
-    use windows::Win32::System::WindowsProgramming::INFINITE;
-    use windows::Win32::System::IO::SetHandleInformation;
 
     const STILL_ACTIVE: u32 = 259;
-    const HANDLE_FLAG_INHERIT: u32 = 0x00000001;
+    /// SE_GROUP_INTEGRITY: marks the SID in a TOKEN_MANDATORY_LABEL as the integrity label.
+    const SE_GROUP_INTEGRITY: u32 = 0x0000_0020;
 
     struct Handle(HANDLE);
 
@@ -78,14 +80,15 @@ mod win {
 
         fn into_raw(mut self) -> HANDLE {
             let handle = self.0;
-            self.0 = HANDLE(0);
+            self.0 = HANDLE(null_mut());
             handle
         }
     }
 
     impl Drop for Handle {
         fn drop(&mut self) {
-            if !self.0.is_invalid() && self.0 != HANDLE(0) {
+            // is_invalid() covers both NULL and INVALID_HANDLE_VALUE.
+            if !self.0.is_invalid() {
                 unsafe {
                     let _ = CloseHandle(self.0);
                 }
@@ -109,41 +112,48 @@ mod win {
             let name_w = to_wide(&name);
             let display_w = to_wide("Bridle Script Runner");
             let description_w = to_wide("Bridle Runner Sandbox alpha profile");
-            let mut sid = PSID::default();
 
-            let create_result = unsafe {
+            // Empty capability list: no internetClient etc., so no network.
+            let created = unsafe {
                 CreateAppContainerProfile(
                     PCWSTR(name_w.as_ptr()),
                     PCWSTR(display_w.as_ptr()),
                     PCWSTR(description_w.as_ptr()),
                     None,
-                    0,
-                    &mut sid,
                 )
             };
 
-            if create_result.is_err() {
-                unsafe {
-                    DeriveAppContainerSidFromAppContainerName(PCWSTR(name_w.as_ptr()), &mut sid)
-                }
-                .map_err(|error| {
-                    SetupFailure::new(
-                        "setup",
-                        format!("could not create or derive AppContainer profile {name}: {error}"),
-                    )
-                })?;
-                return Ok(Self {
+            match created {
+                Ok(sid) => Ok(Self {
                     name,
                     sid,
-                    should_delete: false,
-                });
+                    should_delete: true,
+                }),
+                // Only an existing profile of the same name falls back to deriving
+                // its SID; any other creation failure fails closed.
+                Err(error)
+                    if windows::core::Error::code(&error) == ERROR_ALREADY_EXISTS.to_hresult() =>
+                {
+                    let sid = unsafe {
+                        DeriveAppContainerSidFromAppContainerName(PCWSTR(name_w.as_ptr()))
+                    }
+                    .map_err(|error| {
+                        SetupFailure::new(
+                            "setup",
+                            format!("could not derive AppContainer SID for {name}: {error}"),
+                        )
+                    })?;
+                    Ok(Self {
+                        name,
+                        sid,
+                        should_delete: false,
+                    })
+                }
+                Err(error) => Err(SetupFailure::new(
+                    "setup",
+                    format!("could not create AppContainer profile {name}: {error}"),
+                )),
             }
-
-            Ok(Self {
-                name,
-                sid,
-                should_delete: true,
-            })
         }
     }
 
@@ -154,23 +164,36 @@ mod win {
                     let name_w = to_wide(&self.name);
                     let _ = DeleteAppContainerProfile(PCWSTR(name_w.as_ptr()));
                 }
-                if !self.sid.is_invalid() {
-                    FreeSid(self.sid);
+                // Both CreateAppContainerProfile and
+                // DeriveAppContainerSidFromAppContainerName document FreeSid.
+                if !self.sid.0.is_null() {
+                    let _ = FreeSid(self.sid);
                 }
             }
         }
     }
 
+    /// STARTUPINFOEX attribute list. Owns every buffer an attribute points at,
+    /// because UpdateProcThreadAttribute stores pointers, not copies.
     struct AttributeList {
-        _bytes: Vec<u8>,
+        // usize elements keep the opaque list pointer-aligned.
+        _buffer: Vec<usize>,
+        _security: Box<SECURITY_CAPABILITIES>,
+        _inherit: Box<[HANDLE]>,
         ptr: LPPROC_THREAD_ATTRIBUTE_LIST,
     }
 
     impl AttributeList {
-        fn new(security: &mut SECURITY_CAPABILITIES) -> Result<Self, SetupFailure> {
+        fn new(security: SECURITY_CAPABILITIES, inherit: &[HANDLE]) -> Result<Self, SetupFailure> {
+            const ATTRIBUTE_COUNT: u32 = 2;
             let mut size = 0usize;
             unsafe {
-                let _ = InitializeProcThreadAttributeList(None, 1, 0, &mut size);
+                let _ = InitializeProcThreadAttributeList(
+                    LPPROC_THREAD_ATTRIBUTE_LIST(null_mut()),
+                    ATTRIBUTE_COUNT,
+                    0,
+                    &mut size,
+                );
             }
             if size == 0 {
                 return Err(SetupFailure::new(
@@ -178,20 +201,32 @@ mod win {
                     "could not size STARTUPINFOEX attribute list",
                 ));
             }
-            let mut bytes = vec![0u8; size];
-            let ptr = bytes.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
+            let words = size.div_ceil(size_of::<usize>());
+            let mut buffer = vec![0usize; words];
+            let ptr = LPPROC_THREAD_ATTRIBUTE_LIST(buffer.as_mut_ptr() as *mut c_void);
             unsafe {
-                InitializeProcThreadAttributeList(Some(ptr), 1, 0, &mut size).map_err(|error| {
-                    SetupFailure::new(
-                        "setup",
-                        format!("could not initialise STARTUPINFOEX attribute list: {error}"),
-                    )
-                })?;
+                InitializeProcThreadAttributeList(ptr, ATTRIBUTE_COUNT, 0, &mut size).map_err(
+                    |error| {
+                        SetupFailure::new(
+                            "setup",
+                            format!("could not initialise STARTUPINFOEX attribute list: {error}"),
+                        )
+                    },
+                )?;
+            }
+            // From here Drop calls DeleteProcThreadAttributeList.
+            let list = Self {
+                _buffer: buffer,
+                _security: Box::new(security),
+                _inherit: inherit.to_vec().into_boxed_slice(),
+                ptr,
+            };
+            unsafe {
                 UpdateProcThreadAttribute(
-                    ptr,
+                    list.ptr,
                     0,
                     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
-                    Some(security as *mut _ as *const c_void),
+                    Some(&*list._security as *const SECURITY_CAPABILITIES as *const c_void),
                     size_of::<SECURITY_CAPABILITIES>(),
                     None,
                     None,
@@ -202,8 +237,25 @@ mod win {
                         format!("could not attach AppContainer security capabilities: {error}"),
                     )
                 })?;
+                // Restrict inheritance to exactly the child's stdout/stderr pipe
+                // ends, so no other inheritable handle of the helper leaks in.
+                UpdateProcThreadAttribute(
+                    list.ptr,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                    Some(list._inherit.as_ptr() as *const c_void),
+                    size_of::<HANDLE>() * list._inherit.len(),
+                    None,
+                    None,
+                )
+                .map_err(|error| {
+                    SetupFailure::new(
+                        "setup",
+                        format!("could not restrict inherited handles: {error}"),
+                    )
+                })?;
             }
-            Ok(Self { _bytes: bytes, ptr })
+            Ok(list)
         }
     }
 
@@ -223,29 +275,34 @@ mod win {
     fn create_pipe() -> Result<PipePair, SetupFailure> {
         let mut read = HANDLE::default();
         let mut write = HANDLE::default();
-        let mut attrs = SECURITY_ATTRIBUTES {
+        let attrs = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: null_mut(),
-            bInheritHandle: BOOL(1),
+            bInheritHandle: true.into(),
         };
         unsafe {
-            CreatePipe(&mut read, &mut write, Some(&mut attrs), 0).map_err(|error| {
+            CreatePipe(&mut read, &mut write, Some(&attrs), 0).map_err(|error| {
                 SetupFailure::new(
                     "setup",
                     format!("could not create stdout/stderr pipe: {error}"),
                 )
             })?;
-            SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0).map_err(|error| {
-                SetupFailure::new(
-                    "setup",
-                    format!("could not mark pipe read end private: {error}"),
-                )
-            })?;
         }
-        Ok(PipePair {
+        let pair = PipePair {
             read: Handle::new(read)?,
             write: Handle::new(write)?,
-        })
+        };
+        unsafe {
+            SetHandleInformation(pair.read.raw(), HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)).map_err(
+                |error| {
+                    SetupFailure::new(
+                        "setup",
+                        format!("could not mark pipe read end private: {error}"),
+                    )
+                },
+            )?;
+        }
+        Ok(pair)
     }
 
     fn token_for_app_container() -> Result<Handle, SetupFailure> {
@@ -268,8 +325,8 @@ mod win {
                 process_token.raw(),
                 TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
                 None,
-                SECURITY_IMPERSONATION_LEVEL(2),
-                TOKEN_TYPE(TokenPrimary.0),
+                SecurityImpersonation,
+                TokenPrimary,
                 &mut primary_token,
             )
             .map_err(|error| {
@@ -285,8 +342,7 @@ mod win {
         unsafe {
             CreateRestrictedToken(
                 primary_token.raw(),
-                CREATE_RESTRICTED_TOKEN_FLAGS(DISABLE_MAX_PRIVILEGE.0 | WRITE_RESTRICTED.0),
-                None,
+                DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED,
                 None,
                 None,
                 None,
@@ -313,19 +369,20 @@ mod win {
                     format!("could not create low-integrity SID: {error}"),
                 )
             })?;
-            let mut label = TOKEN_MANDATORY_LABEL {
+            let label = TOKEN_MANDATORY_LABEL {
                 Label: SID_AND_ATTRIBUTES {
                     Sid: low_sid,
-                    Attributes: 0x00000020,
+                    Attributes: SE_GROUP_INTEGRITY,
                 },
             };
             let result = SetTokenInformation(
                 token,
                 TokenIntegrityLevel,
-                Some(&mut label as *mut _ as *const c_void),
-                (size_of::<TOKEN_MANDATORY_LABEL>() + 68) as u32,
+                &label as *const _ as *const c_void,
+                size_of::<TOKEN_MANDATORY_LABEL>() as u32 + GetLengthSid(low_sid),
             );
-            FreeSid(low_sid);
+            // ConvertStringSidToSidW documents LocalFree, not FreeSid.
+            let _ = LocalFree(HLOCAL(low_sid.0));
             result.map_err(|error| {
                 SetupFailure::new(
                     "setup",
@@ -361,9 +418,10 @@ mod win {
     }
 
     fn proxy_stream(handle: Handle, stderr: bool) -> thread::JoinHandle<()> {
+        // HANDLE is not Send; hand the thread an owning File instead.
+        let raw = handle.into_raw();
+        let mut file = unsafe { File::from_raw_handle(raw.0 as RawHandle) };
         thread::spawn(move || {
-            let raw = handle.into_raw();
-            let mut file = unsafe { std::fs::File::from_raw_handle(raw.0 as RawHandle) };
             let mut buffer = [0u8; 16 * 1024];
             loop {
                 match file.read(&mut buffer) {
@@ -430,6 +488,10 @@ mod win {
             block.extend(format!("{key}={value}").encode_utf16());
             block.push(0);
         }
+        if request.env.is_empty() {
+            // An empty Unicode block still needs two terminating NULs.
+            block.push(0);
+        }
         block.push(0);
         block
     }
@@ -457,19 +519,22 @@ mod win {
         let job = create_job(&request)?;
         let stdout_pipe = create_pipe()?;
         let stderr_pipe = create_pipe()?;
-        let mut security = SECURITY_CAPABILITIES {
+        let security = SECURITY_CAPABILITIES {
             AppContainerSid: profile.sid,
             Capabilities: null_mut(),
             CapabilityCount: 0,
             Reserved: 0,
         };
-        let attributes = AttributeList::new(&mut security)?;
+        let attributes = AttributeList::new(
+            security,
+            &[stdout_pipe.write.raw(), stderr_pipe.write.raw()],
+        )?;
         let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
         startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
         startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.StartupInfo.hStdOutput = stdout_pipe.write.raw();
         startup.StartupInfo.hStdError = stderr_pipe.write.raw();
-        startup.StartupInfo.hStdInput = HANDLE(0);
+        startup.StartupInfo.hStdInput = HANDLE(null_mut());
         startup.lpAttributeList = attributes.ptr;
 
         let mut process_info: PROCESS_INFORMATION = unsafe { zeroed() };
@@ -484,11 +549,7 @@ mod win {
                 None,
                 None,
                 true,
-                PROCESS_CREATION_FLAGS(
-                    EXTENDED_STARTUPINFO_PRESENT.0
-                        | CREATE_SUSPENDED.0
-                        | CREATE_UNICODE_ENVIRONMENT.0,
-                ),
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
                 Some(env.as_ptr() as *const c_void),
                 PCWSTR(cwd.as_ptr()),
                 &startup.StartupInfo,
@@ -504,18 +565,28 @@ mod win {
 
         let process = Handle::new(process_info.hProcess)?;
         let thread = Handle::new(process_info.hThread)?;
+        drop(attributes);
         drop(stdout_pipe.write);
         drop(stderr_pipe.write);
 
         unsafe {
-            AssignProcessToJobObject(job.raw(), process.raw()).map_err(|error| {
-                let _ = TerminateJobObject(job.raw(), 111);
-                SetupFailure::new(
+            if let Err(error) = AssignProcessToJobObject(job.raw(), process.raw()) {
+                // The process is not in the job, so terminating the job would not
+                // reach it: kill the still-suspended process directly.
+                let _ = TerminateProcess(process.raw(), 111);
+                return Err(SetupFailure::new(
                     "setup",
                     format!("could not assign confined process to Job Object: {error}"),
-                )
-            })?;
-            ResumeThread(thread.raw());
+                ));
+            }
+            if ResumeThread(thread.raw()) == u32::MAX {
+                let error = GetLastError();
+                let _ = TerminateJobObject(job.raw(), 111);
+                return Err(SetupFailure::new(
+                    "setup",
+                    format!("could not resume confined process: {error:?}"),
+                ));
+            }
         }
 
         let stdout_proxy = proxy_stream(stdout_pipe.read, false);

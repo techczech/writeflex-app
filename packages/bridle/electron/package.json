@@ -51,8 +51,8 @@
     "typescript": "6.0.3"
   },
   "peerDependencies": {
-    "@bridle/core": "file:../core",
-    "@bridle/react": "file:../react",
+    "@bridle/core": "0.14.4",
+    "@bridle/react": "0.2.5",
     "electron": ">=30 <43",
     "react": ">=18"
   },

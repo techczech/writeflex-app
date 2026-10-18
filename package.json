@@ -15,12 +15,12 @@
     "dist:win": "bun run build && electron-builder --win --publish never"
   },
   "dependencies": {
-    "@bridle/contract": "file:./packages/bridle/contract",
-    "@bridle/core": "file:./packages/bridle/core",
-    "@bridle/electron": "file:./packages/bridle/electron",
-    "@bridle/ledger": "file:./packages/bridle/ledger",
-    "@bridle/outline": "file:./packages/bridle/outline",
-    "@bridle/react": "file:./packages/bridle/react",
+    "@bridle/contract": "workspace:*",
+    "@bridle/core": "workspace:*",
+    "@bridle/electron": "workspace:*",
+    "@bridle/ledger": "workspace:*",
+    "@bridle/outline": "workspace:*",
+    "@bridle/react": "workspace:*",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-markdown": "^6.5.0",
@@ -35,11 +35,11 @@
     "@lezer/common": "^1.5.2",
     "@lezer/highlight": "^1.2.3",
     "@lezer/markdown": "^1.6.4",
-    "@readflex/reader-embed": "file:./packages/readflex/reader-embed",
-    "@readflex/sidecar": "file:./packages/readflex/sidecar",
-    "@readflex/sqlite-driver": "file:./packages/readflex/sqlite-driver",
-    "@readflex/zotero-bridge": "file:./packages/readflex/zotero-bridge",
-    "@readflex/zotero-paths": "file:./packages/readflex/zotero-paths",
+    "@readflex/reader-embed": "workspace:*",
+    "@readflex/sidecar": "workspace:*",
+    "@readflex/sqlite-driver": "workspace:*",
+    "@readflex/zotero-bridge": "workspace:*",
+    "@readflex/zotero-paths": "workspace:*",
     "docx": "9.7.1",
     "dompurify": "^3.4.11",
     "lucide-react": "^1.21.0",
@@ -48,13 +48,13 @@
     "mermaid": "^11.16.0",
     "sharp": "0.35.3",
     "typebox": "1.1.38",
-    "@bridle/cognition": "file:./packages/bridle/cognition",
-    "@bridle/knowledge": "file:./packages/bridle/knowledge",
-    "@bridle/lens": "file:./packages/bridle/lens",
-    "@bridle/model-access": "file:./packages/bridle/model-access",
-    "@bridle/packs": "file:./packages/bridle/packs",
-    "@bridle/perception": "file:./packages/bridle/perception",
-    "@bridle/secrets": "file:./packages/bridle/secrets"
+    "@bridle/cognition": "workspace:*",
+    "@bridle/knowledge": "workspace:*",
+    "@bridle/lens": "workspace:*",
+    "@bridle/model-access": "workspace:*",
+    "@bridle/packs": "workspace:*",
+    "@bridle/perception": "workspace:*",
+    "@bridle/secrets": "workspace:*"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
@@ -88,7 +88,8 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "!**/native/runner-sandbox/target{,/**}"
     ],
     "extraResources": [
       {
@@ -178,5 +179,9 @@
       "repo": "writeflex-app",
       "releaseType": "draft"
     }
-  }
+  },
+  "workspaces": [
+    "packages/bridle/*",
+    "packages/readflex/*"
+  ]
 }

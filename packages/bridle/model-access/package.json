@@ -27,7 +27,7 @@
     "typescript": "6.0.3"
   },
   "peerDependencies": {
-    "@bridle/contract": "file:../contract"
+    "@bridle/contract": "0.3.1"
   },
   "license": "MIT"
 }

@@ -13,8 +13,8 @@
     "build": "bun build src/index.ts --outdir dist --target node --format esm && tsc src/index.ts --declaration --emitDeclarationOnly --outDir dist --target ES2022 --module ESNext --moduleResolution Bundler --strict --skipLibCheck --types bun"
   },
   "peerDependencies": {
-    "@readflex/sqlite-driver": "file:../sqlite-driver",
-    "@readflex/zotero-paths": "file:../zotero-paths"
+    "@readflex/sqlite-driver": "0.1.0",
+    "@readflex/zotero-paths": "0.1.0"
   },
   "license": "MIT"
 }
