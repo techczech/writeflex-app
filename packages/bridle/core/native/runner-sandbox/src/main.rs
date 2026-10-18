@@ -58,6 +58,31 @@ fn validate_request(request: &Request) -> Result<(), SetupFailure> {
             "request.command must not be empty",
         ));
     }
+    // Win32 strings are NUL-terminated: an embedded NUL would silently truncate a
+    // path (widening an ACL grant to a parent) or splice extra variables into the
+    // environment block. Reject rather than truncate.
+    let has_nul = |value: &str| value.contains('\0');
+    let grants = &request.app_container.grants;
+    if request.command.iter().any(|part| has_nul(part))
+        || has_nul(&request.cwd)
+        || grants.readable.iter().any(|path| has_nul(path))
+        || grants.writable.iter().any(|path| has_nul(path))
+    {
+        return Err(SetupFailure::new(
+            "setup",
+            "request command, cwd and grant paths must not contain NUL",
+        ));
+    }
+    if request
+        .env
+        .iter()
+        .any(|(key, value)| key.is_empty() || key.contains('=') || has_nul(key) || has_nul(value))
+    {
+        return Err(SetupFailure::new(
+            "setup",
+            "request.env keys must be non-empty without '=' and no entry may contain NUL",
+        ));
+    }
     if request.policy.network != "none" || request.app_container.network != "none" {
         return Err(SetupFailure::new(
             "network",
@@ -98,5 +123,57 @@ fn main() -> ExitCode {
             eprintln!("BRIDLE_SANDBOX_DENIED {}: {}", error.resource, error.detail);
             ExitCode::from(111)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request() -> Request {
+        serde_json::from_value(serde_json::json!({
+            "command": ["cmd.exe", "/c", "exit 0"], "cwd": "C:\\", "env": {},
+            "policy": {"filesystem": {"readable": [], "writable": []}, "network": "none",
+                "resources": {"memoryMB": 128, "wallclockSec": 5, "maxProcesses": 1}},
+            "appContainer": {"namePrefix": "Bridle.Test", "capabilities": [], "network": "none",
+                "integrity": "low", "restrictedToken": "write-restricted",
+                "grants": {"readable": [], "writable": []},
+                "job": {"memoryMB": 128, "wallclockSec": 5, "maxProcesses": 1}}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn restricted_request_is_accepted() {
+        assert!(validate_request(&request()).is_ok());
+    }
+
+    #[test]
+    fn network_and_capability_requests_fail_closed() {
+        let mut input = request();
+        input.policy.network = "internet".into();
+        assert_eq!(validate_request(&input).unwrap_err().resource, "network");
+        input = request();
+        input.app_container.network = "internet".into();
+        assert_eq!(validate_request(&input).unwrap_err().resource, "network");
+        input = request();
+        input
+            .app_container
+            .capabilities
+            .push("internetClient".into());
+        assert_eq!(validate_request(&input).unwrap_err().resource, "network");
+    }
+
+    #[test]
+    fn missing_confinement_requirements_fail_closed() {
+        let mut input = request();
+        input.command.clear();
+        assert!(validate_request(&input).is_err());
+        input = request();
+        input.app_container.integrity = "medium".into();
+        assert!(validate_request(&input).is_err());
+        input = request();
+        input.app_container.restricted_token = "unrestricted".into();
+        assert!(validate_request(&input).is_err());
     }
 }

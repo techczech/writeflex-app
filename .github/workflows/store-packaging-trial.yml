@@ -23,6 +23,8 @@ jobs:
         with:
           toolchain: 1.90.0
           targets: x86_64-pc-windows-msvc
+      - name: Validate Windows sandbox helper
+        run: cargo test --locked --manifest-path packages/bridle/core/native/runner-sandbox/Cargo.toml --target x86_64-pc-windows-msvc
       - run: bun install --frozen-lockfile
       - run: bun run build
       - name: Build unsigned trial AppX (placeholder identity; not for submission)

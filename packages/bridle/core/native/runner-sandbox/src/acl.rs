@@ -21,14 +21,17 @@ impl AclRestorer {
 mod win {
     use super::*;
     use std::ptr::null_mut;
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{LocalFree, HLOCAL, PSID};
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Authorization::{
         GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
-        SET_ACCESS, SE_FILE_OBJECT, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TRUSTEE_FORM, TRUSTEE_TYPE,
+        NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
         TRUSTEE_W,
     };
-    use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PACL, PSECURITY_DESCRIPTOR};
+    use windows::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    };
     use windows::Win32::Storage::FileSystem::{
         FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     };
@@ -37,10 +40,24 @@ mod win {
         value.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
+    /// Owns a buffer returned by an API that documents LocalFree as its release.
+    struct LocalBuffer(*mut core::ffi::c_void);
+
+    impl Drop for LocalBuffer {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe {
+                    let _ = LocalFree(HLOCAL(self.0));
+                }
+            }
+        }
+    }
+
     struct OriginalDacl {
         path: String,
-        dacl: PACL,
-        descriptor: PSECURITY_DESCRIPTOR,
+        /// Points into `descriptor`; valid while `descriptor` is alive.
+        dacl: *mut ACL,
+        _descriptor: LocalBuffer,
     }
 
     pub struct AclRestorer {
@@ -72,7 +89,7 @@ mod win {
             mode: AccessMode,
         ) -> Result<(), SetupFailure> {
             let wide = to_wide(path);
-            let mut old_dacl = PACL::default();
+            let mut old_dacl: *mut ACL = null_mut();
             let mut descriptor = PSECURITY_DESCRIPTOR::default();
             unsafe {
                 GetNamedSecurityInfoW(
@@ -85,60 +102,73 @@ mod win {
                     None,
                     &mut descriptor,
                 )
+                .to_hresult()
+                .ok()
                 .map_err(|error| {
                     SetupFailure::new(
                         "filesystem",
                         format!("could not read ACL for {path}: {error}"),
                     )
                 })?;
+            }
+            let descriptor = LocalBuffer(descriptor.0);
 
-                let mut access = EXPLICIT_ACCESS_W {
-                    grfAccessPermissions: mode.permissions(),
-                    grfAccessMode: SET_ACCESS,
-                    grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-                    Trustee: TRUSTEE_W {
-                        pMultipleTrustee: null_mut(),
-                        MultipleTrusteeOperation: Default::default(),
-                        TrusteeForm: TRUSTEE_FORM(0), // TRUSTEE_IS_SID
-                        TrusteeType: TRUSTEE_TYPE(0), // TRUSTEE_IS_UNKNOWN
-                        ptstrName: sid.0 as *mut u16,
-                    },
-                };
+            let access = EXPLICIT_ACCESS_W {
+                grfAccessPermissions: mode.permissions(),
+                grfAccessMode: SET_ACCESS,
+                grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: null_mut(),
+                    MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    // With TRUSTEE_IS_SID the name field carries the SID pointer.
+                    ptstrName: PWSTR(sid.0 as *mut u16),
+                },
+            };
 
-                let mut new_dacl = PACL::default();
-                SetEntriesInAclW(Some(&mut [access]), old_dacl, &mut new_dacl).map_err(
-                    |error| {
+            let mut new_dacl: *mut ACL = null_mut();
+            unsafe {
+                SetEntriesInAclW(Some(&[access]), Some(old_dacl), &mut new_dacl)
+                    .to_hresult()
+                    .ok()
+                    .map_err(|error| {
                         SetupFailure::new(
                             "filesystem",
                             format!("could not build ACL grant for {path}: {error}"),
                         )
-                    },
-                )?;
+                    })?;
+            }
+            let new_dacl = LocalBuffer(new_dacl as *mut core::ffi::c_void);
 
+            // Record the original before applying: SetNamedSecurityInfoW propagates
+            // inheritable ACEs down the tree and can fail part-way, so a failed
+            // apply must still be rolled back by restore().
+            self.originals.push(OriginalDacl {
+                path: path.to_string(),
+                dacl: old_dacl,
+                _descriptor: descriptor,
+            });
+
+            unsafe {
                 SetNamedSecurityInfoW(
                     PCWSTR(wide.as_ptr()),
                     SE_FILE_OBJECT,
                     DACL_SECURITY_INFORMATION,
-                    None,
-                    None,
-                    Some(new_dacl),
+                    PSID::default(),
+                    PSID::default(),
+                    Some(new_dacl.0 as *const ACL),
                     None,
                 )
+                .to_hresult()
+                .ok()
                 .map_err(|error| {
-                    let _ = LocalFree(HLOCAL(new_dacl.0 as isize));
                     SetupFailure::new(
                         "filesystem",
                         format!("could not apply ACL grant for {path}: {error}"),
                     )
                 })?;
-                let _ = LocalFree(HLOCAL(new_dacl.0 as isize));
             }
-
-            self.originals.push(OriginalDacl {
-                path: path.to_string(),
-                dacl: old_dacl,
-                descriptor,
-            });
             Ok(())
         }
 
@@ -150,13 +180,15 @@ mod win {
                         PCWSTR(wide.as_ptr()),
                         SE_FILE_OBJECT,
                         DACL_SECURITY_INFORMATION,
-                        None,
-                        None,
-                        Some(original.dacl),
+                        PSID::default(),
+                        PSID::default(),
+                        Some(original.dacl as *const ACL),
                         None,
                     );
-                    let _ = LocalFree(HLOCAL(original.descriptor.0 as isize));
                 }
+                // `original._descriptor` (which owns the memory `dacl` points into)
+                // is freed here, after the DACL has been written back.
+                drop(original);
             }
         }
     }

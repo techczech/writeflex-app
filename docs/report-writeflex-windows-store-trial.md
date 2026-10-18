@@ -1,0 +1,23 @@
+---
+title: WriteFlex Windows Store packaging trial
+date: 2026-10-18
+status: validation-in-progress
+---
+
+# WriteFlex Windows Store packaging trial
+
+This branch builds an unsigned AppX with a deliberately fictitious Store identity. It is a packaging investigation, not a submitted product or a release candidate.
+
+## Sandbox helper repair
+
+The initial Windows run (39106945010) failed during the mandatory postinstall helper build with 23 Rust errors. The bundled helper used Win32 imports, handle types and function signatures incompatible with its declared windows 0.58 dependency.
+
+The repair backports the five MIT-licensed native helper files from owning Bridle commit `f3182b3bf4f6cfc23daf9b491885723f5dc3c54d` (14 October 2026). This includes the matching allocation, handle inheritance, Job Object failure cleanup, ACL rollback and JSON `memoryMB` fixes. It does not update the rest of Bridle or disable the sandbox. Three added request-validation tests cover the actual TypeScript JSON shape and rejection of network access, capabilities and weakened confinement settings. The Windows workflow runs those tests before installing dependencies and building the AppX.
+
+The current owning source at `f931dc3` already contains this fix; no duplicate source change is required. Its Windows cross-target cargo check and 13 Rust unit tests passed locally. The older public snapshot's three new request tests and Windows cross-target cargo check also passed locally. Local tests ran on macOS; the Windows workflow supplies native Windows evidence.
+
+## Shipping blockers
+
+The vendored helper still predates later October confinement hardening in its owning source. Material differences include scratch-only writes with Low integrity labelling, revoking only this run's ACL entries rather than restoring a saved whole DACL, starting the child inside its Job Object, and cancellation cleanup. These must be reconciled with the host wrapper and tested before shipping this sandbox-enabled Windows app. A successful AppX build does not establish that confinement is safe or complete.
+
+Store identity, signing, installed-app testing, Windows App Certification Kit results and human Windows usability review remain separate requirements. Nothing on this branch submits to Microsoft or publishes a release.
