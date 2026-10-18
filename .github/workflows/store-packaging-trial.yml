@@ -33,9 +33,9 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: >-
           npx --no-install electron-builder --win appx --x64 --publish never
-          -c.appx.identityName=Techczech.WriteFlexPackagingTrial
-          -c.appx.publisher=CN=StorePackagingTrial
-          -c.appx.publisherDisplayName=PackagingTrial
+          '-c.appx.identityName=Techczech.WriteFlexPackagingTrial'
+          '-c.appx.publisher=CN=StorePackagingTrial'
+          '-c.appx.publisherDisplayName=PackagingTrial'
       - name: Hash trial package
         shell: pwsh
         run: |
