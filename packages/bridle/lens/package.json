@@ -30,7 +30,7 @@
     "typescript": "6.0.3"
   },
   "peerDependencies": {
-    "@bridle/core": "file:../core"
+    "@bridle/core": "0.14.4"
   },
   "license": "MIT"
 }

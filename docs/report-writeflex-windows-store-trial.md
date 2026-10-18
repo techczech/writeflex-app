@@ -21,3 +21,7 @@ The current owning source at `f931dc3` already contains this fix; no duplicate s
 The vendored helper still predates later October confinement hardening in its owning source. Material differences include scratch-only writes with Low integrity labelling, revoking only this run's ACL entries rather than restoring a saved whole DACL, starting the child inside its Job Object, and cancellation cleanup. These must be reconciled with the host wrapper and tested before shipping this sandbox-enabled Windows app. A successful AppX build does not establish that confinement is safe or complete.
 
 Store identity, signing, installed-app testing, Windows App Certification Kit results and human Windows usability review remain separate requirements. Nothing on this branch submits to Microsoft or publishes a release.
+
+## Windows installation dependency layout
+
+After the helper repair, run 39108152839 passed its native helper tests and built the release helper, then failed frozen installation because ten nested relative `file:` peer dependencies could not be copied on Windows. Local vendored peer contracts now name the exact version already installed by the app, instead of asking the installer for another relative file copy. Root local dependency paths and all registry dependency versions remain pinned. The lock is regenerated with Bun; postinstall and the native helper build remain mandatory. The matching macOS regression run 39108155442 passed typechecking, unit tests and application build for the helper backport.

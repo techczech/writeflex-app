@@ -27,7 +27,7 @@
     "typescript": "6.0.3"
   },
   "peerDependencies": {
-    "@bridle/model-access": "file:../model-access"
+    "@bridle/model-access": "0.1.1"
   },
   "license": "MIT"
 }
