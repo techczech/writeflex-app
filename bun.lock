@@ -5,19 +5,19 @@
     "": {
       "name": "writeflex-app",
       "dependencies": {
-        "@bridle/cognition": "file:./packages/bridle/cognition",
-        "@bridle/contract": "file:./packages/bridle/contract",
-        "@bridle/core": "file:./packages/bridle/core",
-        "@bridle/electron": "file:./packages/bridle/electron",
-        "@bridle/knowledge": "file:./packages/bridle/knowledge",
-        "@bridle/ledger": "file:./packages/bridle/ledger",
-        "@bridle/lens": "file:./packages/bridle/lens",
-        "@bridle/model-access": "file:./packages/bridle/model-access",
-        "@bridle/outline": "file:./packages/bridle/outline",
-        "@bridle/packs": "file:./packages/bridle/packs",
-        "@bridle/perception": "file:./packages/bridle/perception",
-        "@bridle/react": "file:./packages/bridle/react",
-        "@bridle/secrets": "file:./packages/bridle/secrets",
+        "@bridle/cognition": "workspace:*",
+        "@bridle/contract": "workspace:*",
+        "@bridle/core": "workspace:*",
+        "@bridle/electron": "workspace:*",
+        "@bridle/knowledge": "workspace:*",
+        "@bridle/ledger": "workspace:*",
+        "@bridle/lens": "workspace:*",
+        "@bridle/model-access": "workspace:*",
+        "@bridle/outline": "workspace:*",
+        "@bridle/packs": "workspace:*",
+        "@bridle/perception": "workspace:*",
+        "@bridle/react": "workspace:*",
+        "@bridle/secrets": "workspace:*",
         "@codemirror/autocomplete": "^6.20.3",
         "@codemirror/commands": "^6.10.4",
         "@codemirror/lang-markdown": "^6.5.0",
@@ -32,11 +32,11 @@
         "@lezer/common": "^1.5.2",
         "@lezer/highlight": "^1.2.3",
         "@lezer/markdown": "^1.6.4",
-        "@readflex/reader-embed": "file:./packages/readflex/reader-embed",
-        "@readflex/sidecar": "file:./packages/readflex/sidecar",
-        "@readflex/sqlite-driver": "file:./packages/readflex/sqlite-driver",
-        "@readflex/zotero-bridge": "file:./packages/readflex/zotero-bridge",
-        "@readflex/zotero-paths": "file:./packages/readflex/zotero-paths",
+        "@readflex/reader-embed": "workspace:*",
+        "@readflex/sidecar": "workspace:*",
+        "@readflex/sqlite-driver": "workspace:*",
+        "@readflex/zotero-bridge": "workspace:*",
+        "@readflex/zotero-paths": "workspace:*",
         "docx": "9.7.1",
         "dompurify": "^3.4.11",
         "lucide-react": "^1.21.0",
@@ -63,6 +63,224 @@
         "typescript": "^5.7.3",
         "vite": "^6.0.11",
       },
+    },
+    "packages/bridle/cognition": {
+      "name": "@bridle/cognition",
+      "version": "0.1.1",
+      "dependencies": {
+        "typebox": "1.1.38",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/model-access": "0.1.1",
+      },
+    },
+    "packages/bridle/contract": {
+      "name": "@bridle/contract",
+      "version": "0.3.1",
+      "dependencies": {
+        "typebox": "1.1.38",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+    },
+    "packages/bridle/core": {
+      "name": "@bridle/core",
+      "version": "0.14.4",
+      "dependencies": {
+        "@earendil-works/pi-agent-core": "0.80.2",
+        "@earendil-works/pi-ai": "0.83.0",
+        "@earendil-works/pi-coding-agent": "0.83.0",
+        "sharp": "0.35.3",
+        "typebox": "1.1.38",
+        "yaml": "2.9.0",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/contract": "0.3.1",
+      },
+    },
+    "packages/bridle/electron": {
+      "name": "@bridle/electron",
+      "version": "0.2.3",
+      "devDependencies": {
+        "@testing-library/react": "16.3.0",
+        "@types/bun": "^1.3.14",
+        "@types/jsdom": "21.1.7",
+        "@types/react": "18.3.23",
+        "@types/react-dom": "18.3.7",
+        "jsdom": "26.1.0",
+        "react": "18.3.1",
+        "react-dom": "18.3.1",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/core": "0.14.4",
+        "@bridle/react": "0.2.5",
+        "electron": ">=30 <43",
+        "react": ">=18",
+      },
+    },
+    "packages/bridle/knowledge": {
+      "name": "@bridle/knowledge",
+      "version": "0.1.4",
+      "dependencies": {
+        "yaml": "2.9.0",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/core": "0.14.4",
+      },
+    },
+    "packages/bridle/ledger": {
+      "name": "@bridle/ledger",
+      "version": "0.1.2",
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+    },
+    "packages/bridle/lens": {
+      "name": "@bridle/lens",
+      "version": "0.1.5",
+      "bin": {
+        "bridle-lens": "./dist/cli.js",
+        "bridle-lens-mcp": "./dist/mcp.js",
+      },
+      "dependencies": {
+        "@modelcontextprotocol/sdk": "1.29.0",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/core": "0.14.4",
+      },
+    },
+    "packages/bridle/model-access": {
+      "name": "@bridle/model-access",
+      "version": "0.1.1",
+      "dependencies": {
+        "typebox": "1.1.38",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/contract": "0.3.1",
+      },
+    },
+    "packages/bridle/outline": {
+      "name": "@bridle/outline",
+      "version": "0.1.0",
+      "dependencies": {
+        "@codemirror/language": "^6.12.4",
+        "@codemirror/state": "^6.7.0",
+        "@codemirror/view": "^6.43.3",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+    },
+    "packages/bridle/packs": {
+      "name": "@bridle/packs",
+      "version": "0.1.1",
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/knowledge": "0.1.4",
+      },
+    },
+    "packages/bridle/perception": {
+      "name": "@bridle/perception",
+      "version": "0.2.1",
+      "dependencies": {
+        "typebox": "1.1.38",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/contract": "0.3.1",
+        "@bridle/model-access": "0.1.1",
+      },
+    },
+    "packages/bridle/react": {
+      "name": "@bridle/react",
+      "version": "0.2.5",
+      "devDependencies": {
+        "@testing-library/react": "16.3.0",
+        "@types/bun": "^1.3.14",
+        "@types/jsdom": "21.1.7",
+        "@types/react": "18.3.23",
+        "@types/react-dom": "18.3.7",
+        "jsdom": "26.1.0",
+        "lucide-react": "1.21.0",
+        "react": "18.3.1",
+        "react-dom": "18.3.1",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/core": "0.14.4",
+        "lucide-react": ">=0.468.0 <2",
+        "react": ">=18",
+      },
+    },
+    "packages/bridle/secrets": {
+      "name": "@bridle/secrets",
+      "version": "0.1.1",
+      "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "typescript": "6.0.3",
+      },
+      "peerDependencies": {
+        "@bridle/contract": "0.3.1",
+      },
+    },
+    "packages/readflex/reader-embed": {
+      "name": "@readflex/reader-embed",
+      "version": "0.1.0",
+    },
+    "packages/readflex/sidecar": {
+      "name": "@readflex/sidecar",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@readflex/sqlite-driver": "0.1.0",
+        "@readflex/zotero-paths": "0.1.0",
+      },
+    },
+    "packages/readflex/sqlite-driver": {
+      "name": "@readflex/sqlite-driver",
+      "version": "0.1.0",
+    },
+    "packages/readflex/zotero-bridge": {
+      "name": "@readflex/zotero-bridge",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@readflex/sqlite-driver": "0.1.0",
+        "@readflex/zotero-paths": "0.1.0",
+      },
+    },
+    "packages/readflex/zotero-paths": {
+      "name": "@readflex/zotero-paths",
+      "version": "0.1.0",
     },
   },
   "packages": {
@@ -164,31 +382,31 @@
 
     "@braintree/sanitize-url": ["@braintree/sanitize-url@7.1.2", "", {}, "sha512-jigsZK+sMF/cuiB7sERuo9V7N9jx+dhmHHnQyDSVdpZwVutaBu7WvNYqMDLSgFgfB30n452TP3vjDAvFC973mA=="],
 
-    "@bridle/cognition": ["@bridle/cognition@file:packages/bridle/cognition", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/model-access": "file:../model-access" } }],
+    "@bridle/cognition": ["@bridle/cognition@workspace:packages/bridle/cognition"],
 
-    "@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
+    "@bridle/contract": ["@bridle/contract@workspace:packages/bridle/contract"],
 
-    "@bridle/core": ["@bridle/core@file:packages/bridle/core", { "dependencies": { "@earendil-works/pi-agent-core": "0.80.2", "@earendil-works/pi-ai": "0.83.0", "@earendil-works/pi-coding-agent": "0.83.0", "sharp": "0.35.3", "typebox": "1.1.38", "yaml": "2.9.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
+    "@bridle/core": ["@bridle/core@workspace:packages/bridle/core"],
 
-    "@bridle/electron": ["@bridle/electron@file:packages/bridle/electron", { "devDependencies": { "@testing-library/react": "16.3.0", "@types/bun": "^1.3.14", "@types/jsdom": "21.1.7", "@types/react": "18.3.23", "@types/react-dom": "18.3.7", "jsdom": "26.1.0", "react": "18.3.1", "react-dom": "18.3.1", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/core": "file:../core", "@bridle/react": "file:../react", "electron": ">=30 <43", "react": ">=18" } }],
+    "@bridle/electron": ["@bridle/electron@workspace:packages/bridle/electron"],
 
-    "@bridle/knowledge": ["@bridle/knowledge@file:packages/bridle/knowledge", { "dependencies": { "yaml": "2.9.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/core": "file:../core" } }],
+    "@bridle/knowledge": ["@bridle/knowledge@workspace:packages/bridle/knowledge"],
 
-    "@bridle/ledger": ["@bridle/ledger@file:packages/bridle/ledger", { "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
+    "@bridle/ledger": ["@bridle/ledger@workspace:packages/bridle/ledger"],
 
-    "@bridle/lens": ["@bridle/lens@file:packages/bridle/lens", { "dependencies": { "@modelcontextprotocol/sdk": "1.29.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/core": "file:../core" }, "bin": { "bridle-lens": "./dist/cli.js", "bridle-lens-mcp": "./dist/mcp.js" } }],
+    "@bridle/lens": ["@bridle/lens@workspace:packages/bridle/lens"],
 
-    "@bridle/model-access": ["@bridle/model-access@file:packages/bridle/model-access", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
+    "@bridle/model-access": ["@bridle/model-access@workspace:packages/bridle/model-access"],
 
-    "@bridle/outline": ["@bridle/outline@file:packages/bridle/outline", { "dependencies": { "@codemirror/language": "^6.12.4", "@codemirror/state": "^6.7.0", "@codemirror/view": "^6.43.3" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
+    "@bridle/outline": ["@bridle/outline@workspace:packages/bridle/outline"],
 
-    "@bridle/packs": ["@bridle/packs@file:packages/bridle/packs", { "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/knowledge": "file:../knowledge" } }],
+    "@bridle/packs": ["@bridle/packs@workspace:packages/bridle/packs"],
 
-    "@bridle/perception": ["@bridle/perception@file:packages/bridle/perception", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract", "@bridle/model-access": "file:../model-access" } }],
+    "@bridle/perception": ["@bridle/perception@workspace:packages/bridle/perception"],
 
-    "@bridle/react": ["@bridle/react@file:packages/bridle/react", { "devDependencies": { "@testing-library/react": "16.3.0", "@types/bun": "^1.3.14", "@types/jsdom": "21.1.7", "@types/react": "18.3.23", "@types/react-dom": "18.3.7", "jsdom": "26.1.0", "lucide-react": "1.21.0", "react": "18.3.1", "react-dom": "18.3.1", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/core": "file:../core", "lucide-react": ">=0.468.0 <2", "react": ">=18" } }],
+    "@bridle/react": ["@bridle/react@workspace:packages/bridle/react"],
 
-    "@bridle/secrets": ["@bridle/secrets@file:packages/bridle/secrets", { "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
+    "@bridle/secrets": ["@bridle/secrets@workspace:packages/bridle/secrets"],
 
     "@chevrotain/types": ["@chevrotain/types@11.1.2", "", {}, "sha512-U+HFai5+zmJCkK86QsaJtoITlboZHBqrVketcO2ROv865xfCMSFpELQoz1GkX5GzME8pTa+3kbKrZHQtI0gdbw=="],
 
@@ -524,15 +742,15 @@
 
     "@protobufjs/utf8": ["@protobufjs/utf8@1.1.2", "", {}, "sha512-b1UQwcEZ4yCnMCD8DAL1VlbvBJE9/IX4FTIp7BG1xYpf29SLazLSrqUkj4w7Y5y7cCVP6E5tcqqcI0xemPkHug=="],
 
-    "@readflex/reader-embed": ["@readflex/reader-embed@file:packages/readflex/reader-embed", {}],
+    "@readflex/reader-embed": ["@readflex/reader-embed@workspace:packages/readflex/reader-embed"],
 
-    "@readflex/sidecar": ["@readflex/sidecar@file:packages/readflex/sidecar", { "peerDependencies": { "@readflex/sqlite-driver": "file:../sqlite-driver", "@readflex/zotero-paths": "file:../zotero-paths" } }],
+    "@readflex/sidecar": ["@readflex/sidecar@workspace:packages/readflex/sidecar"],
 
-    "@readflex/sqlite-driver": ["@readflex/sqlite-driver@file:packages/readflex/sqlite-driver", {}],
+    "@readflex/sqlite-driver": ["@readflex/sqlite-driver@workspace:packages/readflex/sqlite-driver"],
 
-    "@readflex/zotero-bridge": ["@readflex/zotero-bridge@file:packages/readflex/zotero-bridge", { "peerDependencies": { "@readflex/sqlite-driver": "file:../sqlite-driver", "@readflex/zotero-paths": "file:../zotero-paths" } }],
+    "@readflex/zotero-bridge": ["@readflex/zotero-bridge@workspace:packages/readflex/zotero-bridge"],
 
-    "@readflex/zotero-paths": ["@readflex/zotero-paths@file:packages/readflex/zotero-paths", {}],
+    "@readflex/zotero-paths": ["@readflex/zotero-paths@workspace:packages/readflex/zotero-paths"],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-beta.27", "", {}, "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA=="],
 
@@ -1688,57 +1906,35 @@
 
     "@babel/helper-compilation-targets/semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
 
-    "@bridle/cognition/@bridle/model-access": ["@bridle/model-access@file:packages/bridle/model-access", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
-
     "@bridle/cognition/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "@bridle/contract/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
-    "@bridle/core/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
-
     "@bridle/core/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
-
-    "@bridle/electron/@bridle/core": ["@bridle/core@file:packages/bridle/core", { "dependencies": { "@earendil-works/pi-agent-core": "0.80.2", "@earendil-works/pi-ai": "0.83.0", "@earendil-works/pi-coding-agent": "0.83.0", "sharp": "0.35.3", "typebox": "1.1.38", "yaml": "2.9.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
-
-    "@bridle/electron/@bridle/react": ["@bridle/react@file:packages/bridle/react", { "devDependencies": { "@testing-library/react": "16.3.0", "@types/bun": "^1.3.14", "@types/jsdom": "21.1.7", "@types/react": "18.3.23", "@types/react-dom": "18.3.7", "jsdom": "26.1.0", "lucide-react": "1.21.0", "react": "18.3.1", "react-dom": "18.3.1", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/core": "file:../core", "lucide-react": ">=0.468.0 <2", "react": ">=18" } }],
 
     "@bridle/electron/@types/react": ["@types/react@18.3.23", "", { "dependencies": { "@types/prop-types": "*", "csstype": "^3.0.2" } }, "sha512-/LDXMQh55EzZQ0uVAZmKKhfENivEvWz6E+EYzh+/MCjMhNsotd+ZHhBGIjFDTi6+fz0OhQQQLbTgdQIxxCsC0w=="],
 
     "@bridle/electron/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
-    "@bridle/knowledge/@bridle/core": ["@bridle/core@file:packages/bridle/core", { "dependencies": { "@earendil-works/pi-agent-core": "0.80.2", "@earendil-works/pi-ai": "0.83.0", "@earendil-works/pi-coding-agent": "0.83.0", "sharp": "0.35.3", "typebox": "1.1.38", "yaml": "2.9.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
-
     "@bridle/knowledge/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "@bridle/ledger/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
-    "@bridle/lens/@bridle/core": ["@bridle/core@file:packages/bridle/core", { "dependencies": { "@earendil-works/pi-agent-core": "0.80.2", "@earendil-works/pi-ai": "0.83.0", "@earendil-works/pi-coding-agent": "0.83.0", "sharp": "0.35.3", "typebox": "1.1.38", "yaml": "2.9.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
-
     "@bridle/lens/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
-
-    "@bridle/model-access/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
 
     "@bridle/model-access/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "@bridle/outline/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
-    "@bridle/packs/@bridle/knowledge": ["@bridle/knowledge@file:packages/bridle/knowledge", { "dependencies": { "yaml": "2.9.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/core": "file:../core" } }],
-
     "@bridle/packs/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
-
-    "@bridle/perception/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
-
-    "@bridle/perception/@bridle/model-access": ["@bridle/model-access@file:packages/bridle/model-access", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
 
     "@bridle/perception/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
-    "@bridle/react/@bridle/core": ["@bridle/core@file:packages/bridle/core", { "dependencies": { "@earendil-works/pi-agent-core": "0.80.2", "@earendil-works/pi-ai": "0.83.0", "@earendil-works/pi-coding-agent": "0.83.0", "sharp": "0.35.3", "typebox": "1.1.38", "yaml": "2.9.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
-
     "@bridle/react/@types/react": ["@types/react@18.3.23", "", { "dependencies": { "@types/prop-types": "*", "csstype": "^3.0.2" } }, "sha512-/LDXMQh55EzZQ0uVAZmKKhfENivEvWz6E+EYzh+/MCjMhNsotd+ZHhBGIjFDTi6+fz0OhQQQLbTgdQIxxCsC0w=="],
 
-    "@bridle/react/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
+    "@bridle/react/lucide-react": ["lucide-react@1.21.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-reEZMXq8Qdd5jg5XYkQ5TR1fB/GiQ7ih4vcrthYDtgjSDwh0i6/YLiGjsWsIwgN49gpAnd4J2elSNzncMEEUUQ=="],
 
-    "@bridle/secrets/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
+    "@bridle/react/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
     "@bridle/secrets/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 
@@ -1777,14 +1973,6 @@
     "@electron/windows-sign/fs-extra": ["fs-extra@11.4.1", "", { "dependencies": { "graceful-fs": "^4.2.0", "jsonfile": "^6.0.1", "universalify": "^2.0.0" } }, "sha512-KYAb4c9BJQI6QqGKthV68OHe0badztdXJWKo0WtBA9IuCFPTKvE5ZdUBglP833aMjhaSPNO4A5j/EkzZtGlKjA=="],
 
     "@malept/flatpak-bundler/fs-extra": ["fs-extra@9.1.0", "", { "dependencies": { "at-least-node": "^1.0.0", "graceful-fs": "^4.2.0", "jsonfile": "^6.0.1", "universalify": "^2.0.0" } }, "sha512-hcg3ZmepS30/7BSFqRvoo3DOMQu7IjqxO5nCDt+zM9XWjb33Wg7ziNT+Qvqbuc3+gWpzO02JubVyk2G4Zvo1OQ=="],
-
-    "@readflex/sidecar/@readflex/sqlite-driver": ["@readflex/sqlite-driver@file:packages/readflex/sqlite-driver", {}],
-
-    "@readflex/sidecar/@readflex/zotero-paths": ["@readflex/zotero-paths@file:packages/readflex/zotero-paths", {}],
-
-    "@readflex/zotero-bridge/@readflex/sqlite-driver": ["@readflex/sqlite-driver@file:packages/readflex/sqlite-driver", {}],
-
-    "@readflex/zotero-bridge/@readflex/zotero-paths": ["@readflex/zotero-paths@file:packages/readflex/zotero-paths", {}],
 
     "@types/cacheable-request/@types/node": ["@types/node@25.9.9", "", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-b4e2xxj/yMeT2hNlD6x7zNFiQK2Dlmkb9CQ6v3/1G2RezKN4YS2lcEv8lzGm1mhs4f2lM4yNAMI/zUDBZBBt7w=="],
 
@@ -1888,22 +2076,6 @@
 
     "@babel/helper-compilation-targets/lru-cache/yallist": ["yallist@3.1.1", "", {}, "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g=="],
 
-    "@bridle/cognition/@bridle/model-access/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
-
-    "@bridle/electron/@bridle/core/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
-
-    "@bridle/electron/@bridle/react/@bridle/core": ["@bridle/core@file:packages/bridle/core", { "dependencies": { "@earendil-works/pi-agent-core": "0.80.2", "@earendil-works/pi-ai": "0.83.0", "@earendil-works/pi-coding-agent": "0.83.0", "sharp": "0.35.3", "typebox": "1.1.38", "yaml": "2.9.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
-
-    "@bridle/knowledge/@bridle/core/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
-
-    "@bridle/lens/@bridle/core/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
-
-    "@bridle/packs/@bridle/knowledge/@bridle/core": ["@bridle/core@file:packages/bridle/core", { "dependencies": { "@earendil-works/pi-agent-core": "0.80.2", "@earendil-works/pi-ai": "0.83.0", "@earendil-works/pi-coding-agent": "0.83.0", "sharp": "0.35.3", "typebox": "1.1.38", "yaml": "2.9.0" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" }, "peerDependencies": { "@bridle/contract": "file:../contract" } }],
-
-    "@bridle/perception/@bridle/model-access/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
-
-    "@bridle/react/@bridle/core/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
-
     "@electron/asar/minimatch/brace-expansion": ["brace-expansion@1.1.21", "", { "dependencies": { "balanced-match": "^1.0.0", "concat-map": "0.0.1" } }, "sha512-9zeA+KLZNNzglF2TPKRQEDyx6Yby7daAkuy8MiPzpXPsYDWi/DRM8jmwUDxokQjYqBpv5DgPiwD4h4ZZSy1Ujw=="],
 
     "@electron/universal/minimatch/brace-expansion": ["brace-expansion@2.1.7", "", { "dependencies": { "balanced-match": "^1.0.0" } }, "sha512-uZbew1NqdmPDTMJ8ah1y+b+9QEJrfkXFk3RcTQw3X0jW/xRUvFKsg1CfQdSYGdTbXZWExtU3J3ccxtnfw1Fi0g=="],
@@ -1955,10 +2127,6 @@
     "protobufjs/@types/node/undici-types": ["undici-types@7.24.6", "", {}, "sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg=="],
 
     "rimraf/glob/minimatch": ["minimatch@3.1.5", "", { "dependencies": { "brace-expansion": "^1.1.7" } }, "sha512-VgjWUsnnT6n+NUk6eZq77zeFdpW2LWDzP6zFGrCbHXiYNul5Dzqk2HHQ5uFH2DNW5Xbp8+jVzaeNt94ssEEl4w=="],
-
-    "@bridle/electron/@bridle/react/@bridle/core/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
-
-    "@bridle/packs/@bridle/knowledge/@bridle/core/@bridle/contract": ["@bridle/contract@file:packages/bridle/contract", { "dependencies": { "typebox": "1.1.38" }, "devDependencies": { "@types/bun": "^1.3.14", "typescript": "6.0.3" } }],
 
     "@electron/asar/minimatch/brace-expansion/balanced-match": ["balanced-match@1.0.2", "", {}, "sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw=="],
 
