@@ -28,3 +28,6 @@ After the helper repair, run 39108152839 passed its native helper tests and buil
 
 
 Run 39108529050 passed Windows helper tests, frozen installation and application build. Its packaging step exposed PowerShell parsing the dotted `-c.appx.*` arguments as config filenames; the workflow now quotes them individually. The accompanying macOS run 39108532228 passed all checks. Local frozen install, typecheck, 3,465 tests (two existing todos) and application build also passed.
+
+
+The first successful AppX run (39108794088) passed ZIP integrity and matched the generated SHA-256. Artifact inspection found Rust compiler output bundled through the new workspace links. Packaging now explicitly excludes `native/runner-sandbox/target`, retaining the required `bin/bridle-runner-sandbox.exe`. The successful package was unsigned and used the declared fictitious identity; it was not installed or submitted.
