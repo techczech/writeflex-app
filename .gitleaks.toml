@@ -27,3 +27,9 @@ condition = "AND"
 regexTarget = "secret"
 paths = ['''(^|/)tests/main/reading-room-shelf\.test\.ts$''']
 regexes = ['''^Lakoff1987Women$''']
+[[rules.allowlists]]
+description = "Czech chapter file-name fixtures (kapitola contains 'api')"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(^|/)tests/main/folio(-chapter-order)?\.test\.ts$''']
+regexes = ['''^[Kk]apitola[-_]-?[0-9]+(-[a-z])?\.md$''']
