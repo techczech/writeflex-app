@@ -125,7 +125,7 @@ jobs:
       - name: Check version tag
         shell: bash
         run: test "${GITHUB_REF_NAME}" = "v$(node -p "require('./package.json').version")"
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # refs/heads/stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # refs/heads/stable
         with:
           toolchain: 1.90.0
           targets: x86_64-pc-windows-msvc

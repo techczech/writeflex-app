@@ -1,5 +1,5 @@
 {
-  ".github/workflows/release.yml": "5b43538bb1a61971ef8ac57145503838df77d03be657b79c80e0ac9e96ac8ed2",
+  ".github/workflows/release.yml": "30e53c5458e0cca05c2a4d844c5b8385409c832814604664524d7057a7bcf8c1",
   ".github/workflows/tests.yml": "14f2ca84d69e473ab53a645a9a2674b7b6f63269b47225db19edbd0384893cd6",
   ".gitignore": "235f802423bc5df22de5b9078774d41a6cace04361f855dfd461e7754ade9aca",
   ".gitleaks.toml": "b6a1349c0d4ab0913dd783698eeef12a3bd000718675375a0c9cf8a987ad8ec8",
