@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { buildStandardWidgetNow, createStandardWidget, exactBefore, leftAsBefore, previewStandardWidgetDraft, snapshotSeams, StandardWidgetUndoDesk, updateStandardWidgetRecipe, type ExactSnapshot } from '../../src/main/standard-widgets/operations'
 import { folioContaining } from '../../src/main/folio-place'
 import { rollBackOperationWrites } from '../../src/main/operation-rollback'
@@ -472,7 +472,7 @@ describe('The IPC', () => {
 
   test('only the picker intake writes grants: no other source file reaches the store\'s writer', () => {
     const src = new URL('../../src/', import.meta.url).pathname
-    const found = spawnSync('grep', ['-rlE', '\\.(add|undoAdd)\\(|SyncGrantStore', src], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).map((path) => path.slice(src.length))
+    const found = spawnSync('grep', ['-rlE', '\\.(add|undoAdd)\\(|SyncGrantStore', src], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).map((path) => relative(src, path))
     const writers = found.filter((path) => /\.(add|undoAdd)\(/.test(readFileSync(join(src, path), 'utf8')) && readFileSync(join(src, path), 'utf8').includes('store'))
     expect(writers.filter((path) => /\b(store|context\.store)!?\??\.(add|undoAdd)\(/.test(readFileSync(join(src, path), 'utf8'))).sort()).toEqual(['main/standard-widgets/outside-files.ts'])
     expect(readFileSync(join(src, 'preload/index.ts'), 'utf8')).not.toMatch(/grant/i)

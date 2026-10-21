@@ -60,7 +60,6 @@ test('a document whose opening H1 is its title: no repeat in the body, no conten
   expect(contents(html)).toEqual(['level-1 Access', 'level-2 Training'])
   expect(html).toContain('Access</h2>')
   expect(html).toContain('Training</h3>')
-  await writeFile('/private/tmp/claude-501/fix-title-once.html', html)
 })
 test('the cover carries the title once; the body does not repeat it', async () => {
   await put('offer.md', doc)
