@@ -66,7 +66,9 @@ test('N1: every ordered marker is read and five reads preserve the original numb
   }
 })
 
-test('N2: duplicate candidate titles remain unlisted and five reads leave both files byte-identical', async () => {
+test('N2: duplicate candidate titles both read into the order by path and five reads leave both files byte-identical', async () => {
+  // Dominik 2026-10-20 ("just put both in and I will rename later"): two files with one title are both in the
+  // manifest's order, each named by its path, where they used to be left unlisted.
   await write(indexPath, '# Report\n\n## Running order\n')
   await write('report/contents/01-first.md', '# Report\n')
   await write('report/contents/02-second.md', '# Report\n')
@@ -76,16 +78,16 @@ test('N2: duplicate candidate titles remain unlisted and five reads leave both f
   ])
 
   const first = await readPlan(ws, 'report')
-  expect(first?.parts).toEqual([])
-  expect(first?.unlisted.map((part) => part.path)).toEqual([
-    'report/contents/01-first.md',
-    'report/contents/02-second.md',
+  expect(first?.parts.map((part) => [part.title, part.path])).toEqual([
+    ['./contents/01-first', 'report/contents/01-first.md'],
+    ['./contents/02-second', 'report/contents/02-second.md'],
   ])
+  expect(first?.unlisted).toEqual([])
   const originalSource = await read(indexPath)
 
   for (let readNumber = 1; readNumber < 5; readNumber += 1) {
     const plan = await readPlan(ws, 'report')
-    expect(plan?.unlisted).toHaveLength(2)
+    expect(plan?.parts).toHaveLength(2)
     expect(await read(indexPath)).toBe(originalSource)
   }
 })
@@ -135,7 +137,7 @@ test('prepareManifestWrite refuses raw fallback entries that policy must exclude
     .toThrow(/README\.md.*cannot enter a Folio manifest/i)
 })
 
-test('an unreadable manifest refuses every Plan mutation and remains byte-identical', async () => {
+test('an unreadable manifest refuses every Folio outline mutation and remains byte-identical', async () => {
   const index = '# Report\n\n## Running order\n\n- [[Opening]]\n- [[Close]]\n'
   const malformed = '{ "report_id": "keep", "files": ['
   await write(indexPath, index)
@@ -172,7 +174,7 @@ test('an I/O-unreadable manifest refuses before materialisation leaves a stub', 
   expect(await exists('report/01-close.md')).toBe(false)
 })
 
-test('M1: a manifest path outside the folder is kept, not deleted, and the Plan write goes through', async () => {
+test('M1: a manifest path outside the folder is kept, not deleted, and the Folio outline write goes through', async () => {
   const index = '# Report\n\n## Running order\n'
   await write(indexPath, index)
   const manifest = await writeManifest([{ path: '../../shared/preface.md' }])
@@ -262,7 +264,7 @@ test('writing a part out keeps an outside entry as authored', async () => {
   expect(await manifestOrder()).toEqual(['01-alpha.md', 'OUTSIDE', '02-beta.md', '03-gamma.md', '04-epilogue.md'])
 })
 
-test('a refused content_root: the Plan still reads, and every write fails with the content_root message and writes nothing', async () => {
+test('a refused content_root: the Folio outline still reads, and every write fails with the content_root message and writes nothing', async () => {
   const index = '# Report\n\n## Running order\n\n- [[Opening]]\n- [[Opening]]\n- [[Idea]]\n'
   await write(indexPath, index)
   await write('report/01-opening.md', '# Opening\n')
@@ -282,7 +284,8 @@ test('a refused content_root: the Plan still reads, and every write fails with t
   await expect(insertPart(ws, 'report', 0, { title: 'New' })).rejects.toThrow(refused)
   await expect(movePart(ws, 'report', 2, 0)).rejects.toThrow(refused)
   await expect(removePart(ws, 'report', 2)).rejects.toThrow(refused)
-  await expect(setPartRole(ws, 'report', 2, 'appendix')).rejects.toThrow(refused)
+  const idea = plan!.parts[2]
+  await expect(setPartRole(ws, 'report', 2, 'appendix', { title: idea.title, path: idea.path, gloss: idea.gloss, role: idea.role, tags: idea.tags })).rejects.toThrow(refused)
   await expect(adoptPart(ws, 'report', 0)).rejects.toThrow(refused)
   await expect(materialisePart(ws, 'report', 2)).rejects.toThrow(refused)
 
@@ -311,7 +314,7 @@ test('M2: a refused manifest derivation cannot leave an earlier repair in the In
   expect(await exists(manifestBackupPath)).toBe(false)
 })
 
-test('M4: an operation on a duplicated Plan part names the duplicate title without writing the manifest', async () => {
+test('M4: an operation on a duplicated Folio outline part names the duplicate title without writing the manifest', async () => {
   const index = '# Report\n\n## Running order\n\n- [[Report]]\n- [[Report]]\n'
   await write(indexPath, index)
   await write('report/contents/01-report.md', '# Report\n')
@@ -329,7 +332,7 @@ test('the first accepted mutation owns the safety copies and a refused mutation 
   await write('report/contents/01-opening.md', '# Opening\n')
   const manifest = await writeManifest([{ path: '01-opening.md' }])
 
-  await expect(movePart(ws, 'report', 9, 0)).rejects.toThrow('Plan part index is out of range.')
+  await expect(movePart(ws, 'report', 9, 0)).rejects.toThrow('Folio outline part index is out of range.')
   expect(await exists(indexBackupPath)).toBe(false)
   expect(await exists(manifestBackupPath)).toBe(false)
 
@@ -350,7 +353,7 @@ test('the first materialisation does not create a backup for a manifest that did
   expect(await exists(manifestBackupPath)).toBe(false)
 })
 
-test('duplicate titles do not block Plan operations on unrelated parts and explain how to resolve the duplicate', async () => {
+test('duplicate titles do not block Folio outline operations on unrelated parts and explain how to resolve the duplicate', async () => {
   const index = [
     '# Report',
     '',
@@ -384,7 +387,7 @@ test('duplicate titles do not block Plan operations on unrelated parts and expla
   await expect(materialisePart(ws, 'report', 0)).rejects.toThrow(/duplicate.*title.*Notes.*rename or remove/i)
 })
 
-test('ordered Plan writes renumber from the original start while unordered markers stay unordered', async () => {
+test('ordered Folio outline writes renumber from the original start while unordered markers stay unordered', async () => {
   await write(indexPath, '# Report\n\n## Running order\n\n3. [[Alpha]]\n4. [[Beta]]\n5. [[Gamma]]\n')
 
   await insertPart(ws, 'report', 1, { title: 'Delta' })

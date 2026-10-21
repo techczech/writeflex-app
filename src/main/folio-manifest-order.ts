@@ -30,13 +30,14 @@ import { existsSync } from 'node:fs'
 import { posix } from 'node:path'
 import {
   MANIFEST_NAME,
-  fallbackFolioParts,
+  folioPartsUnderRoot,
   indexNotePath,
   manifestContentRootRefused,
   manifestEntryPointsOutsideFolio,
   manifestFilePathCandidates,
   parseManifest,
   resolveManifestFilePath,
+  titleMatterPath,
   type Folio,
 } from './folio'
 import { parseFrontmatter } from './frontmatter'
@@ -45,6 +46,8 @@ import { backupManifestDocument, manifestSiblingEntries, newManifestEntry, write
 import { candidateTitle } from './wikilinks'
 import type { Workspace } from './workspace'
 import { PLAN_ROLES } from '../shared/plan-line'
+import { isAgentInstructionsName } from '../shared/folio-agent-files'
+import { FRONT_MATTER_STAYS_LEADING, assertFrontMatterStaysLeading, frontBlockEnd, manifestEntryIsFrontMatter, moveStaysInBlock } from '../shared/folio-front-matter'
 
 export type ManifestOnlyReason =
   | 'no-manifest' // no manifest, or one that is not a JSON object with a `files` array
@@ -52,6 +55,7 @@ export type ManifestOnlyReason =
   | 'missing-file' // an entry's file is not there
   | 'listed-twice' // a file is listed twice
   | 'unreadable-entry' // an element of `files` is not an entry with a path, so a rewrite could not keep it in place
+  | 'agent-instructions' // an entry names AGENTS.md, CLAUDE.md or a conflict copy of either, which is never a part
 
 export type ManifestOnlyAssessment = { ok: true; order: string[] } | { ok: false; reason: ManifestOnlyReason }
 
@@ -89,6 +93,7 @@ export function assessManifestOnly(dir: string, manifest: Folio | null, source: 
     if (manifestEntryPointsOutsideFolio(dir, manifest, file)) return { ok: false, reason: 'outside-entry' }
     const path = resolveManifestFilePath(dir, manifest, file, present)
     if (!path) return { ok: false, reason: 'missing-file' }
+    if (isAgentInstructionsName(path)) return { ok: false, reason: 'agent-instructions' }
     order.push(path)
   }
   if (new Set(order).size !== order.length) return { ok: false, reason: 'listed-twice' }
@@ -112,20 +117,17 @@ export async function readManifestOnly(ws: Workspace, dir: string): Promise<Mani
 
 /**
  * The files Add accepts for a Folio with no Index Note, in file-name order: the rule the Plan applies to
- * its unlisted files (plan.ts `loadPlan`), without the Index Note. Markdown files directly in the folder
+ * its unlisted files (plan.ts `loadPlan`), without the Index Note. Markdown files under the folder
  * the Folio takes its pieces from (`content_root` when it has one) that are not covers, Index Notes,
- * backups or underscore-prefixed, are present in the Folio folder's listing, are not the manifest's
- * `title_matter` and are not already in the running order.
+ * backups or underscore-prefixed, are present in the Folio folder's listing and are not already in the running
+ * order. The manifest's `title_matter` file is listed like any other (ADR-0046); subfolders are included.
  */
 export async function manifestOnlyAddable(ws: Workspace, dir: string, read: ManifestOnlyRead): Promise<string[]> {
   if (!read.assessment.ok || !read.manifest) return []
   const manifest = read.manifest
   const root = manifest.contentRoot ? posix.join(dir || '.', manifest.contentRoot) : dir
   const listed = new Set(read.assessment.order)
-  const titleMatter = manifest.titleMatter
-    ? manifestFilePathCandidates(dir, manifest, { path: manifest.titleMatter }).find((candidate) => read.present.has(candidate)) ?? null
-    : null
-  return (await fallbackFolioParts(ws, root)).filter((path) => read.present.has(path) && !listed.has(path) && path !== titleMatter)
+  return (await folioPartsUnderRoot(ws, root)).filter((path) => read.present.has(path) && !listed.has(path))
 }
 
 type Desired = { keep: number } | { add: Record<string, unknown> }
@@ -157,7 +159,7 @@ function rewrittenManifest(dir: string, read: ManifestOnlyRead, desired: Desired
   })
   const next = rewriteJsonArrayByKey(source, 'files', 'path', values, verbatim)
 
-  const refusal = new Error('The Folio manifest could not be rewritten exactly, so nothing was changed. Open the Plan to change this Folio’s order.')
+  const refusal = new Error('The Folio manifest could not be rewritten exactly, so nothing was changed. Open the Folio outline to change this Folio’s order.')
   const before = JSON.parse(source) as Record<string, unknown>
   const after = JSON.parse(next) as Record<string, unknown>
   const intendedFiles = desired.map((item) => ('add' in item ? item.add : authored[item.keep]))
@@ -187,8 +189,22 @@ async function commit(ws: Workspace, dir: string, read: ManifestOnlyRead, next: 
   return true
 }
 
-/** Move the entry at `from` so that it sits at `to` once taken out. Only the order of the array's elements changes. */
+/** The manifest's `title_matter` file on this read, or null. */
+function titleMatterOf(dir: string, read: ManifestOnlyRead): string | null {
+  return read.manifest ? titleMatterPath(dir, read.manifest, read.present) : null
+}
+
+/** Which entries are front matter, in the order read (ADR-0046: `role: front-matter|title-matter`, or the `title_matter` file naming no other role). */
+function frontFlagsOf(dir: string, read: ManifestOnlyRead): boolean[] {
+  const manifest = read.manifest
+  if (!manifest) return []
+  const titleMatter = titleMatterOf(dir, read)
+  return manifest.files.map((file) => manifestEntryIsFrontMatter(file, titleMatter !== null && resolveManifestFilePath(dir, manifest, file, read.present) === titleMatter))
+}
+
+/** Move the entry at `from` so that it sits at `to` once taken out. Only the order of the array's elements changes. A move never crosses the front-matter boundary. */
 export async function moveManifestEntry(ws: Workspace, dir: string, read: ManifestOnlyRead & { assessment: { ok: true; order: string[] } }, from: number, to: number, options: PlanWriteOptions = {}): Promise<string[]> {
+  if (!moveStaysInBlock(frontFlagsOf(dir, read), from, to)) throw new Error(FRONT_MATTER_STAYS_LEADING)
   const order = [...read.assessment.order]
   const positions = order.map((_, at) => at)
   const [moved] = positions.splice(from, 1)
@@ -199,23 +215,40 @@ export async function moveManifestEntry(ws: Workspace, dir: string, read: Manife
   return intended
 }
 
-/** Append one entry per file, in the order given. The caller has checked each file is addable on this read. */
+/** Put the entries in a new order (`target` is a permutation of the current order), in one write. Only the order of the array's elements changes. */
+export async function reorderManifestEntries(ws: Workspace, dir: string, read: ManifestOnlyRead & { assessment: { ok: true; order: string[] } }, target: readonly string[], options: PlanWriteOptions = {}): Promise<string[]> {
+  const order = read.assessment.order
+  const positions = target.map((path) => order.indexOf(path))
+  if (target.length !== order.length || positions.some((at) => at < 0) || new Set(positions).size !== order.length) throw new Error('That is not a new order for this running order.')
+  const flags = frontFlagsOf(dir, read)
+  assertFrontMatterStaysLeading(flags, positions.map((at) => flags[at]))
+  const next = rewrittenManifest(dir, read, positions.map((keep) => ({ keep })), [...target])
+  await commit(ws, dir, read, next, options)
+  return [...target]
+}
+
+/**
+ * Append one entry per file, in the order given; an entry for front matter (a file whose header says
+ * `role: front-matter`) goes at the end of the front-matter block instead (ADR-0046). The caller has checked each
+ * file is addable on this read.
+ */
 export async function appendManifestEntries(ws: Workspace, dir: string, read: ManifestOnlyRead & { assessment: { ok: true; order: string[] } }, paths: readonly string[], options: PlanWriteOptions = {}): Promise<string[]> {
   const order = read.assessment.order
-  const added: Desired[] = []
-  for (const path of paths) added.push({ add: await entryForAddedFile(ws, dir, read, path) })
-  const intended = [...order, ...paths]
-  const next = rewrittenManifest(dir, read, [...order.map((_, keep) => ({ keep })), ...added], intended)
+  const added: Array<{ path: string; desired: Desired; front: boolean }> = []
+  for (const path of paths) {
+    const entry = await entryForAddedFile(ws, dir, read, path)
+    added.push({ path, desired: { add: entry }, front: manifestEntryIsFrontMatter(entry, path === titleMatterOf(dir, read)) })
+  }
+  const flags = frontFlagsOf(dir, read)
+  const at = frontBlockEnd(flags)
+  const front = added.filter((item) => item.front)
+  const rest = added.filter((item) => !item.front)
+  const kept: Desired[] = order.map((_, keep) => ({ keep }))
+  const desired = [...kept.slice(0, at), ...front.map((item) => item.desired), ...kept.slice(at), ...rest.map((item) => item.desired)]
+  const intended = [...order.slice(0, at), ...front.map((item) => item.path), ...order.slice(at), ...rest.map((item) => item.path)]
+  assertFrontMatterStaysLeading(flags, [...flags.slice(0, at), ...front.map(() => true), ...flags.slice(at), ...rest.map(() => false)])
+  const next = rewrittenManifest(dir, read, desired, intended)
   await commit(ws, dir, read, next, options)
   return intended
 }
 
-/** Take out the last `count` entries, in one write. The caller has checked they are exactly the pieces it added. */
-export async function removeManifestTail(ws: Workspace, dir: string, read: ManifestOnlyRead & { assessment: { ok: true; order: string[] } }, count: number, options: PlanWriteOptions = {}): Promise<string[]> {
-  const order = read.assessment.order
-  if (!Number.isInteger(count) || count < 1 || count > order.length) throw new Error('There is nothing to undo.')
-  const intended = order.slice(0, order.length - count)
-  const next = rewrittenManifest(dir, read, intended.map((_, keep) => ({ keep })), intended)
-  await commit(ws, dir, read, next, options)
-  return intended
-}

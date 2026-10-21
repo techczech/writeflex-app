@@ -1,0 +1,52 @@
+{
+  "contract": "adapter-output/1",
+  "source": { "path": "csv/courses.csv", "format": "csv" },
+  "selection": null,
+  "declared_types": { "duration_hours": "number" },
+  "id_field": "course_id",
+  "fields": [
+    { "key": "course_id", "label": "course_id" },
+    { "key": "title", "label": "title" },
+    { "key": "audience", "label": "audience" },
+    { "key": "duration_hours", "label": "duration_hours" },
+    { "key": "description", "label": "description" },
+    { "key": "provider", "label": "provider" }
+  ],
+  "records": [
+    {
+      "id": "001",
+      "id_origin": "mapped",
+      "locator": { "line": 2, "record": 1 },
+      "values": { "course_id": "001", "title": "Prompting basics", "audience": "Staff", "duration_hours": "2", "description": "Write clear instructions, then check every output.", "provider": "Training Unit" },
+      "typed": { "duration_hours": 2 }
+    },
+    {
+      "id": "002",
+      "id_origin": "mapped",
+      "locator": { "line": 3, "record": 2 },
+      "values": { "course_id": "002", "title": "Data, privacy and you", "audience": "All", "duration_hours": "1.5", "description": "Covers \"personal data\" and consent.", "provider": "Information Office" },
+      "typed": { "duration_hours": 1.5 }
+    },
+    {
+      "id": "010",
+      "id_origin": "mapped",
+      "locator": { "line": 4, "record": 3 },
+      "values": { "course_id": "010", "title": "Evaluating sources", "audience": "Students", "duration_hours": "3", "description": "Line one of the description.\nLine two, after a quoted newline.", "provider": "Library" },
+      "typed": { "duration_hours": 3 }
+    },
+    {
+      "id": "011",
+      "id_origin": "mapped",
+      "locator": { "line": 6, "record": 4 },
+      "values": { "course_id": "011", "title": "Café conversations — Zürich", "audience": "Researchers", "duration_hours": "", "description": "Unicode title; duration left empty on purpose.", "provider": "" },
+      "typed": { "duration_hours": null }
+    },
+    {
+      "id": "120",
+      "id_origin": "mapped",
+      "locator": { "line": 7, "record": 5 },
+      "values": { "course_id": "120", "title": "Spreadsheet confidence", "audience": "Staff", "duration_hours": "0", "description": "Zero hours: <script>alert(1)</script> is data, not code.", "provider": "Training Unit" },
+      "typed": { "duration_hours": 0 }
+    }
+  ]
+}

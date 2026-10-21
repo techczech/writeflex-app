@@ -36,7 +36,12 @@
     {
       "subgroup": "Insert objects",
       "rows": [
+        "Show metadata",
+        "Collapse metadata",
         "Edit metadata",
+        "New record browser…",
+        "Edit record browser…",
+        "Undo last widget step",
         "Convert to text",
         "Convert to code block",
         "Convert to flow diagram object",
@@ -148,9 +153,9 @@
       ]
     },
     {
-      "subgroup": "Focus modes",
+      "subgroup": "Focus and readability",
       "rows": [
-        "Focus…",
+        "Focus and readability…",
         "Fade other paragraphs",
         "Highlight sentence",
         "Segment focus",
@@ -187,8 +192,7 @@
       "subgroup": "Review sessions",
       "rows": [
         "Start a new review session",
-        "Accept session",
-        "Open Review"
+        "Accept session"
       ]
     },
     {
@@ -197,9 +201,22 @@
         "Return change to review",
         "Send original to Scratchpad",
         "Next / previous change [pair: review.nextChange, review.previousChange]",
+        "Show all in the margin",
+        "Show comments only",
+        "Show edits only",
+        "Next piece with items waiting",
+        "Switch Margin / Inline",
+        "Show or hide the margin",
+        "Settled today",
+        "My edits",
+        "Show quiet fixes",
         "Accept and next",
         "Hide strikes",
-        "Hide inserts"
+        "Hide inserts",
+        "Focus the review margin",
+        "Accept all shown, or the selected",
+        "Decline all shown, or the selected",
+        "Send the review back to the agent"
       ]
     },
     {
@@ -267,13 +284,43 @@
   ],
   "Collect and plan": [
     {
-      "subgroup": "Collections, Board and Plan",
+      "subgroup": "Collections, Board and Folio outline",
       "rows": [
         "Open Board",
         "Open Folder dashboard",
+        "Make this folder a vault…",
+        "Switch vault…",
+        "Writing only",
+        "Show titles in sidebar",
         "Show / Hide offcuts",
         "Undo last offcut, scrap or source step",
-        "Open Plan",
+        "Move column left",
+        "Move column right",
+        "New document",
+        "Search this collection",
+        "Open Collection menu",
+        "Filter collection by status",
+        "Filter collection by purpose",
+        "Filter collection by tags",
+        "Filter collection by modified date",
+        "Group collection documents",
+        "Sort collection documents",
+        "Choose collection search scope",
+        "Clear collection search and filters",
+        "Make a Folio…",
+        "Create index note or edit cover note",
+        "Rename this collection…",
+        "Select all matching collection documents",
+        "Clear collection selection",
+        "Set status for selected documents…",
+        "Move selected documents to…",
+        "Add selected documents to Folio…",
+        "Tag selected documents…",
+        "Start a Folio outline",
+        "Turn back into a collection",
+        "Open Folio outline",
+        "Open Folio",
+        "Open Folio at another part",
         "Previous piece in Folio",
         "Next piece in Folio",
         "Move piece up in running order",
@@ -281,11 +328,34 @@
         "Add to the running order",
         "Add all to the running order",
         "Undo last running-order or section move",
-        "Add a Plan part",
-        "Add existing part to Plan",
-        "Move Plan part up / down [pair: plan.moveUp, plan.moveDown]",
-        "Open or write Plan part",
-        "Remove part from Plan",
+        "Add a Folio outline part",
+        "Add existing part to Folio outline",
+        "Add existing part to Folio outline as front matter",
+        "Add all from this folder to the Folio outline",
+        "Sort the Folio outline by chapter number",
+        "Move Folio outline part up / down [pair: plan.moveUp, plan.moveDown]",
+        "Open or write Folio outline part",
+        "Remove part from Folio outline",
+        "Choose the role of a part",
+        "Write the agent instructions (AGENTS.md and CLAUDE.md)",
+        "Write AGENTS.md only",
+        "Write CLAUDE.md only",
+        "Choose a file as front matter",
+        "Show or hide the files not in the outline",
+        "Go to the Details",
+        "Use heading as title",
+        "Use title as heading",
+        "Use headings as titles for all parts",
+        "Use titles as headings for all parts",
+        "Hide the title-differs bar for this document",
+        "Undo last title change",
+        "Open the file",
+        "Next field",
+        "Open a picker",
+        "Choose in a picker",
+        "Move in the calendar",
+        "Calendar: today",
+        "Undo the last change in the Details",
         "Summon Rail",
         "Focus rail",
         "Insert as query",
@@ -297,6 +367,7 @@
       "subgroup": "Capture ideas",
       "rows": [
         "Make idea from offcut",
+        "Capture to research…",
         "Capture an idea"
       ]
     },
@@ -376,6 +447,14 @@
         "Delete export preset",
         "Move export preset up / down [pair: exportPresets.moveUp, exportPresets.moveDown]",
         "Export…"
+      ]
+    },
+    {
+      "subgroup": "Sharing",
+      "rows": [
+        "Set up sharing",
+        "Share this piece…",
+        "Shares list for this collection"
       ]
     }
   ],

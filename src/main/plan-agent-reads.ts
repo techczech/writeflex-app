@@ -18,7 +18,7 @@ import { readPlan } from './plan'
 import { collectionCandidates } from './wikilinks'
 import { documentWordCount, passageWordCount } from './collection'
 import { isPathInFolder, type Workspace } from './workspace'
-import { AGENT_NOTE_DIR } from './agent-note-create'
+import { AGENT_NOTE_DIR } from './agent-note-dir'
 import { frontmatterBlock } from '../shared/markdown/frontmatter'
 import { blockRangesOf } from '../shared/markdown/line-blocks'
 

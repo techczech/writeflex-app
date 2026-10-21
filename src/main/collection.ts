@@ -11,16 +11,23 @@
 
 import { basename, posix } from 'node:path'
 import { stat } from 'node:fs/promises'
-import { DEFAULT_PATTERN, documentTitle, frontmatterKeys, parseFrontmatter } from './frontmatter'
+import { existsSync } from 'node:fs'
+import { DEFAULT_PATTERN, frontmatterKeys, parseFrontmatter } from './frontmatter'
 import type { Frontmatter } from './frontmatter'
-import type { Workspace } from './workspace'
-import { readManifest, resolveManifestFilePath } from './folio'
+import type { FileReadResult, Workspace } from './workspace'
+import { isFolioAgentInstructionsFile, readManifest, resolveManifestFilePath } from './folio'
+import { folioPartPaths } from './folio-part-set'
+import { INDEX_NOTE_EXISTS, indexNoteCreationRefusal } from './folio-index-note'
+import { partTitle } from '../shared/folio-part-title'
 import { REFERENCE_STATUS_ORDER, UNSORTED_STATUS, type BoardStatus } from '../shared/collection-status'
 import { setFrontmatterKeys } from './capabilities'
-import { frontmatterBlock } from '../shared/markdown/frontmatter'
+import type { VaultIndex, VaultWorkKind } from '../shared/vault-index'
+import { FRONTMATTER_KEY_VALUE, frontmatterBlock } from '../shared/markdown/frontmatter'
 import { stripFencedRegions } from '../shared/markdown/fences'
 import { summariseTasks } from '../shared/markdown/task-lines'
 import { isScrapsPath, scrapsInContent } from './scraps'
+import { listingTitle } from '../shared/markdown/listing-title'
+import { FACTS_READ_CONCURRENCY, factsReader, mapBounded, type FactsReader } from './file-facts'
 
 export { REFERENCE_STATUS_ORDER } from '../shared/collection-status'
 
@@ -36,6 +43,9 @@ export type CollectionRow = {
   status: string | null
   modified: number
   words: number
+  /** Read-only view snapshot derived through the shared search-index facts cache. */
+  searchText?: string
+  tags?: string[]
   bare: boolean
   provenance: { title: MetadataProvenance; purpose: MetadataProvenance; status: MetadataProvenance }
   /** Present only when this row represents one folder-shaped work in the parent Collection. */
@@ -44,8 +54,59 @@ export type CollectionRow = {
   folderPieceMode?: FolderPieceMode
 }
 
-/** A Collection: the folder's display name, its cover (null when the folder declares none), its pieces. */
-export type Collection = { name: string; cover: CollectionCover | null; rows: CollectionRow[] }
+/**
+ * A direct subfolder of a Collection, listed in the Folder dashboard beside the pieces. `title` and `status` come
+ * from the vault's work for that folder (null for a plain folder); `pieces` counts the Markdown files inside it
+ * at any depth; `modified` is the newest of them (0 when empty).
+ */
+export type CollectionSubfolder = {
+  path: string
+  name: string
+  title: string | null
+  status: string | null
+  work: VaultWorkKind | null
+  pieces: number
+  modified: number
+}
+
+/** A Collection: the folder's display name, its cover (null when the folder declares none), its pieces and subfolders. */
+export type Collection = { name: string; cover: CollectionCover | null; rows: CollectionRow[]; subfolders: CollectionSubfolder[] }
+
+/** What a vault tells the dashboard: its works (title, status) and its Writing only hidden set. */
+export type CollectionVaultView = Pick<VaultIndex, 'works'> & { hidden: Pick<VaultIndex['hidden'], 'paths'> }
+
+/**
+ * The direct subfolders of `dir` the Folder dashboard lists. Pure: the caller hands in the folder list and the
+ * Markdown files. Folders that already show as a piece row (`pieceFolders`) are left out; in a vault the Writing
+ * only hidden set (housekeeping, agent and support folders) is left out, with everything under it.
+ */
+export function collectionSubfolders(
+  dir: string,
+  folders: readonly string[],
+  files: ReadonlyArray<Pick<MarkdownFileLike, 'path' | 'name' | 'modifiedAt'>>,
+  pieceFolders: ReadonlySet<string>,
+  vault: CollectionVaultView | null,
+): CollectionSubfolder[] {
+  const hidden = vault ? vault.hidden.paths : []
+  const works = new Map((vault?.works ?? []).map((work) => [work.path, work]))
+  const hiddenPath = (path: string): boolean => hidden.some((h) => path === h || path.startsWith(`${h}/`))
+  const direct = folders.filter((folder) => posix.dirname(folder) === (dir === '' ? '.' : dir) && !pieceFolders.has(folder) && !hiddenPath(folder))
+  return direct.map((folder): CollectionSubfolder => {
+    const inside = files.filter((file) => file.path.startsWith(`${folder}/`) && !INDEX_NOTE.test(file.name) && !hiddenPath(file.path))
+    const work = works.get(folder)
+    return {
+      path: folder,
+      name: basename(folder),
+      title: work?.title ?? null,
+      status: work ? work.status : null,
+      work: work?.kind ?? null,
+      pieces: inside.length,
+      modified: inside.reduce((newest, file) => Math.max(newest, file.modifiedAt), 0),
+    }
+  }).sort((a, b) => (a.title ?? a.name).localeCompare(b.title ?? b.name, undefined, { sensitivity: 'base', numeric: true }))
+}
+
+type MarkdownFileLike = { path: string; name: string; modifiedAt: number }
 
 /** Auditable structural signals behind Collection detection (0.6 W1a). */
 export type CollectionSignals = {
@@ -98,10 +159,21 @@ export async function setCollectionPieceStatus(
   path: string,
   status: BoardStatus,
 ) {
+  const planned = await planCollectionPieceStatus(ws, dir, path, status)
+  return planned.next === null ? planned.source : ws.saveFile(path, planned.next)
+}
+
+/** The piece as read and its text with the new status (`next` null when it already has it). Writes nothing. */
+export async function planCollectionPieceStatus(
+  ws: Workspace,
+  dir: string,
+  path: string,
+  status: BoardStatus,
+): Promise<{ source: FileReadResult; next: string | null }> {
   if (!isUnderDir(path, dir)) throw new Error('Collection Piece is outside its Collection.')
   const source = await ws.readFile(path)
   const currentStatus = parseFrontmatter(source.content)?.status?.trim() || UNSORTED_STATUS
-  if (currentStatus.toLowerCase() === status.trim().toLowerCase()) return source
+  if (currentStatus.toLowerCase() === status.trim().toLowerCase()) return { source, next: null }
   const keys = await resolvedCollectionPattern(ws, dir, path)
   const frontmatter = parseFrontmatter(source.content)
   const existing = new Set(frontmatterKeys(source.content))
@@ -114,7 +186,7 @@ export async function setCollectionPieceStatus(
     else values[key] = ''
   }
   values.status = status === UNSORTED_STATUS ? '' : status
-  return ws.saveFile(path, setFrontmatterKeys(source.content, values, path))
+  return { source, next: setFrontmatterKeys(source.content, values, path) }
 }
 
 /** An Index Note filename: `_<name>_INDEX.md` (ADR-0008 — the explicit, third-party-legible marker). */
@@ -192,15 +264,50 @@ function linkedSiblingNames(text: string, siblingStems: Map<string, string>): st
   return linked
 }
 
+/** Every folder of the workspace; a workspace without `listFolders` (a test double) is read off the file paths. */
+async function listedFolderPaths(ws: Workspace, markdown: Awaited<ReturnType<Workspace['listFiles']>>): Promise<string[]> {
+  if (typeof (ws as Workspace & { listFolders?: () => Promise<string[]> }).listFolders === 'function') return ws.listFolders()
+  return [...new Set(markdown.flatMap((file) => {
+    const folders: string[] = []
+    const directory = file.directory ?? (posix.dirname(file.path) === '.' ? '' : posix.dirname(file.path))
+    for (let cursor = directory; cursor !== ''; cursor = posix.dirname(cursor) === '.' ? '' : posix.dirname(cursor)) folders.push(cursor)
+    return folders
+  }))]
+}
+
 function isUnderDir(path: string, dir: string): boolean {
   if (dir === '') return !posix.isAbsolute(path) && !path.split('/').includes('..')
   const relative = posix.relative(posix.normalize(dir), posix.normalize(path))
   return relative !== '' && relative !== '..' && !relative.startsWith('../') && !posix.isAbsolute(relative)
 }
 
-function isInsideFolder(path: string, folderPath: string): boolean {
-  const relative = posix.relative(posix.normalize(folderPath), posix.normalize(path))
-  return relative !== '' && relative !== '..' && !relative.startsWith('../') && !posix.isAbsolute(relative)
+/**
+ * Whether `path` lies strictly inside one of `folders` (the folder itself is not inside it): the
+ * `posix.relative(folder, path)` rule, answered by walking up the path's own ancestors and looking
+ * each one up. A file × folder scan with `path.relative` was 12% of opening a large folder.
+ */
+function insideAnyFolder(path: string, folders: ReadonlySet<string>): boolean {
+  if (folders.size === 0) return false
+  const normalised = posix.normalize(path)
+  if (normalised.startsWith('/') || normalised === '..' || normalised.startsWith('../')) {
+    // Never a listing path; keep the one-by-one rule for it.
+    for (const folder of folders) {
+      const relative = posix.relative(posix.normalize(folder), normalised)
+      if (relative !== '' && relative !== '..' && !relative.startsWith('../') && !posix.isAbsolute(relative)) return true
+    }
+    return false
+  }
+  for (let cut = normalised.lastIndexOf('/'); cut > 0; cut = normalised.lastIndexOf('/', cut - 1)) {
+    if (folders.has(normalised.slice(0, cut))) return true
+  }
+  return false
+}
+
+/** The folder set `insideAnyFolder` looks up, each folder normalised as the relative rule normalises it. */
+function folderSet(folders: Iterable<string>): Set<string> {
+  const set = new Set<string>()
+  for (const folder of folders) set.add(posix.normalize(folder).replace(/\/+$/, ''))
+  return set
 }
 
 function directChildFolder(folderPath: string, dir: string): boolean {
@@ -287,22 +394,19 @@ async function recognisedFolderPieces(
 ): Promise<FolderPiece[]> {
   const markdown = listedMarkdown ?? await ws.listFiles()
   const files = new Set(markdown.map((file) => file.path))
-  const listedFolders = typeof (ws as Workspace & { listFolders?: () => Promise<string[]> }).listFolders === 'function'
-    ? await ws.listFolders()
-    : [...new Set(markdown.flatMap((file) => {
-      const folders: string[] = []
-      const directory = file.directory ?? (posix.dirname(file.path) === '.' ? '' : posix.dirname(file.path))
-      for (let cursor = directory; cursor !== ''; cursor = posix.dirname(cursor) === '.' ? '' : posix.dirname(cursor)) folders.push(cursor)
-      return folders
-    }))]
+  const listedFolders = await listedFolderPaths(ws, markdown)
   const folders = listedFolders
     .filter((folder) => directOnly ? directChildFolder(folder, dir) : isUnderDir(folder, dir))
     .sort((left, right) => left.split('/').length - right.split('/').length || left.localeCompare(right))
   const recognised: FolderPiece[] = []
+  const recognisedFolders = new Set<string>()
   for (const folderPath of folders) {
-    if (recognised.some((piece) => isInsideFolder(folderPath, piece.folderPath))) continue
+    if (insideAnyFolder(folderPath, recognisedFolders)) continue
     const piece = await recognisedFolderPiece(ws, folderPath, files, includeMany)
-    if (piece) recognised.push(piece)
+    if (piece) {
+      recognised.push(piece)
+      for (const folder of folderSet([piece.folderPath])) recognisedFolders.add(folder)
+    }
   }
   return recognised
 }
@@ -327,12 +431,21 @@ function pieceTasks(content: string): { tasks?: { open: number; done: number } }
   return open + done > 0 ? { tasks: { open, done } } : {}
 }
 
-async function pieceFromFile(ws: Workspace, file: Awaited<ReturnType<Workspace['listFiles']>>[number], folderPath?: string): Promise<Piece> {
-  const { content } = await ws.readFile(file.path)
+/** What a Piece derives from its own text alone — memoised per (path, mtime, size) by the facts
+ *  cache, so a rebuild after one save re-derives one file. */
+type PieceTextFacts = {
+  frontmatter: Frontmatter | null
+  title: string
+  gist: string
+  words: number
+  wikilinks: string[]
+  scraps?: Array<{ id: string; text: string; done: boolean }>
+  tasks?: { open: number; done: number }
+}
+
+function pieceTextFacts(content: string, path: string): PieceTextFacts {
   const frontmatter = parseFrontmatter(content)
-  const writtenDate = frontmatter?.date?.trim()
-  const writtenStatus = frontmatter?.status?.trim()
-  const agentNote = file.path.split('/').includes('agent-notes')
+  const agentNote = path.split('/').includes('agent-notes')
   const kind = typeof frontmatter?.extra.object_kind === 'string' ? frontmatter.extra.object_kind : ''
   const agentBody = bodyOf(content)
   const sourceHeading = agentBody.indexOf('## Object source')
@@ -342,11 +455,39 @@ async function pieceFromFile(ws: Workspace, file: Awaited<ReturnType<Workspace['
     || (agentNote ? agentSummary || (kind ? `${kind} sketch` : firstAgentNoteProseLine(agentBody)) : firstProseLine(bodyOf(content)))
   const gist = rawGist.length <= 120 ? rawGist : `${rawGist.slice(0, 119)}…`
   return {
+    frontmatter,
+    title: listingTitle(content, path),
+    gist,
+    words: countWords(bodyOf(content)),
+    wikilinks: wikilinkTargets(bodyOf(content)),
+    ...(isScrapsPath(path) ? { scraps: scrapsInContent(content) } : {}),
+    ...pieceTasks(content),
+  }
+}
+
+async function pieceFromFile(
+  ws: Workspace,
+  file: Awaited<ReturnType<Workspace['listFiles']>>[number],
+  folderPath?: string,
+  folioPart = false,
+  reader?: FactsReader,
+): Promise<Piece> {
+  const facts = await (reader ?? await factsReader(ws, [file])).read(file)
+  const text = facts.derive('piece:text', (content) => pieceTextFacts(content, file.path))
+  const { frontmatter } = text
+  const writtenDate = frontmatter?.date?.trim()
+  const writtenStatus = frontmatter?.status?.trim()
+  const title = folioPart && !folderPath
+    ? facts.derive('piece:part-title', (content) => partTitle(content, file.path).title)
+    : folderPath ? facts.derive(`piece:title:${folderPath}`, (content) => listingTitle(content, folderPath)) : text.title
+  return {
     path: file.path,
     frontmatter,
     metadata: {
-      title: folderPath ? documentTitle(content, folderPath) : documentTitle(content, file.path),
-      date: writtenDate || await creationDate(ws, file.path),
+      title,
+      // The file's creation date is asked of the disk only when the piece writes no date, and once
+      // per (path, mtime, size): a rename keeps it, a rewrite asks again.
+      date: writtenDate || await facts.derive('piece:creation-date', () => creationDate(ws, file.path)),
       status: writtenStatus || UNSORTED_STATUS,
       purpose: frontmatter?.purpose ?? null,
       related: frontmatter?.related ?? [],
@@ -359,12 +500,12 @@ async function pieceFromFile(ws: Workspace, file: Awaited<ReturnType<Workspace['
       related: frontmatter?.related?.some((value) => value.trim()) ? 'written' : 'derived',
     },
     derived: {
-      words: countWords(bodyOf(content)),
+      words: text.words,
       mtime: file.modifiedAt,
-      gist,
-      wikilinks: wikilinkTargets(bodyOf(content)),
-      ...(isScrapsPath(file.path) ? { scraps: scrapsInContent(content) } : {}),
-      ...pieceTasks(content),
+      gist: text.gist,
+      wikilinks: [...text.wikilinks],
+      ...(text.scraps ? { scraps: text.scraps.map((scrap) => ({ ...scrap })) } : {}),
+      ...(text.tasks ? { tasks: { ...text.tasks } } : {}),
     },
     ...(folderPath ? { folderPath } : {}),
   }
@@ -373,20 +514,26 @@ async function pieceFromFile(ws: Workspace, file: Awaited<ReturnType<Workspace['
 /** Read the current recursive Piece population of a Collection. Bare Pieces are retained. */
 export async function collectionPieces(ws: Workspace, dir: string): Promise<Piece[]> {
   const markdown = await ws.listFiles()
-  const files = markdown.filter((file) => isUnderDir(file.path, dir))
+  // A Folio's agent instructions are never a piece: not on the Board, in a digest or in a word count.
+  const files = markdown.filter((file) => isUnderDir(file.path, dir) && !isFolioAgentInstructionsFile(ws, file.path))
   const byPath = new Map(files.map((file) => [file.path, file]))
   const folderPieces = await recognisedFolderPieces(ws, dir, false, false, markdown)
   const mainDocuments = new Map(folderPieces.map((piece) => [piece.mainDocumentPath, piece.folderPath]))
-  const hiddenFolders = folderPieces.map((piece) => piece.folderPath)
+  const hiddenFolders = folderSet(folderPieces.map((piece) => piece.folderPath))
   const visible = files.filter((file) => {
     if (mainDocuments.has(file.path)) return true
-    if (hiddenFolders.some((folderPath) => isInsideFolder(file.path, folderPath))) return false
+    if (insideAnyFolder(file.path, hiddenFolders)) return false
     return true
   })
-  const pieces = await Promise.all(visible.map(async (file) => {
-    if (INDEX_NOTE.test(file.name) && machineStubIndexNote(file.name, (await ws.readFile(file.path)).content)) return null
-    return pieceFromFile(ws, byPath.get(file.path)!, mainDocuments.get(file.path))
-  }))
+  const parts = await folioPartPaths(ws, visible.map((file) => file.path))
+  const reader = await factsReader(ws, visible, markdown)
+  const pieces = await mapBounded(visible, FACTS_READ_CONCURRENCY, async (file) => {
+    if (INDEX_NOTE.test(file.name)) {
+      const facts = await reader.read(file)
+      if (facts.derive('collection:machine-stub', (content) => machineStubIndexNote(file.name, content))) return null
+    }
+    return pieceFromFile(ws, byPath.get(file.path)!, mainDocuments.get(file.path), parts.has(file.path), reader)
+  })
   return pieces.filter((piece): piece is Piece => piece !== null)
 }
 
@@ -404,7 +551,7 @@ export async function unresolvedFolderPieces(ws: Workspace, dir: string): Promis
     const mode = parseFrontmatter(content)?.extra.piece
     if (typeof mode !== 'string' || mode.trim().toLowerCase() !== 'one') continue
     if (await folderPieceMainDocument(ws, folderPath, files, true)) continue
-    unresolved.push({ folderPath, title: documentTitle(content, folderPath) })
+    unresolved.push({ folderPath, title: listingTitle(content, folderPath) })
   }
   return unresolved
 }
@@ -429,12 +576,13 @@ export async function collectionPattern(ws: Workspace, dir: string): Promise<Col
   const keyOrder: string[] = []
   let frontmattered = 0
   const observedStatuses: string[] = []
+  const reader = await factsReader(ws, files, markdown)
   for (const file of files) {
-    const { content } = await ws.readFile(file.path)
-    const parsed = parseFrontmatter(content)
+    const facts = await reader.read(file)
+    const parsed = facts.derive('frontmatter', parseFrontmatter)
     if (parsed !== null) {
       frontmattered += 1
-      for (const key of frontmatterKeys(content)) {
+      for (const key of facts.derive('frontmatter:keys', frontmatterKeys)) {
         if (key === 'title') continue
         if (!keyCounts.has(key)) keyOrder.push(key)
         keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1)
@@ -483,15 +631,18 @@ export async function resolvedCollectionPattern(ws: Workspace, dir: string, piec
  *  call again. A bare folder remains bare until one of the three documented signals crosses its
  *  threshold. */
 export async function collectionStatus(ws: Workspace, dir: string): Promise<CollectionStatus> {
-  const children = (await ws.listFiles()).filter((file) => file.directory === dir)
+  const markdown = await ws.listFiles()
+  const children = markdown.filter((file) => file.directory === dir)
   const siblingStems = new Map(children.map((file) => [file.name.replace(/\.(?:md|markdown|mdx)$/i, '').toLowerCase(), file.name]))
   let frontmatterPieceCount = 0
   let indexSiblingLinkCount = 0
   let siblingWikilinkCount = 0
 
+  const reader = await factsReader(ws, children, markdown)
   for (const file of children) {
-    const { content } = await ws.readFile(file.path)
-    const frontmatter = parseFrontmatter(content)
+    const facts = await reader.read(file)
+    const content = facts.content
+    const frontmatter = facts.derive('frontmatter', parseFrontmatter)
     if (frontmatter && (
       frontmatter.status !== undefined
       || frontmatter.date !== undefined
@@ -522,15 +673,27 @@ export async function collectionStatus(ws: Workspace, dir: string): Promise<Coll
   }
 }
 
-/** The first prose paragraph after the H1 — the cover blurb. Null when there is no H1 or no paragraph. */
-function firstParagraphAfterH1(text: string): string | null {
+/** A Markdown heading line (`## Running order`, a bare `#`): never part of the cover blurb. */
+const HEADING_LINE = /^ {0,3}#{1,6}(?:\s|$)/
+/** A setext heading's underline (CommonMark): `===` or `---`, up to three spaces in, nothing else on the line. */
+const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)[ \t]*$/
+
+/**
+ * The first prose paragraph after the H1 — the cover blurb. Null when there is no H1 or no paragraph. A heading
+ * is not prose: one straight under the H1 (an Index Note whose next line is `## Running order`, or a setext
+ * `Running order` over a `---` or `===` underline) gives no blurb, and an ATX heading ends the paragraph. Lines
+ * that an underline turns into a setext heading are that heading, never the blurb.
+ */
+export function firstParagraphAfterH1(text: string): string | null {
   const lines = bodyOf(text).split(/\r?\n/)
   let i = lines.findIndex((l) => /^#\s+\S/.test(l))
   if (i === -1) return null
   i += 1
   while (i < lines.length && lines[i].trim() === '') i += 1 // skip blank lines under the H1
   const paragraph: string[] = []
-  while (i < lines.length && lines[i].trim() !== '') {
+  while (i < lines.length && lines[i].trim() !== '' && !HEADING_LINE.test(lines[i])) {
+    // An underline straight under paragraph lines makes them a setext heading (CommonMark): no blurb.
+    if (paragraph.length > 0 && SETEXT_UNDERLINE.test(lines[i])) return null
     paragraph.push(lines[i].trim())
     i += 1
   }
@@ -543,7 +706,7 @@ function firstParagraphAfterH1(text: string): string | null {
  * The resolved cover file and every Index-Note-named file are excluded from the rows (they are chrome,
  * not pieces). Bare files (no frontmatter) appear with null columns and `bare: true`.
  */
-export async function listCollection(ws: Workspace, dir: string): Promise<Collection> {
+export async function listCollection(ws: Workspace, dir: string, vault: CollectionVaultView | null = null, options: { includeSearchText?: boolean } = {}): Promise<Collection> {
   const name = displayName(ws, dir)
   const markdown = await ws.listFiles()
   const children = markdown.filter((f) => f.directory === dir)
@@ -562,18 +725,24 @@ export async function listCollection(ws: Workspace, dir: string): Promise<Collec
   }
 
   const rows: CollectionRow[] = []
+  const folioParts = await folioPartPaths(ws, children.map((file) => file.path))
+  const reader = await factsReader(ws, children, markdown)
   for (const file of children) {
     if (file.path === coverPath || INDEX_NOTE.test(file.name) || file.name === `_${name}.md`) continue
-    const { content } = await ws.readFile(file.path)
-    const fm = parseFrontmatter(content)
+    if (isFolioAgentInstructionsFile(ws, file.path)) continue // a Folio's agent instructions are never a piece
+    const facts = await reader.read(file)
+    const text = facts.derive('piece:text', (content) => pieceTextFacts(content, file.path))
+    const fm = text.frontmatter
     rows.push({
       path: file.path,
       name: file.name,
-      title: documentTitle(content, file.path),
+      title: folioParts.has(file.path) ? facts.derive('piece:part-title', (content) => partTitle(content, file.path).title) : text.title,
       purpose: fm?.purpose ?? null,
       status: fm?.status?.trim() || UNSORTED_STATUS,
       modified: file.modifiedAt,
-      words: countWords(bodyOf(content)),
+      words: text.words,
+      ...(options.includeSearchText ? { searchText: facts.derive('collection:search-text', bodyOf) } : {}),
+      tags: fm?.tags ?? [],
       bare: fm === null,
       provenance: {
         title: 'derived',
@@ -585,7 +754,7 @@ export async function listCollection(ws: Workspace, dir: string): Promise<Collec
   for (const folderPiece of await recognisedFolderPieces(ws, dir, true, true, markdown)) {
     const file = byPath.get(folderPiece.mainDocumentPath)
     if (!file) continue
-    const piece = await pieceFromFile(ws, file, folderPiece.folderPath)
+    const piece = await pieceFromFile(ws, file, folderPiece.folderPath, false, reader)
     rows.push({
       path: piece.path,
       name: basename(folderPiece.folderPath),
@@ -594,6 +763,8 @@ export async function listCollection(ws: Workspace, dir: string): Promise<Collec
       status: piece.metadata.status,
       modified: piece.derived.mtime,
       words: piece.derived.words,
+      ...(options.includeSearchText ? { searchText: (await reader.read(file)).derive('collection:search-text', bodyOf) } : {}),
+      tags: piece.frontmatter?.tags ?? [],
       bare: piece.frontmatter === null,
       provenance: {
         title: piece.provenance.title,
@@ -604,19 +775,40 @@ export async function listCollection(ws: Workspace, dir: string): Promise<Collec
       folderPieceMode: folderPiece.mode,
     })
   }
-  return { name, cover, rows }
+  const pieceFolders = new Set(rows.flatMap((row) => (row.folderPath ? [row.folderPath] : [])))
+  const folders = await listedFolderPaths(ws, markdown)
+  const subfolders = collectionSubfolders(dir, folders, markdown.filter((file) => !isFolioAgentInstructionsFile(ws, file.path)), pieceFolders, vault)
+  return { name, cover, rows, subfolders }
 }
 
 /**
  * Create the folder's Index Note — `_<name>_INDEX.md` holding just `# <name>\n\n` — and return its
- * workspace-relative path. THE one sanctioned Index-Note write: user-initiated, and only when absent
- * (Workspace.createFile throws if the file already exists, enforcing "only when absent" atomically).
+ * workspace-relative path. THE one sanctioned creation of an Index Note file, for every caller (the Folio page's
+ * Start, `collection:create-index`, an agent's running-order proposal, a counted diary, a Folder Piece's mode):
+ * the ownership rule (folio-index-note.ts `indexNoteCreationRefusal`) is applied here, so no caller can skip it.
+ * Refused, with nothing written, when the folder's Index Note is there or the folder is inside another Folio.
+ * Only when absent: Workspace.createFile throws if the file already exists, enforcing it atomically.
+ * (A Folio page edit on a Folio with no Index Note writes the file through the Plan write instead, after the same
+ * refusal: plan.ts `commitPlanDocuments`.)
  */
 export async function createIndexNote(ws: Workspace, dir: string): Promise<string> {
+  const refusal = await indexNoteCreationRefusal(ws, dir)
+  if (refusal) throw new Error(refusal)
   const name = displayName(ws, dir)
   const path = inDir(dir, `_${name}_INDEX.md`)
-  const { file } = await ws.createFile(path, `# ${name}\n\n`)
-  return file.path
+  try {
+    const { file } = await ws.createFile(path, indexNoteStarterText(ws, dir))
+    return file.path
+  } catch (error) {
+    // Created by someone else between the check and the exclusive create: still the same refusal, nothing written.
+    if (existsSync(ws.absolute(path))) throw new Error(INDEX_NOTE_EXISTS(basename(path)))
+    throw error
+  }
+}
+
+/** What `createIndexNote` writes: `# <name>` and a blank line. The Folio page reads a Folio with no Index Note yet as this text (plan.ts `readFolioPlan`). */
+export function indexNoteStarterText(ws: Pick<Workspace, 'root'>, dir: string): string {
+  return `# ${dir === '' ? basename(ws.root) : basename(dir)}\n\n`
 }
 
 /** Persist a writer's one-work/many-files decision in the folder's canonical Index Note. */
@@ -658,4 +850,54 @@ export async function createPiece(ws: Workspace, dir: string): Promise<string> {
   const content = setFrontmatterKeys('# untitled\n\n', values, inDir(dir, candidate))
   const { file } = await ws.createFile(inDir(dir, candidate), content)
   return file.path
+}
+
+/** Explicit user tag action; browsing and filtering never call this writer. */
+export async function addCollectionPieceTags(ws: Workspace, dir: string, path: string, tags: string[]) {
+  if (!isUnderDir(path, dir)) throw new Error('Collection Piece is outside its Collection.')
+  if (!Array.isArray(tags) || tags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.length > 128 || /[\r\n]/.test(tag))) throw new Error('Use short tags without line breaks.')
+  const source = await ws.readFile(path)
+  const parsedTags = parseFrontmatter(source.content)?.tags ?? []
+  // The typed reader promotes scalars to lists. Inspect only the tags key's authored shape,
+  // then split its already-unquoted value; other frontmatter may contain block lists.
+  const lines = frontmatterBlock(source.content)?.lines ?? []
+  let rawTags: string | undefined
+  for (let index = 0; index < lines.length; index++) {
+    const match = FRONTMATTER_KEY_VALUE.exec(lines[index])
+    if (match?.[1] !== 'tags') continue
+    // Empty duplicate list keys do not replace the typed parser's previous value.
+    let end = index + 1
+    while (end < lines.length && /^\s+-\s/.test(lines[end])) end++
+    if (parseFrontmatter(`---\n${lines.slice(index, end).join('\n')}\n---\n`)?.tags) rawTags = match[2].trim()
+  }
+  const scalarTags = Boolean(rawTags && !(rawTags.startsWith('[') && rawTags.endsWith(']')))
+  const existing = scalarTags
+    ? parsedTags.flatMap(value => value.split(',')).map(tag => tag.trim()).filter(Boolean)
+    : parsedTags
+  const next = [...new Set([...existing, ...tags.map(tag => tag.trim())])]
+  if (next.length === new Set(existing).size) return source
+  return ws.saveFile(path, setFrontmatterKeys(source.content, { tags: next }, path))
+}
+
+/** Discover once for a bulk move, shared by both preflight and the exclusive rename turn. */
+export async function collectionMoveFolderPieces(ws: Workspace, dir: string): Promise<ReadonlySet<string>> {
+  return new Set((await recognisedFolderPieces(ws, dir, true, true)).map(piece => piece.mainDocumentPath))
+}
+
+/** Collection bulk moves never create folders or detach a folder piece's main document. */
+export async function assertCollectionMove(ws: Workspace, dir: string, path: string, newPath: string,
+  folderPieces: () => Promise<ReadonlySet<string>> = () => collectionMoveFolderPieces(ws, dir),
+): Promise<void> {
+  if (!isUnderDir(path, dir)) throw new Error('The selected document is outside this collection.')
+  const destination = posix.dirname(newPath)
+  const folder = destination === '.' ? '' : destination
+  if ((folder && ws.classifyPath(folder, 'folder') !== 'document')
+    || ws.classifyPath(newPath) !== 'document'
+    || !(await stat(folder ? ws.absolute(folder) : ws.root).catch(() => null))?.isDirectory()) {
+    throw new Error('Choose an existing visible folder inside this workspace.')
+  }
+  const pieces = await folderPieces()
+  if (pieces.has(path)) {
+    throw new Error('Move folder pieces from Files so all their documents move together.')
+  }
 }

@@ -1,5 +1,6 @@
 import type { VersionStore, Version } from './versions'
-import type { FileReadResult } from './workspace'
+import type { EditorSaveResult } from './workspace'
+import type { SaveBasis } from '../shared/save-basis'
 
 export type VersionContentRequest = {
   id?: string
@@ -16,8 +17,10 @@ export type VersionRestorer = SnapshotContentReader & {
   checkpointFile(path: string): Promise<void>
 }
 
+/** Writes that commit only over the version the open buffer was based on (shared/save-basis.ts). */
 export type VersionFileWriter = {
-  saveFile(path: string, content: string): Promise<FileReadResult>
+  assertOnDisk(path: string, basis: SaveBasis): Promise<void>
+  saveFileOver(path: string, content: string, basis: SaveBasis): Promise<EditorSaveResult>
 }
 
 export type VersionContentResult = {
@@ -59,17 +62,24 @@ export async function readVersionContent(
   }
 }
 
+/**
+ * Put a version back as the document. `basis` is the version of the file the open buffer was based on,
+ * after the renderer flushed the buffer through its own guarded save (review round 1, Muse M2): the
+ * document as the writer has it is on disk then, and the pre-restore checkpoint records it. The restore
+ * replaces only that version: another version on disk (an outside change, before or during the
+ * checkpoint) stops it with DiskChangedUnderBuffer before anything is written.
+ */
 export async function restoreVersionContent(
   versions: VersionStore,
   restorer: VersionRestorer,
   writer: VersionFileWriter,
-  input: VersionContentRequest & { currentContent?: string },
-): Promise<FileReadResult | null> {
+  input: VersionContentRequest & { basis: SaveBasis },
+): Promise<EditorSaveResult | null> {
   const result = await readVersionContent(versions, restorer, input)
   if (!result?.path || result.content === null) return null
-  if (typeof input.currentContent === 'string') await writer.saveFile(result.path, input.currentContent)
+  await writer.assertOnDisk(result.path, input.basis)
   await restorer.checkpointFile(result.path)
-  const file = await writer.saveFile(result.path, result.content)
+  const file = await writer.saveFileOver(result.path, result.content, input.basis)
   await restorer.checkpointFile(result.path)
   return file
 }

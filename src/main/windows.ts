@@ -1,7 +1,9 @@
-import { app, BrowserWindow, dialog, shell } from 'electron'
+import { app, BrowserWindow, dialog, shell, type Rectangle } from 'electron'
 import { join, dirname, relative, basename, sep } from 'node:path'
+import { hostname } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { registerWindow, allStates, setQuitting, type WindowState } from './state'
+import { registerWindow, allStates, setQuitting, waitForAgentDisposals, type WindowState } from './state'
+import { waitForRequestDisposals } from './request-inbox-watch'
 import { bindWorkspace, flushPendingFocus, type OpenPathRouter } from './ipc'
 import { normaliseRoot, resolveWorkspaceRoot, WorkspaceRootError } from './root-resolution'
 import { createCloseController, shouldGuardClose, type CloseStallKind } from './window-close'
@@ -14,13 +16,21 @@ import { attachKeyboardGate, isQuitKey } from './widget-keyboard'
 import { isMarkdownPath } from './writeflex-url'
 import type { ExampleCollection } from './example-collection'
 import { EXAMPLE_OBJECTS_FILE, OBJECTS_LESSON } from '../shared/example-files'
+import { e2eWriteHooksArguments } from '../shared/e2e-write-hooks'
 import { EXAMPLE_CLOSE_MS, type ExampleRemoval, type ExampleRemovalPreview, type ExampleRemoveResult, type ExampleRestoreResult, type ExampleWindowsClosed } from './example-removal'
 import { startScreenModel } from './start-screen-model'
 import { GuideProgressStore } from './guide-progress-store'
 import { lessonFileFor } from '../renderer/src/commands/guide-chapters'
 import type { TaskGroup } from '../renderer/src/commands/command-task-groups'
+import { REPLY_KEY_FOLDER } from './reply-key'
+import { busyNotice, claimWithRetry, CollectionOwnership, lostNotice, unavailableNotice, type OwnershipChange } from './collection-ownership'
+import type { OwnerLockBusyError } from './owner-lock'
+import { createWindowSwitch, routeToExistingWindow, whenRendererReady, type CloseAttempt, type WindowSwitch, type WindowSwitchOutcome } from './window-switch'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+/** Where a window is on screen, for the window that replaces it (the vault switcher, window-switch.ts). */
+export type WindowPlacement = { bounds: Rectangle; fullScreen: boolean; maximized: boolean }
 
 /** What the person is asked when a close has stalled (window-close.ts): the renderer is alive and has
  *  not said that every document is written, so the window is not closed without their say. */
@@ -56,15 +66,37 @@ export class WindowManager {
   /** The example's window as it was found just before a removal, while its folder was still there to name it. */
   #exampleWindowBeforeRemoval: WindowState | undefined
 
+  /** The Collection each window's owner lock was taken for, by webContents id. */
+  readonly #ownedRoots = new Map<number, string>()
+  /** The release of a closed window's owner lock still under way, by the root it was taken for. */
+  readonly #releasing = new Map<string, Promise<void>>()
+
   constructor(
     private readonly settings: SettingsStore,
     /** The Example collection (ADR-0043): the one root that opens without being a Recent or a pin. */
     private readonly example?: Pick<ExampleCollection, 'current' | 'isRoot' | 'startFile' | 'view'> & Partial<Pick<ExampleCollection, 'shownRoot'>>,
     /** The Guide's progress (ticket 07): the first steps are recorded where the person does them. */
     readonly guide: GuideProgressStore = new GuideProgressStore(settings),
-  ) {}
+    /** One owner per Collection across processes (`.writeflex/owner.lock`); index.ts releases all on quit. */
+    readonly ownership = new CollectionOwnership({ diagnostic: recordMainProcessDiagnostic, keyFolder: join(app.getPath('userData'), REPLY_KEY_FOLDER) }),
+  ) {
+    // The ownership module itself stops writes to a Collection whose lock this app does not hold;
+    // this window manager only tells the user.
+    ownership.watch((root, change) => this.#ownershipChanged(root, change))
+  }
 
-  createWindow(): WindowState {
+  /** Tell the user their saves to `root` are paused, in the message-box style of the busy-folder notice. */
+  #ownershipChanged(root: string, change: OwnershipChange): void {
+    void recordMainProcessDiagnostic(`owner-lock.writes-${change === 'regained' ? 'resumed' : 'paused'}`, { root, ...(change === 'regained' ? {} : { why: change }) })
+    // A hidden e2e window must never raise a native dialog nobody can see.
+    if (change === 'regained' || process.env.WRITEFLEX_E2E === '1') return
+    const window = this.windowForRoot(root)?.window
+    if (!window || window.isDestroyed()) return
+    void dialog.showMessageBox(window, { type: 'warning', ...(change === 'lost' ? lostNotice(root) : unavailableNotice(root)), buttons: ['OK'], defaultId: 0 })
+  }
+
+  /** `placement`: the window is created hidden at that place, and whoever asked shows it (window-switch.ts). */
+  createWindow(placement?: WindowPlacement): WindowState {
     // A test run must never take over the screen (AGENTS.md): under the e2e harness the window is
     // created hidden and nothing ever shows it — Playwright's firstWindow() attaches to a hidden
     // BrowserWindow perfectly well, and Electron's focus() is a no-op on an invisible window.
@@ -75,8 +107,9 @@ export class WindowManager {
     // keeps exactly the visible behaviour and timing it had.
     const e2e = process.env.WRITEFLEX_E2E === '1'
     const window = new BrowserWindow({
-      ...(e2e ? { show: false } : {}),
+      ...(e2e || placement ? { show: false } : {}),
       width: 1440, height: 900, minWidth: 960, minHeight: 640,
+      ...(placement ? placement.bounds : {}),
       // The pre-paint frame colour follows the persisted theme (Task 17) so a dark-mode relaunch
       // never flashes a light window while the renderer boots.
       title: 'WriteFlex', backgroundColor: this.settings.get('appearance.theme') === 'dark' ? '#1a1a1e' : '#f6f5f1',
@@ -87,6 +120,8 @@ export class WindowManager {
       webPreferences: {
         preload: join(__dirname, '../preload/index.mjs'),
         nodeIntegration: false, contextIsolation: true, sandbox: false,
+        // The e2e write hooks (holds, failed saves) reach the renderer only in an unpackaged e2e run.
+        additionalArguments: e2eWriteHooksArguments(process.env, app.isPackaged),
         ...(e2e ? { backgroundThrottling: false } : {})
       }
     })
@@ -253,7 +288,20 @@ export class WindowManager {
       state.onCloseCancelled?.()
     })
 
-    window.on('closed', () => this.onWindowClosed?.(webContentsId))
+    window.on('closed', () => {
+      this.onWindowClosed?.(webContentsId)
+      const root = this.#ownedRoots.get(webContentsId)
+      if (!root) return
+      this.#ownedRoots.delete(webContentsId)
+      // state.ts's own 'closed' handler (registered first) has started this window's agent and diary
+      // flushes; the Collection stays ours until they settle, so no other owner writes under them.
+      // The same for a command-line request the app was carrying out when the window closed.
+      // Kept until it settles, so the example's removal can wait for it (`exampleLocksReleased`).
+      const releasing = Promise.all([waitForAgentDisposals(), waitForRequestDisposals()]).then(() => this.ownership.release(root))
+      const after = Promise.all([this.#releasing.get(root), releasing]).then(() => undefined, () => undefined)
+      this.#releasing.set(root, after)
+      void after.then(() => { if (this.#releasing.get(root) === after) this.#releasing.delete(root) })
+    })
     if (process.env.ELECTRON_RENDERER_URL) void window.loadURL(process.env.ELECTRON_RENDERER_URL)
     else void window.loadFile(join(__dirname, '../renderer/index.html'))
     return state
@@ -268,8 +316,14 @@ export class WindowManager {
    * Open (or focus) a window on `root`. If a window already shows this root, focus it — never two
    * windows on one root. Otherwise reuse `from` if it has no Workspace yet (the start screen), else
    * open a new window. Always records the recent.
+   *
+   * A new binding first takes the Collection's owner lock, waiting for a short-lived owner (the
+   * command line mid-write). Resolves null when another owner still has it and the user, told so,
+   * chose not to try again. A Collection whose lock cannot be taken at all (collection-ownership.ts,
+   * `unlockable`) still opens, read-only: its write gate is closed before it is bound, and the user
+   * is told once the window shows it.
    */
-  async openFolder(from: WindowState | null, root: string): Promise<WindowState> {
+  async openFolder(from: WindowState | null, root: string, options: { placement?: WindowPlacement } = {}): Promise<WindowState | null> {
     // Canonicalise BEFORE dedup and binding: dialogs return realpaths while argv/env use resolve(),
     // and APFS is case-insensitive — string comparison on mixed forms would let two windows bind one
     // physical root and corrupt the single-writer Snapshot Store (Bridle ADR-0008). Everything
@@ -277,16 +331,245 @@ export class WindowManager {
     const canonicalRoot = normaliseRoot(root)
     const existing = this.windowForRoot(canonicalRoot)
     if (existing) {
+      // A hidden window a switch has opened is not this open's to show (round 2): the switch's own
+      // window is brought forward and says the switch is under way.
+      if (this.#switchingInto(existing, canonicalRoot)) return null
       this.#recordRecent(canonicalRoot)
       this.#recordGuideStep(canonicalRoot)
       if (!existing.window.isDestroyed()) existing.window.focus()
       return existing
     }
-    const target = from && !from.workspace ? from : this.createWindow()
-    await bindWorkspace(target, canonicalRoot, this.settings)
-    this.#recordRecent(canonicalRoot)
-    this.#recordGuideStep(canonicalRoot)
+    if (!(await claimWithRetry(this.ownership, canonicalRoot, (busy) => this.#askRetry(busy)))) return null
+    // The wait can outlast the caller's picture of the world: this root may have opened meanwhile
+    // (its window shares the claim just taken), and `from` may have closed or been bound.
+    const opened = this.windowForRoot(canonicalRoot)
+    if (opened) {
+      void this.ownership.release(canonicalRoot)
+      if (this.#switchingInto(opened, canonicalRoot)) return null
+      this.#recordRecent(canonicalRoot)
+      if (!opened.window.isDestroyed()) opened.window.focus()
+      return opened
+    }
+    let target: WindowState | null = null
+    let created = false
+    try {
+      if (from && !from.workspace && !from.window.isDestroyed()) target = from
+      else {
+        target = this.createWindow(options.placement)
+        created = true
+      }
+      this.#ownedRoots.set(target.window.webContents.id, canonicalRoot)
+      await bindWorkspace(target, canonicalRoot, this.settings, (root) => this.ownership.owns(root))
+      // Opened without its lock: nothing is saved until a later beat takes it. Say so now that a window shows it.
+      if (this.ownership.unavailable(canonicalRoot)) this.#ownershipChanged(canonicalRoot, 'unavailable')
+      this.#recordRecent(canonicalRoot)
+      this.#recordGuideStep(canonicalRoot)
+    } catch (error) {
+      // A start-screen window this open reused that the bind got far enough to bind (round 3, T1): it
+      // stays bound, so the folder stays claimed (its heartbeat and write gate with it) until the window
+      // closes, whose 'closed' handler releases it. Undoing a part-made bind in place is not attempted.
+      // The window is returned and says what failed.
+      if (target && !created && !target.window.isDestroyed() && target.workspace?.root === canonicalRoot) {
+        const message = error instanceof Error ? error.message : String(error)
+        void recordMainProcessDiagnostic('workspace.open.failed-after-bind', { root: canonicalRoot, message })
+        target.window.webContents.send('window:status', `${basename(canonicalRoot)} is open, but part of opening it failed: ${message}`)
+        return target
+      }
+      // Not bound, so not ours to hold — unless the window closed mid-bind and released it already.
+      if (!target || this.#ownedRoots.delete(target.window.webContents.id)) await this.ownership.release(canonicalRoot)
+      // A window this open made goes with it (round 2): nobody else is responsible for it. Its
+      // 'closed' handlers dispose whatever the bind had made. A start-screen window it reused stays.
+      if (created && target && !target.window.isDestroyed()) target.window.destroy()
+      throw error
+    }
     return target
+  }
+
+  /** The switches in flight: which hidden windows they have opened, and for which window. A test
+   *  replaces this to stand for a switch under way. */
+  switchReservations(): Pick<WindowSwitch<WindowState>, 'isPending' | 'sourceOf'> {
+    return this.#windowSwitch
+  }
+
+  /** `existing` is a hidden window a switch has opened (round 2): bring the switch's own window
+   *  forward with "Switching to <name>…", and report true so the open stops there. */
+  #switchingInto(existing: WindowState, root: string): boolean {
+    const route = routeToExistingWindow(existing, this.switchReservations())
+    if (route.kind === 'focus') return false
+    const source = route.source
+    void recordMainProcessDiagnostic('workspace.open.switching', { root })
+    if (source && !source.window.isDestroyed()) {
+      source.window.focus()
+      source.window.webContents.send('window:status', `Switching to ${basename(root)}…`)
+    }
+    return true
+  }
+
+  /**
+   * Switch `state` to `root` (vaults ticket 06, the vault switcher; review 2026-10-16): the window is
+   * REPLACED, never rebound. `root` opens by `openFolder` in a new window created hidden at this
+   * window's place; this window then closes by the ordinary close route (`#closeByNormalRoute`: its
+   * renderer writes every document and drains its ledger, main makes the close checkpoints, disposes its
+   * services and releases its lock); once it has closed the new window is shown. The new window must
+   * first have loaded its root (`renderer:ready`). A close kept open, or one still undecided after the
+   * switch's bound (then called off), closes the hidden window again and leaves this one as it was. The
+   * order, its refusals and the per-window and per-root reservations are window-switch.ts's.
+   */
+  switchWindow(state: WindowState, root: string, focusFile: string | null = null): Promise<WindowSwitchOutcome<WindowState>> {
+    return this.#windowSwitch.switchWindow(state, root, focusFile).then((outcome) => {
+      void recordMainProcessDiagnostic('workspace.switch', {
+        windowId: state.window.isDestroyed() ? null : state.window.webContents.id,
+        status: outcome.status,
+        ...(outcome.status === 'switched' || outcome.status === 'focused' ? { root: outcome.root } : {}),
+      })
+      return outcome
+    })
+  }
+
+  readonly #windowSwitch = createWindowSwitch<WindowState, WindowPlacement>({
+    rootOf: (state) => state.workspace?.root ?? null,
+    canonical: (candidate) => normaliseRoot(candidate),
+    ownerWindow: (candidate, except) => {
+      const shown = this.windowForRoot(candidate)
+      return shown && shown !== except ? shown : undefined
+    },
+    focus: (shown) => { if (!shown.window.isDestroyed()) shown.window.focus() },
+    placement: (state) => {
+      const { window } = state
+      const fullScreen = window.isFullScreen()
+      return { bounds: fullScreen || window.isMaximized() ? window.getNormalBounds() : window.getBounds(), fullScreen, maximized: window.isMaximized() }
+    },
+    openHidden: async (candidate, placement, focusFile) => {
+      const before = new Set(allStates())
+      const opened = await this.openFolder(null, candidate, { placement })
+      if (!opened) return { kind: 'busy' }
+      if (before.has(opened)) return { kind: 'existing', window: opened }
+      // A fresh window carries the file until its renderer pulls workspace:get (as openFile does).
+      if (focusFile) {
+        opened.pendingFocusFile = focusFile
+        opened.pendingFocusLine = null
+      }
+      return { kind: 'opened', window: opened }
+    },
+    whenReady: (state) => this.#whenRendererReady(state),
+    requestClose: (state) => this.#closeAttempt(state),
+    isGone: (state) => state.window.isDestroyed(),
+    show: (state, placement) => {
+      const { window } = state
+      // A test run never shows a window (AGENTS.md): the e2e window stays hidden, as every e2e window does.
+      if (window.isDestroyed() || process.env.WRITEFLEX_E2E === '1') return
+      if (placement.maximized) window.maximize()
+      window.show()
+      if (placement.fullScreen) window.setFullScreen(true)
+      window.focus()
+    },
+    discard: async (state) => {
+      // A window nobody has seen or typed in: the ordinary close, then destroy if that did not finish
+      // (its 'closed' handler releases the lock either way).
+      try {
+        await this.#closeByNormalRoute(state)
+      } finally {
+        if (!state.window.isDestroyed()) state.window.destroy()
+      }
+    },
+  })
+
+  /** The new window's page has loaded the root it was bound to (`renderer:ready`), or cannot. */
+  #whenRendererReady(state: WindowState): Promise<boolean> {
+    const { window } = state
+    if (window.isDestroyed()) return Promise.resolve(false)
+    const contents = window.webContents
+    return whenRendererReady({
+      isReady: () => !window.isDestroyed() && state.workspace !== null && state.rendererRoot === state.workspace.root,
+      onReport: (listener) => {
+        state.onRendererReady = listener
+        return () => { if (state.onRendererReady === listener) state.onRendererReady = null }
+      },
+      onFailure: (listener) => {
+        const failedLoad = (_event: unknown, _code: number, _description: string, _url: string, isMainFrame: boolean): void => {
+          if (isMainFrame) listener()
+        }
+        const gone = (): void => listener()
+        contents.on('did-fail-load', failedLoad)
+        contents.on('render-process-gone', gone)
+        window.once('closed', gone)
+        return () => {
+          if (contents.isDestroyed()) return
+          contents.removeListener('did-fail-load', failedLoad)
+          contents.removeListener('render-process-gone', gone)
+          if (!window.isDestroyed()) window.removeListener('closed', gone)
+        }
+      },
+      setTimer: (run, ms) => setTimeout(run, ms),
+      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    })
+  }
+
+  /**
+   * One window closed as the red light closes it, with no time limit of its own: `closed` settles
+   * true once it has closed, false once its close was kept open (a write failed, the person kept it, or
+   * a reload replaced the page). `abandon` calls the close off (the switch's bound, window-switch.ts):
+   * main drops any late answer to it and the page is told to drop it too, so the window stays; false
+   * when the window is already closing past recall.
+   */
+  #closeAttempt(state: WindowState): CloseAttempt {
+    const { window } = state
+    if (window.isDestroyed()) return { closed: Promise.resolve(true), abandon: () => false }
+    let finish: (closed: boolean) => void = () => {}
+    const closed = new Promise<boolean>((resolve) => {
+      let finished = false
+      finish = (outcome: boolean): void => {
+        if (finished) return
+        finished = true
+        if (state.onCloseCancelled === refused) state.onCloseCancelled = null
+        if (!window.isDestroyed()) window.removeListener('closed', gone)
+        resolve(outcome)
+      }
+      const gone = (): void => finish(true)
+      const refused = (): void => finish(false)
+      window.once('closed', gone)
+      state.onCloseCancelled = refused
+      try {
+        window.close()
+      } catch {
+        // No close started: the window is as it was (or already gone).
+        finish(window.isDestroyed())
+      }
+    })
+    return {
+      closed,
+      abandon: () => {
+        // Past recall: the renderer's "every document written" has been taken and the window is going.
+        if (window.isDestroyed() || state.forceClose) return false
+        state.closing?.abandon()
+        if (!window.webContents.isDestroyed()) window.webContents.send('window:abandon-close')
+        finish(false)
+        return true
+      },
+    }
+  }
+
+  /** Whether `root` may be named by a renderer as a root to open: a persisted recent or pin, or the
+   *  shown Example collection at its fixed path (see `openRecent` in `router()`). */
+  async isKnownRoot(root: string): Promise<boolean> {
+    const wanted = normaliseRoot(root)
+    return this.settings.recents().some((r) => normaliseRoot(r.root) === wanted)
+      || this.settings.pinned().some((r) => normaliseRoot(r) === wanted)
+      || ((await this.example?.current()) !== null && this.example?.isRoot(root) === true)
+  }
+
+  /** Tell the user another program has the folder, in the dialog style openFile uses; true = try again. */
+  async #askRetry(busy: OwnerLockBusyError): Promise<boolean> {
+    void recordMainProcessDiagnostic('owner-lock.busy', {
+      root: busy.root, waitedMs: busy.waitedMs,
+      owner: busy.owner ? { pid: busy.owner.pid, kind: busy.owner.kind, host: busy.owner.host } : null,
+    })
+    // A hidden e2e window must never block on a native dialog nobody can see.
+    if (process.env.WRITEFLEX_E2E === '1') return false
+    const { response } = await dialog.showMessageBox({
+      type: 'info', ...busyNotice(busy, hostname()), buttons: ['Try Again', 'Cancel'], defaultId: 0, cancelId: 1,
+    })
+    return response === 0
   }
 
   /**
@@ -316,6 +599,7 @@ export class WindowManager {
     // Whether the target window is already mounted decides how the focus push is delivered.
     const alreadyMounted = this.windowForRoot(root) !== undefined || (from !== null && !from.workspace)
     const state = await this.openFolder(from, root)
+    if (!state) return null
     state.pendingFocusFile = relative(root, canonicalPath)
     state.pendingFocusLine = line ?? null
     if (alreadyMounted) flushPendingFocus(state)
@@ -330,7 +614,7 @@ export class WindowManager {
    * `00 Start here.md` (journey J1, step 2); an already-open one is left where the person had it.
    * The root is never supplied by the renderer: it is the fixed example path, checked now, or nothing.
    */
-  async openExampleCollection(from: WindowState | null): Promise<WindowState> {
+  async openExampleCollection(from: WindowState | null): Promise<WindowState | null> {
     const state = await this.#openExample(from, { atStartFile: 'when-new' })
     return state
   }
@@ -340,7 +624,7 @@ export class WindowManager {
    * right pane of the window it lands in (last in the row), so this opens the Example
    * collection's window at `00 Start here.md`, where the first steps and the chapters are.
    */
-  async openGuide(from: WindowState | null): Promise<WindowState> {
+  async openGuide(from: WindowState | null): Promise<WindowState | null> {
     return this.#openExample(from, { atStartFile: 'always' })
   }
 
@@ -350,11 +634,13 @@ export class WindowManager {
    * already open (and focuses it) or opens it as a window of its own, so the lesson is never opened in the
    * person's window. The file name is computed here from the chapter; nothing path-like comes from the renderer.
    */
-  async openChapter(from: WindowState | null, chapter: TaskGroup | typeof OBJECTS_LESSON): Promise<WindowState> {
+  async openChapter(from: WindowState | null, chapter: TaskGroup | typeof OBJECTS_LESSON): Promise<WindowState | null> {
     const root = (await this.example?.current()) ?? null
     if (root === null) throw new Error('The Example collection is not on this Mac.')
     const alreadyMounted = this.windowForRoot(root) !== undefined
     const state = await this.openFolder(from?.workspace ? from : null, root)
+    // Null: another program holds the folder and the person chose not to wait (openFolder said so).
+    if (!state) return null
     state.pendingFocusFile = chapter === OBJECTS_LESSON ? EXAMPLE_OBJECTS_FILE : lessonFileFor(chapter)
     state.pendingFocusLine = null
     if (alreadyMounted) flushPendingFocus(state)
@@ -415,6 +701,17 @@ export class WindowManager {
     return closed.every((done) => done) ? 'closed' : 'open'
   }
 
+  /**
+   * The removal's lock port (`example-removal.ts`, rule J): resolves once every release of a closed
+   * window's owner lock for the example, or a folder inside it, has finished. Called after
+   * `closeExampleWindows` answered `closed`, so each of those windows has already started its release.
+   */
+  async exampleLocksReleased(root: string): Promise<void> {
+    const canonical = normaliseRoot(root)
+    const pending = [...this.#releasing.entries()].filter(([held]) => held === canonical || held.startsWith(canonical + sep)).map(([, done]) => done)
+    await Promise.all(pending)
+  }
+
   /** One window closed as the red light closes it. True once it has closed; false on a refusal or no close in time. */
   #closeByNormalRoute(state: WindowState): Promise<boolean> {
     const { window } = state
@@ -448,12 +745,14 @@ export class WindowManager {
     if (!state.window.isDestroyed()) state.window.webContents.send('guide:show', null)
   }
 
-  async #openExample(from: WindowState | null, options: { atStartFile: 'when-new' | 'always' }): Promise<WindowState> {
+  async #openExample(from: WindowState | null, options: { atStartFile: 'when-new' | 'always' }): Promise<WindowState | null> {
     const root = (await this.example?.current()) ?? null
     if (root === null) throw new Error('The Example collection is not on this Mac.')
     const alreadyOpen = this.windowForRoot(root) !== undefined
     const alreadyMounted = alreadyOpen || (from !== null && !from.workspace)
     const state = await this.openFolder(from, root)
+    // Null: another program holds the folder and the person chose not to wait (openFolder said so).
+    if (!state) return null
     const startFile = alreadyOpen && options.atStartFile === 'when-new' ? null : (await this.example?.startFile()) ?? null
     if (options.atStartFile === 'always') this.#wantGuideTab(state)
     if (startFile !== null) {
@@ -475,14 +774,11 @@ export class WindowManager {
       // workspace. Require it to be a persisted recent so a compromised renderer can't designate an
       // arbitrary folder as the root and gain guarded read/write within it.
       openRecent: async (state, root, options) => {
-        const wanted = normaliseRoot(root)
-        const known = this.settings.recents().some((r) => normaliseRoot(r.root) === wanted)
-          || this.settings.pinned().some((r) => normaliseRoot(r) === wanted)
-          // The Example collection is neither a Recent nor a pin (ADR-0043), so it is admitted by
-          // its own rule: the fixed example path while it is shown, and no other path.
-          // Asked with the path AS REQUESTED: a symlink or another spelling that merely leads to
-          // the example is not the fixed path. (`wanted` is canonical, for ordinary identity only.)
-          || ((await this.example?.current()) !== null && this.example?.isRoot(root) === true)
+        // The Example collection is neither a Recent nor a pin (ADR-0043), so it is admitted by
+        // its own rule: the fixed example path while it is shown, and no other path.
+        // Asked with the path AS REQUESTED: a symlink or another spelling that merely leads to
+        // the example is not the fixed path. (Recents and pins compare canonical forms.)
+        const known = await this.isKnownRoot(root)
         if (!known) throw new Error('Refusing to open a folder that is not in Recents or Pinned.')
         await this.openFolder(options?.newWindow ? null : state, root)
       },
@@ -503,6 +799,8 @@ export class WindowManager {
         openChapter: async (state, chapter) => { await this.openChapter(state, chapter) },
       },
       refreshMenu: () => this.refreshMenu?.(),
+      switchWindow: (state, root, focusFile) => this.switchWindow(state, root, focusFile),
+      isKnownRoot: (root) => this.isKnownRoot(root),
       openWorkspaceRoots: () => allStates().flatMap((candidate) => (candidate.workspace ? [candidate.workspace.root] : []))
     }
   }

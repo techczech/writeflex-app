@@ -57,7 +57,7 @@ export const MERGED_ROWS: readonly MergedRow[] = [
   { label: 'Back / forward along the link trail', kind: 'pair', ids: ['navigation.linkTrailBack', 'navigation.linkTrailForward'] },
   { label: 'Pin / unpin this workspace', kind: 'variants', ids: ['workspace.pin', 'workspace.unpin'] },
   // Collect and plan
-  { label: 'Move Plan part up / down', kind: 'pair', ids: ['plan.moveUp', 'plan.moveDown'] },
+  { label: 'Move Folio outline part up / down', kind: 'pair', ids: ['plan.moveUp', 'plan.moveDown'] },
   // Share and export
   { label: 'Move export preset up / down', kind: 'pair', ids: ['exportPresets.moveUp', 'exportPresets.moveDown'] },
   // Set up WriteFlex

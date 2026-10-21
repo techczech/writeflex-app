@@ -68,7 +68,7 @@ export function usePieceDrag({ listRef, pieces, enabled, onDrop, suppressClick }
       const list = listRef.current
       const base = { path, x: e.clientX, y: e.clientY }
       const el = document.elementFromPoint(e.clientX, e.clientY)
-      const overPlace = el !== null && list !== null && list.contains(el) && !el.closest('[data-fo-also-heading], [data-fo-also-group]')
+      const overPlace = el !== null && list !== null && list.contains(el) && !el.closest('[data-fo-also-heading], [data-fo-also-group], [data-fo-front-heading], [data-fo-front-group]')
       const label = order[source].title
       if (!overPlace || !list) return { ...base, slot: null, inPlace: true, label: '' }
       const boxes = [...list.querySelectorAll<HTMLElement>('[data-fo-box]')].map((box) => box.getBoundingClientRect())

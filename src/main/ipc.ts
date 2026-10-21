@@ -1,17 +1,25 @@
+import { gatedSnapshots } from './gated-snapshots'
+import { CollectionChangeBatches } from './collection-change-batch'
+import { workspaceMetadataValues } from './metadata-vocabulary'
 import { AmbientState, type AmbientSnapshot } from './ambient'
 import { app, clipboard, dialog, ipcMain, shell } from 'electron'
-import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, posix, resolve } from 'node:path'
 import { existsSync, statSync, watch } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { readFile } from 'node:fs/promises'
-import { BridleAuth, createModelService, scriptedSessionFactory, sweepSnapshots, type BridleModelService } from '@bridle/core'
+import { readFile, writeFile } from 'node:fs/promises'
+import { BridleAuth, createModelService, scriptedSessionFactory, sweepSnapshots, SnapshotStore, type BridleModelService } from '@bridle/core'
 import { registerWriteFlexAuth } from './auth'
 import { fetchLinkTitle } from './fetch-title'
-import { allStates, stateForSender, setQuitting, trackPendingDisposal, type WindowState } from './state'
-import { assertRelativeWorkspacePath, EmptyWriteRefusal, sanitiseFileName, Workspace } from './workspace'
+import { allStates, notifyWindowReleased, onWindowReleased, stateForSender, setQuitting, trackPendingDisposal, type WindowState } from './state'
+import { basisAllows, isSaveBasis } from '../shared/save-basis'
+import { e2eWriteHooksAllowed } from '../shared/e2e-write-hooks'
+import { preserveVersion } from './preserve-version'
+import { assertRelativeWorkspacePath, DiskChangedUnderBuffer, EmptyWriteRefusal, NameTaken, sanitiseFileName, SaveWithoutBasis, Workspace, type MarkdownFile } from './workspace'
+import { listingEntryOf, type CollectionChanged } from '../shared/listing-patch'
+import { RestoreNotCompletedError } from './restore-failure'
 import { toggleAgentNoteTask } from './tasks'
 import { parseFrontmatter } from './frontmatter'
-import { collectionPattern, collectionStatus, listCollection, createIndexNote, createPiece, unresolvedFolderPieces, setCollectionPieceMode, setCollectionPieceStatus } from './collection'
+import { collectionMoveFolderPieces, assertCollectionMove, addCollectionPieceTags, collectionPattern, collectionStatus, createIndexNote, listCollection, createPiece, unresolvedFolderPieces, setCollectionPieceMode, setCollectionPieceStatus } from './collection'
 import { countedCollections, countedSettingKey, diaryCaptureRoot, DIARY_FOLDER_SETTING, invalidateCountedCollectionCache, isCountedCollection, isInsideDiaryRoot, parseCountedSettingKey, persistDiarySession, resumeDiaryDayFile, setCollectionCounted } from './diary'
 import { DiaryCaptureTracker, DIARY_IDLE_MS } from './diary-capture'
 import { ExplicitSessionRecorder, shouldIdleCloseExplicitSession, type ExplicitSessionOptions } from './explicit-session'
@@ -20,9 +28,12 @@ import type { ExplicitSessionEndReason, ExplicitSessionState } from '../shared/e
 import { normaliseCollectionStatus } from '../shared/collection-status'
 import { OBJECTS_LESSON } from '../shared/example-files'
 import { collectionQueryInvalidation, evaluateCollectionQuery } from './query-engine'
+import { randomUUID } from 'node:crypto'
+import { TURN_BACK_DESCRIPTION, createNestedFolio, recordFolioInstructionOwnership, turnBackIntoCollection } from './folio-conversion'
 import { collectionLinks, createCollectionStub, previewCollectionStub, type StubInput } from './wikilinks'
 import { validateCollectionStubIpcInput } from './collection-stub-ipc'
-import { folioPlace, invalidateFolioPlaces } from './folio-place'
+import { folioContaining, folioDirOf, folioPlace, invalidateFolioPlaces } from './folio-place'
+import { proposePartTitles } from './folio-part-proposals'
 import { invalidateFolioOrderFacts } from './folio-order-cache'
 import { folioOutline, invalidateFolioOutlineFile, invalidateFolioOutlines } from './folio-outline'
 import { resolveTabGroups, tabGroupPaths } from './tab-groups'
@@ -30,20 +41,27 @@ import { applyFolderFocus, describeFolderFocus, isFocusableFolder, restoreFolder
 import { folioConfirmSummaryFromDraft } from '../shared/folio-confirm-summary'
 import { MANIFEST_NAME, assertManifestAbsent, draftManifest, folioPieces, orderEntriesByFolio, readManifest } from './folio'
 import { registerPlanIpcHandlers } from './plan-ipc'
+import { registerFolioDetailsIpc } from './folio-details-ipc'
+import { registerFolioAgentInstructionsIpc } from './folio-agent-instructions-ipc'
+import { writeFolioAgentInstructions } from './folio-agent-instructions'
 import { registerScoutIpcHandlers } from './scout-ipc'
+import { registerResearchCaptureIpc } from './research-capture-ipc'
 import { registerPlanProposalIpcHandlers } from './plan-proposal-ipc'
 import { registerBoardMaterialIpcHandlers } from './board-material-ipc'
 import { registerWidgetIpcHandlers } from './widget-ipc'
 import { registerWidgetInsertHandlers } from './widget-insert'
 import { createWidgetWatches } from './widget-watch'
 import { registerWidgetOpenHandler } from './widget-open'
+import { registerStandardWidgetHandlers } from './standard-widgets/ipc'
+import { setAppSyncGrantStore, SyncGrantStore } from './standard-widgets/sync-grants'
 import { readPieceSources } from './piece-sources'
 import { BoardMaterialDesk } from './board-material-desk'
 import { applyRenameRepair, failedRenameRepairResult, planRenameRepair, type RenameRepairResult } from './rename-repair'
+import { applyFolderRenameRepair, planFolderRenameRepair } from './folder-rename-repair'
 import { ScrapStore } from './scraps'
 import { ChangeStore, isChangeJournalPath } from './changes'
-import type { ChangeScope, ChangeStatus, EditClass, NewChange } from './changes'
-import { humanAuthorForWorkspace, VersionStore } from './versions'
+import type { Change, ChangeScope, ChangeStatus, EditClass, NewChange } from './changes'
+import { humanAuthorForWorkspace, VersionStore, WRITEFLEX_SELF_AUTHOR } from './versions'
 import type { AuthorIdentity, VersionScope } from './versions'
 import { scanFolder, scanText } from './jumps'
 import {
@@ -66,11 +84,31 @@ import { resolveModelDefaults, type ResolvedModelDefaults, type SettingsStore, t
 import { readVersionContent, restoreVersionContent, type VersionContentRequest } from './version-content'
 import { compareVersionRange, type VersionCompareRequest } from './version-compare'
 import { saveInitialVersionOnClose, saveNamedVersion } from './save-version'
+import { requestedVersionSave } from './requested-version-save'
 import { RendererErrorLog, type RendererErrorInput } from './renderer-errors'
 import { recordMainProcessDiagnostic } from './shutdown'
 import { parseCloseCheckpointPaths, startCloseCheckpoints } from './close-checkpoints'
 import { createWorkspaceWatcher } from './workspace-watcher'
-import { normaliseRoot } from './root-resolution'
+import { registerVaultIpcHandlers } from './vault-ipc'
+import { onVaultChanged, vaultStoreFor } from './vault-store'
+import { VaultIndexService } from './vault-index-service'
+import { previewSettingsFrom } from './vault-preview'
+import { assertCollectionWritable, collectionWritesPaused } from './collection-write-gate'
+import { OPERATIONS_SAVING_A_VERSION, RequestExecutor } from './request-executor'
+import { repliesNeedServiceUpdate, startReaderNotesCollection } from './sharing-reader-notes-run'
+import { outsideSummary, readerNoteOf } from './outside-change-fields'
+import { readerReplyFor } from './sharing-reader-replies'
+import { MAX_UNDECIDED_OUTSIDE_CHANGES, MAX_UNDECIDED_PER_SOURCE } from './cli/review-format'
+import { OUTSIDE_SOURCES, type OutsideLook, type OutsideSummary } from '../shared/outside-source'
+import { REPLY_KEY_FOLDER, readReplyKey } from './reply-key'
+import { watchRequestInbox } from './request-inbox-watch'
+import { queueThenTurn, readyBeforeTurn, REQUEST_READINESS_WAIT_MS } from './collection-write-order'
+import { removeStaleTemporaryFiles } from './cli/stale-temporary-files'
+import { normaliseRoot, resolveWorkspaceRoot, WorkspaceRootError } from './root-resolution'
+import { isMarkdownPath } from './writeflex-url'
+import { registerSwitcherIpcHandlers } from './vault-switcher-ipc'
+import { rootPresences } from './vault-presence'
+import type { WindowSwitchOutcome } from './window-switch'
 import { classifyOpenPath } from './writeflex-url'
 import {
   parseSkillApplyEditInput,
@@ -92,9 +130,12 @@ import {
   LAST_EXPORT_FOLDER_KEY,
   suggestedName,
   type ExportFormat,
+  type ExportOutcome,
 } from './export'
 import { exportBundleRequest, exportDocumentRequest } from './export-ipc'
-import { startScreenModel, type StartScreenModel } from './start-screen-model'
+import { readTocDepthSource } from './export-toc-depth'
+import { exportCollectionTitle, exportDocumentTitle } from './export-title'
+import { startScreenLists, startScreenModel, withVaults, type StartScreenModel } from './start-screen-model'
 import type { ExampleRemovalPreview, ExampleRemoveResult, ExampleRestoreResult } from './example-removal'
 
 type SharedDeps = {
@@ -131,6 +172,10 @@ export type OpenPathRouter = {
   refreshMenu?: () => void
   /** Roots bound in any open window — admitted for pinning alongside recents. */
   openWorkspaceRoots?: () => string[]
+  /** Replace a window by one on another root at the same place (vaults ticket 06, windows.ts `switchWindow`). */
+  switchWindow?: (state: WindowState, root: string, focusFile: string | null) => Promise<WindowSwitchOutcome<WindowState>>
+  /** A persisted recent or pin, or the shown Example collection at its fixed path. */
+  isKnownRoot?: (root: string) => Promise<boolean>
   /** The start screen's two marked entries (ADR-0043). The renderer names a target, never a path. */
   example?: {
     /** The start screen's whole model, computed after the example check has resolved. */
@@ -148,6 +193,11 @@ export type OpenPathRouter = {
     /** Open a chapter's lesson file in the example's window (a chapter name from the ten, validated here). */
     openChapter: (state: WindowState, chapter: TaskGroup | typeof OBJECTS_LESSON) => Promise<void>
   }
+}
+
+/** Ticket 08: a reader's note was decided or replied to; the collecting window sends it now, not at the next minute. */
+function hearBackSoon(state: WindowState, change: Change): void {
+  if (readerNoteOf(change)) void state.readerNotes?.look?.()
 }
 
 /** Send to a window's renderer only if the window still exists (windows can close mid-flow). */
@@ -178,7 +228,144 @@ function bumpCollectionDigestRevisions(root: string, paths: string[]): void {
   collectionDigestRevisions.bump(root, paths)
 }
 
-function notifyCollectionChanged(state: WindowState, paths: string[] = []): void {
+/**
+ * The common post-save notification point: every write the app makes to a piece (a save, an Accept,
+ * a rename, a restore, an agent's turn) and every change the Workspace watcher sees ends here, with
+ * the Workspace root and the paths written. Sharing's publisher (ticket 03) subscribes; a listener
+ * never throws into a write.
+ */
+const documentsChangedListeners = new Set<(root: string, paths: readonly string[]) => void>()
+export function onDocumentsChanged(listener: (root: string, paths: readonly string[]) => void): () => void {
+  documentsChangedListeners.add(listener)
+  return () => { documentsChangedListeners.delete(listener) }
+}
+
+/**
+ * Sharing ticket 04: the app's own rename/move and Trash, told before the save signal above that
+ * follows them, so a share follows its piece to the new path (and is never published at the old one),
+ * and a piece sent to the Trash ends its shares. Workspace-relative paths, as the file IPC names them.
+ */
+const documentsMovedListeners = new Set<(root: string, from: string, to: string) => void>()
+const documentsTrashedListeners = new Set<(root: string, paths: readonly string[]) => void>()
+export function onDocumentsMoved(listener: (root: string, from: string, to: string) => void): () => void {
+  documentsMovedListeners.add(listener)
+  return () => { documentsMovedListeners.delete(listener) }
+}
+export function onDocumentsTrashed(listener: (root: string, paths: readonly string[]) => void): () => void {
+  documentsTrashedListeners.add(listener)
+  return () => { documentsTrashedListeners.delete(listener) }
+}
+function tellDocumentMoved(root: string, from: string, to: string): void {
+  if (from === to) return
+  for (const listener of documentsMovedListeners) {
+    try { listener(root, from, to) } catch { /* a listener never breaks a rename */ }
+  }
+}
+function tellDocumentsTrashed(root: string, paths: string[]): void {
+  for (const listener of documentsTrashedListeners) {
+    try { listener(root, paths) } catch { /* a listener never breaks a Trash */ }
+  }
+}
+function notifyDocumentMoved(state: WindowState, from: string, to: string): void {
+  if (state.workspace) tellDocumentMoved(state.workspace.root, from, to)
+}
+/**
+ * Sharing ticket 04 (ruling R-H): what the agent's file services tell, as the app's own rename does:
+ * a rename before the save signal that follows it (verbs `housekeeping.rename_file` calls
+ * `onFileRenamed` before it repairs and notifies), and the paths it wrote.
+ */
+const folioFlushRequests = new Map<string, { sender: number; root: string; done: (saved: boolean) => void }>()
+
+function prepareFolioInstructions(state: WindowState, dir: string): Promise<void> {
+  const root = state.workspace?.root
+  if (!root) return Promise.reject(new Error('Open a workspace first.'))
+  return new Promise((resolve, reject) => {
+    const id = randomUUID()
+    const timer = setTimeout(() => finish(false), 10_000)
+    const finish = (saved: boolean): void => {
+      clearTimeout(timer)
+      folioFlushRequests.delete(id)
+      if (saved) resolve()
+      else reject(new Error('Save any open AGENTS.md and CLAUDE.md editors before changing this Folio. The instructions could not be saved; nothing was changed.'))
+    }
+    folioFlushRequests.set(id, { sender: state.window.webContents.id, root, done: finish })
+    sendSafe(state, 'folio:flush-requested', { id, dir })
+  })
+}
+
+export function agentFileServices(state: WindowState): { prepareFolioInstructions: (dir: string) => Promise<void>; trashFile: (absolute: string) => Promise<void>; onFileRenamed: (from: string, to: string) => Promise<void>; notifyFilesChangedOnDisk: (paths: string[]) => void } {
+  return {
+    prepareFolioInstructions: (dir) => prepareFolioInstructions(state, dir),
+    trashFile: (absolute) => shell.trashItem(absolute),
+    onFileRenamed: async (from, to) => { notifyDocumentMoved(state, from, to) },
+    notifyFilesChangedOnDisk: (paths) => {
+      notifyCollectionChanged(state, paths)
+      sendSafe(state, 'file:changed-on-disk', paths)
+    },
+  }
+}
+/** Sharing ticket 04 (ruling R-D): a Collection bound to a window (opened, or opened again): its shares are looked at. */
+const workspaceOpenedListeners = new Set<(root: string) => void>()
+export function onWorkspaceOpened(listener: (root: string) => void): () => void {
+  workspaceOpenedListeners.add(listener)
+  return () => { workspaceOpenedListeners.delete(listener) }
+}
+function notifyDocumentsTrashed(state: WindowState, paths: string[]): void {
+  if (state.workspace) tellDocumentsTrashed(state.workspace.root, paths)
+}
+/**
+ * Sharing ticket 04: what the workspace watcher saw change outside WriteFlex, told before the save
+ * signal for the same paths, so a shared piece that vanished is held (moved or ended) rather than
+ * published (sharing-outside-changes.ts).
+ */
+const documentsChangedOutsideListeners = new Set<(root: string, paths: readonly string[]) => void>()
+export function onDocumentsChangedOutside(listener: (root: string, paths: readonly string[]) => void): () => void {
+  documentsChangedOutsideListeners.add(listener)
+  return () => { documentsChangedOutsideListeners.delete(listener) }
+}
+
+/** The vault index per root (ticket 0.25-02); created in registerIpc, where userData is known. */
+let vaultIndexService: VaultIndexService | null = null
+const vaultIndexTimers = new WeakMap<WindowState, ReturnType<typeof setTimeout>>()
+/** How long a burst of changes settles before the vault index is recomputed and pushed. */
+const VAULT_INDEX_SETTLE_MS = 250
+
+/** A change in a root the renderer has asked about: drop the stale index, recompute after the burst
+ *  settles, and push the new one as `vault:index-changed`. */
+function scheduleVaultIndexRecompute(state: WindowState, paths: string[]): void {
+  const workspace = state.workspace
+  if (!vaultIndexService || !workspace || !vaultIndexService.known(workspace.root)) return
+  vaultIndexService.invalidate(workspace.root, paths)
+  const pending = vaultIndexTimers.get(state)
+  if (pending) clearTimeout(pending)
+  vaultIndexTimers.set(state, setTimeout(() => {
+    vaultIndexTimers.delete(state)
+    if (!vaultIndexService || state.workspace !== workspace) return
+    void vaultIndexService.get(workspace)
+      .then((index) => { if (state.workspace === workspace) sendSafe(state, 'vault:index-changed', index) })
+      .catch((error: unknown) => recordMainProcessDiagnostic('vault.index.failed', {
+        root: workspace.root,
+        message: error instanceof Error ? error.message : String(error),
+      }))
+  }, VAULT_INDEX_SETTLE_MS))
+}
+
+/**
+ * `ownSave` is the one case the renderer may answer without re-listing the folder: the editor saved a
+ * document in place (file:save, same path), and this is its fresh listing entry. Every other change
+ * says nothing and the renderer re-pulls the whole listing as before.
+ */
+const collectionBatches = new CollectionChangeBatches<WindowState>()
+const collectionMoveDiscovery = new WeakMap<WindowState, Map<string, Promise<ReadonlySet<string>>>>()
+
+function notifyCollectionChanged(state: WindowState, paths: string[] = [], ownSave?: MarkdownFile): void {
+  if (collectionBatches.collect(state, paths)) return
+  scheduleVaultIndexRecompute(state, paths)
+  if (state.workspace && paths.length > 0) {
+    for (const listener of documentsChangedListeners) {
+      try { listener(state.workspace.root, paths) } catch { /* a listener never breaks a write */ }
+    }
+  }
   if (state.workspace) {
     invalidateCountedCollectionCache(state.workspace.root)
     bumpCollectionDigestRevisions(state.workspace.root, paths)
@@ -186,7 +373,8 @@ function notifyCollectionChanged(state: WindowState, paths: string[] = []): void
     for (const changed of paths) invalidateFolioOutlineFile(state.workspace.root, changed)
   }
   collectionRevision += 1
-  sendSafe(state, 'collection:changed', null)
+  const change: CollectionChanged | null = ownSave ? { ownSave: listingEntryOf(ownSave) } : null
+  sendSafe(state, 'collection:changed', change)
   sendSafe(state, 'collection:query-changed', collectionQueryInvalidation(paths))
 }
 
@@ -200,6 +388,11 @@ function configureWorkspaceWatcher(state: WindowState, enabled: boolean): void {
       // — Board and query objects — as well as the Collection view, then raise the disk-notice banner.
       // The search content cache drops the same paths so the next query re-reads them.
       state.workspace?.searchIndex.invalidate(paths)
+      if (state.workspace) {
+        for (const listener of documentsChangedOutsideListeners) {
+          try { listener(state.workspace.root, paths) } catch { /* a listener never breaks the watcher */ }
+        }
+      }
       notifyCollectionChanged(state, paths)
       sendSafe(state, 'file:changed-on-disk', paths)
     })
@@ -220,12 +413,12 @@ function syncWorkspaceWatcherSetting(settings: SettingsStore): void {
 /** Native confirm for user-invoked Make Folio, showing the drafted manifest before it is written.
  *  Native sheets aren't drivable by Playwright, so under the e2e flag it auto-confirms (env
  *  WRITEFLEX_E2E_FOLIO='cancel' declines) — the same e2e-fence pattern the agent:stub seam uses. */
-async function confirmMakeFolio(state: WindowState, dir: string, draft: string): Promise<boolean> {
+async function confirmMakeFolio(state: WindowState, dir: string, draft: string, warning?: string): Promise<boolean> {
   if (process.env.WRITEFLEX_E2E === '1') return process.env.WRITEFLEX_E2E_FOLIO !== 'cancel'
   const { response } = await dialog.showMessageBox(state.window, {
     type: 'question',
     message: `Make ${dir || 'this folder'} a Folio?`,
-    detail: folioConfirmSummaryFromDraft(draft),
+    detail: folioConfirmSummaryFromDraft(draft, warning),
     buttons: ['Create Folio', 'Cancel'],
     defaultId: 0,
     cancelId: 1,
@@ -233,6 +426,9 @@ async function confirmMakeFolio(state: WindowState, dir: string, draft: string):
   })
   return response === 0
 }
+
+/** What the last look at the request inbox did, per window, for `changes:outside-summary`. Cleared when the window is bound again. */
+const outsideLooks = new WeakMap<WindowState, OutsideLook>()
 
 /**
  * Deliver a queued file-focus to a window at most once. Freshly-created windows can't receive the
@@ -251,6 +447,12 @@ export function flushPendingFocus(state: WindowState): void {
   sendSafe(state, 'workspace:focus-file', line === null ? relPath : { path: relPath, line })
 }
 
+/** The e2e write hooks below (another program writing between a write and its readback) run only in an
+ *  unpackaged build with the e2e flag set, as example-collection.ts gates its own (review S1). */
+function e2eHooksAllowed(): boolean {
+  return e2eWriteHooksAllowed(process.env, app.isPackaged)
+}
+
 /** Registers every IPC handler and returns cleanup hooks the WindowManager calls on window close. */
 export function registerIpc(
   router: OpenPathRouter,
@@ -261,6 +463,8 @@ export function registerIpc(
   // bindWorkspace is a separate export the WindowManager calls; these app-wide services reach it
   // through the module seam rather than a widened signature (registerIpc always runs first at boot).
   const authFilePath = resolve(join(app.getPath('userData'), 'auth.json'))
+  const vaultIndexDir = join(app.getPath('userData'), 'vault-index')
+  vaultIndexService = new VaultIndexService({ cacheDir: vaultIndexDir })
   const rendererErrors = new RendererErrorLog(join(app.getPath('userData'), 'renderer-errors.log'), () => app.getVersion())
   const auth = BridleAuth.file(authFilePath)
   const modelService = createModelService({ auth, appDataDir: app.getPath('userData') })
@@ -433,7 +637,7 @@ export function registerIpc(
   }
   const workspaceState = async (state: WindowState) =>
     state.workspace
-      ? { root: state.workspace.root, files: await state.workspace.listFiles(), folders: await state.workspace.listFolders(), assetBaseUrl: `wf-asset://${state.assetToken}` }
+      ? { root: state.workspace.root, ...(await state.workspace.listFilesAndFolders()), assetBaseUrl: `wf-asset://${state.assetToken}` }
       : { root: null, files: [], folders: [], assetBaseUrl: null }
   const agentState = async (state: WindowState) => {
     // `catalogue` is the shared full registry (for naming a signed-out selection, M7); `models`
@@ -547,8 +751,8 @@ export function registerIpc(
   // ---- Guide and Example collection (start screen marked entries, ADR-0043) ---------------------
   // The start screen asks ONE question and gets its whole model: the marked entries or none, the
   // person's pins as numbered, the recents that are not pins. It compares no paths of its own.
-  ipcMain.handle('start:model', async (): Promise<StartScreenModel> =>
-    router.example ? router.example.startScreen() : startScreenModel(settings, undefined))
+  ipcMain.handle('start:model', async () =>
+    withVaults(await (router.example ? router.example.startScreen() : startScreenModel(settings, undefined)), settings, { cacheDir: vaultIndexDir, home: app.getPath('home') }))
   // ---- The Guide (ticket 07) -------------------------------------------------------------------
   // Progress is one settings key kept by GuideProgressStore; every window's events reach it here, and
   // each change goes out to every window through the ordinary settings:changed push.
@@ -658,9 +862,27 @@ export function registerIpc(
   ipcMain.handle('workspace:pin-reveal', (_event, root: string) => {
     shell.showItemInFolder(pinnedRoot(root))
   })
-  ipcMain.handle('workspace:checklist-progress', async (event) => {
+  // The vault index for this window's root: works, Writing only hidden set, Titles labels (ticket 0.25-02).
+  // Null when the root has no .writeflex/vault.json. No argument: the window's own root only.
+  ipcMain.handle('vault:index', async (event) => {
     const workspace = stateForSender(event.sender.id).workspace
-    return workspace ? workspace.checklistProgress() : []
+    return workspace && vaultIndexService ? vaultIndexService.get(workspace) : null
+  })
+  // What the Make-this-folder-a-vault sheet shows: detection over this window's root with the draft's
+  // hide list and support folders (untrusted; bounded in previewSettingsFrom). Writes nothing (no vault.json, no userData snapshot). Vaults ticket 03.
+  ipcMain.handle('vault:preview', async (event, input: unknown) => {
+    const workspace = stateForSender(event.sender.id).workspace
+    if (!workspace || !vaultIndexService) return null
+    return vaultIndexService.preview(workspace, previewSettingsFrom(input))
+  })
+  ipcMain.handle('workspace:checklist-progress', async (event, input?: unknown) => {
+    const workspace = stateForSender(event.sender.id).workspace
+    if (!workspace) return []
+    // `{ paths }` asks for just those files (a save patched them in the listing); anything else asks for all.
+    const paths = input && typeof input === 'object' && Array.isArray((input as { paths?: unknown }).paths)
+      ? (input as { paths: unknown[] }).paths.filter((path): path is string => typeof path === 'string')
+      : undefined
+    return workspace.checklistProgress(paths)
   })
   ipcMain.handle('workspace:search', async (event, query: string, input?: { scope?: unknown }) => {
     const workspace = requireWorkspace(stateForSender(event.sender.id))
@@ -777,7 +999,8 @@ export function registerIpc(
     if (!allowedRoots.has(requestedRoot) || !existsSync(requestedRoot) || !statSync(requestedRoot).isDirectory()) {
       throw new Error('A Counted Collection can only be changed inside an open or recent Workspace.')
     }
-    const workspace = requestedRoot === current.root ? current : new Workspace(requestedRoot)
+    // The Workspace of the window that has the root open, when one does: its saves take that Collection's one write turn.
+    const workspace = requestedRoot === current.root ? current : allStates().find((candidate) => candidate.workspace?.root === requestedRoot)?.workspace ?? new Workspace(requestedRoot)
     const dir = collectionDir(input)
     const old = await isCountedCollection(workspace, dir)
     if (old === input.counted) return knownCountedCollections()
@@ -967,6 +1190,28 @@ export function registerIpc(
     if (!isExportFormat(value)) throw new Error(`“${String(value)}” is not an export format. Choose HTML or Word.`)
     return value
   }
+  ipcMain.handle('export:title', async (event, input: { scope?: unknown; path?: unknown; dir?: unknown; source?: unknown; sources?: unknown }) => {
+    const workspace = requireWorkspace(stateForSender(event.sender.id))
+    if (input?.scope === 'collection' && typeof input.dir === 'string') {
+      if (input.dir !== '') assertRelativeWorkspacePath(input.dir)
+      const buffers = new Map<string, string>()
+      if (input.sources !== undefined) {
+        if (!Array.isArray(input.sources)) throw new Error('Invalid export title sources.')
+        for (const entry of input.sources) {
+          if (!entry || typeof entry.path !== 'string' || typeof entry.source !== 'string') throw new Error('Invalid export title source.')
+          assertRelativeWorkspacePath(entry.path)
+          buffers.set(entry.path, entry.source)
+        }
+      }
+      return exportCollectionTitle(workspace, input.dir, buffers)
+    }
+    if (input?.scope === 'piece' && typeof input.path === 'string' && (input.source === undefined || typeof input.source === 'string')) {
+      assertRelativeWorkspacePath(input.path)
+      const source = input.source ?? (await workspace.readFile(input.path)).content
+      return exportDocumentTitle(source)
+    }
+    throw new Error('Choose a document or collection for the export title.')
+  })
   ipcMain.handle('export:choose', async (event, input: { scope?: unknown; path?: unknown; dir?: unknown; format?: unknown }) => {
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
@@ -994,16 +1239,24 @@ export function registerIpc(
     if (folder) settings.set(LAST_EXPORT_FOLDER_KEY, folder, 'Last export folder', { log: false })
     return { target, name }
   })
+  // An HTML export asked to keep its Contents depth saves it with the file it exported (export.ts); a
+  // file that was written is announced as any direct write is.
+  const announceTocDepthSave = (state: WindowState, outcome: ExportOutcome): void => {
+    const saved = outcome.tocDepthSave
+    if (saved && !('refused' in saved) && saved.written !== undefined) notifyCollectionChanged(state, [saved.file.path])
+  }
   ipcMain.handle('export:document', async (event, input: unknown) => {
-    const workspace = requireWorkspace(stateForSender(event.sender.id))
-    const outcome = await exportDocument(workspace, exportDocumentRequest(input))
+    const state = stateForSender(event.sender.id)
+    const outcome = await exportDocument(requireWorkspace(state), exportDocumentRequest(input))
     lastExport.set(event.sender.id, outcome.target)
+    announceTocDepthSave(state, outcome)
     return outcome
   })
   ipcMain.handle('export:bundle', async (event, input: unknown) => {
-    const workspace = requireWorkspace(stateForSender(event.sender.id))
-    const outcome = await exportBundle(workspace, exportBundleRequest(input))
+    const state = stateForSender(event.sender.id)
+    const outcome = await exportBundle(requireWorkspace(state), exportBundleRequest(input))
     lastExport.set(event.sender.id, outcome.target)
+    announceTocDepthSave(state, outcome)
     return outcome
   })
   // "Show in Finder" reveals THIS window's last export. The renderer never names the path: an
@@ -1136,11 +1389,18 @@ export function registerIpc(
   // like ScrapStore — the renderer never touches the fs). Every mutation pushes `changes:changed` so
   // the dock re-lists. `add` is here for the writer-edit capture (Task 6); agent ingest (Task 3) writes
   // through the same store in-process, so it also lands as a pending Change the dock can review.
+  // Ticket 08: a reader's record on a link whose service is too old to confirm replies is marked so for
+  // the card (`readerRepliesWait`), as the window reads it; never stored.
   ipcMain.handle('changes:list', async (event, scope?: ChangeScope) =>
-    requireChanges(stateForSender(event.sender.id)).list(scope))
+    (await requireChanges(stateForSender(event.sender.id)).list(scope)).map((change) => {
+      const note = readerNoteOf(change)
+      return note && repliesNeedServiceUpdate(note.shareId) ? { ...change, readerRepliesWait: true } as Change : change
+    }))
   ipcMain.handle('changes:add', async (event, input: NewChange) => {
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
+    // WriteFlex's own author marks its part-title proposals (shared/part-title-proposal.ts); only main files under it.
+    if (input?.author?.name === WRITEFLEX_SELF_AUTHOR.name) throw new Error('That author is reserved for WriteFlex itself.')
     const change = await requireChanges(state).add({
       ...input,
       ...(input.provenance === 'writer' && input.author === undefined
@@ -1158,12 +1418,27 @@ export function registerIpc(
   })
   ipcMain.handle('changes:set-status', async (event, input: { id: string; status: ChangeStatus }) => {
     const state = stateForSender(event.sender.id)
-    const change = await requireChanges(state).setStatus(input.id, input.status)
-    if (input.status === 'accepted' || input.status === 'rejected') {
+    // The status-only door: it never stands in for Accept (ChangeStore.setReviewStatus).
+    const change = await requireChanges(state).setReviewStatus(input.id, input.status)
+    if (change.status === 'accepted' || change.status === 'rejected') {
       state.threads?.clearRestagedOrigin(input.id)
       state.agent?.clearRestagedOrigin(input.id)
     }
     sendSafe(state, 'changes:changed', null)
+    hearBackSoon(state, change)
+    return change
+  })
+  // The writer's reply on a reader's note or proposed edit (0.24 ticket 08): kept on the record as plain
+  // text, then sent to the link the note came through by the window that collects (sharing-reader-replies.ts).
+  // Never a write to a piece; never a decision on the note.
+  ipcMain.handle('changes:reader-reply', async (event, input: { id?: unknown; text?: unknown }) => {
+    const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
+    if (typeof input?.id !== 'string' || input.id === '') throw new Error('Name the comment to reply to.')
+    const author = await humanAuthorForWorkspace(workspace.root)
+    const change = await requireChanges(state).addReaderReply(input.id, readerReplyFor(input.text, author.name, Date.now()))
+    sendSafe(state, 'changes:changed', null)
+    hearBackSoon(state, change)
     return change
   })
   ipcMain.handle('changes:classify', async (event, input: { id: string; editClass: EditClass }) => {
@@ -1174,18 +1449,44 @@ export function registerIpc(
   })
   // Accept/Reject from the docked Changes surface (Task 4): the agent routes it through the live staged
   // suggestion when there is one (same disk-writing pipeline as the callout), else resolves from the ledger.
+  // How full the ledger is with undecided Changes from outside (in all, per source, per request),
+  // and what the last look at the inbox did: the data for the dock's source label and clearing action.
+  ipcMain.handle('changes:outside-summary', async (event): Promise<OutsideSummary> => {
+    const state = stateForSender(event.sender.id)
+    return outsideSummary(await requireChanges(state).list(), { limit: MAX_UNDECIDED_OUTSIDE_CHANGES, limitPerSource: MAX_UNDECIDED_PER_SOURCE }, outsideLooks.get(state) ?? null)
+  })
+  // The writer's one action to clear what came from outside: every undecided Change of one request,
+  // or of one source, rejected in one write of the ledger. Exactly one of the two must be named.
+  ipcMain.handle('changes:reject-outside', async (event, input: { request?: unknown; source?: unknown }) => {
+    const state = stateForSender(event.sender.id)
+    const byRequest = typeof input?.request === 'string' && input.request !== ''
+    const bySource = typeof input?.source === 'string' && (OUTSIDE_SOURCES as readonly string[]).includes(input.source)
+    if (byRequest === bySource) throw new Error('Name one request or one source to reject.')
+    const rejected = await requireChanges(state).rejectOutside(byRequest ? { requestId: input.request as string } : { source: input.source as string })
+    if (rejected.length > 0) sendSafe(state, 'changes:changed', null)
+    return { rejected: rejected.length }
+  })
   ipcMain.handle('changes:resolve', async (event, input: { id: string; action: 'accept' | 'reject' }) => {
     const state = stateForSender(event.sender.id)
-    const result = await (await requireAgent(state)).resolveChange(input.id, input.action)
-    if (!result.applied || input.action !== 'accept') return result
+    // What the accept wrote is the renderer's next baseline, never the file read back after it (Muse M2,
+    // round 2): another program may write between the two, and that version was not seen. It is the
+    // receipt of the accept's own write call (Sol r3 M1, Muse r3 S1), absent when the accept wrote nothing.
+    const { receipt, ...result } = await (await requireAgent(state)).resolveChange(input.id, input.action)
     const change = await requireChanges(state).get(input.id)
+    if (change) hearBackSoon(state, change)
+    if (!result.applied || input.action !== 'accept') return result
     if (!change) return result
+    const withWritten = receipt === undefined ? result : { ...result, written: receipt.written, seq: receipt.seq }
+    // e2e only: another program writes the file between the accept and its readback (Muse r3 M1).
+    // Honoured only in an unpackaged e2e run (as example-collection.ts gates its own e2e hook; review S1).
+    const outside = e2eHooksAllowed() ? process.env.WRITEFLEX_E2E_ACCEPT_OUTSIDE_WRITE : undefined
+    if (outside !== undefined) await writeFile(requireWorkspace(state).absolute(change.path), outside, 'utf8')
     try {
       const file = await requireWorkspace(state).readFile(change.path)
       notifyCollectionChanged(state, [change.path])
-      return { ...result, file }
+      return { ...withWritten, file }
     } catch {
-      return result
+      return withWritten
     }
   })
   ipcMain.handle('changes:save-version', async (event, input: { path: string; changeIds: string[]; name: string; note?: string }) => {
@@ -1235,12 +1536,21 @@ export function registerIpc(
       await humanAuthorForWorkspace(workspace.root),
     )
   })
-  ipcMain.handle('versions:restore', async (event, input: VersionContentRequest & { currentContent?: string }) => {
+  ipcMain.handle('versions:restore', async (event, input: VersionContentRequest & { basis?: unknown }) => {
+    // A restore replaces the open document: like every editor write it says which version it replaces.
+    if (!isSaveBasis(input?.basis)) throw new SaveWithoutBasis(input?.path ?? 'the document')
     const state = stateForSender(event.sender.id)
     const agent = await requireAgent(state)
-    const restored = await restoreVersionContent(requireVersions(state), agent, requireWorkspace(state), input)
-    if (restored?.file.path) notifyCollectionChanged(state, [restored.file.path])
-    return restored
+    try {
+      const restored = await restoreVersionContent(requireVersions(state), agent, requireWorkspace(state), { ...input, basis: input.basis })
+      if (restored?.file.path) notifyCollectionChanged(state, [restored.file.path])
+      return restored
+    } catch (error) {
+      if (error instanceof DiskChangedUnderBuffer) {
+        return { refused: 'disk-changed' as const, path: error.path, diskText: error.diskText, message: error.message }
+      }
+      throw error
+    }
   })
 
   // ---- Sources (Task 21, PRD S30) --------------------------------------------------------------
@@ -1274,8 +1584,39 @@ export function registerIpc(
     if (dir !== '') assertRelativeWorkspacePath(dir)
     return dir
   }
-  ipcMain.handle('collection:list', async (event, input: { dir?: string }) =>
-    listCollection(requireWorkspace(stateForSender(event.sender.id)), collectionDir(input)))
+  ipcMain.handle('menu:collection-active', (event, input: { active: boolean; folio?: boolean }) => {
+    const state = stateForSender(event.sender.id)
+    state.collectionPageActive = input?.active === true
+    state.collectionPageFolio = state.collectionPageActive && input?.folio === true
+    router.refreshMenu?.()
+  })
+  ipcMain.handle('collection:begin-batch', event => {
+    const state = stateForSender(event.sender.id)
+    const finish = () => {
+      collectionMoveDiscovery.delete(state)
+      const paths = collectionBatches.finish(state)
+      if (paths) notifyCollectionChanged(state, paths)
+    }
+    collectionBatches.begin(state, () => {
+      event.sender.removeListener('did-start-loading', finish)
+      event.sender.removeListener('render-process-gone', finish)
+    })
+    collectionMoveDiscovery.set(state, new Map())
+    event.sender.once('did-start-loading', finish)
+    event.sender.once('render-process-gone', finish)
+  })
+  ipcMain.handle('collection:end-batch', event => {
+    const state = stateForSender(event.sender.id)
+    collectionMoveDiscovery.delete(state)
+    const paths = collectionBatches.finish(state)
+    if (paths) notifyCollectionChanged(state, paths)
+  })
+  ipcMain.handle('collection:list', async (event, input: { dir?: string; includeSearchText?: boolean }) => {
+    const workspace = requireWorkspace(stateForSender(event.sender.id))
+    // A vault's works and Writing only hidden set decide which subfolders the Folder dashboard lists.
+    const vault = vaultIndexService ? await vaultIndexService.get(workspace) : null
+    return listCollection(workspace, collectionDir(input), vault, { includeSearchText: input?.includeSearchText === true })
+  })
   ipcMain.handle('collection:status', async (event, input: { dir?: string }) =>
     collectionStatus(requireWorkspace(stateForSender(event.sender.id)), collectionDir(input)))
   ipcMain.handle('collection:pattern', async (event, input: { dir?: string }) =>
@@ -1286,6 +1627,23 @@ export function registerIpc(
   })
   ipcMain.handle('collection:unresolved-folder-pieces', async (event, input: { dir?: string }) =>
     unresolvedFolderPieces(requireWorkspace(stateForSender(event.sender.id)), collectionDir(input)))
+  // User metadata edits use the same local History store without waiting for model boot.
+  const checkpointCollectionFile = async (state: WindowState, path: string) => {
+    const workspace = requireWorkspace(state)
+    if (workspace.classifyPath(path) !== 'document') throw new Error('Choose a document in this workspace.')
+    assertCollectionWritable(workspace.root)
+    const snapshots = gatedSnapshots(workspace.root, await SnapshotStore.open({ dir: join(workspace.root, '.bridle'), root: workspace.root }))
+    await snapshots.snapshotFile(workspace.absolute(path), { sessionId: 'writeflex-user-metadata', capability: 'user.checkpoint', origin: 'host' })
+  }
+  ipcMain.handle('collection:add-tags', async (event, input: { dir?: string; path?: string; tags?: string[] }) => {
+    if (typeof input?.path !== 'string' || !Array.isArray(input.tags)) throw new Error('Invalid tags request.')
+    assertRelativeWorkspacePath(input.path)
+    const state = stateForSender(event.sender.id)
+    await checkpointCollectionFile(state, input.path)
+    const saved = await addCollectionPieceTags(requireWorkspace(state), collectionDir(input), input.path, input.tags)
+    notifyCollectionChanged(state, [saved.file.path])
+    return saved
+  })
   ipcMain.handle('collection:set-status', async (event, input: { dir?: string; path?: string; status?: string }) => {
     if (typeof input?.path !== 'string') throw new Error('Invalid Collection Piece path.')
     assertRelativeWorkspacePath(input.path)
@@ -1293,6 +1651,7 @@ export function registerIpc(
     const workspace = requireWorkspace(state)
     const dir = collectionDir(input)
     const status = normaliseCollectionStatus(input.status)
+    await checkpointCollectionFile(state, input.path)
     const saved = await setCollectionPieceStatus(workspace, dir, input.path, status)
     notifyCollectionChanged(state, [saved.file.path])
     return saved
@@ -1368,6 +1727,7 @@ export function registerIpc(
   })
   ipcMain.handle('collection:create-index', async (event, input: { dir?: string }) => {
     const state = stateForSender(event.sender.id)
+    // Refused in main for a folder inside another Folio or one whose Index Note is there (collection.ts `createIndexNote`).
     const path = await createIndexNote(requireWorkspace(state), collectionDir(input))
     notifyCollectionChanged(state, [path]) // the new Index Note appears in the tree and projections refresh
     return path
@@ -1394,23 +1754,108 @@ export function registerIpc(
   // Which Folio a file belongs to and where it sits in it (line above the text, title-bar button).
   ipcMain.handle('folio:place', async (event, input: { path?: unknown }) =>
     typeof input?.path === 'string' ? folioPlace(requireWorkspace(stateForSender(event.sender.id)), input.path) : null)
+  // The Folio a folder belongs to (same rule and cache as folio:place): the folder the Folio page opens on.
+  ipcMain.handle('folio:dir', async (event, input: { dir?: unknown }) =>
+    typeof input?.dir === 'string' ? folioDirOf(requireWorkspace(stateForSender(event.sender.id)), input.dir) : null)
+  // Part titles (ticket 0.23-09): a part's title is its `#` heading. Parts with no heading get pending changes
+  // in the ledger, never an edit (a title that differs from the heading is fixed by the title-conflict buttons). A Folio is checked once per window
+  // when opened, when it is made and whenever a part is added; a proposal already in the ledger is not made twice.
+  const checkedFolios = new WeakMap<WindowState, Set<string>>()
+  const proposeTitlesFor = async (state: WindowState, dir: string): Promise<void> => {
+    try {
+      const workspace = requireWorkspace(state)
+      const checked = checkedFolios.get(state) ?? new Set<string>()
+      checkedFolios.set(state, checked)
+      checked.add(`${workspace.root}\0${dir}`)
+      const result = await proposePartTitles(workspace, requireChanges(state), dir)
+      if (result.proposed > 0 || result.withdrawn > 0) sendSafe(state, 'changes:changed', null)
+    } catch (error) {
+      recordMainProcessDiagnostic('folio.part-titles.failed', { dir, message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  ipcMain.handle('folio:check-part-titles', async (event, input: { path?: unknown }) => {
+    if (typeof input?.path !== 'string') return null
+    const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
+    const folio = await folioContaining(workspace, input.path)
+    if (!folio) return null
+    if (checkedFolios.get(state)?.has(`${workspace.root}\0${folio.dir}`)) return { proposed: 0 }
+    await proposeTitlesFor(state, folio.dir)
+    return { proposed: 0 }
+  })
   // The Outline's Folio part: the same Folio, with each piece and the folder's other files and their headings.
   ipcMain.handle('folio:outline', async (event, input: { path?: unknown }) =>
     typeof input?.path === 'string' ? folioOutline(requireWorkspace(stateForSender(event.sender.id)), input.path) : null)
+  ipcMain.handle('folio:flush-result', (event, input: { id: string; saved: boolean }) => {
+    const pending = folioFlushRequests.get(input?.id)
+    if (!pending || pending.sender !== event.sender.id) return
+    const state = stateForSender(event.sender.id)
+    pending.done(input.saved === true && state.workspace?.root === pending.root)
+  })
+  ipcMain.handle('folio:create-nested', async (event, input: { dir?: string }) => {
+    const state = stateForSender(event.sender.id)
+    const dir = await createNestedFolio(requireWorkspace(state), collectionDir(input), async (path) => {
+      if (state.agentReady) await (await requireAgent(state)).checkpointFile(path)
+    })
+    notifyCollectionChanged(state, [dir])
+    return dir
+  })
+  ipcMain.handle('folio:turn-back', async (event, input: { dir?: string }) => {
+    const state = stateForSender(event.sender.id)
+    const dir = collectionDir(input)
+    const ws = requireWorkspace(state)
+    if (!await readManifest(ws, dir)) throw new Error('This folder is not a Folio.')
+    const confirmed = process.env.WRITEFLEX_E2E === '1'
+      ? process.env.WRITEFLEX_E2E_FOLIO !== 'cancel'
+      : (await dialog.showMessageBox(state.window, {
+        type: 'question', message: `Turn ${dir || 'this Folio'} back into a collection?`,
+        detail: TURN_BACK_DESCRIPTION,
+        buttons: ['Turn back into a collection', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
+      })).response === 0
+    if (!confirmed) return false
+    const paths = await turnBackIntoCollection(ws, dir, (absolute) => shell.trashItem(absolute))
+    notifyCollectionChanged(state, paths)
+    sendSafe(state, 'file:changed-on-disk', paths)
+    return true
+  })
   ipcMain.handle('folio:create', async (event, input: { dir?: string }): Promise<string | null> => {
     const state = stateForSender(event.sender.id)
     const ws = requireWorkspace(state)
     const dir = collectionDir(input)
     await assertManifestAbsent(ws, dir)
-    const draft = await draftManifest(ws, dir)
-    const confirmed = await confirmMakeFolio(state, dir, draft)
+    let warning: string | undefined
+    const draft = await draftManifest(ws, dir, message => { warning = message })
+    const confirmed = await confirmMakeFolio(state, dir, draft, warning)
     if (!confirmed) return null
     // Re-check after the (blocking) confirm: the writer may have sat on the dialog while the agent
     // declared the same folder a Folio. Never clobber a manifest that appeared in the meantime.
     await assertManifestAbsent(ws, dir)
     const saved = await ws.saveFile(dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME, draft)
-    notifyCollectionChanged(state, [saved.file.path]) // the Folio badge + ordering pick it up
+    // The Folio's agent instructions (ticket 0.23-08). The manifest is the Folio; a failure here leaves
+    // it made, and the Agent instructions row offers to write what is missing.
+    let instructions: string[] = []
+    try {
+      instructions = await writeFolioAgentInstructions(ws, dir, async (path) => {
+        if (state.agentReady) await (await requireAgent(state)).checkpointFile(path)
+      })
+      await recordFolioInstructionOwnership(ws, dir, instructions)
+    } catch (error) {
+      recordMainProcessDiagnostic('folio.agent-instructions.failed', { dir, message: error instanceof Error ? error.message : String(error) })
+    }
+    notifyCollectionChanged(state, [saved.file.path, ...instructions]) // the Folio badge + ordering pick it up
+    if (instructions.length) sendSafe(state, 'file:changed-on-disk', instructions)
+    await proposeTitlesFor(state, dir) // parts without a heading get a pending change (ticket 0.23-09)
     return saved.file.path
+  })
+  registerFolioAgentInstructionsIpc(ipcMain, {
+    stateForSender,
+    requireWorkspace,
+    checkpointFile: async (state, path) => {
+      if (!state.agentReady) return
+      await (await requireAgent(state)).checkpointFile(path)
+    },
+    notifyCollectionChanged,
+    notifyChangedOnDisk: (state, paths) => sendSafe(state, 'file:changed-on-disk', paths),
   })
 
   // ---- Tab groups (direction D) ------------------------------------------------------------
@@ -1426,10 +1871,30 @@ export function registerIpc(
     openFile: (state, filePath, line) => router.openFile(state, filePath, line),
   })
 
+  // Capture to research: the sheet's call into the one verb that spawns `scout capture`; see research-capture-ipc.ts.
+  registerResearchCaptureIpc(ipcMain, {
+    stateForSender,
+    requireWorkspace,
+    filed: (state, path) => notifyCollectionChanged(state, [path]),
+  })
+
   // ---- Plan -------------------------------------------------------------------------------
   // Plan handlers live behind a narrow executable seam so their write ordering, validation,
   // checkpoint and invalidation behaviour can be exercised without booting all Electron IPC.
   registerPlanIpcHandlers(ipcMain, {
+    stateForSender,
+    requireWorkspace,
+    proposePartTitles: proposeTitlesFor,
+    checkpointFile: async (state, path) => {
+      if (!state.agentReady) return
+      await (await requireAgent(state)).checkpointFile(path)
+    },
+    notifyCollectionChanged,
+    notifyChangedOnDisk: (state, paths) => sendSafe(state, 'file:changed-on-disk', paths),
+  })
+  // The Folio outline's Details card (0.26 ticket 4): one write for its seven fields, into the Folio's Index Note,
+  // with the same checkpoint and the same buffer and collection notices as the Plan writes above.
+  registerFolioDetailsIpc(ipcMain, {
     stateForSender,
     requireWorkspace,
     checkpointFile: async (state, path) => {
@@ -1438,6 +1903,7 @@ export function registerIpc(
     },
     notifyCollectionChanged,
     notifyChangedOnDisk: (state, paths) => sendSafe(state, 'file:changed-on-disk', paths),
+    writerName: async (_state, workspace) => (await humanAuthorForWorkspace(workspace.root)).name,
   })
 
   // Widgets (interactive-widgets-in-documents, ticket 02): the HTML of an embed line's file, resolved
@@ -1460,6 +1926,34 @@ export function registerIpc(
     openExternal: (url) => { if (process.env.WRITEFLEX_E2E !== '1') void shell.openExternal(url) },
   })
 
+  // Standard widgets (ticket 04a): create and insert (a document in no Folio gets its own folder, as the writer chose in the sheet), update a
+  // recipe, build, and undo the step. Main reads and writes; the renderer names workspace paths only.
+  // Files kept in sync with an original outside the Workspace (ticket 04c): the app-local grant store, in the app's
+  // data folder, never inside a Workspace. Only the picker's intake writes it; the build reads it.
+  setAppSyncGrantStore(new SyncGrantStore(join(app.getPath('userData'), 'widget-sync-grants.json')))
+  registerStandardWidgetHandlers(ipcMain, {
+    workspaceFor: (event) => requireWorkspace(stateForSender(event.sender.id)),
+    // The native picker (Choose file… in the widget workbench). Called through `dialog` at the moment of the pick.
+    pickDialog: (event) => (options) => dialog.showOpenDialog(stateForSender(event.sender.id).window, options),
+    notifyChanged: (event, paths) => {
+      const state = stateForSender(event.sender.id)
+      invalidateFolioPlaces(requireWorkspace(state).root)
+      notifyCollectionChanged(state, paths)
+      sendSafe(state, 'file:changed-on-disk', paths)
+    },
+    // An undecided Change from outside filed for a moved document follows it, as on a rename (never fails the step).
+    followMoves: async (event, moves) => {
+      const state = stateForSender(event.sender.id)
+      for (const { from, to } of moves) {
+        try {
+          if (await state.changes?.followRename(from, to)) sendSafe(state, 'changes:changed', null)
+        } catch (error) {
+          void recordMainProcessDiagnostic('outside-changes.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
+        }
+      }
+    },
+  })
+
   // Running-order proposals (ticket 09): the Agent pane's proposal card.
   registerPlanProposalIpcHandlers(ipcMain, {
     stateForSender,
@@ -1472,6 +1966,58 @@ export function registerIpc(
   // its piece, a source attached to a piece, and their undo. One desk per agent instance: its restore points live in that agent's
   // snapshot journal, beside the agent's own, so one ⌘⇧Z restores both files the step wrote.
   const boardDesks = new WeakMap<object, BoardMaterialDesk>()
+  // The vault of the window's own root (vaults ticket 01): read, create, pins, whole save, change push.
+  const unsubscribeVault = registerVaultIpcHandlers(ipcMain, {
+    stateForSender,
+    rootOf: (state) => state.workspace?.root ?? null,
+    allStates,
+    send: sendSafe,
+    onWindowReleased,
+  })
+  // The vault switcher (vaults ticket 06): the menu's lists, and replacing this window by one on another root.
+  registerSwitcherIpcHandlers(ipcMain, {
+    stateForSender,
+    rootOf: (state) => state.workspace?.root ?? null,
+    lists: () => {
+      const lists = startScreenLists(settings)
+      return { pinned: lists.pinned, recents: lists.recents.map((recent) => recent.root) }
+    },
+    presence: (roots) => rootPresences(roots, { cacheDir: vaultIndexDir }),
+    home: app.getPath('home'),
+    isKnownRoot: async (root) => (await router.isKnownRoot?.(root)) === true,
+    pickRoot: async (state) => {
+      const result = await dialog.showOpenDialog(state.window, {
+        title: 'Open Folder or Markdown File',
+        properties: ['openFile', 'openDirectory'],
+        filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'mdx'] }],
+      })
+      if (result.canceled || result.filePaths.length === 0) return null
+      const picked = normaliseRoot(result.filePaths[0]!)
+      if (statSync(picked).isDirectory()) return { root: picked, focusFile: null }
+      // A file opens its resolved Workspace root at that file, as windows.ts openFile does.
+      if (!isMarkdownPath(picked)) {
+        await dialog.showMessageBox(state.window, { type: 'info', message: 'Cannot open file', detail: 'WriteFlex opens Markdown files and folders.' })
+        return null
+      }
+      try {
+        const root = resolveWorkspaceRoot(picked)
+        return { root, focusFile: picked.slice(root.length + 1) }
+      } catch (error) {
+        if (!(error instanceof WorkspaceRootError)) throw error
+        await dialog.showMessageBox(state.window, { type: 'info', message: 'Cannot open file', detail: error.message })
+        return null
+      }
+    },
+    switchWindow: async (state, root, focusFile) => {
+      if (!router.switchWindow) throw new Error('Switching folders is not available.')
+      return router.switchWindow(state, root, focusFile)
+    },
+  })
+  // Any change to a root's vault.json (own write or outside) can move the hidden set, so each window on
+  // that root drops its index and gets a fresh `vault:index-changed` once the burst settles.
+  const unsubscribeVaultIndex = onVaultChanged((root) => {
+    for (const state of allStates()) if (state.workspace?.root === root) scheduleVaultIndexRecompute(state, [])
+  })
   registerBoardMaterialIpcHandlers(ipcMain, {
     stateForSender,
     deskFor: async (state) => {
@@ -1496,6 +2042,10 @@ export function registerIpc(
   // file is bare — frontmatter is never auto-inserted). The renderer-supplied path is boundary +
   // symlink validated by Workspace.readFile before any disk access. There is deliberately no write
   // channel here — agent-staged normalisation arrives in T24 through the suggestion pipeline.
+  ipcMain.handle('metadata:values', async (event, exclude: unknown) => {
+    const workspace = requireWorkspace(stateForSender(event.sender.id))
+    return workspaceMetadataValues(workspace, typeof exclude === 'string' && exclude.length < 4096 ? exclude : undefined)
+  })
   ipcMain.handle('frontmatter:read', async (event, path: string) => {
     const { content } = await requireWorkspace(stateForSender(event.sender.id)).readFile(path)
     return parseFrontmatter(content)
@@ -1504,9 +2054,13 @@ export function registerIpc(
   // act through the "Set writing goal…" command, deliberately NOT the staged `frontmatter.set`
   // agent capability (no agent, no review queue; the ADR-0019 pattern: the writer states an intent,
   // a capture path writes the fields). `target: null` clears both keys; the body bytes never change.
-  ipcMain.handle('goal:set', async (event, input: { path?: string; target?: number | null; due?: string | null }) => {
+  ipcMain.handle('goal:set', async (event, input: { path?: string; target?: number | null; due?: string | null; basis?: unknown }) => {
     if (typeof input?.path !== 'string') throw new Error('Invalid document path.')
     assertRelativeWorkspacePath(input.path)
+    // The goal is written into the open document: like every editor write it says which version of the
+    // file it was based on, and main writes only over that version (document-owner plan, parcel 2a).
+    if (!isSaveBasis(input.basis)) throw new SaveWithoutBasis(input.path)
+    const basis = input.basis
     const target = input.target ?? null
     const due = input.due ?? null
     if (target !== null && (!Number.isSafeInteger(target) || target <= 0)) {
@@ -1518,6 +2072,9 @@ export function registerIpc(
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
     const { content } = await workspace.readFile(input.path)
+    if (!basisAllows(basis, content)) {
+      return { refused: 'disk-changed' as const, path: input.path, diskText: content, message: new DiskChangedUnderBuffer(input.path, content).message }
+    }
     const next = target === null
       ? removeFrontmatterKeys(content, ['goal', 'due'], input.path)
       : removeFrontmatterKeys(
@@ -1526,11 +2083,39 @@ export function registerIpc(
           input.path,
         )
     if (next === content) return workspace.readFile(input.path) // no-op: clearing an absent goal
-    const saved = await workspace.saveFile(input.path, next)
+    let saved: Awaited<ReturnType<Workspace['saveFile']>>
+    try {
+      // Compared again in the tick of the rename: a version written meanwhile is not replaced.
+      saved = await workspace.saveFile(input.path, next, { beforeCommit: workspace.commitOnlyOver(input.path, basis) })
+    } catch (error) {
+      if (error instanceof DiskChangedUnderBuffer) {
+        return { refused: 'disk-changed' as const, path: error.path, diskText: error.diskText, message: error.message }
+      }
+      throw error
+    }
     notifyCollectionChanged(state, [saved.file.path])
     return saved
   })
-  ipcMain.handle('file:save', async (event, input: { path: string; content: string }) => {
+  // Contents depth kept with the Folio (its Index Note) or the document: `toc_depth` in its frontmatter.
+  // The Export sheet reads it when it opens; it is saved only by an HTML export (export:document and
+  // export:bundle above). The sheet names a scope (a document, or a Folio's folder), never a file: main
+  // derives the file itself. export-toc-depth.ts owns the rules.
+  ipcMain.handle('export:toc-depth:read', async (event, input: unknown) =>
+    readTocDepthSource(requireWorkspace(stateForSender(event.sender.id)), input))
+  // e2e only (WRITEFLEX_E2E_SAVE_OUTSIDE_WRITE, a JSON object of path → text): the outside text for a
+  // path's next save, taken once. Read when a save asks, never at registration (review S2): a malformed
+  // value fails that save in an e2e run, not the app's start.
+  const e2eSaveOutsideTaken = new Set<string>()
+  const takeE2eSaveOutsideWrite = (path: string): string | undefined => {
+    if (!e2eHooksAllowed() || e2eSaveOutsideTaken.has(path)) return undefined
+    const raw = process.env.WRITEFLEX_E2E_SAVE_OUTSIDE_WRITE
+    if (!raw) return undefined
+    const text = (JSON.parse(raw) as Record<string, string>)[path]
+    if (text === undefined) return undefined
+    e2eSaveOutsideTaken.add(path)
+    return text
+  }
+  ipcMain.handle('file:save', async (event, input: { path: string; content: string; basis?: unknown }) => {
     // Tier 1 (ADR-0013): auto-save writes to disk only — it never snapshots. History (tier 2) is made
     // by explicit checkpoints via snapshot:checkpoint below, and by agent turns.
     const state = stateForSender(event.sender.id)
@@ -1539,10 +2124,25 @@ export function registerIpc(
     try {
       // The editor's text is LF; saveEditorText writes nothing for an unchanged document and restores
       // the file's own line endings and BOM for an edited one (bug 01).
-      const saved = await requireWorkspace(state).saveEditorText(input.path, input.content)
-      notifyCollectionChanged(state, [saved.file.path])
+      // `basis` is the version of the file the buffer was based on; main is the rule that the disk still
+      // holds it when the write commits (shared/save-basis.ts). A save that does not say is refused.
+      if (!isSaveBasis(input.basis)) throw new SaveWithoutBasis(input.path)
+      const saved = await requireWorkspace(state).saveEditorText(input.path, input.content, input.basis)
+      // Saved in place: the renderer patches this one listing entry instead of re-listing the folder.
+      notifyCollectionChanged(state, [saved.file.path], saved.file.path === input.path ? saved.file : undefined)
+      // e2e only: another program writes the file between this save's commit and its readback, once per
+      // path named in WRITEFLEX_E2E_SAVE_OUTSIDE_WRITE (a JSON object of path → text).
+      const outside = takeE2eSaveOutsideWrite(input.path)
+      if (outside !== undefined) {
+        await writeFile(requireWorkspace(state).absolute(input.path), outside, 'utf8')
+        return { ...(await requireWorkspace(state).readFile(input.path)), written: saved.written, seq: saved.seq }
+      }
       return saved
     } catch (error) {
+      if (error instanceof DiskChangedUnderBuffer) {
+        return { refused: 'disk-changed' as const, path: error.path, diskText: error.diskText, message: error.message }
+      }
+      if (error instanceof NameTaken) return { refused: 'name-taken' as const, path: error.path, message: error.message }
       if (!(error instanceof EmptyWriteRefusal)) throw error
       return {
         refused: true as const,
@@ -1562,14 +2162,26 @@ export function registerIpc(
     assertRelativeWorkspacePath(input.path)
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
-    let refusal: EmptyWriteRefusal
-    try {
-      const alreadyEmpty = await workspace.saveFile(input.path, '')
-      notifyCollectionChanged(state, [alreadyEmpty.file.path])
-      return { file: alreadyEmpty, rescueDirectory: null }
-    } catch (error) {
-      if (!(error instanceof EmptyWriteRefusal)) throw error
-      refusal = error
+    let refusal: EmptyWriteRefusal | undefined
+    // A file found with no text is emptied without asking, but only over the text found (saveFile checks it
+    // in the rename tick). Text written there meanwhile refuses that write; the next try finds the text and
+    // takes the guarded path below (rescue, then the confirmation). Final review round 1, finding 2.
+    let changedMeanwhile: DiskChangedUnderBuffer | undefined
+    for (let attempt = 0; attempt < 3 && refusal === undefined; attempt++) {
+      try {
+        const alreadyEmpty = await workspace.saveFile(input.path, '')
+        notifyCollectionChanged(state, [alreadyEmpty.file.path])
+        return { file: alreadyEmpty, rescueDirectory: null }
+      } catch (error) {
+        if (error instanceof DiskChangedUnderBuffer) { changedMeanwhile = error; continue }
+        if (!(error instanceof EmptyWriteRefusal)) throw error
+        refusal = error
+      }
+    }
+    if (refusal === undefined) {
+      // Changed under every try: nothing was cleared, and the renderer re-reads the disk.
+      const error = changedMeanwhile!
+      return { refused: 'disk-changed' as const, path: error.path, diskText: error.diskText, message: error.message }
     }
     const response = process.env.WRITEFLEX_E2E === '1'
       ? (process.env.WRITEFLEX_E2E_CLEAR_DOCUMENT === 'confirm' ? 1 : 0)
@@ -1585,7 +2197,20 @@ export function registerIpc(
           noLink: true,
         })).response
     if (response !== 1) return null
-    const cleared = await workspace.saveFile(input.path, '', { allowExplicitEmpty: true })
+    // The writer confirmed clearing the version that was rescued before the dialog. Another version on
+    // disk now (written while the dialog was up) is not cleared: compared in the tick of the rename.
+    let cleared: Awaited<ReturnType<Workspace['saveFile']>>
+    try {
+      cleared = await workspace.saveFile(input.path, '', {
+        allowExplicitEmpty: true,
+        beforeCommit: workspace.commitOnlyOver(input.path, { kind: 'disk', text: refusal.previousText }),
+      })
+    } catch (error) {
+      if (error instanceof DiskChangedUnderBuffer) {
+        return { refused: 'disk-changed' as const, path: error.path, diskText: error.diskText, message: error.message }
+      }
+      throw error
+    }
     notifyCollectionChanged(state, [cleared.file.path])
     return { file: cleared, rescueDirectory: refusal.rescueDirectory }
   })
@@ -1628,6 +2253,25 @@ export function registerIpc(
       void recordMainProcessDiagnostic('snapshot.checkpoint.settled', { auto: input.auto === true, elapsedMs: Date.now() - startedAt })
     }
   })
+  // Keep one exact version before it is replaced (Merge on the changed-on-disk banner): the receipt names
+  // the History entry whose sha256 equals `text` (preserve-version.ts). With no agent there is no History,
+  // and the request is refused: nothing is kept elsewhere and nothing is written. Unlike
+  // snapshot:checkpoint it never returns quietly without keeping anything.
+  ipcMain.handle('snapshot:preserve', async (event, input: { path: string; text: string }) => {
+    if (typeof input?.path !== 'string' || typeof input.text !== 'string') throw new Error('Invalid preserve request.')
+    assertRelativeWorkspacePath(input.path)
+    const state = stateForSender(event.sender.id)
+    // A spec makes keeping slow, to press keys while the Merge sheet is writing.
+    const e2eDelay = process.env.WRITEFLEX_E2E === '1' ? Number(process.env.WRITEFLEX_E2E_PRESERVE_DELAY_MS ?? 0) : 0
+    if (e2eDelay > 0) await new Promise((resolve) => setTimeout(resolve, e2eDelay))
+    const agentNow = state.agent ?? state.agentReady
+    const result = await preserveVersion({
+      text: input.text,
+      history: agentNow ? async () => (await agentNow).snapshotForPreserve(input.path) : null,
+    })
+    void recordMainProcessDiagnostic('snapshot.preserve.settled', { kept: result.kept, store: result.kept ? result.receipt.store : result.refused })
+    return result
+  })
   // ---- User file management (ADR-0017, the Quiet Menu) ------------------------------------------
   // Sidebar-driven operations keep the TYPED name (sanitiseFileName strips only path separators) —
   // a person gets exactly what they typed or a refusal, never a silent slug transformation. Deletes
@@ -1647,10 +2291,35 @@ export function registerIpc(
     const targetPath = workspace.relative(workspace.renameTarget(path, newPath))
     return planRenameRepair(workspace, path, targetPath)
   }
-  const renameWithRepair = async (state: WindowState, path: string, newPath: string) => {
+  /** Never fails a rename: a Change left on the old path closes with its reason at accept. */
+  const followRenameInLedger = async (state: WindowState, from: string, to: string): Promise<void> => {
+    try {
+      if (await state.changes?.followRename(from, to)) sendSafe(state, 'changes:changed', null)
+    } catch (error) {
+      void recordMainProcessDiagnostic('outside-changes.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  const renameWithRepair = async (state: WindowState, path: string, newPath: string, collection?: string) => {
     const workspace = requireWorkspace(state)
+    let discovered: Promise<ReadonlySet<string>> | undefined
+    const folderPieces = () => {
+      const batch = collectionMoveDiscovery.get(state)
+      discovered ??= batch?.get(collection!) ?? collectionMoveFolderPieces(workspace, collection!)
+      batch?.set(collection!, discovered)
+      return discovered
+    }
+    if (collection !== undefined) await assertCollectionMove(workspace, collection, path, newPath, folderPieces)
     const plan = await plannedRename(workspace, path, newPath)
-    const renamed = await workspace.renameFile(path, newPath)
+    // One turn for the rename and the ledger's follow: an undecided Change from outside filed for this
+    // document follows it to its new name before any decision on it can run.
+    const renamed = await workspace.exclusiveAll(async () => {
+      if (collection !== undefined) await assertCollectionMove(workspace, collection, path, newPath, folderPieces)
+      const moved = await workspace.renameFile(path, newPath, { requireExistingDirectory: collection !== undefined })
+      await followRenameInLedger(state, path, moved.file.path)
+      // Sharing (ticket 04): the share follows in the same turn, before any save signal names either path.
+      notifyDocumentMoved(state, path, moved.file.path)
+      return moved
+    })
     let repair: RenameRepairResult
     try {
       const checkpoint = async (repairPath: string) => {
@@ -1684,10 +2353,10 @@ export function registerIpc(
     const state = stateForSender(event.sender.id)
     return renameWithRepair(state, input.path, input.newPath)
   })
-  ipcMain.handle('file:move', async (event, input: { path: string; newPath: string }) => {
+  ipcMain.handle('file:move', async (event, input: { path: string; newPath: string; collectionDir?: string }) => {
     const state = stateForSender(event.sender.id)
     const workspaceRelativePath = input.newPath.includes('/') ? input.newPath : `./${input.newPath}`
-    return renameWithRepair(state, input.path, workspaceRelativePath)
+    return renameWithRepair(state, input.path, workspaceRelativePath, input.collectionDir)
   })
   ipcMain.handle('file:duplicate', async (event, input: { path: string }) => {
     const state = stateForSender(event.sender.id)
@@ -1698,10 +2367,11 @@ export function registerIpc(
   ipcMain.handle('file:trash', async (event, input: { path: string }) => {
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
-    workspace.recordOwnWrite(input.path) // dedupe: our own trash write must not echo back through the watcher
-    await shell.trashItem(workspace.absolute(input.path)) // containment + symlink guard inside absolute()
+    // One turn of the Collection's write turn, the write gate asked inside it (Workspace.moveToTrash).
+    const trashed = await workspace.moveToTrash(input.path, (absolute) => shell.trashItem(absolute))
+    notifyDocumentsTrashed(state, [input.path])
     notifyCollectionChanged(state, [input.path])
-    return { path: input.path }
+    return trashed
   })
   ipcMain.handle('file:reveal', async (event, input: { path: string }) => {
     const workspace = requireWorkspace(stateForSender(event.sender.id))
@@ -1715,17 +2385,58 @@ export function registerIpc(
   })
   ipcMain.handle('folder:rename', async (event, input: { path: string; newName: string }) => {
     const state = stateForSender(event.sender.id)
-    const renamed = await requireWorkspace(state).renameFolder(input.path, input.newName)
-    notifyCollectionChanged(state, [input.path, renamed.path])
-    return renamed
+    const workspace = requireWorkspace(state)
+    // One turn for the rename, the ledger's follow and the repair of the `./` path links into the folder: read before
+    // it moves and written after (folder-rename-repair.ts, Sol round 4), with no other rename between (Sol round 5).
+    // Each repair write is checkpointed on the agent. The agent is never awaited inside the turn (its start-up began
+    // outside it and may wait on the model service, holding every save), and a rename with nothing to repair never
+    // waits on it at all (Sol round 6). So: when the plan has writes and the agent is still starting, the turn ends
+    // before anything moves, the agent is awaited outside it, and the whole turn runs again with the agent in hand.
+    // A failed start-up refuses each repair write, as before.
+    type Checkpointer = { agent: WorkspaceAgent } | { error: unknown } | null
+    const attempt = (checkpointer: Checkpointer | undefined) => workspace.exclusiveAll(async () => {
+      const from = workspace.relative(workspace.absolute(input.path))
+      const parent = posix.dirname(from)
+      const predicted = parent === '.' ? sanitiseFileName(input.newName) : `${parent}/${sanitiseFileName(input.newName)}`
+      const planned = await planFolderRenameRepair(workspace, from, predicted)
+      let held: Checkpointer = checkpointer ?? null
+      if (checkpointer === undefined && planned.writes.length) {
+        if (state.agent) held = { agent: state.agent }
+        else if (state.agentReady) return null // the agent is starting: await it outside the turn, then again
+      }
+      const checkpoint = async (repairPath: string): Promise<void> => {
+        if (!held) return
+        if ('error' in held) throw held.error
+        await held.agent.checkpointFile(repairPath)
+      }
+      const moved = await workspace.renameFolder(input.path, input.newName)
+      await followRenameInLedger(state, input.path, moved.path)
+      notifyDocumentMoved(state, input.path, moved.path)
+      const repaired = moved.path === predicted
+        ? await applyFolderRenameRepair(planned, workspace, checkpoint)
+        : { writtenPaths: [], unrepairedReferences: [] }
+      return { renamed: moved, repair: repaired }
+    })
+    let outcome = await attempt(undefined)
+    if (!outcome) {
+      let checkpointer: Checkpointer = null
+      if (state.agentReady) {
+        try { checkpointer = { agent: await requireAgent(state) } } catch (error) { checkpointer = { error } }
+      }
+      outcome = (await attempt(checkpointer))!
+    }
+    const { renamed, repair } = outcome
+    notifyCollectionChanged(state, [input.path, renamed.path, ...repair.writtenPaths])
+    if (repair.writtenPaths.length) sendSafe(state, 'file:changed-on-disk', repair.writtenPaths)
+    return { ...renamed, repair }
   })
   ipcMain.handle('folder:trash', async (event, input: { path: string }) => {
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
-    workspace.recordOwnWrite(input.path) // dedupe: our own trash write must not echo back through the watcher
-    await shell.trashItem(workspace.absolute(input.path))
+    const trashed = await workspace.moveToTrash(input.path, (absolute) => shell.trashItem(absolute)) // as file:trash
+    notifyDocumentsTrashed(state, [input.path])
     notifyCollectionChanged(state, [input.path])
-    return { path: input.path }
+    return trashed
   })
 
   // ---- E2E agent double (Task 15) --------------------------------------------------------------
@@ -1880,7 +2591,15 @@ export function registerIpc(
   })
   ipcMain.handle('agent:restore-last-turn', async (event) => {
     const state = stateForSender(event.sender.id)
-    const paths = await (await requireAgent(state)).restoreLastTurn()
+    let paths: string[]
+    try {
+      paths = await (await requireAgent(state)).restoreLastTurn()
+    } catch (error) {
+      // A restore that stopped part-way changed some files: every projection of those is refreshed
+      // before the writer is told, in the error's own words, what was and was not put back.
+      if (error instanceof RestoreNotCompletedError && error.failure.restored.length > 0) notifyCollectionChanged(state, error.failure.restored)
+      throw error
+    }
     notifyCollectionChanged(state, paths)
     return paths
   })
@@ -1927,6 +2646,18 @@ export function registerIpc(
   // The close request reached a page in which no script of the app has run (the preload saw no
   // listener at all: a blank shell). There was never an editor in it, so no text; the window goes at
   // once. A page whose app ran and then broke keeps a listener of its own (renderer unsaved-text.ts).
+  // The page has dropped a close main called off (window:abandon-close, the vault switcher's bound):
+  // its close answers are its own again.
+  ipcMain.handle('window:abandon-close-ack', (event) => {
+    stateForSender(event.sender.id).closing?.abandonAcked()
+  })
+  // The page has loaded and shows `root` (or the start screen, null): the vault switcher shows a new
+  // window only once this matches the root main bound it to (window-switch.ts, `whenReady`).
+  ipcMain.handle('renderer:ready', (event, root: unknown) => {
+    const state = stateForSender(event.sender.id)
+    state.rendererRoot = typeof root === 'string' ? root : null
+    state.onRendererReady?.()
+  })
   ipcMain.handle('window:close-unattended', (event) => {
     stateForSender(event.sender.id).closing?.unattended()
   })
@@ -1941,6 +2672,12 @@ export function registerIpc(
   // the window open one IPC call per tab. They are tracked so will-quit's cleanup bound covers them.
   ipcMain.handle('window:close', (event, input: unknown) => {
     const state = stateForSender(event.sender.id)
+    // Sent before this page heard that its close was called off (window:abandon-close): the answer to
+    // a close that no longer exists. The window stays and owes no checkpoints for it.
+    if (state.closing?.abandoning) {
+      void recordMainProcessDiagnostic('window.close.dropped-abandoned', { windowId: event.sender.id, answer: 'close' })
+      return
+    }
     const paths = parseCloseCheckpointPaths(input, (path) => { assertRelativeWorkspacePath(path); return true })
     if (paths.length > 0 && state.agentReady && state.workspace && !state.closeWork) {
       const root = state.workspace.root
@@ -1963,8 +2700,9 @@ export function registerIpc(
   // The renderer abandoned a guarded close (a save failed, so the window stays open). Clear any ⌘Q
   // intent so a later ordinary close can't inherit it and quit the whole app (Codex review P2).
   ipcMain.handle('window:cancel-close', (event) => {
-    setQuitting(false)
     const state = stateForSender(event.sender.id)
+    if (state.closing?.abandoning) return // the answer to a close already called off
+    setQuitting(false)
     state.closing?.cancelled()
     state.onCloseCancelled?.()
   })
@@ -1990,6 +2728,8 @@ export function registerIpc(
     evictWindow: (webContentsId: number) => { e2eScripts.delete(webContentsId); widgetWatches.disposeWindow(webContentsId) },
     dispose: () => {
       unsubscribeModels()
+      unsubscribeVault()
+      unsubscribeVaultIndex()
       authRegistration.dispose()
       ipcMain.removeHandler('agent:models-picker-opened')
       ipcMain.removeHandler('agent:models-refresh')
@@ -2002,10 +2742,21 @@ export function registerIpc(
  * WindowManager. Takes the SettingsStore whole (Task 17) — model defaults, the live Agent
  * Permissions filter, and snapshot retention all read from it at (or after) this moment.
  */
-export async function bindWorkspace(state: WindowState, root: string, settings: SettingsStore): Promise<void> {
+export async function bindWorkspace(
+  state: WindowState, root: string, settings: SettingsStore,
+  /** Whether this app holds `root`'s owner lock now (collection-ownership.ts `owns`). */
+  ownsRoot: (root: string) => boolean,
+): Promise<void> {
   const previousWorkspace = state.workspace
   state.workspaceWatcher?.dispose()
   state.workspaceWatcher = null
+  // A request the old binding was carrying out is refused and what it wrote put back, before
+  // anything of the new Collection exists in this window.
+  const previousRequests = state.requestInbox
+  state.requestInbox = null
+  state.readerNotes?.dispose()
+  state.readerNotes = null
+  await previousRequests?.dispose()
   if (state.threads) {
     const windowId = state.window.webContents.id
     const startedAt = Date.now()
@@ -2049,16 +2800,103 @@ export async function bindWorkspace(state: WindowState, root: string, settings: 
   invalidateFolioOutlines(root)
   state.workspace = new Workspace(root)
   const workspace = state.workspace
+  // A write that succeeded with a note (a temporary file left as a second name for a document): logged here and
+  // shown in this window's status line, as other notices from the main process are.
+  workspace.onWriteNotice = (message) => {
+    void recordMainProcessDiagnostic('workspace.write.leftover', { root, message })
+    sendSafe(state, 'window:status', message)
+  }
+  // The root left may now be held by no window: its vault watcher stops.
+  if (previousWorkspace && previousWorkspace.root !== root) notifyWindowReleased()
   // A rebind starts from the NEW root's recorded focus (or none); a folder gone since is dropped.
   state.folderFocus = restoreFolderFocus(settings, workspace)
   configureWorkspaceWatcher(state, settings.get('workspace.watchExternalChanges') !== false)
+  for (const listener of workspaceOpenedListeners) {
+    try { listener(state.workspace.root) } catch { /* a listener never breaks opening a Collection */ }
+  }
   // The Scraps store shares the Workspace guard; scraps/ is created on the first cut (ADR-0008).
   state.scraps = new ScrapStore(state.workspace)
   const scraps = state.scraps
+  // Temporary files a killed command-line write left beside documents (older than ten minutes, its own names only).
+  void removeStaleTemporaryFiles(workspace.root).then((removed) => {
+    if (removed.length) void recordMainProcessDiagnostic('command-line.stale-temporary-files-removed', { root: workspace.root, removed })
+  })
   // The Change Ledger store shares the same guard; .writeflex/changes.jsonl on the first captured change.
   state.changes = new ChangeStore(state.workspace)
   const changes = state.changes
   state.versions = new VersionStore(state.workspace)
+  const versions = state.versions
+  /** This binding is still the window's: not bound to another Collection since, and not closed. */
+  const stillBound = (): boolean => state.workspace === workspace && state.bindGeneration === generation
+  // The command line's writes while this Collection is open here: carried out by the app, on request.
+  // The executor is bound to THIS Collection for its life: everything it is given here was made for
+  // this root above, and it is disposed when the window is bound again or closed.
+  // Watched whatever the "watch for outside changes" setting says (specification section 5).
+  outsideLooks.delete(state)
+  // The active thread's agent boots in the background after a bind and waits on model discovery; the
+  // author comes from a child process. A request that saves a version needs both, and waits for them
+  // no longer than the limit; every other request does not wait.
+  const beforeRequest = readyBeforeTurn(async () => ({
+    agent: stillBound() ? state.agent ?? (state.agentReady ? await state.agentReady.catch(() => null) : null) : null,
+    author: await humanAuthorForWorkspace(workspace.root),
+  }), (work) => queueThenTurn(scraps, workspace, work), { needs: (operation) => OPERATIONS_SAVING_A_VERSION.has(operation), limitMs: REQUEST_READINESS_WAIT_MS })
+  state.requestInbox = watchRequestInbox(new RequestExecutor({
+    workspace,
+    // Receipts, undelivered answers and the undo journal: in this app's own folder, outside the Collection.
+    appData: app.getPath('userData'),
+    replyKey: () => readReplyKey(join(app.getPath('userData'), REPLY_KEY_FOLDER), workspace.root),
+    // Real ownership, not "writes are not paused": a request is carried out only under the lock.
+    ownsCollection: () => stillBound() && ownsRoot(workspace.root),
+    // Putting back what a request in flight wrote, when the window closes under it: the lock is kept until then (windows.ts).
+    holdsLock: () => ownsRoot(workspace.root),
+    trash: (absolute) => shell.trashItem(absolute),
+    // Sharing (ticket 04): a requested move or Trash tells the publisher as the app's own does.
+    sharing: {
+      moved: async (moves) => { for (const move of moves) tellDocumentMoved(workspace.root, move.from, move.to); return null },
+      trashed: async (paths) => { tellDocumentsTrashed(workspace.root, paths); return null },
+    },
+    // One request at a time, as the only writer in this app while it runs: the scrap store's queue,
+    // then the Collection's write turn (the one order), and only once what a request may need that
+    // can wait on a model service or the network is in hand (collection-write-order.ts).
+    exclusive: beforeRequest.exclusive,
+    // Shown-first requests become pending Changes in THIS Collection's review ledger (made just above).
+    changes,
+    onLook: (look) => { if (stillBound()) outsideLooks.set(state, look) },
+    onReviewChanged: (pass) => {
+      if (!stillBound()) return
+      sendSafe(state, 'changes:changed', null)
+      if (pass) void recordMainProcessDiagnostic('request-inbox.review', { root: workspace.root, filed: pass.filed, changes: pass.changes, closed: pass.closed, unrecorded: pass.unrecorded, repeats: pass.repeats, left: pass.left, limits: pass.limits, ...(pass.failed ? { failed: pass.failed } : {}) })
+    },
+    // A requested version save, bound to this Collection (requested-version-save.ts): the stores
+    // made for it just above, never "the window's current" ones looked up when the save runs.
+    saveVersion: requestedVersionSave({
+      workspace, versions, changes, live: stillBound,
+      // The active thread's agent; it boots in the background after a bind, so a request that
+      // arrives first waits for it. It is used only if it is of this Collection.
+      // Both were waited for before the request's turn was taken; neither waits inside it. With no
+      // agent in hand (still starting and failed, or none), the save is refused: "no history store open yet".
+      agent: async () => (stillBound() ? beforeRequest.had()?.agent ?? null : null),
+      author: async () => beforeRequest.had()?.author ?? humanAuthorForWorkspace(workspace.root),
+      onSaved: () => { if (stillBound()) sendSafe(state, 'versions:changed', null) },
+    }),
+    onChanged: (paths) => {
+      if (!stillBound()) return
+      notifyCollectionChanged(state, paths)
+      sendSafe(state, 'file:changed-on-disk', paths)
+    },
+  }), { report: (event, details) => { void recordMainProcessDiagnostic(`request-inbox.${event}`, details) } })
+
+  // Readers' notes and proposed edits (0.24 ticket 07): into THIS Collection's ledger, through the
+  // outside-changes door, only while this window holds the Collection's owner lock. Never a write to a piece.
+  state.readerNotes = startReaderNotesCollection({
+    workspace, changes,
+    owns: () => stillBound() && ownsRoot(workspace.root),
+    onCollected: () => { if (stillBound()) { sendSafe(state, 'changes:changed', null); sendSafe(state, 'sharing:changed', null) } },
+    // Ticket 08: the service confirmed outcomes or replies; the cards' "Sent" marks follow.
+    onHeard: () => { if (stillBound()) sendSafe(state, 'changes:changed', null) },
+    report: (event, details) => { void recordMainProcessDiagnostic(event, { root: workspace.root, ...details }) },
+    ...(e2eHooksAllowed() && process.env.WRITEFLEX_E2E_READER_NOTES_MS ? { intervalMs: Math.max(200, Number(process.env.WRITEFLEX_E2E_READER_NOTES_MS) || 1000) } : {}),
+  })
 
   // E2E ONLY — Bridle ADR-0009 upstream parcel: runtime-fed scriptedSessionFactory queue. Bridle's
   // routeFor captures this ARRAY by reference and indexes it lazily, so agent:stub can push a validated
@@ -2118,7 +2956,8 @@ export async function bindWorkspace(state: WindowState, root: string, settings: 
       // sweep runs before every thread boot — it is idempotent and the store is workspace-scoped —
       // and a failed sweep must never block the boot.
       const retention = settings.get('snapshots.retention')
-      if (retention !== 'forever') {
+      // The sweep rewrites the journal inside the Collection, so not while another owner holds it.
+      if (retention !== 'forever' && !collectionWritesPaused(root)) {
         await sweepSnapshots(join(root, '.bridle'), retention === '30' ? 30 : 90).catch(() => {})
       }
       let checkpointCreated: (path: string) => Promise<void>
@@ -2138,10 +2977,8 @@ export async function bindWorkspace(state: WindowState, root: string, settings: 
           scraps,
           onScrapsChanged: () => sendSafe(state, 'scraps:changed', null),
           checkpointFile: (path) => checkpointCreated(path),
-          notifyFilesChangedOnDisk: (paths) => {
-            notifyCollectionChanged(state, paths)
-            sendSafe(state, 'file:changed-on-disk', paths)
-          },
+          // Sharing ticket 04 (R-H): the agent's rename tells the publisher before any save signal.
+          ...agentFileServices(state),
         },
         // The window's ONE ChangeStore: staged prose edits ingest as pending agent Changes, accept/reject
         // moves their status, and each push re-lists the dock (Task 3, ADR-0011).

@@ -52,7 +52,8 @@ export type ImagePolicy = 'keep' | 'omit' | { resolve: (src: string) => string |
  *    null falls back to the fence's own source as code, never to an inline `<svg>`. */
 export type SvgFencePolicy = 'inline' | { resolve: (source: string) => string | null }
 
-export type WidgetHtmlPolicy = 'text' | { resolve: (path: string) => string | null }
+/** `{ withheld }`: every widget line becomes that one fixed sentence, naming no path (a shared copy). */
+export type WidgetHtmlPolicy = 'text' | { withheld: string } | { resolve: (path: string) => string | null }
 
 export type HtmlOptions = {
   /** Main supplies verified local HTML. Clipboard keeps embed text by default. */
@@ -91,6 +92,8 @@ export type HtmlOptions = {
   documentData?: HtmlDocumentData
   /** Standalone document chrome. The contents sidebar defaults on. */
   sidebar?: boolean
+  /** Heading levels the contents lists, 1-6; absent keeps the default four. */
+  tocDepth?: number
   /** Standalone document treatment. Defaults to the light rail. */
   design?: HtmlDocumentDesign
   /** Standalone title, standfirst and selected metadata. Defaults on. */
@@ -103,7 +106,7 @@ export type HtmlOptions = {
   readerNotes?: Omit<ReaderNotesDocument, 'targets'>
   /** Standalone edit-diff runtime configuration; target ids are collected while rendering. */
   readerEdits?: Omit<ReaderEditsDocument, 'targets'>
-  /** `true` wraps each table in `<div class="wf-table-region">`, which the exported HTML FILE's table
+  /** `true` wraps each table in `<div class="wf-table-region table-scroll">`, which the exported HTML FILE's table
    *  styles and script hang on. Only the file export asks for it: a copy keeps the bare table, whose
    *  own markup is the same either way. Default `false`. */
   tableRegions?: boolean
@@ -369,6 +372,7 @@ function block(entry: Block, emitter: Emitter, suppressBlockId = false): string[
     case 'rule': return [`<hr${nextBlockId(emitter)} style="${STYLE.rule}" />`]
     case 'widget': {
       if (emitter.options.widgets === 'text') return [`<p${nextBlockId(emitter)} style="${STYLE.paragraph}">${escapeHtml(entry.source)}</p>`]
+      if ('withheld' in emitter.options.widgets) return [`<p${nextBlockId(emitter)} role="note" style="${STYLE.paragraph}">${escapeHtml(emitter.options.widgets.withheld)}</p>`]
       const page = entry.refusal ? null : emitter.options.widgets.resolve(entry.path)
       return [page === null ? '<p role="note">Interactive widget unavailable: the local HTML file could not be included.</p>' : exportedWidget(page)]
     }
@@ -455,6 +459,7 @@ export function toHtml(markdown: string, options: HtmlOptions = {}): HtmlResult 
       body: html,
       ...(options.documentData ? { documents: [options.documentData] } : {}),
       sidebar: options.sidebar,
+      tocDepth: options.tocDepth,
       design: options.design,
       titleBlock: options.titleBlock,
       summaryTiles: options.summaryTiles,

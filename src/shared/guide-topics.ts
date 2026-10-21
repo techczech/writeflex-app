@@ -42,7 +42,7 @@ const HOW_EXTRA: ReadonlyArray<{ picture: string; tryIt?: TopicTry }> = [
 const FEATURES_EXTRA: ReadonlyArray<{ picture: string; tryIt?: TopicTry }> = [
   { picture: 'send', tryIt: command('export.document', 'Opens Export… for the file you have open.') },
   { picture: 'listen', tryIt: command('readAloud.pauseResume', 'Reads the file you have open aloud.') },
-  { picture: 'focus', tryIt: command('focus.open', 'Opens the focus choices.') },
+  { picture: 'focus', tryIt: command('focus.open', 'Opens Focus and readability.') },
   { picture: 'session', tryIt: command('session.start', 'Starts a timed writing session.') },
   { picture: 'reader', tryIt: command('readingRoom.toggle', 'Opens the Reading Room beside the file you have open.') },
   { picture: 'diagrams', tryIt: objects('Opens 11 Objects.md, with a working table, picture, widget, diagram and more to edit, add and remove.') },

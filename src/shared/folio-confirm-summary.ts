@@ -1,6 +1,6 @@
 /**
  * The text under "Make this folder a Folio?": a short plain list of the pieces, never the raw
- * manifest. Bounded by construction (at most 10 lines of at most 60 characters), so the native
+ * manifest. The piece list is bounded (at most 10 lines of at most 60 characters), so the native
  * dialog always fits on screen and its buttons stay reachable. Pure, so main and the tests share it.
  */
 
@@ -30,7 +30,8 @@ export function folioConfirmSummary(paths: string[]): string {
 
 /** Same, from the drafted manifest text. Anything that is not a manifest with a files list gets the
  *  fixed fallback sentence (no list), not the zero-piece wording. */
-export function folioConfirmSummaryFromDraft(draft: string): string {
+export function folioConfirmSummaryFromDraft(draft: string, warning?: string): string {
+  if (warning) return `${warning}\n\n${folioConfirmSummaryFromDraft(draft)}`
   try {
     const files = (JSON.parse(draft) as { files?: unknown })?.files
     if (!Array.isArray(files)) return FOLIO_CONFIRM_FALLBACK

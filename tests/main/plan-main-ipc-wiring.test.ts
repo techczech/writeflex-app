@@ -24,13 +24,19 @@ const probe = String.raw`
     shell: { openExternal: async () => {}, showItemInFolder: () => {}, trashItem: async () => {} },
   }))
 
-  const [{ registerIpc }, { registerWindow }, { Workspace }] = await Promise.all([
+  const [{ registerIpc, agentFileServices }, { registerWindow }, { Workspace }] = await Promise.all([
     import('./src/main/ipc.ts'),
     import('./src/main/state.ts'),
     import('./src/main/workspace.ts'),
   ])
+  let flushSaved = true
+  const flushed = []
   const state = registerWindow({
-    webContents: { id: 7, send: () => {} },
+    webContents: { id: 7, send: (channel, input) => {
+      if (channel !== 'folio:flush-requested') return
+      flushed.push(input.dir)
+      queueMicrotask(() => handlers.get('folio:flush-result')({ sender: { id: 7 } }, { id: input.id, saved: flushSaved }))
+    } },
     on: () => {},
     isDestroyed: () => false,
   })
@@ -42,6 +48,13 @@ const probe = String.raw`
     { modelDefaults: () => ({}), recents: () => [] },
     {},
   )
+
+  const fileServices = agentFileServices(state)
+  await fileServices.prepareFolioInstructions('report')
+  flushSaved = false
+  let dirtyInstructionsRefused = false
+  try { await fileServices.prepareFolioInstructions('report') } catch (error) { dirtyInstructionsRefused = String(error).includes('Save any open AGENTS.md and CLAUDE.md') }
+  const instructionFlushWired = flushed.join('|') === 'report|report' && dirtyInstructionsRefused
 
   const expectedChannels = [
     'plan:read',
@@ -92,10 +105,10 @@ const probe = String.raw`
     }
   }
   await rm(root, { recursive: true, force: true })
-  console.log(JSON.stringify({ planChannelsPresent, dispatchedWithoutAgent, previewMatchesMaterialised, malformedManifestRefused }))
+  console.log(JSON.stringify({ instructionFlushWired, planChannelsPresent, dispatchedWithoutAgent, previewMatchesMaterialised, malformedManifestRefused }))
 `
 
-async function realMainIpcBehaviour(): Promise<{ planChannelsPresent: boolean; dispatchedWithoutAgent: boolean; previewMatchesMaterialised: boolean; malformedManifestRefused: boolean }> {
+async function realMainIpcBehaviour(): Promise<{ instructionFlushWired: boolean; planChannelsPresent: boolean; dispatchedWithoutAgent: boolean; previewMatchesMaterialised: boolean; malformedManifestRefused: boolean }> {
   const child = Bun.spawn([process.execPath, '-e', probe], {
     cwd: new URL('../..', import.meta.url).pathname,
     stdout: 'pipe',
@@ -112,6 +125,7 @@ async function realMainIpcBehaviour(): Promise<{ planChannelsPresent: boolean; d
 
 test('the real main IPC stubTarget forwards every materialisation field byte-identically', async () => {
   expect(await realMainIpcBehaviour()).toEqual({
+    instructionFlushWired: true,
     planChannelsPresent: true,
     dispatchedWithoutAgent: true,
     previewMatchesMaterialised: true,

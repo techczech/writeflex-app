@@ -13,7 +13,7 @@ import { isDeletionChange, isInsertionChange } from '../components/change-cards'
  * evolves), only this contract and App's one-line binding change — no handler logic.
  */
 export type ReviewLedgerPort = {
-  resolveChange: (id: string, action: 'accept' | 'reject') => Promise<{ applied: boolean; file?: FileReadResult; message?: string }>
+  resolveChange: (id: string, action: 'accept' | 'reject') => Promise<{ applied: boolean; file?: FileReadResult; written?: string; message?: string; changedOnDisk?: { path: string; diskText: string | null } }>
   setChangeStatus: (id: string, status: 'pending' | 'accepted' | 'rejected' | 'held') => Promise<unknown>
 }
 
@@ -35,14 +35,41 @@ export type ReviewActionDeps = {
   refreshInlineChangesAfterReconcile: () => Promise<void>
   flash: (message: string) => void
   handleAgentWorkspaceChange: () => void
-  reconcileAppliedFile: (file: FileReadResult) => void
-  /** Main wrote this open document and the editor took the text as an undoable edit: the returned
-   *  file is the saved baseline and the buffer's standing goes to the unsaved registry. */
-  documentWrittenByMain: (file: FileReadResult) => void
+  reconcileAppliedFile: (file: FileReadResult) => void | Promise<void>
+  /** An accept of a change in `path`, as a route of the document owner (App.tsx, parcel 2a): the buffer is
+   *  written until saved, `resolve` runs holding the document's queue, and the result reaches the buffer
+   *  (the receipt as the baseline when the editor took it as an undoable edit, else a reconcile).
+   *  `not-saved`: the buffer could not be saved first, and nothing was asked of main. */
+  acceptThroughOwner: <A extends { applied: boolean; file?: FileReadResult; written?: string; message?: string }>(path: string, id: string, resolve: () => Promise<A>) =>
+    Promise<{ status: 'acted'; result: A; recorded: boolean } | { status: 'not-saved'; message: string }>
+  /** Run a call to main that resolves a change in `path` in the document's queue, in order with the rest. */
+  inDocumentQueue: <T>(path: string, run: () => Promise<T>) => Promise<T>
   focusComposer: (text?: string) => void
   setChangesOpen: (open: boolean) => void
   selectChange: (id: string) => void
   settleChange: (id: string, advance: boolean) => void
+  /** An Accept main refused because the change could not be placed (ticket 14): the item still waits, and its card
+   *  says "Could not be applied" with this reason (ticket 06). Not called when the buffer could not be saved first. */
+  onAcceptRefused?: (id: string, reason: string) => void
+}
+
+/** A few of a change's words, for naming it in a message. */
+function wordsForMessage(change: Change | undefined): string {
+  const text = (change?.oldText || change?.newText || change?.summary || '').replace(/\s+/g, ' ').trim()
+  return `“${text.length > 40 ? `${text.slice(0, 40)}…` : text}”`
+}
+
+/**
+ * What a batch Accept says (ticket 06, from 14): only the changes that were applied are counted, and the ones that
+ * could not be applied are named (at most three, then how many more). Never "Accepted N" over refusals.
+ */
+export function acceptedSummary(accepted: number, refused: readonly string[]): string {
+  const counted = accepted === 1 ? 'Accepted 1 change' : `Accepted ${accepted} changes`
+  if (refused.length === 0) return counted
+  const named = refused.slice(0, 3).join(', ')
+  const rest = refused.length > 3 ? ` and ${refused.length - 3} more` : ''
+  const failed = `${refused.length} could not be applied: ${named}${rest}`
+  return accepted === 0 ? `Nothing was accepted. ${failed}.` : `${counted}. ${failed}.`
 }
 
 export type ReviewActions = {
@@ -53,23 +80,25 @@ export type ReviewActions = {
   acceptAllPending: () => void
   acceptInsertions: () => void
   acceptDeletions: () => void
-  acceptMany: (ids: string[]) => void
-  rejectMany: (ids: string[]) => void
+  /** Resolves when every id is resolved (one at a time, in document order), the list reloaded and the toast shown. */
+  acceptMany: (ids: string[]) => Promise<void>
+  rejectMany: (ids: string[]) => Promise<void>
   discardRun: () => void
   sendRunBack: (note: string) => void
   reviseChange: (id?: string) => void
-  /** Reopen a mistakenly rejected change to pending (the mis-click must not be a one-way door). */
-  reopenChange: (id: string) => void
+  /** Reopen a mistakenly rejected change to pending (the mis-click must not be a one-way door). `message`
+   *  replaces the "Suggestion reopened" notice (a caller that reopens because something else failed says why). */
+  reopenChange: (id: string, message?: string) => Promise<void>
   onInlineAction: (id: string, act: InlineAction) => void
 }
 
 /** Keep the last inline projection on the post-reconcile document, regardless of IPC push order. */
 export async function reconcileResolvedFile(
   file: FileReadResult,
-  reconcileAppliedFile: (file: FileReadResult) => void,
+  reconcileAppliedFile: (file: FileReadResult) => void | Promise<void>,
   refreshInlineChangesAfterReconcile: () => Promise<void>,
 ): Promise<void> {
-  reconcileAppliedFile(file)
+  await reconcileAppliedFile(file)
   await refreshInlineChangesAfterReconcile()
 }
 
@@ -95,11 +124,13 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
     flash,
     handleAgentWorkspaceChange,
     reconcileAppliedFile,
-    documentWrittenByMain,
+    acceptThroughOwner,
+    inDocumentQueue,
     focusComposer,
     setChangesOpen,
     selectChange,
     settleChange,
+    onAcceptRefused,
   } = deps
 
   const suggestionForChange = useCallback(
@@ -144,24 +175,39 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
         if (resolved) settleChange(id, advance)
         return resolved
       }
-      const res = await ledger.resolveChange(id, 'accept')
+      // As acceptSuggestion: the buffer and the baseline take what main wrote, not the readback (Muse M2,
+      // round 2). Without this the baseline stays at the pre-accept text, and undoing the accept reads
+      // as "equals the disk" while the disk holds the accepted text. With no Change on record here there
+      // is no document to hold: main is asked directly.
+      let res: Awaited<ReturnType<ReviewLedgerPort['resolveChange']>>
+      let recorded = false
+      if (change) {
+        const accepted = await acceptThroughOwner(change.path, id, () => ledger.resolveChange(id, 'accept'))
+        if (accepted.status !== 'acted') {
+          flash(accepted.message)
+          return false
+        }
+        res = accepted.result
+        recorded = accepted.recorded
+      } else {
+        res = await ledger.resolveChange(id, 'accept')
+      }
       if (!res.applied) {
-        flash(res.message ?? 'This suggestion is no longer live — ask the agent to redo the edit.')
+        const reason = res.message ?? 'This suggestion is no longer live — ask the agent to redo the edit.'
+        flash(reason)
+        onAcceptRefused?.(id, reason)
         return false
       }
       handleAgentWorkspaceChange()
-      const recorded = change ? editorRef.current?.recordSuggestionResolution(change.path, id, 'accept', res.file?.content) === true : false
-      // As acceptSuggestion: without this the baseline stays at the pre-accept text, and undoing the
-      // accept reads as "equals the disk" while the disk holds the accepted text.
-      if (recorded && res.file) documentWrittenByMain(res.file)
       if (recorded) await refreshInlineChangesAfterReconcile()
-      else if (res.file) await reconcileResolvedFile(res.file, reconcileAppliedFile, refreshInlineChangesAfterReconcile)
+      else if (res.file && !change) await reconcileResolvedFile(res.file, reconcileAppliedFile, refreshInlineChangesAfterReconcile)
+      else if (res.file) await refreshInlineChangesAfterReconcile() // reconciled in the owner's route
       else await reloadChanges()
       if (res.message) flash(res.message)
       settleChange(id, advance)
       return true
     },
-    [suggestionForChange, changes, acceptSuggestion, isWriterChange, resolveWriterEditById, ledger, editorRef, handleAgentWorkspaceChange, reconcileAppliedFile, documentWrittenByMain, refreshInlineChangesAfterReconcile, reloadChanges, flash, settleChange],
+    [suggestionForChange, changes, acceptSuggestion, isWriterChange, resolveWriterEditById, ledger, handleAgentWorkspaceChange, reconcileAppliedFile, acceptThroughOwner, refreshInlineChangesAfterReconcile, reloadChanges, flash, settleChange, onAcceptRefused],
   )
   const acceptAndNext = useCallback((id: string) => acceptChange(id, true), [acceptChange])
   const rejectChange = useCallback(
@@ -178,7 +224,7 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
         if (resolved) settleChange(id, false)
         return resolved
       }
-      const res = await ledger.resolveChange(id, 'reject')
+      const res = change ? await inDocumentQueue(change.path, () => ledger.resolveChange(id, 'reject')) : await ledger.resolveChange(id, 'reject')
       if (!res.applied) {
         flash(res.message ?? 'This suggestion is no longer live — ask the agent to redo the edit.')
         return false
@@ -191,7 +237,7 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
       settleChange(id, false)
       return true
     },
-    [suggestionForChange, changes, rejectSuggestion, isWriterChange, resolveWriterEditById, ledger, editorRef, reconcileAppliedFile, refreshInlineChangesAfterReconcile, reloadChanges, flash, settleChange],
+    [suggestionForChange, changes, rejectSuggestion, isWriterChange, resolveWriterEditById, ledger, editorRef, inDocumentQueue, reconcileAppliedFile, refreshInlineChangesAfterReconcile, reloadChanges, flash, settleChange],
   )
   const holdChange = useCallback(
     async (id: string): Promise<boolean> => {
@@ -215,9 +261,14 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
         .filter((c) => c.status === 'pending' && c.editClass !== 'move' && pred(c))
         .map((c) => c.id)
       if (ids.length === 0) return
-      for (const id of ids) await acceptChange(id)
+      let accepted = 0
+      const refused: string[] = []
+      for (const id of ids) {
+        if (await acceptChange(id)) accepted += 1
+        else refused.push(wordsForMessage(dockChanges.find((c) => c.id === id)))
+      }
       await reloadChanges()
-      flash(ids.length === 1 ? 'Accepted 1 change' : `Accepted ${ids.length} changes`)
+      flash(acceptedSummary(accepted, refused))
     },
     [dockChanges, acceptChange, reloadChanges, flash],
   )
@@ -232,17 +283,21 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
       if (ids.length === 0) return
       const order = new Map(dockChanges.map((c, i) => [c.id, i]))
       const sorted = [...ids].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
+      let done = 0
+      const refused: string[] = []
       for (const id of sorted) {
-        if (action === 'accept') await acceptChange(id)
-        else await rejectChange(id)
+        const ok = action === 'accept' ? await acceptChange(id) : await rejectChange(id)
+        if (ok) done += 1
+        else refused.push(wordsForMessage(dockChanges.find((c) => c.id === id)))
       }
       await reloadChanges()
-      flash(`${action === 'accept' ? 'Accepted' : 'Rejected'} ${sorted.length} change${sorted.length === 1 ? '' : 's'}`)
+      // Only what was settled is counted; an Accept that could not be applied is named, never counted.
+      flash(action === 'accept' ? acceptedSummary(done, refused) : `Rejected ${done} change${done === 1 ? '' : 's'}${refused.length > 0 ? `. ${refused.length} could not be declined.` : ''}`)
     },
     [dockChanges, acceptChange, rejectChange, reloadChanges, flash],
   )
-  const acceptMany = useCallback((ids: string[]) => void resolveMany(ids, 'accept'), [resolveMany])
-  const rejectMany = useCallback((ids: string[]) => void resolveMany(ids, 'reject'), [resolveMany])
+  const acceptMany = useCallback((ids: string[]) => resolveMany(ids, 'accept'), [resolveMany])
+  const rejectMany = useCallback((ids: string[]) => resolveMany(ids, 'reject'), [resolveMany])
 
   const discardRun = useCallback(() => {
     void (async () => {
@@ -260,7 +315,7 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
       const trimmed = note.trim()
       if (!trimmed) return
       focusComposer(`Revise this review run before I save a version:\n\n${trimmed}`)
-      flash('Notes returned to the agent composer')
+      flash('Comments returned to the agent composer')
     },
     [focusComposer, flash],
   )
@@ -288,12 +343,10 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
   // A mistaken rejection reopens to pending: the proposal returns as a provisional card (and inline,
   // when its text still anchors). The live suggestion is gone by then; accept replays the stored edit.
   const reopenChange = useCallback(
-    (id: string) => {
-      void (async () => {
-        await ledger.setChangeStatus(id, 'pending')
-        await reloadChanges()
-        flash('Suggestion reopened')
-      })()
+    async (id: string, message?: string): Promise<void> => {
+      await ledger.setChangeStatus(id, 'pending')
+      await reloadChanges()
+      flash(message ?? 'Suggestion reopened')
     },
     [ledger, reloadChanges, flash],
   )

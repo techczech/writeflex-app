@@ -1,0 +1,7 @@
+course_id,title,audience,duration_hours,description,provider
+001,"Prompting basics",Staff,2,"Write clear instructions, then check every output.",Training Unit
+002,"Data, privacy and you",All,1.5,"Covers ""personal data"" and consent.",Information Office
+010,Evaluating sources,Students,3,"Line one of the description.
+Line two, after a quoted newline.",Library
+011,Café conversations — Zürich,Researchers,,Unicode title; duration left empty on purpose.,
+120,Spreadsheet confidence,Staff,0,"Zero hours: <script>alert(1)</script> is data, not code.",Training Unit

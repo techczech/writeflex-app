@@ -12,7 +12,7 @@ This folder is the Example collection. It is a folder of its own, pinned on the 
 - [[04 Listen]]: read aloud
 - [[05 Review and versions]]: versions and compare, review changes, review sessions
 - [[06 Find and manage files]]: files and quick open, tabs, search, links and wikilinks
-- [[07 Collect and plan]]: Reading Room; collections, Board and Plan; capture ideas; sources
+- [[07 Collect and plan]]: Reading Room; collections, Board and Folio outline; capture ideas; sources
 - [[08 Work with the agent]]: Scratchpad, conversations, skills
 - [[09 Share and export]]: copy as, export and presets
 - [[10 Set up WriteFlex]]: view and text size, action bar, themes and sounds, settings and shortcuts

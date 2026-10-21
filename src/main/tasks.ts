@@ -42,7 +42,8 @@ export type TaskToggleResult = { saved: FileReadResult; line: number; checked: b
 export async function toggleTaskInFile(workspace: Workspace, path: string, line: number, expected?: boolean): Promise<TaskToggleResult> {
   const source = await workspace.readFile(path)
   const next = toggleTaskLine(source.content, line, expected)
-  const saved = await workspace.saveFile(path, next.text)
+  // Only over the text read above (final review round 1, finding 1): a box ticked in another version is not.
+  const saved = await workspace.saveFileOverRead(path, next.text, source.content)
   return { saved, line, checked: next.checked, text: next.item.text }
 }
 

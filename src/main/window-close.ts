@@ -83,6 +83,14 @@ export type CloseController = {
   /** The top frame committed a new document (reload, navigation): the app has not started in it, and
    *  a close in flight is over. True if one was. */
   reset(): boolean
+  /** Call the close in flight off (the vault switcher's bound ran out, window-switch.ts): it ends here,
+   *  and every close answer the renderer sends until it has acknowledged (`abandonAcked`) is an answer to
+   *  the abandoned close and is dropped (`abandoning`). The caller tells the renderer. */
+  abandon(): void
+  /** The renderer has dropped the abandoned close: its answers from here on are its own again. */
+  abandonAcked(): void
+  /** True between `abandon` and `abandonAcked` (or a new page, or the renderer going). */
+  readonly abandoning: boolean
   readonly inFlight: boolean
 }
 
@@ -113,6 +121,8 @@ export function createCloseController(ports: CloseControllerPorts): CloseControl
   /** The app has started in the window's current page. Cleared only by `reset` (a new document). */
   let appEverStarted = false
   let asking: AbortController | null = null
+  /** An abandoned close the renderer has not yet acknowledged dropping. */
+  let abandoning = false
   let askingKind: CloseStallKind | null = null
 
   const clearAckTimer = (): void => {
@@ -154,6 +164,7 @@ export function createCloseController(ports: CloseControllerPorts): CloseControl
 
   return {
     get inFlight() { return inFlight },
+    get abandoning() { return abandoning },
     onNativeClose() {
       if (!ports.shouldGuard()) return 'pass'
       if (ports.rendererGone()) {
@@ -192,6 +203,8 @@ export function createCloseController(ports: CloseControllerPorts): CloseControl
       ports.record('window.close.acked')
     },
     proceed() {
+      // The answer to a close that was called off: the window stays.
+      if (abandoning) { ports.record('window.close.dropped-abandoned', { answer: 'proceed' }); return }
       end()
       ports.record('window.close.proceed')
       ports.closeNow()
@@ -204,7 +217,7 @@ export function createCloseController(ports: CloseControllerPorts): CloseControl
       if (inFlight) force('no-handler')
     },
     unsaved() {
-      if (!inFlight) return
+      if (!inFlight || abandoning) return
       if (asking && askingKind === 'could-not-save') return // already asked; one question
       clearAckTimer()
       withdrawQuestion() // a "not answered" question is out of date: it has answered, with this
@@ -218,6 +231,7 @@ export function createCloseController(ports: CloseControllerPorts): CloseControl
       })
     },
     rendererGone() {
+      abandoning = false
       if (inFlight) force('renderer-gone')
     },
     appStarted() {
@@ -226,9 +240,19 @@ export function createCloseController(ports: CloseControllerPorts): CloseControl
     reset() {
       const was = inFlight
       appEverStarted = false
+      abandoning = false
       end()
       if (was) ports.record('window.close.cancelled', { reason: 'page-replaced' })
       return was
+    },
+    abandon() {
+      const was = inFlight
+      end()
+      abandoning = true
+      ports.record('window.close.abandoned', { inFlight: was })
+    },
+    abandonAcked() {
+      abandoning = false
     },
   }
 }

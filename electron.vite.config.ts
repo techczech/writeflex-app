@@ -11,7 +11,15 @@ const bridleReact = resolve(bridleReactPackage, 'src/components.ts')
 const bridleDir = resolve(bridleReactPackage, '..')
 
 export default defineConfig({
-  main: { plugins: [externalizeDepsPlugin()], build: { outDir: 'out/main' } },
+  main: {
+    plugins: [externalizeDepsPlugin()],
+    // writeflex-cli.js is the command line the installed `writeflex` shim runs in Node mode
+    // (ELECTRON_RUN_AS_NODE=1), as TodoScout's refresh-cli does. It must import nothing from Electron.
+    build: {
+      outDir: 'out/main',
+      rollupOptions: { input: { index: resolve(__dirname, 'src/main/index.ts'), 'writeflex-cli': resolve(__dirname, 'src/main/writeflex-cli.ts') } }
+    }
+  },
   preload: { plugins: [externalizeDepsPlugin()], build: { outDir: 'out/preload' } },
   renderer: {
     plugins: [react()],

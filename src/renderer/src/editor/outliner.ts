@@ -1,7 +1,7 @@
 import type { StateCommand } from '@codemirror/state'
 import { moveLineDown, moveLineUp, insertTab } from '@codemirror/commands'
 import type { KeyBinding } from '@codemirror/view'
-export { indentListItem, outdentListItem } from '@bridle/outline'
+export { indentListItem, outdentListItem } from '@app-patterns/outline'
 
 export function selectedLines(state: Parameters<StateCommand>[0]['state']): number[] {
   const lines = new Set<number>()

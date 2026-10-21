@@ -212,23 +212,26 @@ test('saveEditorText writes nothing when the editor text is the file (CRLF, BOM,
   const old = new Date('2026-01-01T12:00:00Z')
   for (const name of ['crlf.md', 'bom.md', 'mixed.md']) await utimes(join(root, name), old, old)
 
-  const unchanged = await ws.saveEditorText('crlf.md', '# Windows\n\nalpha\n')
+  // Each save carries the baseline as it is on disk (EditorBaselines.diskText), as the app sends it: main
+  // compares bytes (review round 1, Sol M3).
+  const seen = (text: string) => ({ kind: 'disk' as const, text })
+  const unchanged = await ws.saveEditorText('crlf.md', '# Windows\n\nalpha\n', seen(crlf))
   expect(unchanged.content).toBe(crlf)
   expect(unchanged.file.modifiedAt).toBe(old.getTime()) // no write happened at all
-  await ws.saveEditorText('bom.md', '\uFEFF# BOM\n\nbeta\n')
-  await ws.saveEditorText('mixed.md', '# Mixed\nalpha\nbeta\n')
+  await ws.saveEditorText('bom.md', '\uFEFF# BOM\n\nbeta\n', seen(bom))
+  await ws.saveEditorText('mixed.md', '# Mixed\nalpha\nbeta\n', seen(mixed))
   expect(await readFileOnDisk(join(root, 'bom.md'), 'utf8')).toBe(bom)
   expect(await readFileOnDisk(join(root, 'mixed.md'), 'utf8')).toBe(mixed)
   expect((await ws.readFile('mixed.md')).file.modifiedAt).toBe(old.getTime())
 
-  expect((await ws.saveEditorText('crlf.md', '# Windows\n\nalpha EDIT\n')).content).toBe('# Windows\r\n\r\nalpha EDIT\r\n')
-  expect((await ws.saveEditorText('bom.md', '# BOM\n\nbeta EDIT\n')).content).toBe('\uFEFF# BOM\r\n\r\nbeta EDIT\r\n')
-  expect((await ws.saveEditorText('mixed.md', '# Mixed\nalpha EDIT\nbeta\n')).content).toBe('# Mixed\r\nalpha EDIT\r\nbeta\r\n')
-  expect((await ws.saveEditorText('fresh.md', 'new\n')).content).toBe('new\n')
+  expect((await ws.saveEditorText('crlf.md', '# Windows\n\nalpha EDIT\n', seen(crlf))).content).toBe('# Windows\r\n\r\nalpha EDIT\r\n')
+  expect((await ws.saveEditorText('bom.md', '# BOM\n\nbeta EDIT\n', seen(bom))).content).toBe('\uFEFF# BOM\r\n\r\nbeta EDIT\r\n')
+  expect((await ws.saveEditorText('mixed.md', '# Mixed\nalpha EDIT\nbeta\n', seen(mixed))).content).toBe('# Mixed\r\nalpha EDIT\r\nbeta\r\n')
+  expect((await ws.saveEditorText('fresh.md', 'new\n', { kind: 'new' })).content).toBe('new\n')
 })
 
 test('saveEditorText keeps the empty-write guard', async () => {
-  await expect(ws.saveEditorText('alpha.md', '')).rejects.toThrow()
+  await expect(ws.saveEditorText('alpha.md', '', { kind: 'disk', text: '# Alpha\n\nRiver stories flow.\n' })).rejects.toThrow(/empty save/)
   expect(await readFileOnDisk(join(root, 'alpha.md'), 'utf8')).toBe('# Alpha\n\nRiver stories flow.\n')
 })
 

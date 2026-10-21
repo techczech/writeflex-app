@@ -4,9 +4,11 @@ import './styles/fonts.css'
 import './styles/tokens.css'
 import './styles/app.css'
 import './styles/archive-dock.css'
+import './styles/sharing.css'
 import App from './app/App'
 import { RendererErrorBoundary, RendererErrorSurface, reportRendererError } from './app/RendererErrorBoundary'
 import { installWidgetE2EMount } from './widgets/widget-e2e-mount'
+import { isBenignWindowError } from './benign-window-error'
 import { installUnsavedText, saveUnsavedText, type UnsavedTextApi } from './app/unsaved-text'
 
 // Even a damaged renderer template gets the recovery surface instead of an unhandled pre-React throw.
@@ -26,7 +28,7 @@ const showFatal = (error: unknown): void => {
 // Test-only: writes made from that record can be made to fail, to stand for a disk that will not take them.
 let recoveryWritesFail = false
 const unsavedTextApi: UnsavedTextApi = {
-  saveFile: (path, content) => (recoveryWritesFail ? Promise.reject(new Error('Simulated recovery write failure')) : window.writeflex.saveFile(path, content)),
+  saveFile: (path, content, basis) => (recoveryWritesFail ? Promise.reject(new Error('Simulated recovery write failure')) : window.writeflex.saveFile(path, content, basis)),
   onCloseRequested: (fn) => window.writeflex.onCloseRequested(fn),
   acknowledgeClose: () => window.writeflex.acknowledgeClose(),
   closeWindow: (options) => window.writeflex.closeWindow(options),
@@ -34,13 +36,17 @@ const unsavedTextApi: UnsavedTextApi = {
 }
 installUnsavedText(unsavedTextApi)
 
-window.addEventListener('error', (event) => showFatal(event.error ?? new Error(event.message)))
+window.addEventListener('error', (event) => {
+  if (isBenignWindowError(event.message)) { console.warn(event.message); return }
+  showFatal(event.error ?? new Error(event.message))
+})
 window.addEventListener('unhandledrejection', (event) => showFatal(event.reason))
 
 if (window.writeflex.e2eEnabled) {
   window.__writeflexE2E = {
     throwRendererError: () => queueMicrotask(() => { throw new Error('Forced renderer failure for e2e') }),
-    setRecoveryWrites: (behaviour) => { recoveryWritesFail = behaviour === 'fail' },
+    // A write hook: only in an unpackaged e2e run (shared/e2e-write-hooks.ts).
+    ...(window.writeflex.e2eWriteHooks ? { setRecoveryWrites: (behaviour: 'normal' | 'fail') => { recoveryWritesFail = behaviour === 'fail' } } : {}),
   }
   installWidgetE2EMount(window.__writeflexE2E)
 }

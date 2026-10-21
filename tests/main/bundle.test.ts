@@ -166,7 +166,7 @@ test('a Collection masthead uses the bundle title and summary tiles aggregate ro
   const html = await readFile(outcome.target, 'utf8')
 
   expect(html).toContain('<header class="hero wf-masthead">')
-  expect(html).toContain('<h1>reports</h1>')
+  expect(html).toContain('<h1>Untitled collection</h1>')
   expect(html).toContain('<div class="summary-card"><b>9</b><span>words</span></div>')
   expect(html).toContain('<div class="summary-card"><b>in progress</b><span>collection status</span></div>')
   expect(html).not.toContain(secretCanary)
@@ -294,7 +294,7 @@ test('an empty Collection is refused with a way forward, not an empty file', asy
     .rejects.toThrow(/no pieces/)
 })
 
-test('the bundle is named after the Collection', async () => {
+test('an undeclared collection title never exposes the folder name', async () => {
   await essays()
-  expect(await suggestedName(ws, { scope: 'collection', dir: 'essays', format: 'html' })).toBe('essays.html')
+  expect(await suggestedName(ws, { scope: 'collection', dir: 'essays', format: 'html' })).toBe('Untitled collection.html')
 })

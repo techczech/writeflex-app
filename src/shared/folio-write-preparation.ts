@@ -4,8 +4,13 @@
  * without an editor.
  *
  * The rule: every open buffer that belongs to the Folio's folder (its Index Note, its pieces) first has
- * no save in flight, then is saved if it has unsaved edits. If a save fails, or a buffer is still
- * unsaved afterwards, main is not called and the message names the file. The request then runs through
+ * no save in flight, then is saved if it is not saved. If a save fails, or a buffer is still unsaved
+ * afterwards, main is not called and the message names the file (or is the notice's sentence, when the
+ * file changed on disk and the writer has not answered).
+ *
+ * "Saved" is the document owner's own predicate, never the dirty dot: a buffer undone back to its baseline
+ * under an unanswered changed-on-disk notice has no dot, and is not saved (2b round 3 ruling, root rule:
+ * the owner's savedness decides whether a write may go ahead). The request then runs through
  * the same per-file queue the saves use, for all of those buffers, so a save queued later for any of
  * them waits for the running-order write instead of interleaving with it.
  *
@@ -21,9 +26,14 @@
  */
 
 export type FolioWriteBuffers = {
-  /** The paths of the open buffers, and of any path that holds unsaved text. */
+  /** Every document the app has a record of (open, in flight, or holding unsaved text); the Folio's folder
+   *  is taken from these here. Not tabs and dots alone (2b round 3 root rule). */
   open: () => readonly string[]
-  isDirty: (path: string) => boolean
+  /** The document owner's savedness (DocumentOwner.isSaved): false under an unanswered notice even with
+   *  no dot. Not the dirty dot (2b round 3 root rule). */
+  isSaved: (path: string) => boolean
+  /** The sentence for a file under an unanswered changed-on-disk notice; undefined when none stands. */
+  refusedUnderNotice?: (path: string) => string | undefined
   /** Settles once no save of this path is in flight or queued. */
   settled: (path: string) => Promise<unknown>
   /** Save one buffer through the queue. False = it could not be saved. */
@@ -50,6 +60,11 @@ export function saveFirstMessage(path: string, nameOf?: (path: string) => string
   return `Save "${name}" first.`
 }
 
+/** Why the change cannot go ahead because of this file: the notice's sentence, else "Save … first." */
+function refusalFor(path: string, buffers: FolioWriteBuffers): string {
+  return buffers.refusedUnderNotice?.(path) ?? saveFirstMessage(path, buffers.nameOf)
+}
+
 export type FolioWritePrepared = { ok: true; paths: string[] } | { ok: false; message: string }
 
 /** Wait for saves in flight, then save every unsaved buffer of the Folio. Nothing else is touched. */
@@ -57,13 +72,13 @@ export async function prepareFolioWrite(dir: string, buffers: FolioWriteBuffers)
   const mine = [...new Set(buffers.open())].filter((path) => inFolioFolder(path, dir))
   await Promise.all(mine.map((path) => Promise.resolve(buffers.settled(path)).catch(() => undefined)))
   for (const path of mine) {
-    if (!buffers.isDirty(path)) continue
+    if (buffers.isSaved(path)) continue
     let saved = false
     try { saved = await buffers.save(path) } catch { saved = false }
-    if (!saved) return { ok: false, message: saveFirstMessage(path, buffers.nameOf) }
+    if (!saved) return { ok: false, message: refusalFor(path, buffers) }
   }
-  const unsaved = mine.find((path) => buffers.isDirty(path))
-  if (unsaved !== undefined) return { ok: false, message: saveFirstMessage(unsaved, buffers.nameOf) }
+  const unsaved = mine.find((path) => !buffers.isSaved(path))
+  if (unsaved !== undefined) return { ok: false, message: refusalFor(unsaved, buffers) }
   return { ok: true, paths: mine }
 }
 
@@ -74,6 +89,15 @@ function folioBuffersNow(dir: string, buffers: FolioWriteBuffers): string[] {
 
 /** How many times the buffers are saved and looked at again before the change is refused. */
 export const FOLIO_WRITE_ATTEMPTS = 3
+
+/** The sentence when a file of the Folio changed on disk (or went) and the writer has not answered. The
+ *  caller adds what was not done ("The piece was not moved."). Same advice as the export's refusal. */
+export function changedOnDiskMessage(path: string, kind: 'changed' | 'removed', nameOf?: (path: string) => string): string {
+  const name = nameOf?.(path) ?? (path.split('/').at(-1) ?? path)
+  return kind === 'removed'
+    ? `${name} is no longer readable on disk. Choose Keep mine above the text to write it again, then try again.`
+    : `${name} changed on disk. Choose Reload or Keep mine above the text, then try again.`
+}
 
 export function openedMeanwhileMessage(path: string, nameOf?: (path: string) => string): string {
   const name = nameOf?.(path) ?? (path.split('/').at(-1) ?? path).replace(/\.(md|markdown)$/i, '')
@@ -93,8 +117,8 @@ export async function writeFolioThroughSaveQueue<T>(dir: string, buffers: FolioW
     const answer = await buffers.exclusive(prepared.paths, async (): Promise<{ made: true; value: T } | { made: false; message: string }> => {
       // No await between this look and the call: main is asked in the turn the buffers were found saved.
       const now = folioBuffersNow(dir, buffers)
-      const unsaved = now.find((path) => buffers.isDirty(path))
-      if (unsaved !== undefined) return { made: false, message: saveFirstMessage(unsaved, buffers.nameOf) }
+      const unsaved = now.find((path) => !buffers.isSaved(path))
+      if (unsaved !== undefined) return { made: false, message: refusalFor(unsaved, buffers) }
       const unheld = now.find((path) => !held.has(path))
       if (unheld !== undefined) return { made: false, message: openedMeanwhileMessage(unheld, buffers.nameOf) }
       try {

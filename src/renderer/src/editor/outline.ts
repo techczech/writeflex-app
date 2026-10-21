@@ -1,3 +1,6 @@
+import { ensureSyntaxTree, language, syntaxTree, syntaxTreeAvailable } from '@codemirror/language'
+import type { EditorState } from '@codemirror/state'
+import type { Tree } from '@lezer/common'
 import { parseMarkdown } from '../../../shared/markdown/dialect'
 import { frontmatterBlock } from '../../../shared/markdown/frontmatter'
 
@@ -15,7 +18,22 @@ export type OutlineNode = OutlineHeading & { children: OutlineNode[] }
 export function extractOutline(doc: string): OutlineHeading[] {
   // The app's ONE dialect, not the bare CommonMark parser: the outline must agree with the editor
   // and the exporters about where a heading is.
-  const tree = parseMarkdown(doc)
+  return outlineOfTree(parseMarkdown(doc), doc)
+}
+
+/**
+ * {@link extractOutline} for a live editor state: the headings come off the editor's own incremental
+ * syntax tree instead of a second whole-document parse. `text` is `state.doc.toString()` (passed in
+ * because the caller already holds it). A state with no language has no tree and is parsed as before.
+ */
+export function extractOutlineOfState(state: EditorState, text: string): OutlineHeading[] {
+  if (!state.facet(language)) return extractOutline(text)
+  // Only a tree that covers the whole document is the document's outline; a half-parsed one is not.
+  const tree = syntaxTreeAvailable(state) ? syntaxTree(state) : ensureSyntaxTree(state, state.doc.length, 25)
+  return tree ? outlineOfTree(tree, text) : extractOutline(text)
+}
+
+function outlineOfTree(tree: Tree, doc: string): OutlineHeading[] {
   // Frontmatter is metadata, not writing (ADR-0019): to the Markdown parser its closing `---` is a
   // Setext underline, which turned `title: …` into an H2 spanning the block. The ONE recogniser in
   // shared/markdown/frontmatter.ts says where the block ends; nothing inside it is a heading.

@@ -14,6 +14,12 @@ The local `vendor/reader/reader.html` change replaces three `resource://zotero/`
 
 The sound pack includes CC BY and CC0/public-domain material. Attribution and processing details are in `resources/sounds/CREDITS.md`.
 
+## App Patterns outline
+
+`@app-patterns/outline` 0.3.0 is MIT licensed, copyright 2026 Dominik Lukeš. The public release archive at `vendor/app-patterns/app-patterns-outline-0.3.0.tgz` includes the compiled module, type declarations and full MIT licence in `package/LICENSE`. Installation uses the archive directly; it does not rebuild the package.
+
+Upstream source and releases: https://github.com/techczech/app-patterns.
+
 ## Dependencies
 
 Installed dependencies retain their own licences. Their notices ship with the dependencies in the packaged app.

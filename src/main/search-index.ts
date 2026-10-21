@@ -20,11 +20,33 @@
  *
  * `invalidate(paths)` is the watcher's door: an external change or unlink drops the entry so the
  * next query re-reads it even when a same-size rewrite lands inside the same mtime tick.
+ *
+ * THE PER-FILE FACTS CACHE (0.24.1). The same entries serve every listing that derives facts from a
+ * file — Collection pieces, the agent's Digest, wikilink candidates, the vault index — so a file is
+ * read once and its facts derived once per (path, mtime, size), whoever asks first:
+ *   - `ensure(files, listed)` brings just the named files up to date WITHOUT forgetting the rest
+ *     (a Collection of one folder must not empty the cache search relies on). Files it brought in
+ *     are retained across a search `refresh` whose scope leaves them out (search skips top-level
+ *     `cache/` and `indexes/`, a Collection does not), until a later `ensure` sees they have left
+ *     the whole listing.
+ *   - `derive(path, slot, fn)` memoises anything computed from an entry's content on the entry
+ *     itself, so a re-read (new mtime or size), an own write or a watcher change — which all replace
+ *     or drop the entry — take every derived fact with it. There is no second invalidation path to
+ *     forget.
  */
 
 import { summariseTasks, type TaskSummary } from '../shared/markdown/task-lines'
 
-export type SearchIndexEntry = { mtimeMs: number; size: number; content: string; tags: string[]; title?: string; tasks?: TaskSummary }
+export type SearchIndexEntry = {
+  mtimeMs: number
+  size: number
+  content: string
+  tags: string[]
+  title?: string
+  tasks?: TaskSummary
+  /** Facts derived from `content` by `derive`, by slot name; they live and die with the entry. */
+  derived?: Map<string, unknown>
+}
 /** The listing shape the index needs to decide freshness — a subset of Workspace's MarkdownFile. */
 export type IndexableFile = { path: string; modifiedAt: number; size: number }
 
@@ -34,6 +56,8 @@ const fileStem = (path: string): string => (path.split('/').pop() ?? path).repla
 
 export class SearchIndex {
   readonly #entries = new Map<string, SearchIndexEntry>()
+  /** Paths `ensure` brought in: a scoped `refresh` that does not list them leaves them alone. */
+  readonly #retained = new Set<string>()
   /** Files read from disk since construction — the counter tests assert on. */
   reads = 0
 
@@ -70,6 +94,25 @@ export class SearchIndex {
     return entry.tasks
   }
 
+  /** A fact derived from the cached entry's content, computed on first ask and kept on the entry
+   *  until it is re-read or dropped; undefined when the path is not cached. Never reads the disk.
+   *  `slot` names the fact; one slot must always be derived by the same function. */
+  derive<T>(path: string, slot: string, compute: (content: string) => T): T | undefined {
+    const entry = this.#entries.get(path)
+    if (!entry) return undefined
+    entry.derived ??= new Map()
+    if (entry.derived.has(slot)) return entry.derived.get(slot) as T
+    const value = compute(entry.content)
+    entry.derived.set(slot, value)
+    return value
+  }
+
+  /** The entry for `file` only when it matches the listing's mtime and size. */
+  current(file: IndexableFile): SearchIndexEntry | undefined {
+    const entry = this.#entries.get(file.path)
+    return entry && entry.mtimeMs === file.modifiedAt && entry.size === file.size ? entry : undefined
+  }
+
   /** Drop entries so the next refresh re-reads them (watcher change/unlink, own writes). */
   invalidate(paths: Iterable<string>): void {
     for (const path of paths) this.#entries.delete(path)
@@ -77,6 +120,26 @@ export class SearchIndex {
 
   clear(): void {
     this.#entries.clear()
+    this.#retained.clear()
+  }
+
+  /**
+   * Bring the named files up to date (re-read the stale or missing) without forgetting any other
+   * entry. `listed` is every path of the whole current listing: a retained entry no longer in it is
+   * forgotten here. After this resolves, `current(file)` answers for every named file that could
+   * be read.
+   */
+  async ensure(files: readonly IndexableFile[], listed?: ReadonlySet<string>): Promise<void> {
+    if (listed) {
+      for (const path of this.#retained) {
+        if (listed.has(path)) continue
+        this.#retained.delete(path)
+        this.#entries.delete(path)
+      }
+    }
+    const stale = files.filter((file) => !this.current(file))
+    for (const file of files) this.#retained.add(file.path)
+    await this.#read(stale)
   }
 
   /**
@@ -91,9 +154,13 @@ export class SearchIndex {
       const cached = this.#entries.get(file.path)
       if (!cached || cached.mtimeMs !== file.modifiedAt || cached.size !== file.size) stale.push(file)
     }
-    for (const path of this.#entries.keys()) if (!listed.has(path)) this.#entries.delete(path)
-    if (stale.length === 0) return
+    for (const path of this.#entries.keys()) if (!listed.has(path) && !this.#retained.has(path)) this.#entries.delete(path)
+    await this.#read(stale)
+  }
 
+  /** Read files into the cache with bounded concurrency; a file that cannot be read is dropped. */
+  async #read(stale: readonly IndexableFile[]): Promise<void> {
+    if (stale.length === 0) return
     let next = 0
     const worker = async (): Promise<void> => {
       while (next < stale.length) {

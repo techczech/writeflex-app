@@ -20,7 +20,7 @@ import { ActionsHere } from './ActionsHere'
 import type { FolioOutline, FolioPlace, OutlineScanEntry } from '../../../preload'
 import { FolderPartFoot, FolioOutlinePart, folioFileKeys } from './FolioOutline'
 import type { FolioRunningOrder } from '../app/folio-running-order'
-import { commandTarget, type FocusedFolioRow } from '../../../shared/folio-running-order'
+import { blockCommandTarget, type FocusedFolioRow } from '../../../shared/folio-running-order'
 import { clampOffset, outlineSwitch } from '../../../shared/folio-outline'
 import { extractOutline, type OutlineHeading } from '../editor/outline'
 import type { EditorSnapshot } from '../hooks/useEditorSnapshot'
@@ -47,7 +47,7 @@ import { scanText, type JumpKind } from '../../../main/jumps'
 /** What the palette asks the panel to do (the display commands live here, not in the editor). */
 export type OutlineRequest = {
   tick: number
-  action: 'expandAll' | 'collapseAll' | 'toggleWordCounts' | 'rowMenu' | { levels: number | null }
+  action: 'expandAll' | 'collapseAll' | 'toggleWordCounts' | 'rowMenu' | 'showFolio' | { levels: number | null }
 }
 
 type OutlinePaneProps = {
@@ -551,7 +551,7 @@ export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, o
     if (seen) void guardBusy(() => runningOrder.addPieces(seen, files))
   }, [seenFolio, guardBusy, runningOrder])
   const pieceMove = (direction: 'up' | 'down') => (folioShown && !folioShown.orderInPlanOnly && folioFocused?.kind === 'piece'
-    ? commandTarget(direction, folioFocused, null, folioShown)
+    ? blockCommandTarget(direction, folioFocused, null, folioShown)
     : { message: 'Focus a piece of the running order to move it.' })
   const movePieceFromBar = (direction: 'up' | 'down'): void => {
     const target = pieceMove(direction)
@@ -717,6 +717,7 @@ export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, o
     if (action === 'expandAll') expandAll()
     else if (action === 'collapseAll') collapseAll()
     else if (action === 'toggleWordCounts') toggleWordCounts()
+    else if (action === 'showFolio') { setScope('folder'); setFocusFrom(null); setFolderFocusKey(null) }
     else if (action === 'rowMenu') {
       const focused = rows.find((r) => r.entry.from === effectiveFocus && r.entry.type === 'heading')?.entry.from ?? activeFrom
       if (focused != null) openRowMenu(focused)
@@ -1036,7 +1037,7 @@ export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, o
       </span>
       {folioPart && (
         <div className="fo-actions">
-          <button type="button" data-action="openPlan" title={`Open the Plan for ${folioPlace?.name ?? 'this Folio'}`} onClick={onOpenPlan}><ListOrdered className="icon sm" aria-hidden="true" />Plan</button>
+          <button type="button" data-action="openPlan" title={`Open the Folio outline for ${folioPlace?.name ?? 'this Folio'}`} onClick={onOpenPlan}><ListOrdered className="icon sm" aria-hidden="true" />Folio outline</button>
           <button type="button" data-action="openBoard" title={`Open the Board for ${folioPlace?.name ?? 'this Folio'}`} onClick={onOpenBoard}><Columns3 className="icon sm" aria-hidden="true" />Board</button>
         </div>
       )}
@@ -1094,6 +1095,7 @@ export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, o
             openPath={activePath}
             bufferHeadings={headings}
             bufferPath={snapshot ? snapshot.path : null}
+            bufferText={snapshot?.docText ?? null}
             activeFrom={activeFrom}
             needle={filter.trim().toLowerCase()}
             levelLimit={levelLimit}

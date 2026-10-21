@@ -1,4 +1,5 @@
-export const PLAN_ROLES = ['section', 'vignette', 'appendix', 'summary'] as const
+/** The Plan's roles. `front-matter` (ADR-0046, shared/folio-front-matter.ts) exports before the contents and is never in them. */
+export const PLAN_ROLES = ['section', 'vignette', 'appendix', 'summary', 'front-matter'] as const
 
 export type PlanLineMarker = '-' | '*' | `${number}.`
 
@@ -6,8 +7,14 @@ export type PlanLine = {
   marker: PlanLineMarker
   title: string
   gloss: string | null
+  /** The last role tag on the line (`section` when none). */
   role: string
   tags: string[]
+  /**
+   * Whether the line carries `#front-matter` among its tags, whatever role it ends on (ADR-0046): the tag is a
+   * sufficient front-matter marker on its own, so `#front-matter #summary` is still front matter.
+   */
+  frontMatter: boolean
 }
 
 export type PlanLineInput = {
@@ -46,9 +53,11 @@ export function parsePlanLine(line: string): PlanLine | null {
   if (separator < 0 && afterLink.text !== '') return null
 
   let role = 'section'
+  let frontMatter = false
   const tags: string[] = []
   for (const tag of afterLink.tags) {
     const normalised = tag.toLocaleLowerCase()
+    if (normalised === 'front-matter') frontMatter = true
     if (ROLE_NAMES.has(normalised)) role = normalised
     else tags.push(tag)
   }
@@ -58,17 +67,18 @@ export function parsePlanLine(line: string): PlanLine | null {
     gloss: separator < 0 || afterLink.text === '' ? null : afterLink.text,
     role,
     tags,
+    frontMatter,
   }
 }
 
 /** Serialise one canonical Plan line; callers choose the surrounding list's marker style. */
 export function serialisePlanLine(input: PlanLineInput, marker: PlanLineMarker = '-'): string {
   const title = input.title.trim()
-  if (!title || title.includes(']]') || /[|#\r\n]/.test(title)) throw new Error('Plan title cannot be represented as a wikilink.')
+  if (!title || title.includes(']]') || /[|#\r\n]/.test(title)) throw new Error('Folio outline title cannot be represented as a wikilink.')
   const role = (input.role?.trim() || 'section').toLocaleLowerCase()
-  if (!ROLE_NAMES.has(role)) throw new Error(`Unknown Plan role: ${input.role}`)
+  if (!ROLE_NAMES.has(role)) throw new Error(`Unknown Folio outline role: ${input.role}`)
   const tags = input.tags ?? []
-  if (tags.some((tag) => !TAG.test(`#${tag}`) || tag.startsWith('#'))) throw new Error('Plan tag cannot contain spaces or Markdown punctuation.')
+  if (tags.some((tag) => !TAG.test(`#${tag}`) || tag.startsWith('#'))) throw new Error('Folio outline tag cannot contain spaces or Markdown punctuation.')
   const gloss = input.gloss?.trim() || null
   const suffix = [role === 'section' ? null : `#${role}`, ...tags.map((tag) => `#${tag}`)].filter(Boolean).join(' ')
   return `${marker} [[${title}]]${gloss ? ` — ${gloss}` : ''}${suffix ? ` ${suffix}` : ''}`

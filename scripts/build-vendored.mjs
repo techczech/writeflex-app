@@ -3,7 +3,7 @@ import {cpSync,existsSync,realpathSync,readdirSync,readFileSync,symlinkSync} fro
 import {resolve,join} from 'node:path';
 // Same bun build scripts as the source workspaces, in dependency order.
 const order = [
-  'bridle/contract', 'bridle/ledger', 'bridle/outline', 'bridle/model-access',
+  'bridle/contract', 'bridle/ledger', 'bridle/model-access',
   'bridle/core', 'bridle/cognition', 'bridle/secrets', 'bridle/perception',
   'bridle/knowledge', 'bridle/packs', 'bridle/lens', 'bridle/react', 'bridle/electron',
   'readflex/sqlite-driver', 'readflex/zotero-paths', 'readflex/reader-embed',

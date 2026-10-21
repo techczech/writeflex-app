@@ -1,6 +1,7 @@
 import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
 import { mkdir, readFile } from 'node:fs/promises'
+import { assertCollectionWritable } from './collection-write-gate'
 import { createHash } from 'node:crypto'
 import { Workspace } from './workspace'
 import { createIndexNote, localCalendarDate } from './collection'
@@ -240,6 +241,9 @@ async function pieceTitles(record: DiarySessionRecord, sourceWorkspace?: Workspa
 }
 
 async function writeDiarySession(diaryRoot: string, record: DiarySessionRecord, context: DiaryWriteContext): Promise<string> {
+  // A diary kept inside a Collection is written only while this app holds that Collection; refused
+  // like the save below would be, and reported the same way (persistDiarySession).
+  assertCollectionWritable(diaryRoot)
   await mkdir(diaryRoot, { recursive: true })
   const diary = context.diaryWorkspace?.root === diaryRoot ? context.diaryWorkspace : new Workspace(diaryRoot)
   const name = `${localCalendarDate(new Date(record.startedAt))}.md`

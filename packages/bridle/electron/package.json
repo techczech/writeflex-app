@@ -31,8 +31,7 @@
     }
   },
   "files": [
-    "dist",
-    "src"
+    "dist"
   ],
   "scripts": {
     "build:js": "bun build ./src/index.ts ./src/main.ts ./src/preload.ts ./src/renderer.ts ./src/transport.ts --outdir dist --target node --format esm --packages external",

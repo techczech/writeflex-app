@@ -10,7 +10,6 @@ const GUIDE_TAB: TabSpec = { id: 'guide', label: 'Guide', icon: Compass }
 const BASE_TABS: readonly TabSpec[] = [
   { id: 'agent', label: 'Agent', icon: AGENT_ICON, chord: '⌘J', keys: 'Meta+J' },
   { id: 'scratchpad', label: 'Scratchpad', icon: StickyNote },
-  { id: 'review', label: 'Review', icon: GitCommitHorizontal, chord: '⇧⌘C', keys: 'Shift+Meta+C' },
   { id: 'agent-notes', label: 'Agent notes', icon: Bot },
   { id: 'versions', label: 'Versions', icon: GitCommitHorizontal, chord: '⌘3', keys: 'Meta+3' },
 ]

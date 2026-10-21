@@ -225,7 +225,16 @@ function runtimeFor(win: Window): Runtime {
     try { first?.options.returnFocus() } catch { /* the caller's affair */ }
     guard.check()
   }
+  // Escape that reaches this document with an engaged frame as the focused element: the frame's own page had not
+  // taken the focus yet (a press on the cover, then Escape at once), so the key landed on the frame element and
+  // the frame never relayed it. It ends the engagement just as the relayed one does; it can do nothing else.
+  const onEscapeKey = (event: KeyboardEvent): void => {
+    if (!event.isTrusted || event.key !== 'Escape' || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing) return
+    const entry = entryFor(runtime, doc.activeElement)
+    if (entry && entry.engaged) setEngaged(runtime, entry, false, { returnFocus: true })
+  }
   win.addEventListener('pointerdown', onPointerDown, true)
+  win.addEventListener('keydown', onEscapeKey, true)
   doc.addEventListener('focusin', onFocusIn, true)
   win.addEventListener(WIDGET_RECLAIM_EVENT, onReclaim)
 
@@ -238,6 +247,7 @@ function runtimeFor(win: Window): Runtime {
       guard.dispose()
       channel.dispose()
       win.removeEventListener('pointerdown', onPointerDown, true)
+      win.removeEventListener('keydown', onEscapeKey, true)
       win.removeEventListener(WIDGET_RECLAIM_EVENT, onReclaim)
       doc.removeEventListener('focusin', onFocusIn, true)
       runtimes.delete(win)

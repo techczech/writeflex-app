@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { PLAN_STAGE_ALIASES, planStageForStatus } from '../../src/shared/plan-stage'
 
-test('Plan stage aliases map existing statuses onto the approved vocabulary', () => {
+test('Folio outline stage aliases map existing statuses onto the approved vocabulary', () => {
   expect(PLAN_STAGE_ALIASES).toEqual({
     idea: 'idea',
     jottings: 'jottings',
@@ -17,7 +17,7 @@ test('Plan stage aliases map existing statuses onto the approved vocabulary', ()
   })
 })
 
-test('Plan stage mapping is display-only, case-insensitive, and does not invent unknown stages', () => {
+test('Folio outline stage mapping is display-only, case-insensitive, and does not invent unknown stages', () => {
   expect(planStageForStatus(' Editing ')).toBe('final draft')
   expect(planStageForStatus('DRAFTING')).toBe('jottings')
   expect(planStageForStatus('custom review')).toBeNull()

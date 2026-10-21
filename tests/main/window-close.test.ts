@@ -333,3 +333,59 @@ describe('an unacknowledged close: forced, or asked', () => {
     expect(w.questions).toHaveLength(1)
   })
 })
+
+// Vaults 06 review round 2: the vault switcher calls a close off after its bound. The renderer's late
+// answer to that close must never close the window.
+describe('a close called off (abandon)', () => {
+  it('ends the close, and drops the renderer\'s proceed sent before it heard', () => {
+    const fake = fakeClose()
+    expect(fake.controller.onNativeClose()).toBe('hold')
+    fake.controller.acked()
+    fake.controller.abandon()
+    expect(fake.controller.inFlight).toBe(false)
+    expect(fake.controller.abandoning).toBe(true)
+    fake.controller.proceed() // the flush finished and its window:close was already on the way
+    expect(fake.closes).toBe(0)
+    expect(fake.events).toContain('window.close.dropped-abandoned')
+  })
+
+  it('withdraws a question that was open and arms nothing', () => {
+    const fake = fakeClose()
+    fake.controller.onNativeClose()
+    fake.tick(CLOSE_ACK_MS) // no answer: the person is asked
+    expect(fake.questions).toHaveLength(1)
+    fake.controller.abandon()
+    expect(fake.questions[0]!.signal.aborted).toBe(true)
+    expect(fake.armed).toBe(0)
+  })
+
+  it('once the renderer acknowledges, its closes are its own again', () => {
+    const fake = fakeClose()
+    fake.controller.onNativeClose()
+    fake.controller.abandon()
+    fake.controller.abandonAcked()
+    expect(fake.controller.abandoning).toBe(false)
+    fake.controller.proceed() // e.g. ⌘W with no tab open, after the abandonment
+    expect(fake.closes).toBe(1)
+  })
+
+  it('a new page or a gone renderer clears the drop (no stale latch can trap the window)', () => {
+    const page = fakeClose()
+    page.controller.abandon()
+    page.controller.reset()
+    expect(page.controller.abandoning).toBe(false)
+    const crashed = fakeClose()
+    crashed.controller.abandon()
+    crashed.controller.rendererGone()
+    expect(crashed.controller.abandoning).toBe(false)
+  })
+
+  it('a later close request starts a fresh close', () => {
+    const fake = fakeClose()
+    fake.controller.onNativeClose()
+    fake.controller.abandon()
+    fake.controller.abandonAcked()
+    expect(fake.controller.onNativeClose()).toBe('hold')
+    expect(fake.requests).toBe(2)
+  })
+})

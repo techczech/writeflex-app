@@ -20,8 +20,11 @@ import { open, stat } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { folioOrderFacts } from './folio-order-facts'
 import { folioContaining } from './folio-place'
-import { documentTitle } from './frontmatter'
+import { partTitle, titleFromFileName } from '../shared/folio-part-title'
 import { scanText } from './jumps'
+import { fingerprintOf } from './guarded-document-read'
+import { titleConflict } from '../shared/title-conflict'
+import { asFrontMatterTitle } from '../shared/folio-front-matter'
 import type { Workspace } from './workspace'
 import { groupAlsoInFolder, subFolderOf, type FolioOutline, type FolioOutlineFile } from '../shared/folio-outline'
 
@@ -32,7 +35,7 @@ const MAX_HEADING_CHARS = 200
 
 /** Every title the reader returns goes through here, so the cap covers filename fallbacks too. */
 function cappedTitle(content: string, path: string): string {
-  return documentTitle(content, path).slice(0, MAX_HEADING_CHARS)
+  return partTitle(content, path).title.slice(0, MAX_HEADING_CHARS)
 }
 /** A file larger than this is not read: it lists no headings and is flagged `tooLarge`. */
 export const MAX_OUTLINE_FILE_BYTES = 2 * 1024 * 1024
@@ -41,7 +44,8 @@ const MAX_CACHED_FILES = 2000
 /** Files read at once. */
 const READ_BATCH = 12
 
-type Parsed = Pick<FolioOutlineFile, 'title' | 'headings' | 'tooLarge'>
+/** `frontMatterTitle`: the title the file has if it is front matter (shared/folio-front-matter.ts); `fileOf` picks. */
+type Parsed = Pick<FolioOutlineFile, 'title' | 'headings' | 'tooLarge' | 'heading' | 'titleMismatch' | 'titleConflict'> & { frontMatterTitle?: string }
 type Entry = { stamp: string; parsed: Promise<Parsed | null> }
 const cache = new Map<string, Map<string, Entry>>()
 
@@ -103,13 +107,22 @@ async function readParsed(fs: OutlineFs, ws: Workspace, path: string): Promise<P
   try {
     handle = await fs.open(ws.absolute(path))
     const content = await readBounded(handle)
-    if (content === null) return { title: cappedTitle('', path), headings: [], tooLarge: true }
+    if (content === null) return { title: titleFromFileName(path).slice(0, MAX_HEADING_CHARS), headings: [], tooLarge: true }
     const headings: Parsed['headings'] = []
     for (const entry of scanText(content, { headings: true, headingLimit: MAX_HEADINGS_PER_FILE })) {
       if (entry.kind !== 'heading') continue
       headings.push({ level: entry.level, text: entry.text.slice(0, MAX_HEADING_CHARS), line: entry.line })
     }
-    return { title: cappedTitle(content, path), headings }
+    const named = partTitle(content, path)
+    const conflict = named.mismatch ? titleConflict(content, path, { part: true }) : null
+    return {
+      title: named.title.slice(0, MAX_HEADING_CHARS),
+      frontMatterTitle: asFrontMatterTitle(named, path).title.slice(0, MAX_HEADING_CHARS),
+      headings,
+      heading: named.mode,
+      ...(named.mismatch ? { titleMismatch: true as const } : {}),
+      ...(conflict ? { titleConflict: { ...conflict, fingerprint: fingerprintOf(content) } } : {}),
+    }
   } catch {
     return null
   } finally {
@@ -129,7 +142,7 @@ async function stampOf(fs: OutlineFs, ws: Workspace, path: string): Promise<stri
 
 /** Answer one file from the cache or start its read. Registers the entry synchronously, so entries enter the cache (and leave it) in the order they are asked for. */
 function parsedFile(fs: OutlineFs, ws: Workspace, path: string, stamp: string | null): Promise<Parsed> {
-  const empty = (): Parsed => ({ title: cappedTitle('', path), headings: [] })
+  const empty = (): Parsed => ({ title: titleFromFileName(path).slice(0, MAX_HEADING_CHARS), headings: [] })
   if (stamp === null) return Promise.resolve(empty())
   let byPath = cache.get(ws.root)
   if (!byPath) cache.set(ws.root, (byPath = new Map()))
@@ -153,32 +166,46 @@ export async function folioOutline(ws: Workspace, path: string, fs: OutlineFs = 
   const folio = await folioContaining(ws, path)
   if (!folio) return null
   const { dir } = folio
-  // `folio.pieces` is `folioPieces` (the list the Plan and the export use); this lists exactly those, nested-manifest entries included.
+  // `pieces` is the Plan's running order when there is one, else `folioPieces` (manifest order, nested-manifest entries included).
   const listed = await ws.listFilesIn(dir)
   const byPath = new Map(listed.map((file) => [file.path, file]))
   // Whether the Outline may change this Folio's order, and which files Add will accept: the rule main's write
   // routes apply, kept per Folio folder. A failed read hides the controls.
   const facts = await folioOrderFacts(ws, dir)
-  const also = groupAlsoInFolder(listed, folio.pieces, dir, new Set(facts.changeable ? facts.addable : []), new Set(facts.unlisted))
-  const wanted = [...new Set([...folio.pieces, ...also.map((file) => file.path)])].filter((p) => byPath.has(p))
+  // Front matter (ADR-0046): the manifest's entries that read as front matter; the Outline lists them first, out of the contents.
+  const front = new Set(facts.frontMatter)
+  // With an Index Note that has a running order, the Outline's numbered order is the Plan's (same parts, same order);
+  // a manifest entry the running order lacks is then "Not in the outline". No Index Note: the manifest order stands.
+  const pieces = facts.order ?? folio.pieces
+  const also = groupAlsoInFolder(listed, pieces, dir, new Set(facts.changeable ? facts.addable : []), facts.root, facts.deep)
+  const wanted = [...new Set([...pieces, ...also.map((file) => file.path)])].filter((p) => byPath.has(p))
   const parsed = new Map<string, Parsed>()
   for (let at = 0; at < wanted.length; at += READ_BATCH) {
     const batch = wanted.slice(at, at + READ_BATCH)
     const stamps = await Promise.all(batch.map((p) => stampOf(fs, ws, p)))
     await Promise.all(batch.map(async (p, i) => { parsed.set(p, await parsedFile(fs, ws, p, stamps[i])) }))
   }
-  const fileOf = (p: string, addable?: boolean): FolioOutlineFile => ({
-    path: p,
-    ...(addable !== undefined && subFolderOf(dir, p) ? { under: subFolderOf(dir, p) as string } : {}),
-    title: parsed.get(p)?.title ?? cappedTitle('', p),
-    headings: parsed.get(p)?.headings ?? [],
-    ...(parsed.get(p)?.tooLarge ? { tooLarge: true } : {}),
-    ...(addable === undefined ? {} : { addable }),
-  })
+  const fileOf = (p: string, addable?: boolean): FolioOutlineFile => {
+    // Front matter (a title page; ADR-0046, one rule in shared/folio-front-matter.ts): titled by its frontmatter
+    // only, and no heading checks. Only a listed part is shown in the Outline's front-matter group.
+    const isFront = front.has(p) || folio.frontMatter.has(p)
+    return {
+      path: p,
+      ...(addable !== undefined && subFolderOf(dir, p) ? { under: subFolderOf(dir, p) as string } : {}),
+      title: (isFront ? parsed.get(p)?.frontMatterTitle : undefined) ?? parsed.get(p)?.title ?? titleFromFileName(p).slice(0, MAX_HEADING_CHARS),
+      headings: parsed.get(p)?.headings ?? [],
+      ...(parsed.get(p)?.heading ? { heading: parsed.get(p)!.heading } : {}),
+      ...(!isFront && parsed.get(p)?.titleMismatch ? { titleMismatch: true as const } : {}),
+      ...(!isFront && parsed.get(p)?.titleConflict ? { titleConflict: parsed.get(p)!.titleConflict } : {}),
+      ...(parsed.get(p)?.tooLarge ? { tooLarge: true } : {}),
+      ...(addable === undefined ? {} : { addable }),
+      ...(addable === undefined && isFront ? { frontMatter: true as const } : {}),
+    }
+  }
   return {
     dir,
     name: dir === '' ? posix.basename(ws.root) : posix.basename(dir),
-    pieces: folio.pieces.filter((p) => byPath.has(p)).map((p) => fileOf(p)),
+    pieces: pieces.filter((p) => byPath.has(p)).map((p) => fileOf(p)),
     also: also.map((file) => fileOf(file.path, file.addable)),
     ...(facts.changeable ? {} : { orderInPlanOnly: true as const }),
   }

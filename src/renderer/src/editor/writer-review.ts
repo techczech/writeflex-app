@@ -612,6 +612,10 @@ export function materialiseRecords(
   return { changes, marks }
 }
 
+/** A mode switch with nothing to carry (no text change, no marks, no captured edits) stays out of the undo history:
+ *  ⌘Z is never spent on it. With any of those, the switch is its own undo step so the ledgers can be restored. */
+const noStateHistory = (nothingToCarry: boolean): Array<ReturnType<typeof TransactionClass.addToHistory.of>> => (nothingToCarry ? [TransactionClass.addToHistory.of(false)] : [])
+
 /** Apply an already-safe record materialisation as Reviewing state without enabling edit tracking. */
 export function materialiseRecordsTransaction(
   records: readonly WriterPendingChange[],
@@ -627,7 +631,7 @@ export function materialiseRecordsTransaction(
     ],
     // A mode switch is its own undo step: joined with an adjacent edit, one undo would revert both and
     // mix the two modes' ledgers.
-    annotations: [writerReviewInternal.of(true), skipWriterReviewTracking.of(true), isolateHistory.of('full')],
+    annotations: [writerReviewInternal.of(true), skipWriterReviewTracking.of(true), isolateHistory.of('full'), ...noStateHistory(records.length === 0)],
   }
 }
 
@@ -712,7 +716,7 @@ export function foldReviewingChanges(state: EditorState): TransactionSpec {
       setDraftingCapture.of(capture),
       setWriterMode.of('drafting'),
     ],
-    annotations: [writerReviewInternal.of(true), skipWriterReviewTracking.of(true), isolateHistory.of('full')],
+    annotations: [writerReviewInternal.of(true), skipWriterReviewTracking.of(true), isolateHistory.of('full'), ...noStateHistory(marks.length === 0 && capture.length === 0)],
   }
 }
 

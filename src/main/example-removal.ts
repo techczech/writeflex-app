@@ -42,9 +42,10 @@
  * D. CHECKED BEFORE IT IS MOVED. The path must be a real directory, not a symlink, and `WriteFlex`
  *    and the folder must each resolve to a place directly inside the one above, up to the real
  *    Documents folder. If any of that fails, nothing changes and one sentence says so.
- * E. ORDER. The token and the checks; then the example's windows closed (rule I); then the checks of
- *    rule D and the fresh count of rule H once more (outside WriteFlex's own records); then trash. Only when it has succeeded AND the
- *    path is then empty: record `removed` (which takes both entries off the start screen). If the
+ * E. ORDER. The token and the checks; then the example's windows closed (rule I) and this app's own
+ *    owner lock let go (rule J); then the checks of rule D and the fresh count of rule H once more
+ *    (outside WriteFlex's own records); then the owner lock read (rule J); then trash. Only when it
+ *    has succeeded AND the path is then empty: record `removed` (which takes both entries off the start screen). If the
  *    trash fails: state unchanged, one sentence; the windows already closed stay closed. If the
  *    folder is already gone: record `removed`, no trash call, no error.
  * F. RESTORE starts only from `removed` or `incomplete`, and creates only by the first run's rule:
@@ -70,6 +71,15 @@
  *    `closed` within `EXAMPLE_CLOSE_MS` (a save failed, a window refused, or one did not close in
  *    time), nothing is binned: no trash call, no state change, and one sentence says so.
  *
+ * J. NOT WHILE ANOTHER PROGRAM HOLDS IT. Once the windows have closed, this app's own hold on the
+ *    folder (its owner lock, `.writeflex/owner.lock`) is let go before anything else: `remove`
+ *    waits for that release, within `EXAMPLE_CLOSE_MS`, and refuses (`inUse`) if it does not come.
+ *    Then, immediately before the trash call, the lock is read: held by a live owner (the writeflex
+ *    command writing there, or another WriteFlex), or not readable, means nothing is binned and one
+ *    sentence says so. A lock left behind by a program that has gone does not stop it. A program
+ *    that takes the lock between that read and the trash call is not stopped: the same accepted gap
+ *    as rule D's.
+ *
  * Guide progress is another settings key and is never read or written here.
  */
 import { randomBytes } from 'node:crypto'
@@ -89,6 +99,7 @@ import {
   type ExampleStateStore,
 } from './example-collection'
 import { sameLexicalPath } from './lexical-path'
+import { inspectOwnerLock, type OwnerLockStatus } from './owner-lock'
 
 /** The first run's port plus one read: the names in a directory. Still no remove, rename or overwrite. */
 export type ExampleRemovalFs = ExampleFs & {
@@ -117,6 +128,14 @@ export type ExampleRemovalDeps = {
    * before the trash.
    */
   closeWindows: (root: string) => Promise<ExampleWindowsClosed>
+  /**
+   * Rule J: resolves once this app has let go of the owner lock of every Collection at or inside
+   * `root` that the closed windows held (the release that follows a window's close). Given the fixed
+   * path. Called after `closeWindows` answered `closed`, before the lock is read and the trash runs.
+   */
+  ownLocksReleased: (root: string) => Promise<void>
+  /** Rule J: reads the owner lock at `root`. `inspectOwnerLock` unless a test sets it. */
+  inspectOwnerLock?: (root: string) => Promise<OwnerLockStatus>
   /** The person's home, for the home-relative path in the confirmation. */
   home?: () => string
   /** One line per removal or restore. Never given paths or file contents. */
@@ -163,6 +182,8 @@ export const EXAMPLE_REMOVAL_TEXT = {
   noDocuments: 'WriteFlex could not find your Documents folder, so nothing was changed.',
   notPlain: 'The Example collection is not a plain folder inside Documents, so WriteFlex left it where it is.',
   trashFailed: 'The Example collection could not be moved to the Bin, so nothing was changed.',
+  inUse: 'Another program, such as the writeflex command, is using the Example collection, so nothing was removed; try again when it has finished.',
+  ownLockHeld: 'WriteFlex could not let go of the Example collection, so nothing was removed; quit and reopen WriteFlex, then remove it again.',
   notRecorded: 'The Example collection is in the Bin, but WriteFlex could not save that to its settings.',
   goneNotRecorded: 'WriteFlex could not save its settings, so nothing was changed.',
   parentNotPlain: `${EXAMPLE_PARENT_NAME} in your Documents folder is not a plain folder, so the example was not brought back.`,
@@ -308,6 +329,11 @@ export class ExampleRemoval {
       this.#log('remove', 'unsaved')
       return { ok: false, message: EXAMPLE_REMOVAL_TEXT.unsaved }
     }
+    // J: this app's own owner lock on the folder is let go before anything else happens to it.
+    if (!(await this.#ownLocksReleased(located.root))) {
+      this.#log('remove', 'own-lock-not-released')
+      return { ok: false, message: EXAMPLE_REMOVAL_TEXT.inUse }
+    }
     // D and H again: the windows may have taken seconds to close, so what is at the path is checked
     // afresh. Their close wrote WriteFlex's own records into the folder; every other file is as shown.
     const now = await this.#checked(confirmed, 'outside-records')
@@ -319,6 +345,17 @@ export class ExampleRemoval {
       return { ok: true, outcome: 'already-gone' }
     }
 
+    // J: immediately before the trash, nobody else holds the folder.
+    const holder = await this.#heldBy(now.root)
+    if (holder !== null) {
+      // This app's own lock still on disk (its release failed): refused, but not blamed on another program.
+      if (holder.own) {
+        this.#log('remove', 'own-lock-held', holder.kind)
+        return { ok: false, message: EXAMPLE_REMOVAL_TEXT.ownLockHeld }
+      }
+      this.#log('remove', 'in-use', holder.kind)
+      return { ok: false, message: EXAMPLE_REMOVAL_TEXT.inUse }
+    }
     // B and E: the one destructive call, on exactly the fixed path, before anything else changes.
     try {
       await this.#deps.trash(now.root)
@@ -473,6 +510,34 @@ export class ExampleRemoval {
       return false
     } finally {
       clearTimeout(timer)
+    }
+  }
+
+  /** Rule J: true once this app's release of its own locks under `root` has finished, in time. */
+  async #ownLocksReleased(root: string): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const late = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), this.#deps.closeMs ?? EXAMPLE_CLOSE_MS) })
+      return (await Promise.race([this.#deps.ownLocksReleased(root).then(() => 'released' as const), late])) === 'released'
+    } catch {
+      return false
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /**
+   * Rule J: who holds the folder's owner lock now (`app`, `command-line`, `unknown`), or null when nobody does.
+   * `own` is true when the held lock names this app's own process. Unreadable counts as held.
+   */
+  async #heldBy(root: string): Promise<{ kind: string; own: boolean } | null> {
+    try {
+      const status = await (this.#deps.inspectOwnerLock ?? inspectOwnerLock)(root)
+      if (status.state !== 'held') return null
+      const own = status.owner?.kind === 'app' && status.owner.pid === process.pid
+      return { kind: status.owner?.kind ?? 'unknown', own }
+    } catch (error) {
+      return { kind: `unreadable:${errorCode(error)}`, own: false }
     }
   }
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -178,4 +179,36 @@ test('an agent sources.attach is a proposal: nothing is written until the writer
 
   expect((await live.resolveChange(change.id, 'accept')).applied).toBe(true)
   expect(await read(PIECE)).toBe(change.newText)
+})
+
+// Final review round 2, finding 1 (R5): an accepted sources.attach writes the piece only over the text it
+// read. Another program writes the piece after the accept has read it, at the moment its write is staged:
+// nothing is written over that version, and the accept is refused by type (changedOnDisk) for the notice.
+test('an accepted sources.attach never writes the piece over a version it did not read (R5, round 2 finding 1)', async () => {
+  const changes = new ChangeStore(ws)
+  const step: ScriptedStep = { cap: 'sources.attach', input: { dir: DIR, piece: PIECE, source: SCHANK } }
+  const prompt = 'Attach the Schank note to Tools of reason'
+  const live = await bootAgent({
+    changes,
+    script: [{ prompt, rounds: [
+      { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
+      { kind: 'message', text: 'Proposed.' },
+    ] }],
+  })
+  await live.runScriptedTurn(prompt, [step])
+  const [change] = await waitForChanges(changes, 1)
+  const outside = pieceText.replace('We reason with tools.', 'Paragraph X, written by another program.')
+  const saveFile = ws.saveFile.bind(ws)
+  let fired = false
+  ws.saveFile = (p, content, options) => {
+    if (!fired && p === PIECE) { fired = true; writeFileSync(join(root, PIECE), outside) }
+    return saveFile(p, content, options)
+  }
+  const result = await live.resolveChange(change.id, 'accept')
+  expect(fired).toBe(true)
+  expect(result.applied).toBe(false)
+  expect(result.message).toContain('changed on disk while the change was being applied')
+  expect(result.changedOnDisk).toEqual({ path: PIECE, diskText: outside })
+  expect(await read(PIECE)).toBe(outside)
+  expect((await changes.get(change.id))?.status).toBe('pending')
 })

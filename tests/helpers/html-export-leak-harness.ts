@@ -7,6 +7,13 @@ export type HtmlExportLeakContext = {
   versionRecordMarkers: readonly string[]
   diarySessionMarkers: readonly string[]
   collectionProvenanceMarkers: readonly string[]
+  /** Sharing: words only an Agent note about the piece holds. */
+  agentNoteTexts?: readonly string[]
+  /** Sharing: words only a pending change to the piece holds (its proposed text, its summary). */
+  pendingChangeTexts?: readonly string[]
+  /** Sharing: the collection's name and the piece's file path, absolute and relative. */
+  collectionName?: string
+  filePaths?: readonly string[]
   annotationEnabled: boolean
   editEnabled?: boolean
 }
@@ -42,7 +49,7 @@ function scalarStrings(value: unknown): string[] {
   return []
 }
 
-/** Assert the five non-negotiable export exclusions from the HTML-export design. */
+/** Assert the five non-negotiable HTML-export exclusions, and (sharing) what a published copy must also leave out: Agent notes, pending changes, the collection name and the file path. */
 export function assertHtmlExportDoesNotLeak(html: string, context: HtmlExportLeakContext): void {
   assertAbsent(html, 'margin-note text', context.marginNoteTexts)
 
@@ -59,6 +66,10 @@ export function assertHtmlExportDoesNotLeak(html: string, context: HtmlExportLea
   assertAbsent(html, 'version record', context.versionRecordMarkers)
   assertAbsent(html, 'diary session', context.diarySessionMarkers)
   assertAbsent(html, 'collection provenance', context.collectionProvenanceMarkers)
+  assertAbsent(html, 'Agent note', context.agentNoteTexts ?? [])
+  assertAbsent(html, 'pending change', context.pendingChangeTexts ?? [])
+  if (context.collectionName) assertAbsent(html, 'collection name', [context.collectionName])
+  assertAbsent(html, 'file path', context.filePaths ?? [])
 
   if (!context.annotationEnabled) {
     assertAbsent(html, 'annotation runtime', ANNOTATION_RUNTIME_MARKERS)

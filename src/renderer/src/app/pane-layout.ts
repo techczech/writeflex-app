@@ -10,10 +10,10 @@ export type LeftPaneTab = 'files' | 'outline' | 'search'
 export function normaliseLeftPaneTab(value: unknown): LeftPaneTab {
   return value === 'outline' || value === 'search' || value === 'files' ? value : 'files'
 }
-export type RightPaneTab = 'guide' | 'agent' | 'scratchpad' | 'review' | 'agent-notes' | 'versions'
+export type RightPaneTab = 'guide' | 'agent' | 'scratchpad' | 'agent-notes' | 'versions'
 
 /** The tabs that are always there. The Guide is not one of them: the title bar's Guide button adds it. */
-export const RIGHT_PANE_TABS: readonly RightPaneTab[] = ['agent', 'scratchpad', 'review', 'agent-notes', 'versions']
+export const RIGHT_PANE_TABS: readonly RightPaneTab[] = ['agent', 'scratchpad', 'agent-notes', 'versions']
 
 /** The tabs in the row now: the Guide is last, and only while the person has opened it. */
 export const rightPaneTabsFor = (guideOpen: boolean): readonly RightPaneTab[] =>

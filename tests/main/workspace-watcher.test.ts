@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   OWN_WRITE_DEDUPE_MS,
   OwnWriteTracker,
+  createWatchRouter,
   isIgnoredWorkspaceWatchPath,
 } from '../../src/main/workspace-watcher'
 
@@ -54,5 +55,21 @@ describe('isIgnoredWorkspaceWatchPath', () => {
     expect(isIgnoredWorkspaceWatchPath('')).toBe(true)
     expect(isIgnoredWorkspaceWatchPath('/tmp/note.md')).toBe(true)
     expect(isIgnoredWorkspaceWatchPath('../note.md')).toBe(true)
+  })
+})
+
+describe('the document router and the vault file', () => {
+  const settle = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+  const workspace = () => ({ root: '/r', wasRecentlyWrittenByApp: () => false })
+
+  test('.writeflex/vault.json is never a document path (it has its own watcher, vault-watcher.ts)', async () => {
+    const changed: string[][] = []
+    const router = createWatchRouter(workspace(), (paths) => changed.push(paths), 10)
+    router.take('.writeflex/vault.json')
+    router.take('.writeflex/.vault.json.abc.tmp')
+    router.take('drafts/a.md')
+    await settle(30)
+    expect(changed).toEqual([['drafts/a.md']])
+    router.dispose()
   })
 })

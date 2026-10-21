@@ -43,6 +43,12 @@ export function RendererErrorSurface({ error }: { error: unknown }) {
         <p className="renderer-error-eyebrow">WriteFlex recovered the window</p>
         <h1>{heading}</h1>
         <p className="renderer-error-message">{parts.message}</p>
+        {status.copies.map((copy) => (
+          <p className="renderer-error-recovery-copy" key={copy.copyPath}>
+            {copy.path.split('/').at(-1) ?? copy.path} changed on disk, so it was left as it is. Your text was
+            saved beside it as {copy.copyPath.split('/').at(-1) ?? copy.copyPath}.
+          </p>
+        ))}
         {unsavedLeft && (
           <p className="renderer-error-unsaved">
             WriteFlex could not save your latest text in {unsavedFileNames(status.documents)}. Copy it before you reload:

@@ -1,7 +1,9 @@
+import { CollectionWriteTurn } from './collection-write-turn'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { posix } from 'node:path'
 import type { Workspace } from './workspace'
+import { assertCollectionWritable } from './collection-write-gate'
 
 /**
  * A cutting the writer set aside (ADR-0008). Lives on disk in a `scraps/` subfolder BESIDE its origin
@@ -185,6 +187,22 @@ function generateId(taken: Set<string>): string {
 }
 
 /**
+ * What adding a scrap appends to a scraps file holding `existing` ('' for a new file): the bytes to
+ * append and the new scrap's id and text. Pure, so a writer with its own write discipline (the command
+ * line) appends exactly what the store does. Append-only: a single blank line separates the new
+ * section from whatever is already there, and no existing byte is touched (foreign content and
+ * earlier scraps are preserved exactly).
+ */
+export function scrapAddition(existing: string, text: string): { addition: string; id: string; text: string } {
+  const taken = new Set(parseScrapsFile(existing).flatMap((b) => (b.kind === 'scrap' ? [b.id] : [])))
+  const id = generateId(taken)
+  const bodyLines = text.replace(/\n+$/, '').split('\n')
+  const section = `${[`## ${id}`, ...bodyLines].join('\n')}\n`
+  const separator = existing === '' ? '' : existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n'
+  return { addition: separator + section, id, text: bodyLines.join('\n').replace(/^\n+/, '') }
+}
+
+/**
  * File-native Scraps store (ADR-0008). One `## <id> <flags>` section per scrap in a `scraps/`
  * subfolder beside its origin (`a/b/notes.md` → `a/b/scraps/notes-SCRAPS.md`); bodies are verbatim,
  * foreign content is preserved, and every edit rewrites only its owned heading line. All writes go
@@ -197,21 +215,27 @@ function generateId(taken: Set<string>): string {
  * IRRECOVERABLE writing. list() rides the same chain so a read never observes a half-applied mutation.
  */
 export class ScrapStore {
-  /** The serialisation chain; kept rejection-free so one failed op (e.g. remove of a missing id) never
-   *  poisons the ops queued behind it. */
-  #queue: Promise<unknown> = Promise.resolve()
+  /** The serialisation chain: one op after another, and one failed op (e.g. remove of a missing id)
+   *  never poisons the ops queued behind it. It is the same chain as the Collection's write turn
+   *  (collection-write-turn.ts), so code running inside one of its ops that asks for the queue again
+   *  runs at once: a decision on a Change holds the queue and then runs a capability that asks for it. */
+  readonly #queue = new CollectionWriteTurn()
 
   constructor(private readonly ws: Workspace) {}
 
   /** Queue `op` after everything already in flight, returning ITS result/rejection to the caller while
    *  leaving the shared chain settled-successfully for the next op. */
   #run<T>(op: () => Promise<T>): Promise<T> {
-    const result = this.#queue.then(() => op())
-    this.#queue = result.then(
-      () => undefined,
-      () => undefined,
-    )
-    return result
+    return this.#queue.run(op)
+  }
+
+  /**
+   * A write of a scraps file: on the store's chain and then, from its read to its write, one turn of
+   * the Collection's write turn (collection-write-turn.ts), since a scraps file is a file of the
+   * Collection like any document. Queue first, turn second: the one order (collection-write-order.ts).
+   */
+  #write<T>(op: () => Promise<T>): Promise<T> {
+    return this.#run(() => this.ws.exclusiveAll(op))
   }
 
   /** Every store-shaped SCRAPS.md across the workspace, workspace-relative and sorted. Discovered via
@@ -224,11 +248,20 @@ export class ScrapStore {
   /** Atomic SCRAPS.md write: stage to a sibling temp file, then rename over the target. A SCRAPS.md is
    *  a contract file (round-trips byte-exact), and rename is atomic on one filesystem, so a crash
    *  mid-write can never leave a truncated or half-written scraps file. The temp name is not
-   *  `*-SCRAPS.md`, so a stranded temp is never picked up as a scraps file. */
+   *  `*-SCRAPS.md`, so a stranded temp is never picked up as a scraps file.
+   *  Why this needs no checked append (checked-store-append.ts): `rename` replaces whatever stands at
+   *  the target, a link included, instead of following it, and the staged name is random, so no file
+   *  planted at either name is ever written through. */
   async #writeAtomic(abs: string, content: string): Promise<void> {
+    assertCollectionWritable(this.ws.root)
     const tmp = `${abs}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`
     await writeFile(tmp, content, 'utf8')
     await rename(tmp, abs)
+  }
+
+  /** How many ops are waiting for the queue. @internal For tests: a handshake in place of a pause. */
+  get waiting(): number {
+    return this.#queue.waiting
   }
 
   /** Run `op` on the store's serialisation chain, so a caller that rewrites a scraps file itself (under
@@ -252,20 +285,15 @@ export class ScrapStore {
   }
 
   async add(origin: string, text: string): Promise<Scrap> {
-    return this.#run(async () => {
+    return this.#write(async () => {
       const rel = scrapsPathFor(origin)
+      assertCollectionWritable(this.ws.root)
       await mkdir(this.ws.absolute(posix.dirname(rel)), { recursive: true })
       const abs = this.ws.absolute(rel)
       const existing = existsSync(abs) ? await readFile(abs, 'utf8') : ''
-      const taken = new Set(parseScrapsFile(existing).flatMap((b) => (b.kind === 'scrap' ? [b.id] : [])))
-      const id = generateId(taken)
-      const bodyLines = text.replace(/\n+$/, '').split('\n')
-      const section = `${[`## ${id}`, ...bodyLines].join('\n')}\n`
-      // Append-only: a single blank line separates the new section from whatever is already there, and
-      // no existing byte is touched (foreign content and earlier scraps are preserved exactly).
-      const separator = existing === '' ? '' : existing.endsWith('\n\n') ? '' : existing.endsWith('\n') ? '\n' : '\n\n'
-      await this.#writeAtomic(abs, existing + separator + section)
-      return { id, origin: originForScrapsPath(rel), text: bodyLines.join('\n').replace(/^\n+/, ''), done: false }
+      const { addition, id, text: body } = scrapAddition(existing, text)
+      await this.#writeAtomic(abs, existing + addition)
+      return { id, origin: originForScrapsPath(rel), text: body, done: false }
     })
   }
 
@@ -293,7 +321,7 @@ export class ScrapStore {
 
   /** Remove a scrap, returning it so the caller can paste it back (drag-into-document, undo). */
   async remove(id: string): Promise<Scrap> {
-    return this.#run(async () => {
+    return this.#write(async () => {
       for (const rel of await this.scrapFiles()) {
         const abs = this.ws.absolute(rel)
         const blocks = parseScrapsFile(await readFile(abs, 'utf8'))
@@ -303,6 +331,7 @@ export class ScrapStore {
         blocks.splice(index, 1)
         const next = serializeBlocks(blocks)
         // Nothing left (no foreign preamble either): drop the now-empty file rather than leave a husk.
+        assertCollectionWritable(this.ws.root)
         if (next === '') await unlink(abs)
         else await this.#writeAtomic(abs, next)
         return removed
@@ -314,7 +343,7 @@ export class ScrapStore {
   /** Locate the file holding `id`, apply `mutate` to its block, and write the section back — serialised
    *  on the shared chain so a concurrent edit of a sibling scrap can never clobber this one. */
   async #edit(id: string, mutate: (block: ScrapBlock) => void): Promise<void> {
-    return this.#run(async () => {
+    return this.#write(async () => {
       for (const rel of await this.scrapFiles()) {
         const abs = this.ws.absolute(rel)
         const blocks = parseScrapsFile(await readFile(abs, 'utf8'))

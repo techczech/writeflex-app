@@ -18,12 +18,13 @@
  * by a page that builds its addresses at run time; such a page is accepted and then simply does not work.
  */
 import { createHash } from 'node:crypto'
-import { closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { insertWidgetInText } from '../shared/widget-insert'
 import { OPEN_NOFOLLOW, walkNoFollow, walkNoFollowSync } from './widget-file'
 import { isHiddenWorkspacePath, type Workspace } from './workspace'
+import { pausedMessage } from './collection-write-gate'
 
 /** Largest widget file the agent may create: 1 MiB. Hand-written pages are tens of KiB; the reader's own limit is 16 MiB. */
 export const WIDGET_CREATE_MAX_BYTES = 1024 * 1024
@@ -217,7 +218,11 @@ export async function planWidgetCreate(workspace: Workspace, input: WidgetCreate
 }
 
 /** The file writeWidgetFile created: its workspace-relative path and identity, so undo removes that file and no other. */
-export type CreatedWidgetFile = { path: string; dev: number; ino: number; /** assets/ did not exist and was made for this file. */ madeFolder: boolean }
+export type CreatedWidgetFile = {
+  path: string; dev: number; ino: number; /** assets/ did not exist and was made for this file. */ madeFolder: boolean
+  /** SHA-256 of the bytes written, once the write finished: undo removes the file only while it still holds them (R7). */
+  sha256?: string
+}
 
 const plainReason = (error: unknown): string => {
   const code = (error as NodeJS.ErrnoException | null)?.code
@@ -264,6 +269,9 @@ export async function writeWidgetFile(root: string, documentRelative: string, pl
 /** The synchronous block of writeWidgetFile: permission read, then the syscalls, with no await anywhere. */
 function createWidgetFileNow(place: Extract<WidgetPlace, { ok: true }>, plannedPath: string, bytes: Buffer, allowed: () => boolean): { ok: true; created: CreatedWidgetFile } | Refusal {
   if (!allowed()) return { ok: false, message: WIDGET_WRITE_SWITCHED_OFF }
+  // The owner lock's write gate (collection-write-gate.ts), asked in the same tick as the syscalls below.
+  const paused = pausedMessage(place.realRoot)
+  if (paused !== null) return { ok: false, message: paused }
   const assetsAbsolute = join(place.realRoot, place.assets)
   const removeMadeFolder = (): void => { try { rmdirSync(assetsAbsolute) } catch { /* not empty or already gone: not ours to force */ } }
   // The place was walked a moment ago, asynchronously; it is walked again here, inside the tick.
@@ -302,17 +310,26 @@ function createWidgetFileNow(place: Extract<WidgetPlace, { ok: true }>, plannedP
   } finally {
     try { closeSync(fd) } catch { /* the descriptor is gone either way */ }
   }
-  if (!failure && created) return { ok: true, created }
+  if (!failure && created) return { ok: true, created: { ...created, sha256: createHash('sha256').update(bytes).digest('hex') } }
   if (!created) return { ok: false, message: `${failure} An empty file may have been left at ${plannedPath}.` }
   const undone = removeCreatedWidgetFile(place.realRoot, created)
   return { ok: false, message: undone.removed ? failure : `${failure} The incomplete file ${created.path} could not be removed (${undone.reason}); it is still in the Workspace.` }
 }
 
 function removeCreatedWidgetFile(realRoot: string, created: CreatedWidgetFile): { removed: true } | { removed: false; reason: string } {
+  const paused = pausedMessage(realRoot)
+  if (paused !== null) return { removed: false, reason: paused }
   const walked = walkNoFollowSync(realRoot, created.path)
   if (walked.kind === 'missing') return { removed: true }
   if (walked.kind !== 'file' || walked.dev !== created.dev || walked.ino !== created.ino) {
     return { removed: false, reason: 'what is at that path now is not the file WriteFlex wrote, so it was left alone' }
+  }
+  // The same file, but written to since (an edit in place keeps its identity): left as it is (R7). Read in
+  // the tick of the unlink, nothing awaited between.
+  if (created.sha256 !== undefined) {
+    let now: string | null
+    try { now = createHash('sha256').update(readFileSync(join(realRoot, created.path))).digest('hex') } catch { now = null }
+    if (now !== created.sha256) return { removed: false, reason: 'it changed after WriteFlex wrote it, so it was left as it is' }
   }
   try { unlinkSync(join(realRoot, created.path)) } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return { removed: false, reason: plainReason(error) }

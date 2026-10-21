@@ -56,11 +56,13 @@ export type ActionsHereProps = {
   runHere?: (id: string) => boolean
   /** Rows listed first in the Insert object list although the place does not list them. */
   insertExtras?: ActionRow[]
+  /** Rows of the surface's own, drawn as a group after the place's first group (the vault sidebar's Pin / Unpin). Run through `runHere`. */
+  extraRows?: ActionRow[]
   /** Escape or a click away is 'dismiss'; running a row that App runs is 'ran'. */
   onClose: (reason: 'dismiss' | 'ran') => void
 }
 
-export function ActionsHere({ x, y, place, startView = 'here', runHere, insertExtras = [], onClose }: ActionsHereProps): JSX.Element {
+export function ActionsHere({ x, y, place, startView = 'here', runHere, insertExtras = [], extraRows, onClose }: ActionsHereProps): JSX.Element {
   const api = useActionsHere()
   const [query, setQuery] = useState('')
   const [hi, setHi] = useState(0)
@@ -86,9 +88,10 @@ export function ActionsHere({ x, y, place, startView = 'here', runHere, insertEx
   // The strip is drawn above the filter while nothing is typed; once something is typed its cells are rows like any other.
   const showStrip = query === '' && layout.strip.length > 0
   const groups: ActionGroup[] = useMemo(() => {
-    const withStrip = query !== '' && layout.strip.length > 0 ? [...layout.groups, { name: '', rows: layout.strip }] : layout.groups
+    const base = extraRows && extraRows.length > 0 ? [...layout.groups.slice(0, 1), { name: '', rows: extraRows }, ...layout.groups.slice(1)] : layout.groups
+    const withStrip = query !== '' && layout.strip.length > 0 ? [...base, { name: '', rows: layout.strip }] : base
     return filterActionGroups(withStrip, query, objects)
-  }, [layout, objects, query])
+  }, [layout, objects, query, extraRows])
   const flat = useMemo(() => groups.flatMap((group) => group.rows.filter((row) => !row.inert)), [groups])
   const panelGroups: ActionGroup[][] = stack.map((row) =>
     row.opens === 'insert' ? filterActionGroups([{ name: INSERT_GROUP, rows: objects }], objQuery)

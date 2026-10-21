@@ -73,7 +73,7 @@ function atWrite(before: (path: string, content: string, nth: number) => Promise
 test('1: an Index Note edited after the comparison and before the rename is not overwritten', async () => {
   await makeFolio()
   const restore = atWrite(async (path) => { if (path === INDEX) await writeFile(join(root, INDEX), THEIRS_INDEX) })
-  await expect(movePart(ws, DIR, 0, 3)).rejects.toThrow('The Index Note changed while the Plan was being updated.')
+  await expect(movePart(ws, DIR, 0, 3)).rejects.toThrow('The Index Note changed while the Folio outline was being updated.')
   restore()
   expect(await read(INDEX)).toBe(THEIRS_INDEX)
   expect(await read(MANIFEST)).toBe(MANIFEST_TEXT)
@@ -104,7 +104,7 @@ test('1: a rollback does not put the old Index Note over an edit that landed aft
   await movePart(ws, DIR, 0, 3).catch((error: Error) => { message = error.message })
   restore()
   expect(message).toContain('The Index Note was updated but the Folio manifest could not be')
-  expect(message).toContain('Check both in the Plan.')
+  expect(message).toContain('Check both in the Folio outline.')
   expect(message).not.toContain('Nothing was changed')
   expect(await read(INDEX)).toBe(THEIRS_INDEX)
   expect(await read(MANIFEST)).toBe(MANIFEST_TEXT)
@@ -169,7 +169,7 @@ test('2: a manifest with an element that is not an entry is refused by the Outli
   expect((await folioOutline(ws, piece('a')))?.orderInPlanOnly).toBe(true)
 })
 
-test('2: a Plan write keeps such elements, byte for byte, after the entry they followed', async () => {
+test('2: a Folio outline write keeps such elements, byte for byte, after the entry they followed', async () => {
   await makeFolio({ manifest: WITH_OTHERS, index: AC_INDEX })
   await movePart(ws, DIR, 1, 0)
   const text = await read(MANIFEST)
@@ -193,7 +193,7 @@ function failReadsAfterManifestWrite(): () => void {
   return () => { restoreSave(); ws.listFiles = listFiles }
 }
 
-test('4: a move that was written is reported as made when the Plan cannot be read again', async () => {
+test('4: a move that was written is reported as made when the Folio outline cannot be read again', async () => {
   await makeFolio()
   const restore = failReadsAfterManifestWrite()
   const outcome = await moveFolioPiece(ws, DIR, { path: piece('a'), beforePath: null, expected: ABCD })
@@ -206,12 +206,14 @@ test('4: a move that was written is reported as made when the Plan cannot be rea
   expect(await read(INDEX)).toContain('- [[Beta]]\n- [[Gamma]]\n- [[Delta]]\n- [[Alpha]]')
 })
 
-test('4: an Add that was written is reported as made, and a Plan write says so in its own error', async () => {
+test('4: an Add that was written is reported as made, and a Folio outline write says so in its own error', async () => {
   await makeFolio()
   let restore = failReadsAfterManifestWrite()
   const outcome = await addFolioPieces(ws, DIR, { paths: [piece('glossary')], expected: ABCD })
   restore()
-  expect(outcome.result).toEqual({ ok: true, changed: true, order: [...ABCD, piece('glossary')] })
+  expect(outcome.result).toMatchObject({ ok: true, changed: true, order: [...ABCD, piece('glossary')] })
+  // Its Undo is kept all the same: the documents are read straight from disk, not through the listing.
+  expect(outcome.result.ok && typeof outcome.result.undoToken).toBe('string')
   expect(outcome.writtenIndex).toBe(INDEX)
   restore = failReadsAfterManifestWrite()
   const error = await movePart(ws, DIR, 0, 1).catch((caught: unknown) => caught)
@@ -220,26 +222,20 @@ test('4: an Add that was written is reported as made, and a Plan write says so i
   expect((error as Error).message).toContain('The change was made')
 })
 
-test('4: Undo of an Add counts a removal that was written and could not be read again', async () => {
+test('4: Undo of an Add that was written and whose Folio outline could not be read again is reported as made, both documents put back', async () => {
   await makeFolio()
   const added = [piece('glossary'), piece('snippets')]
-  const after = [...ABCD, ...added]
-  expect((await addFolioPieces(ws, DIR, { paths: added, expected: ABCD })).result).toMatchObject({ ok: true, order: after })
+  const outcome = await addFolioPieces(ws, DIR, { paths: added, expected: ABCD })
+  if (!outcome.result.ok) throw new Error(outcome.result.message)
 
-  // The first removal (snippets) is written; every read after it fails, so the second removal cannot start.
+  // The listing fails once the manifest is written back, so the Plan cannot be read again after the Undo.
   const restore = failReadsAfterManifestWrite()
-  const outcome = await removeAddedFolioPieces(ws, DIR, { paths: added, expected: after })
+  const undone = await removeAddedFolioPieces(ws, DIR, { token: outcome.result.undoToken! })
   restore()
-  expect(outcome.result).toMatchObject({ ok: false, stale: false, partial: { removed: [piece('snippets')], remaining: [piece('glossary')], order: [...ABCD, piece('glossary')] } })
-  expect(outcome.writtenIndex).toBe(INDEX)
-  expect(JSON.parse(await read(MANIFEST)).files).toHaveLength(5)
-
-  // One piece left to take out: its removal is written, the read after it fails, and the Undo is complete.
-  const restoreAgain = failReadsAfterManifestWrite()
-  const last = await removeAddedFolioPieces(ws, DIR, { paths: [piece('glossary')], expected: [...ABCD, piece('glossary')] })
-  restoreAgain()
-  expect(last.result).toEqual({ ok: true, changed: true, order: ABCD })
-  expect(last.writtenIndex).toBe(INDEX)
+  expect(undone.result).toMatchObject({ ok: true, changed: true })
+  expect(undone.plan).toBeNull()
+  expect(undone.writtenIndex).toBe(INDEX)
+  expect(await read(INDEX)).toBe(INDEX_TEXT)
   expect(await read(MANIFEST)).toBe(MANIFEST_TEXT)
 })
 

@@ -24,7 +24,7 @@
  * flight, which removes the entry under rule 1 if the text written is still the latest.
  *
  * A hold (`hold`) is not an entry and not a write: it says that calls which write the document's file
- * outside the save queue are in flight (the redo of an undone suggestion, main-wrote-document.ts). It
+ * outside a save are in flight (the redo of an undone suggestion, resolution-routes.ts). It
  * claims nothing about text and changes no entry; while it stands the document is pending and not
  * settled, so a close waits for it.
  *
@@ -58,6 +58,9 @@ export type UnsavedRegistry = {
   hold(path: string): () => void
   /** The latest unconfirmed text, or undefined when the document has no entry. */
   textOf(path: string): string | undefined
+  /** A write of unknown outcome left the disk unknown for the document (until a write succeeds). Then
+   *  "the buffer equals the saved baseline" does not make it clean: no automatic reload may replace it. */
+  diskIsUnknown(path: string): boolean
   /** Documents with an entry. */
   paths(): string[]
   /** Documents with an entry, a write in flight or a hold: everything a close must wait for. */
@@ -66,6 +69,8 @@ export type UnsavedRegistry = {
   clean(): boolean
   /** Resolves when no write of the path is in flight and no hold stands (at once when neither). */
   settled(path: string): Promise<void>
+  /** A write of the path is in flight or a hold stands (what `settled` waits for). */
+  busy(path: string): boolean
 }
 
 export function createUnsavedRegistry(onChange: () => void = () => {}): UnsavedRegistry {
@@ -151,9 +156,11 @@ export function createUnsavedRegistry(onChange: () => void = () => {}): UnsavedR
       }
     },
     textOf: (path) => latest.get(path),
+    diskIsUnknown: (path) => diskUnknown.has(path),
     paths: () => [...latest.keys()],
     pending: () => [...new Set([...latest.keys(), ...inFlight.keys(), ...holds.keys()])],
     clean: () => latest.size === 0 && inFlight.size === 0 && holds.size === 0,
+    busy: (path) => writing(path),
     settled(path) {
       if (!writing(path)) return Promise.resolve()
       return new Promise<void>((resolve) => {

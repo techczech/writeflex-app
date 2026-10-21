@@ -170,25 +170,29 @@ test('Add puts the file last, and only files directly in the Folio folder that i
   await makeFolio()
   const expected = await order()
   const { result } = await addFolioPieces(ws, DIR, { paths: [piece('glossary')], expected })
-  expect(result).toEqual({ ok: true, changed: true, order: [...ABCD, piece('glossary')] })
+  expect(result).toMatchObject({ ok: true, changed: true, order: [...ABCD, piece('glossary')] })
+  expect(result.ok && typeof result.undoToken).toBe('string')
   expect(await read(MANIFEST)).toContain('glossary.md')
   expect(await read(INDEX)).toContain('- [[Glossary]]')
   expect(await read(`${DIR}/glossary.md`)).toBe('# Glossary\n')
 })
 
-test('Add refuses a non-addable file, a file in a sub-folder, a listed file and a file outside, writing nothing', async () => {
+test('Add refuses a non-addable file, a listed file and a file outside, writing nothing; a file in a sub-folder is accepted', async () => {
   await makeFolio({ extra: {} })
   await mkdir(join(root, DIR, 'sub'), { recursive: true })
   await writeFile(join(root, DIR, 'sub', 'deep.md'), '# Deep\n')
   await writeFile(join(root, 'stray.md'), '# Stray\n')
   const bytes = [await read(MANIFEST), await read(INDEX)]
   const expected = await order()
-  for (const paths of [[piece('_hidden')], [INDEX], [`${DIR}/sub/deep.md`], ['stray.md'], [piece('a')], [piece('glossary'), piece('_hidden')], [piece('gone')], []]) {
+  for (const paths of [[piece('_hidden')], [INDEX], ['stray.md'], [piece('a')], [piece('glossary'), piece('_hidden')], [piece('gone')], []]) {
     const { result } = await addFolioPieces(ws, DIR, { paths, expected })
     expect(result.ok).toBe(false)
   }
   expect([await read(MANIFEST), await read(INDEX)]).toEqual(bytes)
   expect(await order()).toEqual(expected)
+  const deep = await addFolioPieces(ws, DIR, { paths: [`${DIR}/sub/deep.md`], expected })
+  expect(deep.result).toMatchObject({ ok: true, changed: true })
+  expect(await order()).toEqual([...expected, `${DIR}/sub/deep.md`])
 })
 
 test('Add all adds every file in the order given, in one write', async () => {
@@ -199,15 +203,38 @@ test('Add all adds every file in the order given, in one write', async () => {
   expect(await read(INDEX)).toContain('- [[Delta]]\n- [[Glossary]]\n- [[Snippets]]')
 })
 
-test('Add all: a refusal the write itself makes for the LAST file adds none of them', async () => {
-  // zz.md shares its title with a cover, so its line would resolve to the cover: refused inside adoptParts, after glossary's line was prepared.
-  await makeFolio({ extra: { 'zz.md': '# Shared\n', 'README.md': '# Shared\n' } })
+test('Add all: a file whose bare path two files share goes in by its path with its extension', async () => {
+  // zz.md shares its title with a cover, and its bare path `./zz` with zz.markdown (ambiguous: names neither). Its
+  // path with the extension, `./zz.md`, names it alone (Sol round 3: an explicit extension matches only itself).
+  await makeFolio({ extra: { 'zz.md': '# Shared\n', 'zz.markdown': '# Shared\n', 'README.md': '# Shared\n' } })
+  const expected = await order()
+  const added = await addFolioPieces(ws, DIR, { paths: [piece('glossary'), piece('zz')], expected })
+  expect(added.result).toMatchObject({ ok: true, order: [...ABCD, piece('glossary'), piece('zz')] })
+  expect(await read(INDEX)).toContain('- [[Glossary]]\n- [[./zz.md]]\n')
+  expect((await readPlan(ws, DIR))?.parts.map((part) => part.path)).toEqual([...ABCD, piece('glossary'), piece('zz')])
+})
+
+test('Add all: a file no line can name is skipped and named; the rest go in and Undo takes back only them (Sol round 3)', async () => {
+  // `x#1.md` headed `# Bad | title`: neither its title nor its path `./x#1` can be a running-order line.
+  await makeFolio({ extra: { 'x#1.md': '# Bad | title\n' } })
+  const odd = `${DIR}/x#1.md`
+  expect((await readPlan(ws, DIR))?.unlisted.find((part) => part.path === odd)?.putBackRefusal).toMatch(/No running-order line can name this file/)
   const expected = await order()
   const bytes = [await read(MANIFEST), await read(INDEX)]
-  const refusal = await addFolioPieces(ws, DIR, { paths: [piece('glossary'), piece('zz')], expected })
-  expect(refusal.result).toMatchObject({ ok: false })
+  const alone = await addFolioPieces(ws, DIR, { paths: [odd], expected })
+  expect(alone.result).toMatchObject({ ok: false, stale: false })
+  expect(alone.result.ok ? '' : alone.result.message).toContain('“x#1.md” was not added')
   expect([await read(MANIFEST), await read(INDEX)]).toEqual(bytes)
-  expect(await order()).toEqual(expected)
+
+  const added = await addFolioPieces(ws, DIR, { paths: [piece('glossary'), odd], expected })
+  expect(added.result).toMatchObject({ ok: true, order: [...ABCD, piece('glossary')], skipped: [odd] })
+  expect(added.result.ok ? added.result.note : '').toContain('“x#1.md” was not added')
+  expect(await read(MANIFEST)).not.toContain('x#1')
+  expect((await readPlan(ws, DIR))?.parts.map((part) => part.path)).toEqual([...ABCD, piece('glossary')])
+  const token = added.result.ok ? added.result.undoToken : undefined
+  expect(token).toBeTruthy()
+  expect((await removeAddedFolioPieces(ws, DIR, { token: token! })).result).toMatchObject({ ok: true })
+  expect([await read(MANIFEST), await read(INDEX)]).toEqual(bytes)
 })
 
 test('Add refuses a stale running order', async () => {
@@ -225,30 +252,29 @@ test('Undo of an Add and of Add all takes out exactly the added pieces, and both
   const bytes = [await read(MANIFEST), await read(INDEX)]
   const start = await order()
   const added = await addFolioPieces(ws, DIR, { paths: [piece('glossary')], expected: start })
-  expect(added.result.ok).toBe(true)
-  const one = await removeAddedFolioPieces(ws, DIR, { paths: [piece('glossary')], expected: [...start, piece('glossary')] })
+  if (!added.result.ok) throw new Error(added.result.message)
+  const one = await removeAddedFolioPieces(ws, DIR, { token: added.result.undoToken! })
   expect(one.result).toMatchObject({ ok: true, order: start })
   expect([await read(MANIFEST), await read(INDEX)]).toEqual(bytes)
   const both = [piece('glossary'), piece('snippets')]
-  await addFolioPieces(ws, DIR, { paths: both, expected: start })
-  const undone = await removeAddedFolioPieces(ws, DIR, { paths: both, expected: [...start, ...both] })
+  const addedBoth = await addFolioPieces(ws, DIR, { paths: both, expected: start })
+  if (!addedBoth.result.ok) throw new Error(addedBoth.result.message)
+  const undone = await removeAddedFolioPieces(ws, DIR, { token: addedBoth.result.undoToken! })
   expect(undone.result).toMatchObject({ ok: true, order: start })
   expect([await read(MANIFEST), await read(INDEX)]).toEqual(bytes)
   expect(await read(`${DIR}/glossary.md`)).toBe('# Glossary\n')
 })
 
-test('Undo of an Add is refused when the running order changed since, or the added pieces are no longer last', async () => {
+test('Undo of an Add is refused when the running order changed since, and writes nothing', async () => {
   await makeFolio()
   const start = await order()
   const both = [piece('glossary'), piece('snippets')]
-  await addFolioPieces(ws, DIR, { paths: both, expected: start })
+  const added = await addFolioPieces(ws, DIR, { paths: both, expected: start })
+  if (!added.result.ok) throw new Error(added.result.message)
   const afterAdd = [...start, ...both]
   await moveFolioPiece(ws, DIR, { path: piece('a'), beforePath: null, expected: afterAdd })
   const bytes = [await read(MANIFEST), await read(INDEX)]
-  expect((await removeAddedFolioPieces(ws, DIR, { paths: both, expected: afterAdd })).result).toMatchObject({ ok: false, stale: true })
-  // Even with the current order named, pieces that are not the tail are refused.
-  const now = await order()
-  expect((await removeAddedFolioPieces(ws, DIR, { paths: both, expected: now })).result).toMatchObject({ ok: false, stale: true })
+  expect((await removeAddedFolioPieces(ws, DIR, { token: added.result.undoToken! })).result).toMatchObject({ ok: false, stale: true })
   expect([await read(MANIFEST), await read(INDEX)]).toEqual(bytes)
 })
 
@@ -262,7 +288,7 @@ test('numbered Index Notes stay numbered after a move and after Undo (the order 
   expect(await read(INDEX)).toBe(bytes)
 })
 
-test('after a write the Plan reads the same running order the Outline will', async () => {
+test('after a write the Folio outline reads the same running order the Outline will', async () => {
   await makeFolio()
   await moveFolioPiece(ws, DIR, { path: piece('b'), beforePath: null, expected: await order() })
   const plan = await readPlan(ws, DIR)
@@ -318,7 +344,7 @@ test('announcement texts follow the spec', () => {
   expect(undoneAnnouncement('Listen', 5, 9)).toBe('Order restored. Listen is back at position 5 of 9.')
 })
 
-test('Undo of a move restores the ORDER, not the bytes: a sparsely numbered Index Note is renumbered by every Plan write', async () => {
+test('Undo of a move restores the ORDER, not the bytes: a sparsely numbered Index Note is renumbered by every Folio outline write', async () => {
   await makeFolio({ index: '# Guide\n\n## Running order\n\n10. [[Alpha]]\n20. [[Beta]]\n30. [[Gamma]]\n40. [[Delta]]\n' })
   const start = await order()
   const manifest = await read(MANIFEST)
@@ -327,4 +353,18 @@ test('Undo of a move restores the ORDER, not the bytes: a sparsely numbered Inde
   expect(back.result).toMatchObject({ ok: true, order: start })
   expect(await read(MANIFEST)).toBe(manifest)
   expect(await read(INDEX)).toContain('10. [[Alpha]]\n11. [[Beta]]\n12. [[Gamma]]\n13. [[Delta]]')
+})
+
+test('Add from the resolved Folio read refuses left-out entries explicitly, without claiming stale order', async () => {
+  for (const withIndex of [true, false]) {
+    await makeFolio({ manifest: JSON.stringify({ schema_version: 1, content_root: '', files: [{ path: 'a.md' }, { path: 'missing.md' }] }) })
+    if (!withIndex) await rm(join(root, INDEX))
+    const seen = (await folioPieces(ws, DIR))!
+    expect(seen.leftOut).toHaveLength(1)
+    const before = await read(MANIFEST)
+    const { result } = await addFolioPieces(ws, DIR, { paths: [piece('glossary')], expected: seen.pieces })
+    expect(result).toMatchObject({ ok: false, stale: false })
+    if (!result.ok) expect(result.message).toContain('Folio outline')
+    expect(await read(MANIFEST)).toBe(before)
+  }
 })

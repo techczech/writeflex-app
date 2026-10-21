@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs'
 import type { ExampleCollection, ExampleView } from './example-collection'
+import { vaultFigures } from './vault-presence'
 import type { RecentWorkspace, SettingsStore } from './settings'
 
 /**
@@ -37,5 +38,51 @@ export async function startScreenModel(settings: Lists, example: Pick<ExampleCol
       return { root, missing }
     }),
     recents: lists.recents,
+  }
+}
+
+/** A vault as its start-screen card shows it. `works` and `inProgress` are null until the vault's index has been saved once. */
+export type StartVault = {
+  root: string
+  name: string
+  /** The root's path, home written `~`. */
+  location: string
+  works: number | null
+  inProgress: number | null
+  /** When this Mac last opened it (ms), or null. The nearest record of "last worked by you". */
+  lastWorked: number | null
+}
+
+export type StartScreenModelWithVaults = StartScreenModel & { vaults: StartVault[] }
+
+function tilde(root: string, home: string): string {
+  const base = home.replace(/\/+$/, '')
+  return base && (root === base || root.startsWith(`${base}/`)) ? `~${root.slice(base.length)}` : root
+}
+
+/**
+ * Vaults are listed once, in their own row: every pinned or recent root that holds a vault file is
+ * taken out of `pinned` and `recents` and becomes a card (a pinned vault keeps its pin in settings;
+ * it simply has no ⌘ number here, and the remaining pins number from ⌘1). Order: pins, then recents.
+ */
+export async function withVaults(
+  model: StartScreenModel,
+  settings: Pick<SettingsStore, 'recents'>,
+  options: { cacheDir: string | null; home: string },
+): Promise<StartScreenModelWithVaults> {
+  const opened = new Map(settings.recents().map((r) => [r.root, r.openedAt]))
+  const roots = [...new Set([...model.pinned.filter((p) => !p.missing).map((p) => p.root), ...model.recents.map((r) => r.root)])]
+  const found = await Promise.all(roots.map(async (root) => [root, await vaultFigures(root, options.cacheDir)] as const))
+  const vaults: StartVault[] = []
+  for (const [root, figures] of found) {
+    if (!figures) continue
+    vaults.push({ root, name: figures.name, location: tilde(root, options.home), works: figures.works, inProgress: figures.inProgress, lastWorked: opened.get(root) ?? null })
+  }
+  const isVault = new Set(vaults.map((v) => v.root))
+  return {
+    ...model,
+    vaults,
+    pinned: model.pinned.filter((p) => !isVault.has(p.root)),
+    recents: model.recents.filter((r) => !isVault.has(r.root)),
   }
 }

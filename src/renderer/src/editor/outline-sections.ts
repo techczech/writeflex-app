@@ -6,7 +6,7 @@ import {
   moveSubtreeDown,
   moveSubtreeUp,
   raiseSubtreeLevel,
-} from '@bridle/outline'
+} from '@app-patterns/outline'
 import { extractOutline, type OutlineHeading } from './outline'
 
 /**
@@ -14,7 +14,7 @@ import { extractOutline, type OutlineHeading } from './outline'
  * headings; every edit here takes heading start offsets and returns document changes, so the panel,
  * the editor chords and the tests all share one implementation and one undo step per call.
  *
- * Section ranges, moves and level changes come from `@bridle/outline` (getSectionRange and the
+ * Section ranges, moves and level changes come from `@app-patterns/outline` (getSectionRange and the
  * subtree commands, run against a scratch state). Only the arbitrary-target drop is composed here,
  * from the section range, because Bridle's moves are adjacent swaps.
  */

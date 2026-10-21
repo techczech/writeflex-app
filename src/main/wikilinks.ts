@@ -1,8 +1,10 @@
 import { posix } from 'node:path'
 import { collectionPattern, collectionStatus, localCalendarDate } from './collection'
 import { parseFrontmatter } from './frontmatter'
+import { isListedPath } from './document-path'
 import { slugifyFileName } from './workspace'
 import type { Workspace } from './workspace'
+import { FACTS_READ_CONCURRENCY, factsReader, mapBounded } from './file-facts'
 
 export type ParsedWikilink = {
   target: string
@@ -44,7 +46,8 @@ export type StubPreview = {
 }
 
 export type CreateStubResult =
-  | { created: true; path: string; content: string; seeded: boolean }
+  /** `content`: the file as read back after the create; `submitted`: the exact text this call wrote. */
+  | { created: true; path: string; content: string; submitted: string; seeded: boolean }
   | { created: false; existing: string[] }
 
 /** A piece a wikilink could mean: how it is titled, named and aliased. */
@@ -87,21 +90,27 @@ function withoutMarkdownExtension(value: string): string {
   return value.replace(/\.(?:md|markdown|mdx)$/i, '')
 }
 
-function addCandidate(map: CandidateIndex, tier: 'title' | 'basename' | 'alias', key: string, candidate: Candidate): void {
+function addCandidate(map: CandidateIndex, tier: 'title' | 'basename' | 'alias' | 'path', key: string, candidate: Candidate): void {
   const normalised = `${tier}:${withoutMarkdownExtension(key).toLocaleLowerCase()}`
   const current = map.get(normalised)
   if (current) current.push(candidate)
   else map.set(normalised, [candidate])
 }
 
-/** Build the three resolution tiers once so each subsequent wikilink lookup is O(1) before tie sorting. */
-export function buildWikilinkCandidateIndex(pieces: Candidate[]): CandidateIndex {
+/**
+ * Build the resolution tiers once so each subsequent wikilink lookup is O(1) before tie sorting. Each piece of
+ * `pathPieces` (by default `pieces`) is also filed under its workspace path (`path:`, extension dropped, lower case),
+ * the key `resolveWikilinkPath` reads for a `./` path link (`[[./contents/a]]`). A Folio's running order resolves
+ * titles among its line pool but paths among every file in its folder (plan.ts `planCandidates`), as the editor does.
+ */
+export function buildWikilinkCandidateIndex(pieces: Candidate[], pathPieces: Candidate[] = pieces): CandidateIndex {
   const index: CandidateIndex = new Map()
   for (const piece of pieces) {
     addCandidate(index, 'title', piece.title, piece)
     addCandidate(index, 'basename', piece.basename, piece)
     for (const alias of piece.aliases) addCandidate(index, 'alias', alias, piece)
   }
+  for (const piece of pathPieces) addCandidate(index, 'path', piece.path, piece)
   return index
 }
 
@@ -137,13 +146,23 @@ function aliasesOf(extra: Record<string, unknown>): string[] {
 /** Every piece under `dir` as a wikilink candidate. Exported because the Collection bundle
  *  (main/export.ts) must resolve links by the SAME rule the editor resolves them by. */
 export async function collectionCandidates(ws: Pick<Workspace, 'listFiles' | 'readFile'>, dir: string): Promise<Candidate[]> {
-  const files = (await ws.listFiles()).filter((file) => dir === '' || file.path.startsWith(`${dir}/`))
-  return Promise.all(files.map(async (file) => {
-    const { content } = await ws.readFile(file.path)
-    const fm = parseFrontmatter(content)
+  return candidatesFrom(ws, await ws.listFiles(), dir)
+}
+
+async function candidatesFrom(ws: Pick<Workspace, 'readFile'>, listing: Awaited<ReturnType<Workspace['listFiles']>>, dir: string): Promise<Candidate[]> {
+  const files = listing.filter((file) => dir === '' || file.path.startsWith(`${dir}/`))
+  // Title and aliases come from the per-file facts cache (file-facts.ts): a file is re-read and
+  // re-parsed only when it changed, so resolving links after each typing pause stays cheap.
+  const reader = await factsReader(ws, files, listing)
+  return mapBounded(files, FACTS_READ_CONCURRENCY, async (file) => {
+    const facts = await reader.read(file)
+    const { title, aliases } = facts.derive('wikilinks:candidate', (content) => ({
+      title: candidateTitle(content, file.path),
+      aliases: aliasesOf(parseFrontmatter(content)?.extra ?? {}),
+    }))
     const basename = posix.basename(file.path).replace(/\.(?:md|markdown|mdx)$/i, '')
-    return { path: file.path, title: candidateTitle(content, file.path), basename, aliases: aliasesOf(fm?.extra ?? {}) }
-  }))
+    return { path: file.path, title, basename, aliases: [...aliases] }
+  })
 }
 
 /** A piece's title as a wikilink candidate carries it: frontmatter title, else first level-1 heading, else file name. */
@@ -160,13 +179,85 @@ function folderDistance(from: string, to: string): number {
   return left.length - common + right.length - common
 }
 
-/** Which piece `target` means, judged from `from`: title, then file name, then alias, each
- *  case-insensitively and without a Markdown extension; ties break on folder distance. */
+/** The one form a path link takes: its target starts with `./` and is read from the linking note's own folder. */
+export function isPathLink(target: string): boolean {
+  return target.trim().startsWith('./')
+}
+
+const MARKDOWN_EXTENSION = /\.(?:md|markdown|mdx)$/i
+
+/** The workspace path a `./` path link spells, as written (extension or none), or null when it cannot name a file:
+ *  it climbs, is absolute, has a backslash, ends in `/`, or, with `within`, lies outside that folder. */
+function pathLinkPlace(from: string, target: string, within?: string): string | null {
+  const wanted = target.trim()
+  if (!isPathLink(wanted) || wanted.includes('\\') || wanted.split('/').includes('..')) return null
+  const folder = posix.dirname(from)
+  const full = posix.normalize(posix.join(folder === '.' ? '' : folder, wanted))
+  if (full === '.' || full === '..' || full.startsWith('../') || posix.isAbsolute(full) || full.endsWith('/') || wanted.endsWith('/')) return null
+  const scoped = within !== undefined && within !== '' && within !== '.'
+  if (scoped && !full.startsWith(`${within}/`)) return null
+  return full
+}
+
+/**
+ * The file a dead `./` path link would name once written (Sol round 4): its path from the note's folder, with the
+ * extension the link gives or `.md`. Null when the link cannot name a file (`pathLinkPlace`), or names one the
+ * workspace listing would never show.
+ */
+export function pathLinkNewFile(from: string, target: string, within?: string): string | null {
+  const full = pathLinkPlace(from, target, within)
+  // Only a place the workspace listing shows (the walker's own rule): a file in a hidden or tooling folder
+  // (`./.bridle/x`) would be written where no link can find it (Sol round 5).
+  if (full === null || posix.basename(full).startsWith('.') || !isListedPath(full, 'file')) return null
+  return MARKDOWN_EXTENSION.test(full) ? full : `${full}.md`
+}
+
+/**
+ * The file a `./` path link names, or null when it names none or more than one. The path is read from the linking
+ * note's own folder (`./contents/a`, `./a`). Never a path that climbs (`..` anywhere), an absolute one, one with a
+ * backslash, or, with `within`, one outside that folder. Only files in `index` can match: the workspace walk lists no
+ * symlink and enters none (workspace.ts), so no match is a link out.
+ *
+ * Exact, never a silent pick (Sol round 3): a target that gives an extension matches only that extension; one that
+ * gives none matches `.md`, `.markdown` or `.mdx`, and two of those both there is no match. An exact-case match wins;
+ * a case-folded one counts only when it is the single candidate.
+ *
+ * One rule for every reader of a link: the editor and the Collection graph (`resolveWikilinkTargetFromIndex`) and the
+ * Folio's running-order lines (plan.ts `resolvePlanLink`).
+ */
+export function resolveWikilinkPath(from: string, target: string, index: CandidateIndex, within?: string): string | null {
+  const full = pathLinkPlace(from, target, within)
+  if (full === null) return null
+  const scoped = within !== undefined && within !== '' && within !== '.'
+  const pool = (index.get(`path:${withoutMarkdownExtension(full).toLocaleLowerCase()}`) ?? [])
+    .map((piece) => piece.path)
+    .filter((path) => !scoped || path.startsWith(`${within}/`))
+  const extension = MARKDOWN_EXTENSION.exec(full)?.[0]
+  // With an extension the whole path is compared; without, the path less its extension.
+  const stem = (path: string): string => (extension ? path : withoutMarkdownExtension(path))
+  const named = extension ? pool.filter((path) => posix.extname(path).toLocaleLowerCase() === extension.toLocaleLowerCase()) : pool
+  const exact = named.filter((path) => stem(path) === full)
+  if (exact.length) return exact.length === 1 ? exact[0] : null
+  const folded = named.filter((path) => stem(path).toLocaleLowerCase() === full.toLocaleLowerCase())
+  return folded.length === 1 ? folded[0] : null
+}
+
+/** Which piece `target` means, judged from `from` (`resolveWikilinkTargetFromIndex`): a `./` path link by its path
+ *  alone, any other by title, file name, alias, each case-insensitively and without a Markdown extension; ties break
+ *  on folder distance. */
 export function resolveWikilinkTarget(from: string, target: string, pieces: Candidate[]): { to: string | null; ambiguous?: string[] } {
   return resolveWikilinkTargetFromIndex(from, target, buildWikilinkCandidateIndex(pieces))
 }
 
-export function resolveWikilinkTargetFromIndex(from: string, target: string, index: CandidateIndex): { to: string | null; ambiguous?: string[] } {
+/**
+ * Which piece `target` means, judged from `from`. A target that starts with `./` is a path link
+ * (`resolveWikilinkPath`): it names that file or nothing, never a title or alias. Every other target, with a `/` or
+ * without, resolves as it always has: title, then file name, then alias, each case-insensitively and without a
+ * Markdown extension; ties break on folder distance. `within`: the folder a path link must stay inside (a Folio's
+ * folder for its running order).
+ */
+export function resolveWikilinkTargetFromIndex(from: string, target: string, index: CandidateIndex, scope: { within?: string } = {}): { to: string | null; ambiguous?: string[] } {
+  if (isPathLink(target)) return { to: resolveWikilinkPath(from, target, index, scope.within) }
   const wanted = withoutMarkdownExtension(target).toLocaleLowerCase()
   const tiers = [index.get(`title:${wanted}`), index.get(`basename:${wanted}`), index.get(`alias:${wanted}`)]
   const matches = tiers.find((tier) => (tier?.length ?? 0) > 0) ?? []
@@ -177,12 +268,18 @@ export function resolveWikilinkTargetFromIndex(from: string, target: string, ind
 
 /** Build the read-only link graph for a Collection, including dead links and explicit ambiguity. */
 export async function collectionLinks(ws: Workspace, dir: string, override?: { from: string; content: string }): Promise<CollectionLink[]> {
-  const pieces = await collectionCandidates(ws, dir)
+  const listing = await ws.listFiles()
+  const pieces = await candidatesFrom(ws, listing, dir)
   const index = buildWikilinkCandidateIndex(pieces)
+  const byPath = new Map(listing.map((file) => [file.path, file]))
+  const reader = await factsReader(ws, [], listing)
   const links: CollectionLink[] = []
   for (const piece of pieces) {
-    const content = override?.from === piece.path ? override.content : (await ws.readFile(piece.path)).content
-    for (const parsed of extractWikilinks(content)) {
+    const file = byPath.get(piece.path)
+    const parsedLinks = override?.from === piece.path
+      ? extractWikilinks(override.content)
+      : file ? (await reader.read(file)).derive('wikilinks:parsed', extractWikilinks) : extractWikilinks((await ws.readFile(piece.path)).content)
+    for (const parsed of parsedLinks) {
       links.push({ from: piece.path, target: parsed.target, display: parsed.display, ...resolveWikilinkTargetFromIndex(piece.path, parsed.target, index) })
     }
   }
@@ -254,9 +351,11 @@ export async function previewCollectionStub(ws: Workspace, input: StubInput): Pr
 }
 
 /** Main-owned Stub write used by both capture paths; never writes outside Workspace containment. */
-export async function createCollectionStub(ws: Workspace, input: StubInput): Promise<CreateStubResult> {
+export async function createCollectionStub(ws: Workspace, input: StubInput, lastCheck?: () => void): Promise<CreateStubResult> {
   const preview = await previewCollectionStub(ws, input)
   if (preview.existing.length && !input.createAnyway) return { created: false, existing: preview.existing }
+  // `lastCheck` (synchronous) runs immediately before the create, with nothing awaited between: a refusal throws.
+  lastCheck?.()
   const created = await ws.createFile(preview.path, preview.content)
-  return { created: true, path: created.file.path, content: created.content, seeded: preview.seeded }
+  return { created: true, path: created.file.path, content: created.content, submitted: preview.content, seeded: preview.seeded }
 }

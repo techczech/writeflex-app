@@ -161,15 +161,16 @@ test('the derived rows of each chapter, as built (counts are the build\'s, not t
   const listed = Object.fromEntries(chapters.map((chapter) => [chapter.task, chapter.subgroups.map((group) => ({ subgroup: group.name, rows: group.rows.map((row) => `${row.label}${row.merged ? ` [${row.merged}: ${row.ids.join(', ')}]` : ''}`) }))]))
   expect(listed).toEqual(JSON.parse(readFileSync(new URL('../fixtures/guide-chapter-rows.json', import.meta.url), 'utf8')))
   expect(Object.fromEntries(chapters.map((chapter) => [chapter.task, chapter.rows.length]))).toEqual({
-    'Write': 53,
+    'Write': 58,
     'Shape the document': 28,
     'Stay focused': 20,
     'Listen': 9,
-    'Review and versions': 11,
+    'Review and versions': 23,
     'Find and manage files': 33,
-    'Collect and plan': 34,
+    'Collect and plan': 88, // +19 option A collection page commands (2026-10-21).
+    // // +1 Capture to research;  +5 Folio page redesign (0.26: the agent pill's three writes, Choose a file as front matter, Show or hide the files not in the outline); then 58: 41 at the fork; +5 title-conflict buttons, +1 Open Folio (next/0.25.1); +1 Add existing part to Folio outline as front matter (ADR-0046); +1 Go to the Details (0.26 ticket 4); +9 Folio outline keys (0.26 ticket 7: Open Folio at another part, Choose the role of a part, Open the file, six Details rows)
     'Work with the agent': 17,
-    'Share and export': 12,
+    'Share and export': 15,
     'Set up WriteFlex': 15,
   })
   expect(chapterFor(chapters, 'Shape the document')!.subgroups.map((group) => [group.name, group.rows.map((row) => row.label)])).toEqual([

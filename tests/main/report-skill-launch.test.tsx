@@ -57,7 +57,7 @@ test('a folder skill lands on the focused folder; a document skill still needs i
   expect(on(copyEdit, null, 'reports/strategy')).toEqual({ kind: 'refused', message: 'Report-structure needs an open document.' })
 })
 
-test('the Plan pane shows the trigger only when it can start the skill', () => {
+test('the Folio outline pane shows the trigger only when it can start the skill', () => {
   const withTrigger = renderToStaticMarkup(<PlanProjectionNav onOpenBoard={() => {}} onHelpWithReport={() => {}} />)
   expect(withTrigger).toContain('class="ghost primary skill-trigger"')
   expect(withTrigger).toContain('Help with this report')

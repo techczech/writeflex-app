@@ -1,6 +1,6 @@
 {
   "name": "writeflex-app",
-  "version": "0.22.0",
+  "version": "0.26.0",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
@@ -8,9 +8,10 @@
     "postinstall": "node scripts/build-vendored.mjs",
     "build:packages": "node scripts/build-vendored.mjs",
     "dev": "electron-vite dev",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p sharing-service/tsconfig.json",
     "test": "bun test",
-    "build": "bun test tests/main/agent-parity.test.ts && tsc --noEmit && electron-vite build && bun scripts/stage-readflex-reader.ts",
+    "build": "bun test tests/main/agent-parity.test.ts && bun run typecheck && bun run build:sharing-service && electron-vite build && bun scripts/stage-readflex-reader.ts",
+    "build:sharing-service": "bun scripts/build-sharing-service.ts",
     "dist:mac": "bun run build && electron-builder --mac --publish never",
     "dist:win": "bun run build && electron-builder --win --publish never"
   },
@@ -19,7 +20,7 @@
     "@bridle/core": "file:./packages/bridle/core",
     "@bridle/electron": "file:./packages/bridle/electron",
     "@bridle/ledger": "file:./packages/bridle/ledger",
-    "@bridle/outline": "file:./packages/bridle/outline",
+    "@app-patterns/outline": "file:./vendor/app-patterns/app-patterns-outline-0.3.0.tgz",
     "@bridle/react": "file:./packages/bridle/react",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.4",
@@ -106,6 +107,10 @@
       {
         "from": "node_modules/.cache/writeflex/readflex-reader",
         "to": "readflex-reader"
+      },
+      {
+        "from": "sharing-service-dist",
+        "to": "sharing-service-dist"
       }
     ],
     "fileAssociations": [

@@ -408,17 +408,17 @@ export function undoRefusalMessage(block: UndoBlock): string {
     const before = rename.fromTitle ?? fileName(rename.path)
     const after = rename.toTitle ?? (rename.to ? fileName(rename.to) : null)
     const renamed = after && after !== before ? `renamed ${before} to ${after}` : `renamed ${before}`
-    return `Can't put the order back: you have since ${renamed}, and undoing would bring back the old name in the plan. Undo the rename first, or change the order in the Plan pane.`
+    return `Can't put the order back: you have since ${renamed}, and undoing would bring back the old name in the Folio outline. Undo the rename first, or change the order in the Folio outline pane.`
   }
   const edited = block.drift[0]
   if (edited) {
     const name = fileName(edited.path)
     const what = edited.kind === 'missing' ? 'moved or deleted' : edited.kind === 'created' ? 'created' : 'changed'
-    return `Can't put the order back: ${name} has been ${what} since the order was set, and undoing would overwrite that. Undo that change first, or change the order in the Plan pane.`
+    return `Can't put the order back: ${name} has been ${what} since the order was set, and undoing would overwrite that. Undo that change first, or change the order in the Folio outline pane.`
   }
   const later = block.laterAgentFiles[0]
   if (later) {
-    return `Can't put the order back: a later agent change to ${fileName(later)} would be undone with it. Undo that turn first, or change the order in the Plan pane.`
+    return `Can't put the order back: a later agent change to ${fileName(later)} would be undone with it. Undo that turn first, or change the order in the Folio outline pane.`
   }
   return ''
 }

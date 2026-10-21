@@ -19,6 +19,7 @@ import {
   type ExampleRemovalFs,
 } from '../../src/main/example-removal'
 import { GuideProgressStore } from '../../src/main/guide-progress-store'
+import { acquireOwnerLock, releaseOwnerLock } from '../../src/main/owner-lock'
 import { SettingsStore } from '../../src/main/settings'
 import { startScreenModel } from '../../src/main/start-screen-model'
 
@@ -123,6 +124,7 @@ async function sandbox(): Promise<Sandbox> {
           await rename(path, join(bin, `Example collection ${trashed.length}`))
         },
         closeWindows: async (root) => { closed.push(root); order.push(`close:${store.exampleState()}:${existsSync(root) ? 'there' : 'gone'}`); return 'closed' },
+        ownLocksReleased: async () => {},
         fs: fencedFs(documents, calls, hook),
         ...overrides,
       })
@@ -266,6 +268,79 @@ test('dirty and saved: what the window writes as it closes is what goes to the B
   expect(launch.trashed).toEqual([box.example])
   expect(await readFile(join(box.bin, 'Example collection 1', EXAMPLE_LESSON_FILES[1]!), 'utf8')).toBe('typed just before removing\n')
   expect(launch.store.exampleState()).toBe('removed')
+})
+
+test('held by another program (the writeflex command): nothing is binned or recorded, one sentence says so; once it lets go, removal goes ahead', async () => {
+  const box = await written()
+  const launch = box.launch()
+  await launch.collection.current()
+  const settingsBefore = await readFile(box.settingsPath, 'utf8')
+  const lock = await acquireOwnerLock(box.example, { kind: 'command-line' })
+  try {
+    expect(await launch.confirmRemove()).toEqual({ ok: false, message: EXAMPLE_REMOVAL_TEXT.inUse })
+    expect(launch.trashed).toEqual([])
+    expect(launch.store.exampleState()).toBe('written')
+    expect(await readFile(box.settingsPath, 'utf8')).toBe(settingsBefore)
+    expect(existsSync(join(box.example, '00 Start here.md'))).toBe(true)
+  } finally {
+    await releaseOwnerLock(lock)
+  }
+  expect(EXAMPLE_REMOVAL_TEXT.inUse.match(/[.!?]/g)).toHaveLength(1)
+  const again = box.launch()
+  expect(await again.confirmRemove()).toEqual({ ok: true, outcome: 'moved-to-bin' })
+})
+
+test('this app\'s own owner lock on the example is released, and waited for, before the trash runs', async () => {
+  const box = await written()
+  // The example open in a window of this app: its owner lock, as the window's claim takes it.
+  let own: Awaited<ReturnType<typeof acquireOwnerLock>> | null = null
+  const lockFile = join(box.example, '.writeflex', 'owner.lock')
+  const launch = box.launch({
+    closeWindows: async () => {
+      launch.order.push('close')
+      return 'closed'
+    },
+    // The window's release runs after its close and takes a moment (its agent and requests settle first).
+    ownLocksReleased: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      await releaseOwnerLock(own!)
+      launch.order.push('released')
+    },
+    trash: async (path) => {
+      launch.order.push(`trash:${existsSync(lockFile) ? 'locked' : 'free'}`)
+      launch.trashed.push(path)
+      await rename(path, join(box.bin, 'Example collection 1'))
+    },
+  })
+  own = await acquireOwnerLock(box.example, { kind: 'app' })
+  expect(existsSync(lockFile)).toBe(true)
+  const token = await launch.look()
+  expect(await launch.removal.remove(token, WINDOW)).toEqual({ ok: true, outcome: 'moved-to-bin' })
+  expect(launch.order).toEqual(['close', 'released', 'trash:free'])
+})
+
+test('this app\'s own owner lock still on the example after its release failed: refused with its own sentence, not blamed on another program, nothing binned', async () => {
+  const box = await written()
+  const launch = box.launch()
+  await launch.collection.current()
+  // The window's lock was never let go: it is on disk, and it names this process.
+  const own = await acquireOwnerLock(box.example, { kind: 'app' })
+  try {
+    expect(await launch.confirmRemove()).toEqual({ ok: false, message: EXAMPLE_REMOVAL_TEXT.ownLockHeld })
+    expect(launch.trashed).toEqual([])
+    expect(launch.store.exampleState()).toBe('written')
+    expect(existsSync(join(box.example, '00 Start here.md'))).toBe(true)
+  } finally {
+    await releaseOwnerLock(own)
+  }
+})
+
+test('a release of this app\'s own lock that does not finish in time stops the removal, with nothing binned', async () => {
+  const box = await written()
+  const launch = box.launch({ ownLocksReleased: () => new Promise(() => {}), closeMs: 20 })
+  expect(await launch.confirmRemove()).toEqual({ ok: false, message: EXAMPLE_REMOVAL_TEXT.inUse })
+  expect(launch.trashed).toEqual([])
+  expect(launch.store.exampleState()).toBe('written')
 })
 
 /** A removal whose windows do not all close: nothing may be binned or recorded. */

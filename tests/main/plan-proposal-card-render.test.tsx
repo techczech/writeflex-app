@@ -106,12 +106,12 @@ const accepted = reducePlanCard(loaded(), {
   },
 })
 
-test('frame 4 · accepted: one activity row with Undo ⌘⇧Z, and the Plan as it now stands', () => {
+test('frame 4 · accepted: one activity row with Undo ⌘⇧Z, and the Folio outline as it now stands', () => {
   const html = render(accepted)
   expect(html).toContain('Running order set · 2 changes')
   expect(html).toContain('Undo<kbd class="k">⌘⇧Z</kbd>')
-  expect(html).toContain('The Plan pane now shows two parts in your order. The Index Note gained the running-order list, and _report-structure.json follows from it.')
-  expect(html).toContain('Plan <span>notes-towards-ai-strategy</span>')
+  expect(html).toContain('The Folio outline pane now shows two parts in your order. The Index Note gained the running-order list, and _report-structure.json follows from it.')
+  expect(html).toContain('Folio outline <span>notes-towards-ai-strategy</span>')
   expect(html).toContain('In the folder, not in the order')
   expect(html).toContain('Shared language for garden planning')
   expect(html).toContain('00_strategy-framework-Studio Mac')
@@ -119,7 +119,7 @@ test('frame 4 · accepted: one activity row with Undo ⌘⇧Z, and the Plan as i
 })
 
 test('frame 5 · undo refused: the Undo fades and the refusal names what is in the way', () => {
-  const message = "Can't put the order back: you have since renamed Key strategic moves to Moves for 2027, and undoing would bring back the old name in the plan. Undo the rename first, or change the order in the Plan pane."
+  const message = "Can't put the order back: you have since renamed Key strategic moves to Moves for 2027, and undoing would bring back the old name in the plan. Undo the rename first, or change the order in the Folio outline pane."
   const card = reducePlanCard(accepted, { type: 'undo-result', ok: false, message })
   const html = render(card)
   expect(html).toContain('Running order set · 2 changes')

@@ -30,15 +30,26 @@ test('the switch reads Folio only when the file is in a Folio, Folder otherwise,
   expect(outlineSwitch(false, { dir: 'paper' })).toEqual({ second: 'Folder', secondDisabled: true })
 })
 
-test('also-in-this-folder lists direct children the running order lacks, in file-name order, with whether each is admitted', () => {
+test('not-in-the-outline lists the files under the root the running order lacks (the Index Note never), in file-name order, with whether each is admitted', () => {
   const files = ['paper/b.md', 'paper/a.md', 'paper/_paper_INDEX.md', 'paper/Snippets.md', 'paper/glossary.md', 'paper/sub/deep.md'].map(file)
   const admissible = new Set(['paper/b.md', 'paper/a.md', 'paper/Snippets.md', 'paper/glossary.md'])
   expect(groupAlsoInFolder(files, ['paper/a.md', 'paper/sub/deep.md'], 'paper', admissible)).toEqual([
-    { path: 'paper/_paper_INDEX.md', addable: false },
     { path: 'paper/b.md', addable: true },
     { path: 'paper/glossary.md', addable: true },
     { path: 'paper/Snippets.md', addable: true },
   ])
+})
+
+test('Not in the outline reaches into sub-folders at any depth, below the content_root, and leaves covers, instructions, backups and _ files out', () => {
+  const names = ['p/contents/00-front.md', 'p/contents/a.md', 'p/contents/x/y/deep.md', 'p/contents/x/b.md', 'p/contents/README.md', 'p/contents/x/index.md',
+    'p/contents/_hidden.md', 'p/contents/c.md.writeflex-backup', 'p/contents/AGENTS.md', 'p/outside/z.md',
+    // Directly in the Folio folder but outside content_root: not under the piece root, so not listed (the Plan's boundary).
+    'p/top.md', 'p/contents/readme.md', 'p/contents/x/Index.MD']
+  expect(groupAlsoInFolder(names.map(file), ['p/contents/a.md'], 'p', new Set(names), 'p/contents', true).map((row) => row.path)).toEqual([
+    'p/contents/00-front.md', 'p/contents/x/b.md', 'p/contents/x/y/deep.md',
+  ])
+  // A refused content_root lists the Folio folder's direct files only.
+  expect(groupAlsoInFolder(['p/q.md', 'p/sub/r.md'].map(file), [], 'p', new Set(), 'p', false).map((row) => row.path)).toEqual(['p/q.md'])
 })
 
 test('a piece listed twice does not appear under also-in-this-folder', () => {
@@ -108,7 +119,7 @@ test('folio:outline gives the running order, then the folder\'s other files with
   ])
   expect(outline?.pieces[1].headings[1]).toEqual({ level: 2, text: 'One', line: 3 })
   // This Folio lists a file that is gone and one outside its folder: its order is the Plan's to change, so nothing is addable here.
-  expect(outline?.also.map((f) => [f.path, f.addable])).toEqual([['paper/_paper_INDEX.md', false], ['paper/Snippets.md', false]])
+  expect(outline?.also.map((f) => [f.path, f.addable])).toEqual([['paper/Snippets.md', false], ['paper/sub/deep.md', false]])
   expect(outline?.orderInPlanOnly).toBe(true)
   // A file of "Also in this folder" is in the same Folio; a file outside every Folio is in none.
   expect((await folioOutline(ws, 'paper/Snippets.md'))?.pieces.length).toBe(2)
@@ -230,7 +241,7 @@ test('a symlinked file inside the Folio folder that points outside is not listed
   expect(reads).toEqual(['paper/a.md'])
 })
 
-test('the outline lists exactly the pieces folioPieces gives the Plan and the export, a nested Folio\'s entry included', async () => {
+test('the outline lists exactly the pieces folioPieces gives the Folio outline and the export, a nested Folio\'s entry included', async () => {
   await write(`paper/${MANIFEST_NAME}`, manifest(['inner/a.md', 'b.md']))
   await write(`paper/inner/${MANIFEST_NAME}`, manifest(['a.md']))
   await write('paper/inner/a.md', '# Inner\n')

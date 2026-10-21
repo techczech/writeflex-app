@@ -9,3 +9,5 @@ packages/*/*/native/**/target/
 .env*
 test-results/
 playwright-report/
+sharing-service-dist/
+sharing-service-dist.staged-*/

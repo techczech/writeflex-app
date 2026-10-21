@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Check, Glasses, MessageSquare, Pause, TextCursorInput, Volume2 } from 'lucide-react'
+import { AlertTriangle, Check, X, ChevronDown, ChevronUp, Files, Glasses, History, MessageSquare, Pause, Pencil, TextCursorInput, Volume2 } from 'lucide-react'
 import { countUnits, type UnitCounts } from '../editor/word-count'
 import { activeHeadingIndex } from '../editor/outline'
 import type { EditorSnapshot } from '../hooks/useEditorSnapshot'
@@ -11,8 +11,16 @@ import { goalPercent, isOverdue } from '../../../main/frontmatter'
 import type { PlayerState } from '../editor/read-aloud-player'
 import { StatusBarEvents } from './StatusBarEvents'
 import { StatusBarDisclosure } from './StatusBarDisclosure'
+import { ReviewCountMenu } from './ReviewCountMenu'
+import { ReviewAskPopover, type ReviewAsk } from './ReviewBulkPopovers'
+import { ElsewherePopover, type ElsewhereControls } from './ReviewElsewherePopover'
+import { NotPlacedPopover, type NotPlacedControls } from './ReviewNotPlacedPopover'
+import type { CountMenuAction, CountMenuRow } from '../app/margin-count-menu'
+import { NARROW_REASON } from '../app/margin-count-menu'
 import {
   placeChipText,
+  type ReviewKindFilter,
+  type ReviewLine,
   statusBarAbsorption,
   statusBarLayout,
   type StatusBarEvent,
@@ -174,6 +182,42 @@ export type StatusBarProps = {
   place?: { label: string; count: number } | null
   /** Clicking the chip does what ⌘K does at that time. */
   onPlaceChip?: () => void
+  /** The review line (ADR-0046), from the margin model: null shows nothing. */
+  review?: ReviewLine | null
+  /** The count menu's rows (`countMenu()`), drawn when the count is pressed; a pick runs `onReviewMenuPick`. */
+  reviewMenu?: () => CountMenuRow[]
+  onReviewMenuPick?: (action: CountMenuAction) => void
+  /** The who chip's ×: back to Everyone. */
+  onReviewClearWho?: () => void
+  /** A segment of All / Comments / Edits was pressed. */
+  onReviewKind?: (segment: ReviewKindFilter) => void
+  /** Previous (-1) or next (1) shown item. */
+  onReviewStep?: (direction: -1 | 1) => void
+  /** "N new": go to the first arrival. */
+  onReviewNew?: () => void
+  /** The pieces behind "Waiting in N other pieces" and what Open and Next piece do (ticket 07). */
+  reviewElsewhere?: ElsewhereControls | null
+  /** A window too narrow for the margin: the review line drops key hints and the progress bar (ticket 07). */
+  reviewCompact?: boolean
+  /** The Margin | Inline switch on the review line (Dominik 2026-10-19): the view drawn (null while the margin is hidden), whether the text has too little room beside the margin for it, and the switch's chord. */
+  reviewView?: { view: 'margin' | 'under' | null; narrow: boolean; chord: string } | null
+  onReviewView?: (view: 'margin' | 'under') => void
+  /** The step chords, shown beside the arrows while a card is focused; null while none is. */
+  reviewKeys?: { previous: string; next: string } | null
+  /** "Accept all N" (six or more edits shown): accept them, without asking. */
+  onReviewAcceptAll?: () => void
+  /** "N selected · Accept · Decline · Clear": act on the picked cards (Decline asks first), or unpick them. */
+  onReviewPicked?: (what: 'accept' | 'decline' | 'clear') => void
+  /** The chord shown on "Accept all N" (⇧⌘A as the writer has it set). */
+  reviewAcceptKey?: string
+  /** The Decline all confirmation or the Send back popover, drawn over the review line; null draws neither. */
+  reviewAsk?: ReviewAsk | null
+  /** The changes behind "N could not be placed" and what their popover's buttons do (ticket 06). */
+  reviewNotPlaced?: NotPlacedControls | null
+  /** Settled today / My edits (ticket 08): Esc Back, back to review. */
+  onReviewModeBack?: () => void
+  /** My edits' "Accept all N": the Accept session. */
+  onReviewModeAcceptAll?: () => void
 }
 
 export type StatusBarSnapshotForCount = Pick<EditorSnapshot, 'docText' | 'countText' | 'selEmpty' | 'selFrom' | 'selTo'>
@@ -239,6 +283,25 @@ export function StatusBar({
   onRestoreEditorFocus = () => {},
   development = false,
   place = null,
+  review = null,
+  reviewMenu,
+  onReviewMenuPick,
+  onReviewClearWho,
+  onReviewKind,
+  onReviewStep,
+  onReviewNew,
+  reviewElsewhere = null,
+  reviewCompact = false,
+  reviewView = null,
+  onReviewView,
+  reviewKeys = null,
+  onReviewAcceptAll,
+  onReviewPicked,
+  reviewAcceptKey,
+  reviewAsk = null,
+  reviewNotPlaced = null,
+  onReviewModeBack,
+  onReviewModeAcceptAll,
   onPlaceChip = () => {},
 }: StatusBarProps): JSX.Element {
   const [unit, setUnit] = useState<Unit>(() => loadUnit(workspaceRoot))
@@ -251,6 +314,33 @@ export function StatusBar({
 
   // Restore the workspace's last-picked unit when a root binds/changes.
   useEffect(() => setUnit(loadUnit(workspaceRoot)), [workspaceRoot])
+  const [countMenuOpen, setCountMenuOpen] = useState(false)
+  const closeCountMenu = useCallback(() => { setCountMenuOpen(false); onRestoreEditorFocus() }, [onRestoreEditorFocus])
+  useEffect(() => { if (!review || review.hereless) setCountMenuOpen(false) }, [review])
+  const [notPlacedOpen, setNotPlacedOpen] = useState(false)
+  const closeNotPlaced = useCallback(() => { setNotPlacedOpen(false); onRestoreEditorFocus() }, [onRestoreEditorFocus])
+  useEffect(() => { if (!review?.notPlacedText) setNotPlacedOpen(false) }, [review?.notPlacedText])
+  // "N could not be placed" and its popover (ticket 06, frame `stale`), at the end of the review line.
+  const notPlacedPart = review?.notPlacedText ? (
+    <span className="sb-review-menu-wrap sb-review-np-wrap">
+      <button type="button" className="sb-review-np" data-testid="status-review-not-placed" aria-haspopup="dialog" aria-expanded={notPlacedOpen} onMouseDown={(event) => event.preventDefault()} onClick={() => setNotPlacedOpen((open) => !open)}>
+        <AlertTriangle className="icon" aria-hidden="true" />{review.notPlacedText}
+      </button>
+      {notPlacedOpen && reviewNotPlaced && <NotPlacedPopover controls={reviewNotPlaced} onClose={closeNotPlaced} />}
+    </span>
+  ) : null
+  const [elsewhereOpen, setElsewhereOpen] = useState(false)
+  const closeElsewhere = useCallback(() => { setElsewhereOpen(false); onRestoreEditorFocus() }, [onRestoreEditorFocus])
+  useEffect(() => { if (!review?.elsewhereText) setElsewhereOpen(false) }, [review?.elsewhereText])
+  // "Waiting in N other pieces" and its popover (ticket 07, frame `elsewhere`).
+  const elsewherePart = review?.elsewhereText ? (
+    <span className="sb-review-menu-wrap sb-review-else-wrap">
+      <button type="button" className="sb-review-else" data-testid="status-review-elsewhere" aria-haspopup="dialog" aria-expanded={elsewhereOpen} title="Pieces with items waiting" onMouseDown={(event) => event.preventDefault()} onClick={() => setElsewhereOpen((open) => !open)}>
+        <Files className="icon" aria-hidden="true" />{review.elsewhereText}
+      </button>
+      {elsewhereOpen && reviewElsewhere && <ElsewherePopover controls={reviewElsewhere} onClose={closeElsewhere} />}
+    </span>
+  ) : null
   // Merge note 2026-08-02: the 250ms session clock is retired — the single useSession tick
   // (1s) drives the countdown, sufficient for a mm:ss readout (deliberate choice at merge).
   useEffect(() => {
@@ -377,7 +467,9 @@ export function StatusBar({
           : outerWidth(bar.querySelector<HTMLElement>(':scope > .count-btn'))
       const agent = outerWidth(bar.querySelector<HTMLElement>('[data-sb-measure="agent-full"]'))
       const versionWidth = outerWidth(bar.querySelector<HTMLElement>(':scope > .sb-version'))
-      const fixedWidths = [collectionWidth, disclosure, instrument, agent, versionWidth].filter((width) => width > 0)
+      // The review line (ticket 07): its width counts, so a narrow window gives up the place chip and the rest before it clips.
+      const reviewWidth = outerWidth(bar.querySelector<HTMLElement>(':scope > .sb-review[data-testid="status-review-line"]'))
+      const fixedWidths = [collectionWidth, disclosure, instrument, agent, versionWidth, reviewWidth].filter((width) => width > 0)
       const residentWidth = padding + fixedWidths.reduce((sum, width) => sum + width, 0) + Math.max(0, fixedWidths.length - 1) * gap
       const eventNode = bar.querySelector<HTMLElement>('[data-sb-measure="event"]')
       const eventWidth = events.length > 0 && eventNode ? eventNode.getBoundingClientRect().width + gap : 0
@@ -404,12 +496,12 @@ export function StatusBar({
     const observer = new ResizeObserver(measure)
     observer.observe(bar)
     return () => observer.disconnect()
-  }, [collectionName, workspaceRoot, events, explicitInstrument?.label, explicitInstrument?.reached, goal, label, modeIds, place?.label, place?.count, readAloud?.state.rate, readAloud?.state.paused, readAloud?.voiceName, status, version])
+  }, [collectionName, workspaceRoot, events, explicitInstrument?.label, explicitInstrument?.reached, goal, label, modeIds, place?.label, place?.count, review, reviewKeys?.next, readAloud?.state.rate, readAloud?.state.paused, readAloud?.voiceName, status, version])
 
   const absorbed = layout.absorbed
   const eventAbsorbed = absorbed.includes('event')
   const focusLabel = focus && focus.mode !== '' ? focusChipLabel(focus.mode, focus.leadStyle) : null
-  const placeText = place ? placeChipText(place.label, place.count) : null
+    const placeText = place ? placeChipText(place.label, place.count) : null
   const placeLayout = layout.place ?? 'full'
   const absorbedModes = absorbed.reduce<Array<{ id: string; label: string }>>((rows, id) => {
     if (id === 'reviewing') rows.push({ id, label: 'Reviewing' })
@@ -477,8 +569,8 @@ export function StatusBar({
       {focusLabel && !absorbed.includes('focus') && (
         <button
           className="focus-chip"
-          title="Focus mode — click to change"
-          aria-label={`${focusLabel}. Click to open the Focus Picker`}
+          title="Focus and readability — click to change"
+          aria-label={`${focusLabel}. Click to open Focus and readability`}
           onClick={onOpenFocusPicker}
         >
           <span className="dot" aria-hidden="true" />
@@ -486,13 +578,13 @@ export function StatusBar({
         </button>
       )}
       {lineOverlay?.lineFocus.on && (
-        <button className="focus-chip" data-testid="line-focus-chip" title="Line focus — click to change" aria-label={`${lineFocusChipLabel(lineOverlay.lineFocus)}. Click to open the Focus Picker`} onClick={onOpenFocusPicker}>
+        <button className="focus-chip" data-testid="line-focus-chip" title="Line focus — click to change" aria-label={`${lineFocusChipLabel(lineOverlay.lineFocus)}. Click to open Focus and readability`} onClick={onOpenFocusPicker}>
           <span className="dot" aria-hidden="true" />
           <span>{lineFocusChipLabel(lineOverlay.lineFocus)}</span>
         </button>
       )}
       {lineOverlay?.ruler.on && (
-        <button className="focus-chip" data-testid="ruler-chip" title="Ruler — click to change" aria-label={`${rulerChipLabel(lineOverlay.ruler)}. Click to open the Focus Picker`} onClick={onOpenFocusPicker}>
+        <button className="focus-chip" data-testid="ruler-chip" title="Ruler — click to change" aria-label={`${rulerChipLabel(lineOverlay.ruler)}. Click to open Focus and readability`} onClick={onOpenFocusPicker}>
           <span className="dot" aria-hidden="true" />
           <span>{rulerChipLabel(lineOverlay.ruler)}</span>
         </button>
@@ -594,6 +686,165 @@ export function StatusBar({
           {automaticDot}
           {label}
         </button>
+      )}
+      {review && (
+        <span className={`sb-review${reviewCompact ? ' compact' : ''}`} data-testid="status-review-line" data-sb-resident>
+          {review.newText && (
+            <button type="button" className="sb-review-new" data-testid="status-review-new" onMouseDown={(event) => event.preventDefault()} onClick={onReviewNew}>{review.newText}</button>
+          )}
+          {review.mode ? (
+            // Settled today or My edits (ticket 08, frames settled and my-edits): the mode's name opens the count menu.
+            <>
+              <span className="sb-review-menu-wrap">
+                <button
+                  type="button"
+                  className="sb-review-count sb-review-mode"
+                  data-testid="status-review-mode"
+                  data-mode={review.mode.kind}
+                  title="Review: count menu"
+                  aria-label={`${review.mode.label}, ${review.mode.text}. Open the review menu`}
+                  aria-haspopup="menu"
+                  aria-expanded={countMenuOpen}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setCountMenuOpen((open) => !open)}
+                >
+                  {review.mode.kind === 'settled' ? <History className="icon" aria-hidden="true" /> : <Pencil className="icon" aria-hidden="true" />}
+                  <b>{review.mode.label} · {review.mode.text}</b>
+                </button>
+                {countMenuOpen && reviewMenu && (
+                  <ReviewCountMenu rows={reviewMenu()} onClose={closeCountMenu} onPick={(action) => { setCountMenuOpen(false); onReviewMenuPick?.(action) }} />
+                )}
+                {reviewAsk && <ReviewAskPopover ask={reviewAsk} />}
+              </span>
+              {review.mode.kind === 'mine' && (
+                <span className="sb-review-step">
+                  <button type="button" className="sb-review-arrow" data-testid="status-review-previous" aria-label="Previous item" title="Previous item" onMouseDown={(event) => event.preventDefault()} onClick={() => onReviewStep?.(-1)}><ChevronUp className="icon" aria-hidden="true" /></button>
+                  <button type="button" className="sb-review-arrow" data-testid="status-review-next" aria-label="Next item" title="Next item" onMouseDown={(event) => event.preventDefault()} onClick={() => onReviewStep?.(1)}><ChevronDown className="icon" aria-hidden="true" /></button>
+                </span>
+              )}
+              {review.mode.acceptAllText && (
+                <button type="button" className="sb-review-bulk" data-testid="status-review-mode-accept-all" onMouseDown={(event) => event.preventDefault()} onClick={onReviewModeAcceptAll}>
+                  <Check className="icon" aria-hidden="true" />{review.mode.acceptAllText}{reviewAcceptKey && <kbd className="sb-review-kbd">{reviewAcceptKey}</kbd>}
+                </button>
+              )}
+              {review.mode.othersText && <span className="sb-review-others" data-testid="status-review-mode-others">{review.mode.othersText}</span>}
+              <button type="button" className="sb-review-back" data-testid="status-review-mode-back" title="Back to review (Esc)" onMouseDown={(event) => event.preventDefault()} onClick={onReviewModeBack}>
+                <kbd className="sb-review-kbd">Esc</kbd>Back
+              </button>
+            </>
+          ) : review.hereless ? (
+            <>
+              {elsewherePart}
+              {notPlacedPart}
+            </>
+          ) : (
+            <>
+              <span className="sb-review-menu-wrap">
+                <button
+                  type="button"
+                  className="sb-review-count"
+                  data-testid="status-review-count"
+                  title="Review: count menu"
+                  aria-label={`${review.countText}. Open the review menu`}
+                  aria-haspopup="menu"
+                  aria-expanded={countMenuOpen}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setCountMenuOpen((open) => !open)}
+                >
+                  <MessageSquare className="icon" aria-hidden="true" />
+                  <b>{review.countText}</b>
+                  <ChevronDown className="icon chev" aria-hidden="true" />
+                </button>
+                {countMenuOpen && reviewMenu && (
+                  <ReviewCountMenu rows={reviewMenu()} onClose={closeCountMenu} onPick={(action) => { setCountMenuOpen(false); onReviewMenuPick?.(action) }} />
+                )}
+                {reviewAsk && <ReviewAskPopover ask={reviewAsk} />}
+              </span>
+              <span className="sb-review-seg" role="group" aria-label="Show in the margin">
+                {review.segments.map((segment) => (
+                  <button
+                    key={segment.id}
+                    type="button"
+                    className="sb-review-seg-btn"
+                    data-testid={`status-review-${segment.id}`}
+                    aria-pressed={segment.pressed}
+                    disabled={segment.off}
+                    title={segment.id === 'all' ? 'Show everything (⌃⌥⌘1)' : segment.id === 'comments' ? 'Show comments only (⌃⌥⌘2)' : 'Show edits only (⌃⌥⌘3)'}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => onReviewKind?.(segment.id)}
+                  >
+                    {segment.label} <span className="n">{segment.count}</span>
+                  </button>
+                ))}
+              </span>
+              {reviewView && (
+                <span className="sb-review-seg sb-review-view" role="group" aria-label="Where the cards sit">
+                  <button
+                    type="button"
+                    className="sb-review-seg-btn"
+                    data-testid="status-review-view-margin"
+                    aria-pressed={reviewView.view === 'margin'}
+                    disabled={reviewView.narrow}
+                    title={reviewView.narrow ? NARROW_REASON : `Cards in the margin beside the text (${reviewView.chord || '⇧⌥⌘V'})`}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => onReviewView?.('margin')}
+                  >
+                    Margin
+                  </button>
+                  <button
+                    type="button"
+                    className="sb-review-seg-btn"
+                    data-testid="status-review-view-inline"
+                    aria-pressed={reviewView.view === 'under'}
+                    title={`Cards inline, under their paragraph (${reviewView.chord || '⇧⌥⌘V'})`}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => onReviewView?.('under')}
+                  >
+                    Inline
+                  </button>
+                </span>
+              )}
+              {review.who && (
+                <span className="sb-review-who" data-testid="status-review-who">
+                  {review.who}
+                  <button type="button" aria-label={`Clear ${review.who}`} title="Show everyone" data-testid="status-review-who-clear" onMouseDown={(event) => event.preventDefault()} onClick={onReviewClearWho}><X className="icon" aria-hidden="true" /></button>
+                </span>
+              )}
+              <span className="sb-review-step">
+                {reviewKeys && <kbd className="sb-review-kbd" data-testid="status-review-previous-key">{reviewKeys.previous}</kbd>}
+                <button type="button" className="sb-review-arrow" data-testid="status-review-previous" aria-label="Previous item" title="Previous item" onMouseDown={(event) => event.preventDefault()} onClick={() => onReviewStep?.(-1)}><ChevronUp className="icon" aria-hidden="true" /></button>
+                <button type="button" className="sb-review-arrow" data-testid="status-review-next" aria-label="Next item" title="Next item" onMouseDown={(event) => event.preventDefault()} onClick={() => onReviewStep?.(1)}><ChevronDown className="icon" aria-hidden="true" /></button>
+                {reviewKeys && <kbd className="sb-review-kbd" data-testid="status-review-next-key">{reviewKeys.next}</kbd>}
+              </span>
+              {review.selectedText && (
+                <span className="sb-review-sel" data-testid="status-review-selected">
+                  <b>{review.selectedText}</b>
+                  <button type="button" className="sb-review-act yes" data-testid="status-review-picked-accept" onMouseDown={(event) => event.preventDefault()} onClick={() => onReviewPicked?.('accept')}><Check className="icon" aria-hidden="true" />Accept</button>
+                  <button type="button" className="sb-review-act" data-testid="status-review-picked-decline" onMouseDown={(event) => event.preventDefault()} onClick={() => onReviewPicked?.('decline')}><X className="icon" aria-hidden="true" />Decline</button>
+                  <button type="button" className="sb-review-act" data-testid="status-review-picked-clear" onMouseDown={(event) => event.preventDefault()} onClick={() => onReviewPicked?.('clear')}>Clear</button>
+                </span>
+              )}
+              {review.acceptAllText && (
+                <button type="button" className="sb-review-bulk" data-testid="status-review-accept-all" onMouseDown={(event) => event.preventDefault()} onClick={onReviewAcceptAll}>
+                  <Check className="icon" aria-hidden="true" />{review.acceptAllText}{reviewAcceptKey && <kbd className="sb-review-kbd">{reviewAcceptKey}</kbd>}
+                </button>
+              )}
+              {review.progress && (
+                <span className="sb-review-prog" data-testid="status-review-progress">
+                  <span>{review.progress.text}</span>
+                  <span className="bar" aria-hidden="true"><i style={{ width: `${Math.round(review.progress.fraction * 100)}%` }} /></span>
+                </span>
+              )}
+              {elsewherePart}
+              {notPlacedPart}
+            </>
+          )}
+        </span>
+      )}
+      {reviewAsk && (!review || review.hereless) && (
+        <span className="sb-review sb-review-menu-wrap sb-review-ask-alone">
+          <ReviewAskPopover ask={reviewAsk} />
+        </span>
       )}
       {!layout.typewriterPriority && (
         <button type="button" className={`sb-agent-affordance${layout.agentIconOnly ? ' icon-only' : ''}`} data-sb-resident title="Message the agent…" aria-label="Message the agent" onClick={onMessageAgent}>

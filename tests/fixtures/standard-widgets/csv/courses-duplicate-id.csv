@@ -1,0 +1,4 @@
+course_id,title,audience,duration_hours,description
+001,Prompting basics,Staff,2,First use of the id.
+002,Data and privacy,All,1.5,A different id.
+001,Prompting basics (repeat),Staff,2,Second use of the same id.

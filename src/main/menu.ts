@@ -1,3 +1,4 @@
+import { COLLECTION_PAGE_COMMANDS } from '../shared/collection-page-commands'
 import { BrowserWindow, Menu, dialog, type MenuItemConstructorOptions } from 'electron'
 import { statSync } from 'node:fs'
 import { allStates, type WindowState } from './state'
@@ -15,6 +16,15 @@ function focusedState(): WindowState | null {
 /** Menu commands the renderer owns (they touch the editor buffer) go to the focused window. */
 function sendMenuAction(action: MenuAction): void {
   BrowserWindow.getFocusedWindow()?.webContents.send('menu:action', action)
+}
+
+export function updateCollectionMenu(): void {
+  const item = Menu.getApplicationMenu()?.getMenuItemById('collection-page')
+  const enabled = focusedState()?.collectionPageActive === true
+  for (const child of item?.submenu?.items ?? []) {
+    child.enabled = enabled
+    child.visible = child.id !== 'collection-page:bulk-folio' || focusedState()?.collectionPageFolio === true
+  }
 }
 
 /** Same dialog as the renderer's workspace:open-dialog, but routed straight through the manager. */
@@ -138,7 +148,9 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
     // historyKeymap; the menu CLICK routes as a 'redo' action for the mouse path.
     label: 'Edit',
     submenu: [
-      { role: 'undo' },
+      // Undo follows the Redo pattern: a native role would claim ⌘Z before the Folio outline's Details card (which
+      // undoes its own change by token) could see it. The renderer owns the key; the click routes as 'undo'.
+      { label: 'Undo', accelerator: 'CmdOrCtrl+Z', registerAccelerator: false, click: () => sendMenuAction('undo') },
       { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', registerAccelerator: false, click: () => sendMenuAction('redo') },
       { type: 'separator' },
       { role: 'cut' },
@@ -165,7 +177,9 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         { label: 'Previous Tab', ...accel('navigation.previousTab', 'Shift+CmdOrCtrl+['), registerAccelerator: false, click: () => sendMenuAction('previous-tab') },
         { label: 'Next File in Folder', ...accel('navigation.nextFolderFile', 'Alt+CmdOrCtrl+]'), registerAccelerator: false, click: () => sendMenuAction('next-folder-file') },
         { label: 'Previous File in Folder', ...accel('navigation.previousFolderFile', 'Alt+CmdOrCtrl+['), registerAccelerator: false, click: () => sendMenuAction('previous-folder-file') },
-        { label: 'Open Review', ...accel('app.review', 'Shift+CmdOrCtrl+C'), registerAccelerator: false, click: () => sendMenuAction('open-review') },
+        { label: 'Focus Review Margin', ...accel('review.focusMargin', 'Shift+CmdOrCtrl+C'), registerAccelerator: false, click: () => sendMenuAction('focus-review-margin') },
+        { label: 'Switch Margin / Inline', ...accel('review.switchMarginView', 'Shift+Alt+CmdOrCtrl+V'), registerAccelerator: false, click: () => sendMenuAction('switch-margin-view') },
+        { label: 'Show or Hide Margin', ...accel('review.toggleMargin', 'Shift+Alt+CmdOrCtrl+M'), registerAccelerator: false, click: () => sendMenuAction('toggle-margin') },
         { label: 'Open Versions', ...accel('app.versions', 'CmdOrCtrl+3'), registerAccelerator: false, click: () => sendMenuAction('open-versions') },
         // Same registerAccelerator: false pattern as Toggle Outline above — the renderer's keydown
         // handler is the sole owner of ⌘T (Task 14), so a native registration here would double-fire.
@@ -191,6 +205,11 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         // chord opens the archive search (WF-4B). fn-F and the green window button still toggle it.
         { label: 'Toggle Full Screen', click: (_item, window) => { if (window instanceof BrowserWindow) window.setFullScreen(!window.isFullScreen()) } }
       ]
+    },
+    {
+      id: 'collection-page',
+      label: 'Collection',
+      submenu: COLLECTION_PAGE_COMMANDS.map(([name, label]) => ({ id: `collection-page:${name}`, label, enabled: focusedState()?.collectionPageActive === true, visible: name !== 'bulk-folio' || focusedState()?.collectionPageFolio === true, click: () => sendMenuAction(`collection-page:${name}`) }))
     },
     {
       label: 'Window',

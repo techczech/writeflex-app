@@ -1,7 +1,8 @@
+import { metadataWorkspace } from './metadata-view-state'
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language'
 import { EditorState, Facet, Prec, StateEffect, StateField, type Extension, type Range } from '@codemirror/state'
 import { Decoration, EditorView, keymap, WidgetType, type DecorationSet } from '@codemirror/view'
-import { extractOutline } from './outline'
+import { extractOutlineOfState } from './outline'
 import { WidgetBlockWidget } from './live-preview-widget-block'
 import { embedLine } from '../../../shared/markdown/embed-line'
 import { CodeWidget, FrontmatterWidget, ImageWidget, MarkmapWidget, MermaidWidget, QueryWidget, SvgWidget, TableWidget } from './live-preview-widgets'
@@ -137,7 +138,7 @@ export function shouldProtectBackspaceAfterBlock(blocks: TextRange[], pos: numbe
 }
 
 export function headingJumpTarget(state: EditorState, pos: number, direction: 1 | -1): number | null {
-  const headings = extractOutline(state.doc.toString())
+  const headings = extractOutlineOfState(state, state.doc.toString())
   const target = direction > 0 ? headings.find((heading) => heading.from > pos) : [...headings].reverse().find((heading) => heading.from < pos)
   return target?.from ?? null
 }
@@ -164,8 +165,12 @@ function localAssetUrl(base: string, path: string): string {
   return `${base.replace(/\/$/, '')}/${path.split('/').map(encodeURIComponent).join('/')}`
 }
 
-export function widgetFor(block: LivePreviewBlock, assetBaseUrl: string, selected: boolean, pending: boolean): WidgetType {
-  if (block.kind === 'frontmatter') return new FrontmatterWidget(block.source, selected, pending)
+export function widgetFor(block: LivePreviewBlock, assetBaseUrl: string, selected: boolean, pending: boolean, documentPath: string | null = null): WidgetType {
+  if (block.kind === 'frontmatter') return new FrontmatterWidget(block.source, selected, pending, documentPath, (view) => {
+    if (blockHasPendingChange(view.state, block)) view.state.facet(livePreviewConfig).onPendingMetadataEdit?.()
+    view.dispatch({ selection: { anchor: block.from }, effects: setOpenLivePreviewBlock.of(block), scrollIntoView: true })
+    view.focus()
+  })
   if (block.kind === 'image') return new ImageWidget(block.source, localAssetUrl(assetBaseUrl, block.url ?? ''), block.alt ?? '', selected)
   if (block.kind === 'table') return new TableWidget(block.source, selected)
   if (block.kind === 'mermaid') return new MermaidWidget(block.source, selected)
@@ -244,8 +249,11 @@ class ObjectEditorWidget extends WidgetType {
         console.error(message)
         void reportRendererError(new Error(message))
       }
-      const footnotes = renumberFootnotes(view.state.doc.toString())
-      if (footnotes) view.dispatch({ changes: footnotes.changes, annotations: [skipWriterReviewTracking.of(true)] })
+      // Metadata edits own the header only, even when the body has non-canonical footnote numbering.
+      if (this.block.kind !== 'frontmatter') {
+        const footnotes = renumberFootnotes(view.state.doc.toString())
+        if (footnotes) view.dispatch({ changes: footnotes.changes, annotations: [skipWriterReviewTracking.of(true)] })
+      }
       view.focus()
       return true
     }
@@ -265,7 +273,7 @@ class ObjectEditorWidget extends WidgetType {
     // box without its margin, and a margin here desynchronises its height map (keys move by screen position).
     const slot = document.createElement('div')
     slot.className = 'oe-slot'
-    slot.append(mountObjectEditor(this.block, { commit, close }) ?? new DoneWidget(this.block).toDOM(view))
+    slot.append(mountObjectEditor(this.block, { commit, close }, { workspace: metadataWorkspace(view.dom), path: view.state.facet(livePreviewConfig).documentPath() }) ?? new DoneWidget(this.block).toDOM(view))
     return slot
   }
   // The EDITING widget owns its events entirely — with false, CM processed clicks inside the
@@ -290,21 +298,68 @@ export function shouldEscapeAboveBlock(block: Pick<LivePreviewBlock, 'kind' | 'f
   return block.kind !== 'frontmatter' && block.from === 0
 }
 
-type PreviewState = { blocks: LivePreviewBlock[]; decorations: DecorationSet; atomic: DecorationSet }
+/** What a document (not a caret) decides: the blocks and the ranges that colour them. A bare caret
+ *  move leaves all of it alone, so it is kept and only the selection-dependent decorations are redone. */
+type PreviewStructure = { blocks: LivePreviewBlock[]; pendingRanges: TextRange[]; malformedMetadata: TextRange | null }
+type PreviewState = {
+  blocks: LivePreviewBlock[]
+  decorations: DecorationSet
+  atomic: DecorationSet
+  /** Null in raw mode, where nothing is rendered. */
+  structure: PreviewStructure | null
+  /** Per block: is a selection head on it (the only selection-dependent input to the decorations)? */
+  selected: boolean[]
+}
+
+/** Half-open: block.to is the NEXT line's start (the atomic skip lands there), which must not
+ *  read as "still on the block". A block ending at EOF keeps the inclusive end (nowhere past it). */
+function selectedFlagsOf(state: EditorState, blocks: LivePreviewBlock[]): boolean[] {
+  return blocks.map((block) => {
+    const onBlock = (head: number): boolean => head >= block.from && (head < block.to || (block.to >= state.doc.length && head <= block.to))
+    return state.selection.ranges.some((selection) => onBlock(selection.head))
+  })
+}
+
+/** {@link malformedFrontmatterRange} for a live document, reading only as far as the first fence's
+ *  closing partner (the function looks no further) instead of copying and splitting the whole text. */
+export function malformedFrontmatterRangeOf(state: EditorState): TextRange | null {
+  const { doc } = state
+  let seen = 0
+  let readTo = -1
+  let offset = 0
+  for (const line of doc.iterLines()) {
+    if (line === '---') {
+      seen += 1
+      if (seen === 2) { readTo = Math.min(doc.length, offset + line.length + 1); break }
+    }
+    offset += line.length + 1
+  }
+  if (seen === 0) return null
+  return malformedFrontmatterRange(readTo >= 0 ? doc.sliceString(0, readTo) : doc.toString())
+}
+
+const sameFlags = (a: boolean[], b: boolean[]): boolean => a.length === b.length && a.every((flag, index) => flag === b[index])
 
 /** Block decorations MUST come from state, never a ViewPlugin — CM6's tile DocView hard-crashes on
  *  plugin-provided block replaces (C1 review find, 2026-07-11: "Cannot destructure property 'tile'").
  *  The whole document is scanned (no viewport limit — a StateField has no view); detect is a single
  *  tree iteration, cheap at prose scale. */
 function buildPreview(state: EditorState): PreviewState {
-  if (editorViewModeOf(state) === 'raw') return { blocks: [], decorations: Decoration.none, atomic: Decoration.none }
+  if (editorViewModeOf(state) === 'raw') return { blocks: [], decorations: Decoration.none, atomic: Decoration.none, structure: null, selected: [] }
+  const structure: PreviewStructure = {
+    blocks: detectLivePreviewBlocks(state),
+    pendingRanges: [...changeMarkRanges(state), ...inlineChangeRanges(state)],
+    malformedMetadata: malformedFrontmatterRangeOf(state),
+  }
+  return composePreview(state, structure, selectedFlagsOf(state, structure.blocks))
+}
+
+function composePreview(state: EditorState, structure: PreviewStructure, selectedFlags: boolean[]): PreviewState {
   const open = state.field(openBlockField)
-  const blocks = detectLivePreviewBlocks(state)
+  const { blocks, pendingRanges, malformedMetadata } = structure
   const config = state.facet(livePreviewConfig)
-  const pendingRanges = [...changeMarkRanges(state), ...inlineChangeRanges(state)]
   const ranges: Range<Decoration>[] = []
   const atomicRanges: Range<Decoration>[] = []
-  const malformedMetadata = malformedFrontmatterRange(state.doc.toString())
   if (malformedMetadata) ranges.push(Decoration.mark({ class: 'lp-malformed-frontmatter-source' }).range(malformedMetadata.from, malformedMetadata.to))
   if (open) {
     const block = blocks.find((item) => item.from === open.from)
@@ -319,15 +374,12 @@ function buildPreview(state: EditorState): PreviewState {
       }
     }
   }
-  for (const block of blocks) {
+  for (const [blockIndex, block] of blocks.entries()) {
     const pending = intersectsPendingChange(block, pendingRanges)
     // ADR-0018 consequence, metadata exception : ordinary blocks show
     // pending diffs as source, but frontmatter always stays the clickable form and carries a badge.
     if ((open && block.from === open.from) || (pending && !rendersBlockWithPendingChange(block.kind))) continue
-    // Half-open: block.to is the NEXT line's start (the atomic skip lands there), which must not
-    // read as "still on the block". A block ending at EOF keeps the inclusive end (nowhere past it).
-    const onBlock = (head: number): boolean => head >= block.from && (head < block.to || (block.to >= state.doc.length && head <= block.to))
-    const selected = state.selection.ranges.some((selection) => onBlock(selection.head))
+    const selected = selectedFlags[blockIndex]!
     if (block.kind === 'widget') {
       // The widget goes after its line; the line itself is hidden unless the cursor is on it.
       const line = state.doc.lineAt(block.from)
@@ -338,20 +390,26 @@ function buildPreview(state: EditorState): PreviewState {
     // Replace ranges stop at the last line's END (never swallowing the line break); the selection
     // outline lives on the widget itself — both required by CM's tile geometry.
     const lastLineEnd = state.doc.lineAt(Math.max(block.from, block.to - 1)).to
-    const deco = Decoration.replace({ widget: widgetFor(block, config.assetBaseUrl(), selected, pending), block: true })
+    const deco = Decoration.replace({ widget: widgetFor(block, config.assetBaseUrl(), selected, pending, config.documentPath()), block: true })
     ranges.push(deco.range(block.from, lastLineEnd))
     // The ATOMIC range swallows the trailing line break too, so one ↓ from the block steps fully
     // past it (mockup grammar: land on, then move past) — while the visual replace stops at the
     // line end, which is what CM's tile geometry requires.
     atomicRanges.push(deco.range(block.from, Math.min(state.doc.length, lastLineEnd + 1)))
   }
-  return { blocks, decorations: Decoration.set(ranges, true), atomic: Decoration.set(atomicRanges, true) }
+  return { blocks, decorations: Decoration.set(ranges, true), atomic: Decoration.set(atomicRanges, true), structure, selected: selectedFlags }
 }
 
 const previewField = StateField.define<PreviewState>({
   create: buildPreview,
   update(value, tr) {
     if (!tr.docChanged && !tr.selection && !tr.effects.length) return value
+    if (!tr.docChanged && !tr.effects.length && value.structure) {
+      // A caret move alone: the blocks, pending ranges and metadata are unchanged, and the
+      // decorations only differ when a block gained or lost the caret.
+      const selected = selectedFlagsOf(tr.state, value.structure.blocks)
+      return sameFlags(selected, value.selected) ? value : composePreview(tr.state, value.structure, selected)
+    }
     return buildPreview(tr.state)
   },
   provide: (field) => [
@@ -360,7 +418,7 @@ const previewField = StateField.define<PreviewState>({
   ],
 })
 
-type PreviewConfig = { assetBaseUrl: () => string; pendingRanges: () => TextRange[]; documentPath: () => string | null }
+type PreviewConfig = { onPendingMetadataEdit?: () => void; assetBaseUrl: () => string; pendingRanges: () => TextRange[]; documentPath: () => string | null }
 const livePreviewConfig = Facet.define<PreviewConfig, PreviewConfig>({
   combine: (values) => values[0] ?? { assetBaseUrl: () => '', pendingRanges: () => [], documentPath: () => null },
 })
@@ -467,7 +525,7 @@ export function livePreview(opts: { assetBaseUrl: () => string; documentPath?: (
   return [
     typeEscape,
     fenceTrigger,
-    openBlockField, livePreviewConfig.of({ assetBaseUrl: opts.assetBaseUrl, pendingRanges: opts.pendingRanges ?? (() => []), documentPath: opts.documentPath ?? (() => null) }),
+    openBlockField, livePreviewConfig.of({ assetBaseUrl: opts.assetBaseUrl, pendingRanges: opts.pendingRanges ?? (() => []), documentPath: opts.documentPath ?? (() => null), onPendingMetadataEdit: opts.onPendingMetadataEdit }),
     previewField,
     previewEventHandlers(opts.onPendingMetadataEdit),
     // High precedence: ↵-on-a-block must win over the default insertNewline (which would otherwise

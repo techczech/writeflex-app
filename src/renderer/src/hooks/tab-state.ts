@@ -19,6 +19,21 @@ export function isBoardTabId(id: string | null): boolean {
   return id === BOARD_TAB_ID
 }
 
+/**
+ * The Source and preview tab of a record browser (ticket 04b): one per document, named by the document it
+ * belongs to, so it sits in that document's group on the strip. Never persisted: what it holds (a half-made
+ * widget) is not restored by a relaunch.
+ */
+export const WIDGET_WORKBENCH_PREFIX = 'writeflex://widget-workbench/'
+export const widgetWorkbenchTabId = (documentPath: string): string => `${WIDGET_WORKBENCH_PREFIX}${documentPath}`
+export function isWidgetWorkbenchTabId(id: string | null): boolean {
+  return id !== null && id.startsWith(WIDGET_WORKBENCH_PREFIX)
+}
+/** The document a workbench tab belongs to. */
+export const workbenchDocumentOf = (id: string): string => id.slice(WIDGET_WORKBENCH_PREFIX.length)
+/** A tab that is not a file: the Board or a widget workbench. File-owned code never sees these. */
+export const isSurfaceTabId = (id: string | null): boolean => isBoardTabId(id) || isWidgetWorkbenchTabId(id)
+
 /** localStorage key — one entry per workspace root so windows on different folders don't collide. */
 export function tabStorageKey(root: string): string {
   return `writeflex:tabs:${root}`
@@ -170,6 +185,7 @@ export function tabStripView(state: TabState, groupOf: TabGroupOf): TabStripView
 /** The own-folder fallback group of a path — used until main has resolved it. */
 export function ownFolderGroup(path: string): string {
   if (isBoardTabId(path)) return BOARD_TAB_ID
+  if (isWidgetWorkbenchTabId(path)) return ownFolderGroup(workbenchDocumentOf(path))
   const cut = path.lastIndexOf('/')
   return cut === -1 ? '' : path.slice(0, cut)
 }
@@ -230,10 +246,11 @@ export function sameTabList(a: readonly string[], b: readonly string[]): boolean
 export function reconcileTabs(state: TabState, knownPaths: Iterable<string>): TabState {
   const known = knownPaths instanceof Set ? new Set(knownPaths) : new Set(knownPaths)
   known.add(BOARD_TAB_ID)
-  const tabs = state.tabs.filter((t) => known.has(t))
+  // A workbench tab stays while its document does (it is not a file, so the file list never names it).
+  const tabs = state.tabs.filter((t) => known.has(t) || (isWidgetWorkbenchTabId(t) && known.has(workbenchDocumentOf(t))))
   const pinned = state.pinned.filter((t) => tabs.includes(t)).slice(0, 4)
   const recent = state.recent.filter((t) => tabs.includes(t))
-  const activeOk = state.active === null || known.has(state.active)
+  const activeOk = state.active === null || known.has(state.active) || (state.active !== null && isWidgetWorkbenchTabId(state.active) && known.has(workbenchDocumentOf(state.active)))
   if (tabs.length === state.tabs.length && pinned.length === state.pinned.length && recent.length === state.recent.length && activeOk) return state
   return { tabs, pinned, recent, active: activeOk ? state.active : tabs[0] ?? null }
 }
@@ -244,7 +261,7 @@ export function parseTabState(raw: string | null): TabState {
   try {
     const value = JSON.parse(raw) as { tabs?: unknown; active?: unknown; pinned?: unknown; recent?: unknown }
     if (Array.isArray(value.tabs) && value.tabs.every((t) => typeof t === 'string')) {
-      const tabs = value.tabs as string[]
+      const tabs = (value.tabs as string[]).filter((t) => !isWidgetWorkbenchTabId(t))
       const active = typeof value.active === 'string' && tabs.includes(value.active) ? value.active : tabs[0] ?? null
       const pinned = Array.isArray(value.pinned) ? value.pinned.filter((t): t is string => typeof t === 'string' && tabs.includes(t)).slice(0, 4) : []
       const parsedRecent = Array.isArray(value.recent) ? value.recent.filter((t): t is string => typeof t === 'string' && tabs.includes(t)) : []

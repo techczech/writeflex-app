@@ -4,7 +4,7 @@ import { history, undo } from '@codemirror/commands'
 import { makePlainParagraph, makeTaskList } from '../../src/renderer/src/editor/block-marks'
 import { clearFormatting, clearInlineMarks, composeCommands, deleteBlock, duplicateBlock, turnIntoCodeBlock, turnIntoTable } from '../../src/renderer/src/editor/block-actions'
 import { toggleInlineCode } from '../../src/renderer/src/editor/commands'
-import { makeHeadingAtSurroundingLevel } from '@bridle/outline'
+import { makeHeadingAtSurroundingLevel } from '@app-patterns/outline'
 import { registryCommand } from '../../src/renderer/src/commands/registry'
 import { toggleBulletList } from '../../src/renderer/src/editor/block-marks'
 

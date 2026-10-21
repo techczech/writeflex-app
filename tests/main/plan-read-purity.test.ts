@@ -46,7 +46,7 @@ async function expectFivePureReads(index: string, manifest: string): Promise<voi
   }).toEqual({ index, manifest, indexWrittenByApp: false, manifestWrittenByApp: false })
 }
 
-test('five reads are byte-pure for every reconciliation-sensitive Plan shape', async () => {
+test('five reads are byte-pure for every reconciliation-sensitive Folio outline shape', async () => {
   const shapes = [
     {
       name: 'needs repair',
@@ -61,7 +61,7 @@ test('five reads are byte-pure for every reconciliation-sensitive Plan shape', a
       documents: [['01-report.md', '# Report\n'], ['02-report.md', '# Report\n']],
     },
     {
-      name: 'numbered Plan',
+      name: 'numbered Folio outline',
       index: '# Report\n\n## Running order\n\n3. [[Alpha]]\n4. [[Beta]]\n',
       files: [{ path: '01-alpha.md' }, { path: '02-beta.md' }],
       documents: [['01-alpha.md', '# Alpha\n'], ['02-beta.md', '# Beta\n']],
@@ -83,7 +83,7 @@ test('five reads are byte-pure for every reconciliation-sensitive Plan shape', a
   }
 })
 
-test('deleting a Plan line by hand keeps it deleted and reports the file as unlisted', async () => {
+test('deleting a Folio outline line by hand keeps it deleted and reports the file as unlisted', async () => {
   await write('report/contents/01-alpha.md', '# Alpha\n')
   await write('report/contents/02-beta.md', '# Beta\n')
   await write('report/contents/03-gamma.md', '# Gamma\n')
@@ -144,7 +144,7 @@ test('adoptPart appends one unlisted part with derivable gloss and role, and rej
     { path: '02-beta.md', role: 'appendix', toc: false },
   ])
 
-  await expect(adoptPart(ws, 'report', 1)).rejects.toThrow('Plan part index is out of range.')
+  await expect(adoptPart(ws, 'report', 1)).rejects.toThrow('Folio outline part index is out of range.')
   expect(await read(indexPath)).toBe(index)
   expect(await read(manifestPath)).toBe(manifest)
 
@@ -166,7 +166,7 @@ test('adoptPart appends one unlisted part with derivable gloss and role, and rej
   expect(await read(`${manifestPath}.writeflex-backup`)).toBe(manifest)
 })
 
-test('a Plan write leaves an unlisted manifest entry byte-identical in its existing position', async () => {
+test('a Folio outline write leaves an unlisted manifest entry byte-identical in its existing position', async () => {
   await write(indexPath, '# Report\n\n## Running order\n\n- [[Alpha]]\n- [[Gamma]]\n')
   await write('report/contents/01-alpha.md', '# Alpha\n')
   await write('report/contents/02-beta.md', '# Beta\n')

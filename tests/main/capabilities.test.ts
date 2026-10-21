@@ -29,9 +29,9 @@ test('manifest passes bridle validation and scopes to the workspace root', () =>
   const manifest = createManifest(buildWriteFlexManifest(ws))
   expect(manifest.workspaceRoot).toBe(root)
   expect(manifest.capabilities.map((c) => c.name).sort()).toEqual([
-    'files.list', 'files.read', 'folio.create_manifest', 'frontmatter.normalise', 'frontmatter.set',
+    'files.list', 'files.read', 'folio.create_manifest', 'folio.turn_back', 'frontmatter.normalise', 'frontmatter.set',
     'housekeeping.create_file', 'housekeeping.rename_file', 'notes.create', 'objects.insert', 'plan.compare_parts', 'plan.propose', 'plan.read',
-    'prose.edit', 'prose.insert', 'prose.move', 'sources.attach', 'sources.list', 'tasks.list', 'tasks.toggle', 'widgets.create', 'widgets.insert', 'widgets.list', 'widgets.remove'
+    'prose.edit', 'prose.insert', 'prose.move', 'research.capture', 'sources.attach', 'sources.list', 'tasks.list', 'tasks.toggle', 'widgets.create', 'widgets.insert', 'widgets.list', 'widgets.remove'
   ])
 })
 
@@ -118,7 +118,7 @@ test('permissions: a switched-off capability is excluded from the manifest at bi
   const enabled = (name: string): boolean => name !== 'housekeeping.create_file'
   const names = buildWriteFlexManifest(ws, enabled).capabilities.map((c) => c.name).sort()
   expect(names).toEqual([
-    'files.list', 'files.read', 'folio.create_manifest', 'frontmatter.normalise', 'frontmatter.set', 'housekeeping.rename_file', 'notes.create', 'objects.insert', 'plan.compare_parts', 'plan.propose', 'plan.read', 'prose.edit', 'prose.insert', 'prose.move', 'sources.attach', 'sources.list', 'tasks.list', 'tasks.toggle', 'widgets.create', 'widgets.insert', 'widgets.list', 'widgets.remove'
+    'files.list', 'files.read', 'folio.create_manifest', 'folio.turn_back', 'frontmatter.normalise', 'frontmatter.set', 'housekeeping.rename_file', 'notes.create', 'objects.insert', 'plan.compare_parts', 'plan.propose', 'plan.read', 'prose.edit', 'prose.insert', 'prose.move', 'research.capture', 'sources.attach', 'sources.list', 'tasks.list', 'tasks.toggle', 'widgets.create', 'widgets.insert', 'widgets.list', 'widgets.remove'
   ])
 })
 
@@ -683,7 +683,8 @@ test('folio.create_manifest drafts a manifest when absent, then refuses to clobb
   await ws.createFile('report/contents/01-intro.md', '# Intro\n')
   await ws.createFile('report/contents/02-method.md', '# Method\n')
   const create = cap('folio.create_manifest')
-  expect(create.touchedPaths!({ dir: 'report' })).toEqual([join(root, 'report/_report-structure.json')])
+  // The manifest and the Folio's agent instructions (ticket 0.23-08): the turn's restore point covers the instructions and their ownership record.
+  expect(create.touchedPaths!({ dir: 'report' })).toEqual(['_report-structure.json', 'AGENTS.md', 'CLAUDE.md', '.folio-instructions.json'].map((name) => join(root, 'report', name)))
   const preview = await create.preview!({ dir: 'report' })
   expect(preview).toContain('Create a Folio manifest in report')
   expect(preview).toContain('"content_root": ""')
@@ -695,6 +696,9 @@ test('folio.create_manifest drafts a manifest when absent, then refuses to clobb
   const written = JSON.parse((await ws.readFile('report/_report-structure.json')).content)
   expect(written.content_root).toBe('')
   expect(written.files.map((f: { path: string }) => f.path)).toEqual(['01-overview.md', '02-findings.md'])
+  expect(first.text).toContain('Wrote the Folio\'s agent instructions: report/AGENTS.md, report/CLAUDE.md.')
+  expect((await ws.readFile('report/CLAUDE.md')).content).toBe('@AGENTS.md\n')
+  expect((await ws.readFile('report/AGENTS.md')).content).toContain('<!-- BEGIN WriteFlex Folio instructions (')
   // Only-when-absent: a second call must refuse rather than overwrite the writer's manifest.
   const second = await create.execute({ dir: 'report' }, ctx)
   expect(second.isError).toBe(true)

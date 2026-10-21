@@ -1,0 +1,29 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Validated generated SHA-256 receipt"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^[a-f0-9]{64}$''']
+paths = ['''(^|/)public-snapshot-receipt\.json$''']
+[[rules.allowlists]]
+description = "Zotero key alphabet constant"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(^|/)packages/readflex/zotero-bridge/src/annotation-write\.ts$''']
+regexes = ['''^23456789ABCDEFGHIJKLMNPQRSTUVWXYZ$''']
+[[rules.allowlists]]
+description = "Zotero key alphabet in upstream reader bundle"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(^|/)packages/readflex/reader-embed/vendor/reader/reader\.js$''']
+regexes = ['''^23456789ABCDEFGHIJKLMNPQRSTUVWXYZ$''']
+[[rules.allowlists]]
+description = "Citation key fixture"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(^|/)tests/main/reading-room-shelf\.test\.ts$''']
+regexes = ['''^Lakoff1987Women$''']

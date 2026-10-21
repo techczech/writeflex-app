@@ -632,7 +632,7 @@ test('the sidebar rename door proceeds and names wikilink and manifest bystander
   })
 })
 
-test('both rename doors repair an Index Note through the scoped Plan resolver', async () => {
+test('both rename doors repair an Index Note through the scoped Folio outline resolver', async () => {
   const [agentDoor, { scopedOrphanResult: sidebarDoor }] = await Promise.all([
     agentScopedPlanProbe('orphan'),
     realIpcRenameDoor(),
@@ -660,7 +660,7 @@ test('both rename doors repair an Index Note through the scoped Plan resolver', 
   })
 })
 
-test('both rename doors allow an unrelated rename that leaves the scoped Plan unchanged', async () => {
+test('both rename doors allow an unrelated rename that leaves the scoped Folio outline unchanged', async () => {
   const [agentDoor, { scopedUnaffectedResult: sidebarDoor }] = await Promise.all([
     agentScopedPlanProbe('unaffected'),
     realIpcRenameDoor(),

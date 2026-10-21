@@ -6,6 +6,7 @@ export const EXPORT_PRESET_FIELDS = [
   'summaryTiles',
   'frontPage',
   'design',
+  'tocDepth',
   'frontmatterFields',
   'format',
 ] as const
@@ -25,6 +26,8 @@ export type ExportPresetChoice = {
   summaryTiles: boolean
   frontPage: boolean
   design: ExportPresetDesign
+  /** Heading levels the HTML contents lists, 1-6 (6 is All); absent keeps the default. */
+  tocDepth?: number
   frontmatterFields: ExportPresetMastheadField[]
 }
 
@@ -70,6 +73,9 @@ export function shippedExportPresetSettings(): ExportPresetSettings {
 const isMastheadField = (value: unknown): value is ExportPresetMastheadField =>
   typeof value === 'string' && (EXPORT_PRESET_MASTHEAD_FIELDS as readonly string[]).includes(value)
 
+export const isTocDepth = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 6
+
 function normaliseChoice(value: unknown): ExportPresetChoice | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const input = value as Record<string, unknown>
@@ -81,6 +87,7 @@ function normaliseChoice(value: unknown): ExportPresetChoice | null {
     || typeof input.summaryTiles !== 'boolean'
     || (input.frontPage !== undefined && typeof input.frontPage !== 'boolean')
     || (input.design !== 'a' && input.design !== 'b')
+    || (input.tocDepth !== undefined && !isTocDepth(input.tocDepth))
     || !Array.isArray(input.frontmatterFields)
     || !input.frontmatterFields.every(isMastheadField)) return null
   return {
@@ -92,6 +99,7 @@ function normaliseChoice(value: unknown): ExportPresetChoice | null {
     summaryTiles: input.summaryTiles,
     frontPage: input.frontPage === true,
     design: input.design,
+    ...(input.tocDepth === undefined ? {} : { tocDepth: input.tocDepth as number }),
     frontmatterFields: [...new Set(input.frontmatterFields)],
   }
 }

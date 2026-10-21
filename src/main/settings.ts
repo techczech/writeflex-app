@@ -12,6 +12,7 @@ import {
   type ExportPresetSettings,
 } from '../shared/export-presets'
 import { ACTION_BAR_VISIBLE_KEY, actionBarVisibleFrom } from '../shared/action-bar-settings'
+import { readSharingRecord, type SharingRecord } from './sharing-record'
 
 export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high'
 /** One reopenable Workspace. `focus` is the folder focused in its window (ticket 03): a
@@ -107,6 +108,10 @@ type SettingsData = {
   example?: unknown
   /** Bundled Example files ever written (names); see `exampleFiles()`. Absent in files from older builds. */
   exampleFiles?: unknown
+  /** Sharing's set-up record (sharing-record.ts): never a secret. Absent until set-up starts. */
+  sharing?: unknown
+  /** The links made on this Mac (sharing-publisher.ts ShareRecord[]): never a secret. */
+  sharingLinks?: unknown
 }
 
 const MAX_RECENTS = 10
@@ -194,6 +199,8 @@ export class SettingsStore {
         // Kept exactly as found, whatever it is: present is present.
         ...('example' in parsed ? { example: parsed.example ?? null } : {}),
         ...('exampleFiles' in parsed ? { exampleFiles: parsed.exampleFiles } : {}),
+        ...('sharing' in parsed ? { sharing: parsed.sharing } : {}),
+        ...('sharingLinks' in parsed ? { sharingLinks: parsed.sharingLinks } : {}),
       }
     } catch {
       return {
@@ -297,6 +304,39 @@ export class SettingsStore {
       if (temp !== null) try { unlinkSync(temp) } catch { /* nothing to remove */ }
       return false
     }
+  }
+
+  // ---- Sharing (ticket 02) ---------------------------------------------------------------------
+
+  /** Sharing's set-up record, or null when there is none (sharing-record.ts). Holds no secret. */
+  sharingRecord(): SharingRecord | null {
+    return readSharingRecord(this.#data.sharing)
+  }
+
+  /** Replace (or with null, remove) sharing's record and save. False when the save failed; the store then keeps what it had. */
+  setSharingRecord(record: SharingRecord | null): boolean {
+    const before = this.#data.sharing
+    if (record === null) delete this.#data.sharing
+    else this.#data.sharing = structuredClone(record)
+    if (this.#persist()) return true
+    if (before === undefined) delete this.#data.sharing
+    else this.#data.sharing = before
+    return false
+  }
+
+  /** The links made on this Mac, as saved (sharing-publisher.ts reads and checks them). */
+  sharingLinks(): unknown {
+    return structuredClone(this.#data.sharingLinks ?? [])
+  }
+
+  /** Replace the links and save. False when the save failed; the store then keeps what it had. */
+  setSharingLinks(links: unknown): boolean {
+    const before = this.#data.sharingLinks
+    this.#data.sharingLinks = structuredClone(links)
+    if (this.#persist()) return true
+    if (before === undefined) delete this.#data.sharingLinks
+    else this.#data.sharingLinks = before
+    return false
   }
 
   // ---- Example collection ----------------------------------------------------------------------

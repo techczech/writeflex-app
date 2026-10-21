@@ -13,6 +13,10 @@
  * block) reloads the block and shows "Reloaded" in the bar for two seconds.
  */
 import { mountWidgetFrame, type WidgetFrame } from './widget-frame'
+import { isStandardWidgetPath } from './standard-widget-model'
+
+/** The window event a standard widget's Edit button sends; the app opens the widget's Source and preview tab. */
+export const EDIT_STANDARD_WIDGET_EVENT = 'writeflex:edit-standard-widget'
 
 /** The stage's height until the page reports its own. */
 export const WIDGET_STAGE_HEIGHT = 'min(340px, 70vh)'
@@ -53,6 +57,7 @@ const ICONS: Record<string, IconNode> = {
   reload: [['path', { d: 'M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8' }], ['path', { d: 'M21 3v5h-5' }]],
   external: [['path', { d: 'M15 3h6v6' }], ['path', { d: 'M10 14 21 3' }], ['path', { d: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6' }]],
   check: [['path', { d: 'M20 6 9 17l-5-5' }]],
+  pencil: [['path', { d: 'M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z' }], ['path', { d: 'm15 5 4 4' }]],
 }
 function icon(name: keyof typeof ICONS, size = 15): SVGElement {
   const ns = 'http://www.w3.org/2000/svg'
@@ -71,6 +76,7 @@ function button(label: string, title: string, glyph: SVGElement, testid: string,
   el.type = 'button'
   el.className = 'wf-widget-button'
   el.title = title
+  el.setAttribute('aria-label', label)
   el.dataset.testid = testid
   const text = document.createElement('span')
   text.textContent = label
@@ -146,8 +152,29 @@ export function createWidgetBlock(options: WidgetBlockOptions): WidgetBlock {
   const openButton = button('Open file', 'Open the HTML file in your browser', icon('external'), 'widget-open-file', () => {
     void window.writeflex.openWidgetFile(options.documentPath, options.rawPath).catch(() => {})
   })
-  bar.append(icon('appWindow'), nameEl, pathEl, reloaded, spacer, reloadButton, openButton)
+  bar.append(icon('appWindow'), nameEl, pathEl, reloaded, spacer, reloadButton)
+  // A widget the record browser made (visualisations/<name>/widget.html) can be reopened in Source and preview.
+  if (isStandardWidgetPath(options.rawPath)) {
+    bar.append(button('Edit', 'Edit this record browser: its source file, fields and preview', icon('pencil'), 'widget-edit', () => {
+      window.dispatchEvent(new CustomEvent(EDIT_STANDARD_WIDGET_EVENT, { detail: { documentPath: options.documentPath, rawPath: options.rawPath } }))
+    }))
+  }
+  bar.append(openButton)
   bar.addEventListener('mousedown', () => options.onCaptionPress?.())
+  // Short on room, the labels drop to icons (CSS `.is-narrow`); a size watch rather than a container query, which
+  // changes how the editor lays the block out for arrow-key movement.
+  // The bar's own width is not the room it has (its buttons hold it open), so the editor's width counts too.
+  const NARROW_BAR = 430
+  let watchedContent: Element | null = null
+  let narrowFrame: number | null = null // measured a frame later: changing the bar inside the observer's callback loops it
+  const measureNarrow = (): void => {
+    const content = bar.closest('.cm-editor')
+    if (content && content !== watchedContent) { watchedContent = content; narrowWatch?.observe(content) }
+    const room = Math.min(bar.clientWidth || Infinity, content?.clientWidth || Infinity)
+    bar.classList.toggle('is-narrow', Number.isFinite(room) && room > 0 && room < NARROW_BAR)
+  }
+  const narrowWatch = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => { if (narrowFrame === null) narrowFrame = requestAnimationFrame(() => { narrowFrame = null; if (!disposed) measureNarrow() }) })
+  narrowWatch?.observe(bar)
 
   const failed = document.createElement('div')
   failed.className = 'wf-widget-source'
@@ -231,6 +258,8 @@ export function createWidgetBlock(options: WidgetBlockOptions): WidgetBlock {
       if (disposed) return
       disposed = true
       untrack()
+      narrowWatch?.disconnect()
+      if (narrowFrame !== null) cancelAnimationFrame(narrowFrame)
       if (watchable) void window.writeflex.unwatchWidget(options.documentPath, options.rawPath).catch(() => {})
       window.removeEventListener('resize', applyHeight)
       if (reloadedTimer) clearTimeout(reloadedTimer)

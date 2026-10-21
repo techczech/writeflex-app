@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
-import { ArrowLeft, ArrowRight, Columns3, Ellipsis, FileText, FolderTree, ListTree, Pin, Plus, Search, SlidersHorizontal, X } from 'lucide-react'
-import { isBoardTabId, ownFolderGroup, sameTabList, tabGroupLabels, tabStripFill, tabStripView, type OpenTabGroup } from '../hooks/tab-state'
+import { AppWindow, ArrowLeft, ArrowRight, Columns3, Ellipsis, FileText, FolderTree, ListTree, Pin, Plus, Search, SlidersHorizontal, X } from 'lucide-react'
+import { isBoardTabId, isSurfaceTabId, isWidgetWorkbenchTabId, ownFolderGroup, sameTabList, tabGroupLabels, tabStripFill, tabStripView, type OpenTabGroup } from '../hooks/tab-state'
 
 export type TabOrientation = 'horizontal' | 'sidebar'
 
@@ -197,7 +197,7 @@ export function TabBar({
         <button role="menuitem" className="tab-menu-open" onClick={run(() => onActivate(path))}>
           <FileText className="icon sm" /><span>Open</span>
         </button>
-        {onReveal && !isBoardTabId(path) && (
+        {onReveal && !isSurfaceTabId(path) && (
           <button role="menuitem" className="tab-menu-reveal" onClick={run(() => onReveal(path))}>
             <FolderTree className="icon sm" /><span>Reveal in Files</span>
           </button>
@@ -212,7 +212,8 @@ export function TabBar({
   const tabButton = (path: string, className: string): JSX.Element => {
     const selected = path === active
     const board = isBoardTabId(path)
-    const name = board ? `Board — ${boardName ?? 'Collection'}` : basename(path)
+    const workbench = isWidgetWorkbenchTabId(path)
+    const name = board ? `Board — ${boardName ?? 'Collection'}` : workbench ? 'Widget workbench' : basename(path)
     const dirty = dirtyPaths.has(path)
     const diskNotice = diskNoticePaths.has(path)
     const isPinned = pinned.includes(path)
@@ -226,7 +227,7 @@ export function TabBar({
         className={`${className}${isPinned ? ' pinned' : ''}${dirty ? ' dirty' : ''}${diskNotice ? ' disk-notice' : ''}`}
         role="tab"
         aria-selected={selected}
-        title={board ? name : path}
+        title={board || workbench ? name : path}
         draggable={orientation === 'horizontal'}
         onDragStart={(event) => event.dataTransfer.setData('text/writeflex-tab', path)}
         onDragOver={(event) => { if (orientation === 'horizontal') event.preventDefault() }}
@@ -255,7 +256,7 @@ export function TabBar({
           }
         }}
       >
-        {isPinned ? <Pin className="icon sm" /> : board ? <Columns3 className="icon sm" /> : <FileText className="icon sm" />}
+        {isPinned ? <Pin className="icon sm" /> : board ? <Columns3 className="icon sm" /> : workbench ? <AppWindow className="icon sm" /> : <FileText className="icon sm" />}
         <span className="name">{name}</span>
         {dirty && <span className="dirty-dot" aria-hidden="true" />}
         {diskNotice && <span className="disk-notice-dot" aria-hidden="true" />}
@@ -390,7 +391,7 @@ export function TabBar({
     <>
       <div className="tab-measure" ref={measureRef} aria-hidden="true">
         {tabs.map((path) => {
-          const name = isBoardTabId(path) ? `Board — ${boardName ?? 'Collection'}` : basename(path)
+          const name = isBoardTabId(path) ? `Board — ${boardName ?? 'Collection'}` : isWidgetWorkbenchTabId(path) ? 'Widget workbench' : basename(path)
           const isPinned = pinned.includes(path)
           return <span key={path} className={`tab${isPinned ? ' pinned' : ''}`} data-measure-path={path}>{isPinned ? <Pin className="icon sm" /> : <FileText className="icon sm" />}<span className="name">{name}</span>{!isPinned && <span className="close"><X className="icon sm" /></span>}</span>
         })}

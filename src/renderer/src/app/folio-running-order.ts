@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { plainErrorForScreen } from '../error-text'
+import { chapterSortOrder, inverseOrder, isIdentityOrder } from '../../../shared/folio-chapter-order'
 import {
   addedAnnouncement,
   addedFlash,
   folioScope,
   movedAnnouncement,
   movedFlash,
+  sortedAnnouncement,
+  sortedFlash,
+  undoneSortAnnouncement,
   successorOf,
   undoneAddAnnouncement,
   undoneAnnouncement,
-  undoStepKept,
-  undoStepUsable,
+  undoStepKeptAmong,
+  undoStepUsableOnScreen,
+  type PlanOrderResult,
+  type PlanPartKey,
+  type RunningOrderResult,
   type RunningOrderUndo,
 } from '../../../shared/folio-running-order'
 
@@ -30,9 +37,11 @@ type Deps = {
   write: <T>(dir: string, call: () => Promise<T>) => Promise<{ ok: true; value: T } | { ok: false; message: string }>
   /** The running order on screen is out of date: read it again. */
   refresh: () => void
-  /** The open workspace's root, and the folder of the Folio on screen (null = the open file is in no Folio). */
+  /** The open workspace's root, and the folder of the open file's Folio (null = the open file is in no Folio). */
   root: string | null
   openDir: string | null
+  /** The folder whose Plan (or Collection) is on screen in place of the editor, or null. A step made there is that Folio's. */
+  planDir?: string | null
 }
 
 /** The one Undo step, with the Folio it was made in (`folioScope`). */
@@ -43,7 +52,13 @@ export type FolioRunningOrder = {
   movePiece: (seen: FolioSeen, path: string, beforePath: string | null) => Promise<boolean>
   /** Add files to the end of the running order in one step. */
   addPieces: (seen: FolioSeen, files: ReadonlyArray<{ path: string; title: string }>) => Promise<boolean>
+  /** The Plan's Sort by chapter number: the parts with a file, in chapter order, in one write and one Undo step (Plan write path). */
+  sortPlan: (dir: string, parts: readonly PlanPartKey[], frontMatter?: readonly boolean[]) => Promise<boolean>
+  /** The Plan's Add all from this folder: the files at the end, in the order given, in one write and one Undo step (Plan write path). */
+  addToPlan: (dir: string, parts: readonly PlanPartKey[], files: ReadonlyArray<{ path: string; title: string }>) => Promise<boolean>
   undo: () => Promise<void>
+  /** One request of another Folio write (the Details card's) through the same save of the Folio's open buffers and the editor's save queue. */
+  write: Deps['write']
   canUndo: boolean
   /** The live-region text for the last change. */
   announcement: string
@@ -60,20 +75,29 @@ export type FolioRunningOrder = {
  * preload bridge, which names pieces by path and the running order the caller saw, and main refuses when
  * that is out of date. This keeps the one Undo step, the flash that offers it and the live-region text.
  *
- * The Undo step belongs to the Folio it was made in (workspace root and folder). It is dropped when another
- * Folio comes on screen, it is offered and run only while its own Folio is on screen, and an answer from
- * main that arrives after another Folio came on screen does not put a step back.
+ * The Undo step belongs to the Folio it was made in (workspace root and folder): the open file's Folio for
+ * an Outline change, the Plan's folder for a Plan change. A Folio is on screen when it is the open file's
+ * Folio or the one whose Plan is shown. The step is dropped when only other Folios are on screen, it is
+ * offered and run only while its own Folio is on screen (and, while a Plan is shown, only when it is the
+ * Plan's Folio: the Plan covers the Outline), and an answer from main that arrives after another
+ * Folio came on screen does not put a step back.
  */
-export function useFolioRunningOrder({ say, write, refresh, root, openDir }: Deps): FolioRunningOrder {
+export function useFolioRunningOrder({ say, write, refresh, root, openDir, planDir = null }: Deps): FolioRunningOrder {
   const [announcement, setAnnouncement] = useState('')
   const [touched, setTouched] = useState<{ tick: number; path: string; order: string[] } | null>(null)
   const [justAdded, setJustAdded] = useState<readonly string[]>([])
   const [undoStep, setUndoStep] = useState<HeldUndo | null>(null)
   const undoRef = useRef<HeldUndo | null>(null)
-  const openScope = openDir === null ? null : folioScope(root, openDir)
-  // Read by answers that arrive later: the Folio on screen at that moment, not when the request was made.
-  const openScopeRef = useRef(openScope)
-  openScopeRef.current = openScope
+  const openScopes = [openDir, planDir].flatMap((dir) => (dir === null ? [] : [folioScope(root, dir)]))
+  const openScopesKey = openScopes.join('\u0001')
+  // Read by answers that arrive later: the Folios on screen at that moment, not when the request was made.
+  const openScopesRef = useRef(openScopes)
+  openScopesRef.current = openScopes
+  // While a Plan is shown it covers the Outline: only the Plan's own Folio may be undone (`undoStepUsableOnScreen`).
+  const outlineScope = openDir === null ? null : folioScope(root, openDir)
+  const planScope = planDir === null ? null : folioScope(root, planDir)
+  const usableScopesRef = useRef({ outlineScope, planScope })
+  usableScopesRef.current = { outlineScope, planScope }
   const rootRef = useRef(root)
   rootRef.current = root
   const busy = useRef(false)
@@ -81,7 +105,7 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir }: Dep
 
   /** Keep `step` as the Undo step of the Folio `scope`, unless another Folio is on screen by now (then there is none). */
   const remember = useCallback((step: RunningOrderUndo | null, scope = '') => {
-    const held = step && undoStepKept(scope, openScopeRef.current) ? { step, scope } : null
+    const held = step && undoStepKeptAmong(scope, openScopesRef.current) ? { step, scope } : null
     undoRef.current = held
     setUndoStep(held)
   }, [])
@@ -106,34 +130,35 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir }: Dep
     const held = undoRef.current
     if (!held) return
     // Only in its own Folio: an Undo asked while another Folio (or none) is on screen changes nothing.
-    if (!undoStepUsable(held.scope, openScopeRef.current)) return
-    const { step, scope } = held
+    if (!undoStepUsableOnScreen(held.scope, usableScopesRef.current.outlineScope, usableScopesRef.current.planScope)) return
+    const { step } = held
     await guarded(async () => {
       const bridge = window.writeflex.folioRunningOrder
-      const asked = await write(step.dir, () => (step.kind === 'move'
+      const plan = window.writeflex.plan
+      const asked = await write<RunningOrderResult | PlanOrderResult>(step.dir, () => (step.kind === 'move'
         ? bridge.movePiece(step.dir, step.path, step.before, step.after)
-        : bridge.removeAdded(step.dir, step.paths, step.after)))
+        : step.kind === 'add'
+          ? bridge.removeAdded(step.dir, step.token)
+          : step.kind === 'plan-reorder'
+            ? plan.reorderParts(step.dir, step.order, step.after)
+            : plan.removeAdded(step.dir, step.token)))
       if (!asked.ok) { tell(`${asked.message} The change was not undone.`); return false }
       const result = asked.value
       refresh()
       if (!result.ok) {
-        // Main's own sentence is shown: after an Undo that stopped part-way it says exactly which pieces
-        // were taken out and which remain, and the Undo step is kept for the ones that remain.
+        // Main's own sentence is shown. An Undo of an Add is all or nothing (folio-add-undo.ts): nothing was written.
         tell(result.message)
-        if (step.kind === 'add' && result.partial) {
-          const { remaining, order } = result.partial
-          const titles = remaining.map((path) => step.titles[step.paths.indexOf(path)] ?? path)
-          remember(remaining.length ? { kind: 'add', dir: step.dir, paths: remaining, titles, after: order } : null, scope)
-          setJustAdded(remaining)
-        } else if (result.stale) remember(null)
+        if (result.stale) remember(null)
         return false
       }
       remember(null)
       setJustAdded([])
-      if (step.kind === 'move') {
+      if (step.kind === 'move' && 'order' in result) {
         tell(undoneAnnouncement(step.title, result.order.indexOf(step.path) + 1, result.order.length))
         touch(step.path, result.order)
-      } else {
+      } else if (step.kind === 'plan-reorder') {
+        tell(undoneSortAnnouncement)
+      } else if (step.kind === 'add' || step.kind === 'plan-add') {
         tell(undoneAddAnnouncement(step.paths.length))
       }
       return true
@@ -168,26 +193,73 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir }: Dep
     if (!asked.ok) { tell(`${asked.message} Nothing was added.`); return false }
     const result = asked.value
     if (!result.ok) { tell(result.message); refresh(); return false }
-    const titles = files.map((file) => file.title)
-    remember({ kind: 'add', dir: seen.dir, paths, titles, after: result.order }, scope)
-    setJustAdded(paths)
+    // Files main did not add (no running-order line can name them) are named in `note`; the rest went in.
+    const skipped = new Set(result.skipped ?? [])
+    const taken = files.filter((file) => !skipped.has(file.path))
+    const addedPaths = taken.map((file) => file.path)
+    const titles = taken.map((file) => file.title)
+    // The Undo names this Add's token: main undoes exactly this Add, or nothing.
+    remember(result.undoToken ? { kind: 'add', dir: seen.dir, paths: addedPaths, titles, after: result.order, token: result.undoToken } : null, scope)
+    setJustAdded(addedPaths)
     refresh()
-    say(addedFlash(titles), { label: 'Undo', run: () => { void undo() } })
-    setAnnouncement(addedAnnouncement(titles, result.order.indexOf(paths[0]) + 1, result.order.length))
-    touch(paths[0], result.order)
+    say(result.note ? `${addedFlash(titles)}. ${result.note}` : addedFlash(titles), result.undoToken ? { label: 'Undo', run: () => { void undo() } } : undefined)
+    setAnnouncement(`${addedAnnouncement(titles, result.order.indexOf(addedPaths[0]) + 1, result.order.length)}${result.note ? ` ${result.note}` : ''}`)
+    touch(addedPaths[0], result.order)
     return true
   }), [guarded, refresh, remember, write, say, tell, touch, undo])
+
+  const sortPlan = useCallback((dir: string, parts: readonly PlanPartKey[], frontMatter?: readonly boolean[]): Promise<boolean> => guarded(async () => {
+    // Front matter and contents are each sorted in place: the sort never moves a part across the boundary (ADR-0046).
+    const order = chapterSortOrder(parts.map((part) => part.path), frontMatter)
+    if (isIdentityOrder(order)) { tell('The running order is already in chapter order.'); return true }
+    const expected = [...parts]
+    const scope = folioScope(rootRef.current, dir)
+    const asked = await write(dir, () => window.writeflex.plan.reorderParts(dir, order, expected))
+    if (!asked.ok) { tell(`${asked.message} The running order was not sorted.`); return false }
+    const result = asked.value
+    if (!result.ok) { tell(result.message); refresh(); return false }
+    if (!result.changed) return true
+    const sorted = expected.filter((part) => part.path !== null).length
+    remember({ kind: 'plan-reorder', dir, order: inverseOrder(order), after: result.parts }, scope)
+    setJustAdded([])
+    refresh()
+    say(sortedFlash(sorted), { label: 'Undo', run: () => { void undo() } })
+    setAnnouncement(sortedAnnouncement(sorted))
+    return true
+  }), [guarded, refresh, remember, write, say, tell, undo])
+
+  const addToPlan = useCallback((dir: string, parts: readonly PlanPartKey[], files: ReadonlyArray<{ path: string; title: string }>): Promise<boolean> => guarded(async () => {
+    if (files.length === 0) return false
+    const paths = files.map((file) => file.path)
+    const scope = folioScope(rootRef.current, dir)
+    const asked = await write(dir, () => window.writeflex.plan.addParts(dir, paths, [...parts]))
+    if (!asked.ok) { tell(`${asked.message} Nothing was added.`); return false }
+    const result = asked.value
+    if (!result.ok) { tell(result.message); refresh(); return false }
+    // Files main did not add (no running-order line can name them) are named in `note`; the rest went in.
+    const skipped = new Set(result.skipped ?? [])
+    const taken = files.filter((file) => !skipped.has(file.path))
+    const addedPaths = taken.map((file) => file.path)
+    const titles = taken.map((file) => file.title)
+    remember(result.undoToken ? { kind: 'plan-add', dir, paths: addedPaths, titles, after: result.parts, token: result.undoToken } : null, scope)
+    setJustAdded([])
+    refresh()
+    say(result.note ? `${addedFlash(titles)}. ${result.note}` : addedFlash(titles), result.undoToken ? { label: 'Undo', run: () => { void undo() } } : undefined)
+    setAnnouncement(`${addedAnnouncement(titles, result.parts.findIndex((part) => part.path === addedPaths[0]) + 1, result.parts.length)}${result.note ? ` ${result.note}` : ''}`)
+    return true
+  }), [guarded, refresh, remember, write, say, tell, undo])
 
   const clear = useCallback(() => { remember(null); setJustAdded([]) }, [remember])
 
   // Another Folio came on screen: its Outline must not offer, tint or run the step made in the one before.
   useEffect(() => {
-    if (undoRef.current && !undoStepKept(undoRef.current.scope, openScope)) clear()
-  }, [openScope, clear])
+    if (undoRef.current && !undoStepKeptAmong(undoRef.current.scope, openScopesRef.current)) clear()
+  }, [openScopesKey, clear])
 
-  const canUndo = undoStep !== null && undoStepUsable(undoStep.scope, openScope)
+  const canUndo = undoStep !== null && undoStepUsableOnScreen(undoStep.scope, outlineScope, planScope)
   return useMemo(
-    () => ({ movePiece, addPieces, undo, canUndo, announcement, touched, justAdded, clear }),
-    [movePiece, addPieces, undo, canUndo, announcement, touched, justAdded, clear],
+    () => ({ movePiece, addPieces, sortPlan, addToPlan, undo, write, canUndo, announcement, touched, justAdded, clear }),
+    [movePiece, addPieces, sortPlan, addToPlan, undo, write, canUndo, announcement, touched, justAdded, clear],
   )
 }
+

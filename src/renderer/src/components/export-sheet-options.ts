@@ -1,5 +1,6 @@
 import type { ExportFormat, FolioLeftOut, HtmlExportOptions } from '../../../preload'
 import {
+  isTocDepth,
   normaliseExportPresetLastUsed,
   type ExportPresetChoice,
   type ExportPresetLastUsed,
@@ -16,6 +17,8 @@ export type ExportSheetOptions = {
   summaryTiles: boolean
   frontPage: boolean
   design: 'a' | 'b'
+  /** Heading levels the contents lists, 1-6 (6 is All); absent keeps the default. */
+  tocDepth?: number
   frontmatterFields: ExportMastheadField[]
 }
 
@@ -50,6 +53,7 @@ function parseOptions(value: unknown): ExportSheetOptions | null {
     || typeof input.summaryTiles !== 'boolean'
     || (input.frontPage !== undefined && typeof input.frontPage !== 'boolean')
     || (input.design !== 'a' && input.design !== 'b')
+    || (input.tocDepth !== undefined && !isTocDepth(input.tocDepth))
     || !Array.isArray(input.frontmatterFields)
     || !input.frontmatterFields.every(isMastheadField)) return null
   return {
@@ -60,6 +64,7 @@ function parseOptions(value: unknown): ExportSheetOptions | null {
     summaryTiles: input.summaryTiles,
     frontPage: input.frontPage === true,
     design: input.design,
+    ...(input.tocDepth === undefined ? {} : { tocDepth: input.tocDepth as number }),
     frontmatterFields: [...new Set(input.frontmatterFields)],
   }
 }
@@ -125,6 +130,7 @@ export function exportSheetOptions(choice: ExportPresetChoice): ExportSheetOptio
     summaryTiles: choice.summaryTiles,
     frontPage: choice.frontPage,
     design: choice.design,
+    ...(choice.tocDepth === undefined ? {} : { tocDepth: choice.tocDepth }),
     frontmatterFields: [...choice.frontmatterFields],
   }
 }
@@ -169,11 +175,11 @@ export function exportDisclosure(format: ExportFormat, options: ExportSheetOptio
   if (options.frontPage) included.push('a front page cover')
   else omitted.push('the front page')
   if (options.summaryTiles) included.push('word-count and modified-date tiles')
-  if (options.readerNotes) included.push('reader notes with Markdown and JSON return files')
+  if (options.readerNotes) included.push('reader comments with Markdown and JSON return files')
   if (options.readerEdits) included.push('reader editing with a JSON diff return file')
   if (options.design === 'b') included.push('Editorial design')
   included.push('print styling')
-  if (!options.readerNotes) omitted.push('reader notes')
+  if (!options.readerNotes) omitted.push('reader comments')
   if (!options.readerEdits) omitted.push('reader editing')
   if (!options.summaryTiles) omitted.push('word-count and modified-date tiles')
   omitted.push('unselected frontmatter', 'your // margin notes never travel')
@@ -187,6 +193,7 @@ export function htmlExportOptions(options: ExportSheetOptions): HtmlExportOption
     summaryTiles: options.summaryTiles,
     frontPage: options.frontPage,
     design: options.design,
+    ...(options.tocDepth === undefined ? {} : { tocDepth: options.tocDepth }),
     frontmatterFields: options.frontmatterFields,
     readerNotes: options.readerNotes,
     readerEdits: options.readerEdits,
@@ -197,11 +204,14 @@ export function exportSheetChoice(
   scope: 'piece' | 'collection',
   format: ExportFormat,
   options: ExportSheetOptions,
-): { scope: 'piece' | 'collection'; format: ExportFormat; html?: HtmlExportOptions } {
+  home?: ExportTocDepthHome | null,
+): { scope: 'piece' | 'collection'; format: ExportFormat; html?: HtmlExportOptions; keepTocDepth?: true } {
   return {
     scope,
     format,
     ...(format === 'html' ? { html: htmlExportOptions(options) } : {}),
+    // A depth the writer chose for a scope with a file home is saved there by main as the HTML export runs.
+    ...(format === 'html' && home?.chosen ? { keepTocDepth: true as const } : {}),
   }
 }
 
@@ -211,6 +221,7 @@ export type ExportLeftOut = FolioLeftOut
 const LEFT_OUT_REASONS: Record<ExportLeftOut['reason'], string> = {
   'not-found': 'file not found',
   'outside-folio': 'outside this Folio’s folder',
+  'agent-instructions': 'agent instructions are never part of the Folio',
 }
 
 /** The line above the left-out list, and one row per entry: its path as the manifest wrote it, and why. */
@@ -230,4 +241,31 @@ export function exportedPhrase(done: { pieces: number; listed: number }, bundled
   if (!bundled) return 'Exported'
   if (done.listed > done.pieces) return `Exported ${done.pieces} of ${done.listed} listed pieces`
   return `Exported ${done.pieces} ${done.pieces === 1 ? 'piece' : 'pieces'}`
+}
+
+/**
+ * Where the Contents depth for one scope is kept: the file (`toc_depth` in a document's own frontmatter,
+ * or in a Folio's Index Note) and what it says now. A scope with such a file shows the file's value,
+ * Default when the key is absent; only a scope without one uses the last-used/preset depth. The sheet
+ * never writes it: a depth chosen here is saved by main when an HTML export runs (export.ts).
+ */
+export type ExportTocDepthHome = {
+  /** Plain words for the hint under the control: where the choice is saved. */
+  label: string
+  depth: number | null
+  /** The writer chose this depth in the sheet: the export uses it exactly and main saves it with the
+   *  file when an HTML export runs. Untouched, the sheet only shows what the file says. */
+  chosen?: boolean
+}
+
+/** Does this scope's file decide the depth? Whenever the scope has one: absent there means Default. */
+export const tocDepthHomeGoverns = (home: ExportTocDepthHome | null | undefined): home is ExportTocDepthHome => !!home
+
+/**
+ * The Contents depth the sheet shows and exports: with a file home, the file's `toc_depth` or the depth
+ * chosen here (undefined, i.e. Default and no explicit depth sent, when there is none); without one, the
+ * last-used or preset value.
+ */
+export function sheetTocDepth(lastUsed: number | undefined, home: ExportTocDepthHome | null | undefined): number | undefined {
+  return tocDepthHomeGoverns(home) ? home.depth ?? undefined : lastUsed
 }

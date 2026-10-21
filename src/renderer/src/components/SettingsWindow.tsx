@@ -8,6 +8,7 @@ import {
   CircleUser,
   Command,
   Cpu,
+  Terminal,
   FilePlus2,
   FileSearch,
   FolderSync,
@@ -40,6 +41,7 @@ import {
   Volume2,
   type LucideIcon,
   Compass,
+  Scan,
 } from 'lucide-react'
 import { useIpcAuthFlow } from '@bridle/electron/renderer'
 import type {
@@ -87,12 +89,32 @@ import {
   normaliseFixedLine,
 } from '../editor/fixed-line'
 import { normaliseReadAloudScrollMode } from '../editor/read-aloud'
+import { normaliseFocusMode } from '../editor/focus-modes'
+import {
+  LINE_FOCUS_DIM_NAMES,
+  LINE_FOCUS_DIMS,
+  LINE_FOCUS_SIZES,
+  LINE_FOLLOW_NAMES,
+  LINE_FOLLOWS,
+  LINE_OVERLAY_SETTINGS,
+  RULER_COVER_NAMES,
+  RULER_COVERS,
+  RULER_OPACITY_MAX,
+  RULER_OPACITY_MIN,
+  RULER_OPACITY_STEP,
+  normaliseLineFocusDim,
+  normaliseLineFocusSize,
+  normaliseLineFollow,
+  normaliseRulerCovers,
+  normaliseRulerOpacity,
+} from '../editor/line-overlay'
 import type { SpeechVoiceInfo } from '../editor/speech-engine'
 import { ShortcutCapture } from './ShortcutCapture'
 import { VoiceSettings } from './VoiceSettings'
 import { ModelRefreshControl } from './ModelRefreshControl'
 import type { ModelsChecked } from '../../../shared/model-refresh'
 import { AboutPanel } from './settings/AboutPanel'
+import { SharingSettingsPanel } from './settings/SharingSettingsPanel'
 import changelogSource from '../../../../CHANGELOG.md?raw'
 
 export type SettingsWindowProps = {
@@ -126,7 +148,11 @@ export type SettingsWindowProps = {
   onRestoreExample?: () => Promise<{ ok: true } | { ok: false; message: string }>
   /** Open the Guide (the same command as the palette's). */
   onOpenGuide?: () => void
+  /** Open the set-up steps for sharing (the same command as the palette's "Set up sharing"). */
+  onOpenSharingSetup?: () => void
 }
+/** The words the Settings filter finds the Sharing section by. */
+const SHARING_SEARCH = 'sharing share by link cloudflare account token replace check sharing service update version remove sharing from this account set up sharing'
 
 /** The words the Settings filter finds the Place chip's switch by. */
 /** Settings → Get started (state 32), as drawn. */
@@ -154,6 +180,7 @@ const SECTIONS: Array<{ id: string; title: string; icon: LucideIcon }> = [
   { id: 'sec-changelog', title: 'Changelog', icon: ScrollText },
   { id: 'sec-get-started', title: 'Get started', icon: Compass },
   { id: 'sec-shortcuts', title: 'Shortcuts', icon: Keyboard },
+  { id: 'sec-sharing', title: 'Sharing', icon: Link2 },
   { id: 'sec-about', title: 'About', icon: Info },
 ]
 
@@ -492,6 +519,7 @@ export function SettingsWindow({
   getStarted,
   onRestoreExample,
   onOpenGuide,
+  onOpenSharingSetup,
 }: SettingsWindowProps): JSX.Element {
   const [query, setQuery] = useState('')
   const [restoring, setRestoring] = useState(false)
@@ -774,7 +802,7 @@ export function SettingsWindow({
       'sec-appearance': ['light default', 'dark optional theme'],
       'sec-get-started': [GET_STARTED_SEARCH, SHOW_PLACE_SEARCH],
       'sec-action-bar': ['action bar show hide row of buttons under the toolbar', 'configure the action bar commands order separators groups customise'],
-      'sec-editor': ['typewriter mode centred cursor', 'read-aloud highlight colour strength soft medium strong terracotta amber green blue lilac grey custom preview wash', 'fixed line position top third middle lower third custom read aloud typewriter height', 'live preview seamless paper rendered blocks', 'line width narrow medium wide', 'prose size 17 19 21', 'spellcheck', 'anchored lead-in style bold colour contrast reading focus', 'open files from browser links external url scheme'],
+      'sec-editor': ['typewriter mode centred cursor', 'read-aloud highlight colour strength soft medium strong terracotta amber green blue lilac grey custom preview wash', 'fixed line position top third middle lower third custom read aloud typewriter height', 'live preview seamless paper rendered blocks', 'line width narrow medium wide', 'prose size 17 19 21', 'spellcheck', 'text readability focus mode fade sentence segment breakup anchored', 'anchored lead-in style bold colour contrast reading focus', 'text overlay line focus ruler size follow dim covers opacity', 'open files from browser links external url scheme'],
       'sec-reading-room': ['reading room side left right rail paper margin mirror global'],
       'sec-read-aloud': [
         'voice system default premium enhanced show all voices installed language',
@@ -783,7 +811,7 @@ export function SettingsWindow({
         'reading scroll typewriter centred centre middle stable voice page turn top screen viewport',
       ],
       'sec-sounds': ['typing sounds a sound per keystroke while you write typewriter deep erika crisp smith corona electric soft keyboard scheme volume', 'ambient sound background loop warm white noise hush rain volume pauses in the background', 'sound credits attribution licence wikimedia commons work with sounds lonemonk'],
-      'sec-library': [`${workspaceName} not a library promote`, 'watch for external changes other agents apps workspace folder'],
+      'sec-library': [`${workspaceName} not a library promote`, 'watch for external changes other agents apps workspace folder', 'install command-line tool writeflex terminal shell agents claude code codex'],
       'sec-diary': ['diary folder designate choose change dormant counted collections un-count', ...counted.map((collection) => `${collection.name} ${collection.pieces} pieces`)],
       'sec-snapshots': ['checkpoint on close returnable point history', 'keep history for 30 90 days forever retention'],
       'sec-changelog': changelog.map((e) => `${e.label} reset`),
@@ -791,6 +819,7 @@ export function SettingsWindow({
         'keycap ledger chord assign custom default not assigned press keys now reset all shortcuts',
         ...bindableCommands.map((command) => `${command.label} ${command.task}`),
       ],
+      'sec-sharing': [SHARING_SEARCH],
       'sec-about': [
         'about WriteFlex version release notes',
         ...(changelogSource.match(/^##\s+\[[^\]]+\].*$/gm) ?? []),
@@ -845,6 +874,31 @@ export function SettingsWindow({
     const value = values[key]
     return typeof value === 'boolean' ? value : fallback
   }
+  /** A pill-less select row for one Line focus / Ruler setting (Text overlay group). */
+  const overlaySelect = (searchWords: string, label: string, key: string, current: string, options: Array<[string, string]>): JSX.Element => (
+    <div className="crow" hidden={!rowShown('sec-editor', searchWords)}>
+      <span className="grow">
+        <span className="lbl">{label}</span>
+      </span>
+      <select aria-label={label} title={label} value={current} onChange={(e) => onSet(key, key.endsWith('.size') ? Number(e.target.value) : e.target.value, label)}>
+        {options.map(([value, name]) => (
+          <option key={value} value={value}>{name}</option>
+        ))}
+      </select>
+    </div>
+  )
+  const overlaySwitch = (searchWords: string, label: string, key: string, Icon: LucideIcon): JSX.Element => (
+    <div className="crow" hidden={!rowShown('sec-editor', searchWords)}>
+      <Icon className="icon" aria-hidden="true" />
+      <span className="grow">
+        <span className="lbl">{label}</span>
+      </span>
+      <label className="switch" title={label}>
+        <input type="checkbox" aria-label={label} checked={boolValue(key, false)} onChange={(e) => onSet(key, e.target.checked, label)} />
+        <span className="knob" />
+      </label>
+    </div>
+  )
   const volumeValue = (key: string, fallback: number): number => {
     const value = values[key]
     return typeof value === 'number' && !Number.isNaN(value) ? Math.min(1, Math.max(0, value)) : fallback
@@ -1398,6 +1452,27 @@ export function SettingsWindow({
                     <span className="knob" />
                   </label>
                 </div>
+                <div className="crow-sub" hidden={!rowShown('sec-editor', 'text readability focus mode fade sentence segment breakup anchored anchored lead-in style bold colour contrast reading focus')}>Text readability</div>
+                <div className="crow" hidden={!rowShown('sec-editor', 'text readability focus mode fade sentence segment breakup anchored')}>
+                  <Anchor className="icon" aria-hidden="true" />
+                  <span className="grow">
+                    <span className="lbl">Reading focus</span>
+                    <small>How the text itself is shown, one at a time</small>
+                  </span>
+                  <select
+                    aria-label="Reading focus"
+                    title="Reading focus"
+                    value={normaliseFocusMode(values['editor.focusMode'])}
+                    onChange={(e) => onSet('editor.focusMode', e.target.value, 'Reading focus')}
+                  >
+                    <option value="">Off</option>
+                    <option value="fade">Fade other paragraphs</option>
+                    <option value="sentence">Highlight sentence</option>
+                    <option value="segment">Segment focus</option>
+                    <option value="breakup">Sentence breakup</option>
+                    <option value="anchored">Anchored reading</option>
+                  </select>
+                </div>
                 <div className="crow" hidden={!rowShown('sec-editor', 'anchored lead-in style bold colour contrast reading focus')}>
                   <Anchor className="icon" aria-hidden="true" />
                   <span className="grow">
@@ -1415,6 +1490,28 @@ export function SettingsWindow({
                     <option value="contrast">Contrast</option>
                   </select>
                 </div>
+                <div className="crow-sub" hidden={!rowShown('sec-editor', 'text overlay line focus ruler size follow dim covers opacity')}>Text overlay</div>
+                {overlaySwitch('text overlay line focus ruler', 'Line focus', LINE_OVERLAY_SETTINGS.lineFocusOn, Scan)}
+                {overlaySelect('text overlay line focus size lines', 'Line focus size', LINE_OVERLAY_SETTINGS.lineFocusSize, String(normaliseLineFocusSize(values[LINE_OVERLAY_SETTINGS.lineFocusSize])), LINE_FOCUS_SIZES.map((n) => [String(n), `${n} ${n === 1 ? 'line' : 'lines'}`]))}
+                {overlaySelect('text overlay line focus follow', 'Line focus follow', LINE_OVERLAY_SETTINGS.lineFocusFollow, normaliseLineFollow(values[LINE_OVERLAY_SETTINGS.lineFocusFollow]), LINE_FOLLOWS.map((f) => [f, LINE_FOLLOW_NAMES[f]]))}
+                {overlaySelect('text overlay line focus dim light medium dark', 'Line focus dim', LINE_OVERLAY_SETTINGS.lineFocusDim, normaliseLineFocusDim(values[LINE_OVERLAY_SETTINGS.lineFocusDim]), LINE_FOCUS_DIMS.map((d) => [d, LINE_FOCUS_DIM_NAMES[d]]))}
+                {overlaySwitch('text overlay line focus ruler', 'Ruler', LINE_OVERLAY_SETTINGS.rulerOn, Minus)}
+                {overlaySelect('text overlay ruler covers', 'Ruler covers', LINE_OVERLAY_SETTINGS.rulerCovers, normaliseRulerCovers(values[LINE_OVERLAY_SETTINGS.rulerCovers]), RULER_COVERS.map((c) => [c, RULER_COVER_NAMES[c]]))}
+                <div className="crow" hidden={!rowShown('sec-editor', 'text overlay ruler opacity')}>
+                  <span className="grow">
+                    <span className="lbl">Ruler opacity</span>
+                  </span>
+                  <input
+                    type="range"
+                    aria-label="Ruler opacity"
+                    min={RULER_OPACITY_MIN}
+                    max={RULER_OPACITY_MAX}
+                    step={RULER_OPACITY_STEP}
+                    value={normaliseRulerOpacity(values[LINE_OVERLAY_SETTINGS.rulerOpacity])}
+                    onChange={(e) => onSet(LINE_OVERLAY_SETTINGS.rulerOpacity, Number(e.target.value), 'Ruler opacity')}
+                  />
+                </div>
+                {overlaySelect('text overlay ruler follow', 'Ruler follow', LINE_OVERLAY_SETTINGS.rulerFollow, normaliseLineFollow(values[LINE_OVERLAY_SETTINGS.rulerFollow]), LINE_FOLLOWS.map((f) => [f, LINE_FOLLOW_NAMES[f]]))}
                 <div className="crow" hidden={!rowShown('sec-editor', 'open files from browser links external url scheme')}>
                   <Link2 className="icon" aria-hidden="true" />
                   <span className="grow">
@@ -1619,6 +1716,24 @@ export function SettingsWindow({
                     />
                     <span className="knob" />
                   </label>
+                </div>
+                <div className="crow" hidden={!rowShown('sec-library', 'install command-line tool writeflex terminal shell agents claude code codex')}>
+                  <Terminal className="icon" aria-hidden="true" />
+                  <span className="grow">
+                    <span className="lbl">Command-line tool</span>
+                    <small>Lets Claude Code, Codex and other agents search and read your Collection with “writeflex”</small>
+                  </span>
+                  <button
+                    className="ghost"
+                    type="button"
+                    title="Install command-line tool"
+                    aria-label="Install command-line tool"
+                    onClick={() => {
+                      void window.writeflex.installCommandLineTool().then((result) => onFlash(result.message)).catch(() => onFlash('Could not install the command-line tool.'))
+                    }}
+                  >
+                    Install command-line tool
+                  </button>
                 </div>
               </div>
             </div>
@@ -1882,6 +1997,8 @@ export function SettingsWindow({
                 })}
               </div>
             </div>
+
+            {sectionHasRow['sec-sharing'] && <SharingSettingsPanel onFlash={onFlash} onOpenSetup={onOpenSharingSetup} />}
 
             {sectionHasRow['sec-about'] && <AboutPanel onFlash={onFlash} />}
           </div>

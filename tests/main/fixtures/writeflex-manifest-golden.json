@@ -5,21 +5,19 @@
     "systemPromptPreamble": "You are WriteFlex's in-app writing agent. The human writes; you keep house.\nBe conservative: make the SMALLEST change that fixes a real error, and do not rewrite for style, tone, or flow unless the writer explicitly asks. When the writer limits the scope of a request — 'spelling only', 'just proofread', 'only the second paragraph' — stay strictly inside it and change nothing else, even if you notice other issues; mention them in your reply instead of editing them.\nProse changes — anything a reader would notice in the rendered document, including heading text — must go through prose.edit. Stage MANY small edits, one prose.edit per SENTENCE or short phrase you change (its oldText must not span more than one sentence), each categorised as typo, grammar, wording, structure, clarity, tone, or other as a last-resort fallback when none of those fit. Rewriting a paragraph is several prose.edit calls, one per changed sentence — a copy-edit pass is dozens of small edits, a typo here, a wording tweak there, NEVER one big replacement and NEVER a whole section as a single edit. Judge the boundaries of each distinct change and stage them separately so the writer can accept/reject each on its own. prose.edit calls are staged for the writer to review; never expect them to apply immediately.\nAdding NEW text is prose.insert, never prose.edit. prose.edit REPLACES existing unique text; to write into an empty or near-empty file, add a paragraph, or place a new passage, use prose.insert with the exact unique text to follow as insertAfter, or an empty insertAfter to append at the end (also how you fill a blank file). Never invent an oldText that is not actually in the file just to satisfy prose.edit — that edit cannot be shown in the document and is a bug.\nPrefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations; it validates inner markup before staging and owns any required fences.\nPrefer frontmatter.set over prose edits for document metadata. Use it to set or add keys; pass lists as arrays.\nRelocations are prose.move, not delete plus insert: provide the exact unique block as text and the exact unique destination anchor as insertAfter. A move is categorised as structure and remains one reviewable operation.\nYou can correct your OWN staged work: every staged call's result names its suggestion id, and suggestions.retract(id) withdraws it. If an edit you staged this turn was wrong or over-reached, or the writer asks you to undo a change you proposed, retract it — do NOT stack another edit on top to paper over it. To amend a staged edit, retract it and then stage the corrected version.\nWidgets. A widget is an interactive HTML page (a calculator, chart, simulation, quiz, any interactive thing) that runs live inside the document as a block. It is one self-contained HTML file inside the Workspace, referred to from the text by one line of its own, with blank lines around it, outside code, lists and quotes: `[Simulation: assets/compound-interest.html]` (path relative to the document's folder). Typed or pasted HTML in the text is only ever shown as text, so an embed line is the only way to make something run. When the writer asks for a calculator, chart, simulation or any interactive X in a document, make a widget: use widgets.create (you write the whole page; WriteFlex saves it in assets/ beside the document and adds the line). Other widget verbs: widgets.list reads the document's widgets (ordinal, line, path, whether it resolves); widgets.insert embeds an HTML file that already exists in the Workspace; widgets.remove takes one embed line out (the file stays). widgets.create, widgets.insert and widgets.remove are proposals: the writer accepts or discards them, and nothing is written until they accept; for widgets.create the writer is shown the new file's path and full source first. Widget rules: one file with inline CSS and JavaScript and a <title>; no network of any kind (no http(s): or //host addresses, no fetch, XMLHttpRequest, WebSocket or import, no external scripts, fonts, stylesheets or images; data: and blob: URLs only). The widget runs sealed: its frame has no network and it cannot read or change the document, other files, storage or the app. A page that obviously reaches for the network is refused straight away with the reason, but that check only catches the obvious cases; it is the sealed frame that keeps a widget offline, so a page that gets past the check still has no network and just does not work. Size: the block sizes to its content, so keep it compact (a widget taller than about seven tenths of the editor scrolls inside its block); give controls visible labels. Keyboard: typing belongs to the document until the writer clicks into the widget, which then takes the keyboard; Esc, or a click in the text, hands it back, so a widget must also make sense with no keyboard focus. Do not change the sealing or try to work around it.\nHousekeeping — new files, renames/moves — applies immediately under snapshot and audit.\nNever overwrite an existing file wholesale: propose prose.edit changes instead.\nThe hidden Writer situation context describes the open piece, selection, mode and session. When the writer does not name a file, act on that piece. Briefly name the file you acted on.\nAll paths are relative to the Workspace root. Keep final replies brief and say what changed or what was staged.",
     "capabilities": [
       {
-        "name": "files.list",
         "label": "list files",
         "risk": "read",
-        "description": "List every Markdown file in the Workspace (relative paths).",
         "parameters": {
           "type": "object",
           "properties": {}
         },
+        "name": "files.list",
+        "description": "List every Markdown file in the Workspace (relative paths).",
         "execute": "[function]"
       },
       {
-        "name": "files.read",
         "label": "read file",
         "risk": "read",
-        "description": "Read a Markdown file from the Workspace, including reference material the writer keeps under research/ (the Sources pane) — read it there for context before drafting.",
         "parameters": {
           "type": "object",
           "required": [
@@ -32,13 +30,13 @@
             }
           }
         },
+        "name": "files.read",
+        "description": "Read a Markdown file from the Workspace, including reference material the writer keeps under research/ (the Sources pane) — read it there for context before drafting.",
         "execute": "[function]"
       },
       {
-        "name": "folio.create_manifest",
         "label": "create Folio manifest",
         "risk": "write",
-        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
         "parameters": {
           "type": "object",
           "required": [
@@ -53,13 +51,33 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "folio.create_manifest",
+        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. When .folio-backup.json exists, restore it: drop entries whose files no longer exist, append new files at the end as sections, and keep everything else byte-for-byte. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
         "execute": "[function]"
       },
       {
-        "name": "frontmatter.normalise",
+        "description": "Turn a Folio back into a collection. Keep its manifest as .folio-backup.json inside the folder; the backup does not make the folder a Folio. Make a Folio restores that backup, drops entries whose files no longer exist, appends new files at the end as sections, and keeps everything else byte-for-byte. Remove WriteFlex’s Folio instruction block. Remove its generated CLAUDE.md only while it matches the recorded content hash; keep edited CLAUDE.md unchanged. Keep edited instructions without their markers, all documents, the Index Note and your own instructions.",
+        "execute": "[function]",
+        "label": "Turn back into a collection",
+        "name": "folio.turn_back",
+        "parameters": {
+          "properties": {
+            "dir": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dir"
+          ],
+          "type": "object"
+        },
+        "preview": "[function]",
+        "risk": "write",
+        "touchedPaths": "[function]"
+      },
+      {
         "label": "normalise frontmatter",
         "risk": "write",
-        "description": "Canonicalise and reorder an EXISTING frontmatter block only; never use this to add or set metadata keys. Use frontmatter.set for metadata changes.",
         "parameters": {
           "type": "object",
           "required": [
@@ -74,13 +92,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "frontmatter.normalise",
+        "description": "Canonicalise and reorder an EXISTING frontmatter block only; never use this to add or set metadata keys. Use frontmatter.set for metadata changes.",
         "execute": "[function]"
       },
       {
-        "name": "frontmatter.set",
         "label": "set frontmatter",
         "risk": "write",
-        "description": "Set or add document metadata (frontmatter) keys; lists as arrays. Example: { path: \"draft.md\", set: { status: \"draft\", tags: [\"essay\", \"review\"] } }. STAGED for review.",
         "parameters": {
           "type": "object",
           "required": [
@@ -119,13 +137,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "frontmatter.set",
+        "description": "Set or add document metadata (frontmatter) keys; lists as arrays. Example: { path: \"draft.md\", set: { status: \"draft\", tags: [\"essay\", \"review\"] } }. STAGED for review.",
         "execute": "[function]"
       },
       {
-        "name": "housekeeping.create_file",
         "label": "create file",
         "risk": "write",
-        "description": "Create a NEW Markdown file with complete content. Fails if the file already exists — never use this to overwrite.",
         "parameters": {
           "type": "object",
           "required": [
@@ -145,13 +163,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "housekeeping.create_file",
+        "description": "Create a NEW Markdown file with complete content. Fails if the file already exists — never use this to overwrite.",
         "execute": "[function]"
       },
       {
-        "name": "housekeeping.rename_file",
         "label": "rename file",
         "risk": "write",
-        "description": "Rename or move a Markdown file inside the Workspace.",
         "parameters": {
           "type": "object",
           "required": [
@@ -171,15 +189,19 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "housekeeping.rename_file",
+        "description": "Rename or move a Markdown file inside the Workspace.",
         "execute": "[function]"
       },
       {
-        "name": "notes.create",
         "label": "create agent note",
         "risk": "write",
-        "description": "Write a note ABOUT a Workspace document — a review, comments, feedback — as a new file the app files under agent-notes/ beside that document, with frontmatter marking it agent-authored (author, kind, source document, skill). You never choose the path: give the document, a short kind and the note body. Never use housekeeping.create_file for notes about a document.",
         "parameters": {
           "type": "object",
+          "required": [
+            "sourceDocument",
+            "body"
+          ],
           "properties": {
             "sourceDocument": {
               "type": "string",
@@ -197,21 +219,17 @@
               "type": "string",
               "description": "The note as Markdown"
             }
-          },
-          "required": [
-            "sourceDocument",
-            "body"
-          ]
+          }
         },
-        "execute": "[function]",
         "preview": "[function]",
-        "touchedPaths": "[function]"
+        "touchedPaths": "[function]",
+        "name": "notes.create",
+        "description": "Write a note ABOUT a Workspace document — a review, comments, feedback — as a new file the app files under agent-notes/ beside that document, with frontmatter marking it agent-authored (author, kind, source document, skill). You never choose the path: give the document, a short kind and the note body. Never use housekeeping.create_file for notes about a document.",
+        "execute": "[function]"
       },
       {
-        "name": "objects.insert",
         "label": "propose object insertion",
         "risk": "write",
-        "description": "Propose a validated Markdown object, staged for review; prefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations. Supply INNER markup only; this capability owns fences. table: `| A | B |\\n| --- | --- |\\n| 1 | 2 |`. mermaid: `flowchart LR\\n  A --> B`. markmap: `- Root\\n  - Child`. SVG: `<svg viewBox=\"0 0 10 10\"><rect/></svg>`. SVG is untrusted and is sanitised before every render.",
         "parameters": {
           "type": "object",
           "required": [
@@ -260,6 +278,8 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "objects.insert",
+        "description": "Propose a validated Markdown object, staged for review; prefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations. Supply INNER markup only; this capability owns fences. table: `| A | B |\\n| --- | --- |\\n| 1 | 2 |`. mermaid: `flowchart LR\\n  A --> B`. markmap: `- Root\\n  - Child`. SVG: `<svg viewBox=\"0 0 10 10\"><rect/></svg>`. SVG is untrusted and is sanitised before every render.",
         "execute": "[function]"
       },
       {
@@ -447,7 +467,7 @@
         "validateStage": "[function]",
         "touchedPaths": "[function]",
         "name": "plan.propose",
-        "description": "Propose changes to a report folder's running order as ONE proposal the writer accepts, edits or discards. Nothing is written when you call this: the writer sees the proposed order with each change marked, and Accept applies every change as one undoable step. There is no other way to change a running order. Name parts by their running-order title (as plan.read gives it). Changes apply in the order listed; `at` and `to` are 0-based places in the order as it stands at that point. insert: add a part (an unwritten one, or a file in the folder by its title). move: put a part at place `to`. remove: take a part out of the order (its file stays; nothing is deleted). adopt: add a stray file (by path, from plan.read's strays). materialise: write an unwritten part out into a new file. setRole: set a part's role (section, vignette, appendix or summary). If the folder has no Index Note, accepting creates it first. Call plan.read first.",
+        "description": "Propose changes to a report folder's running order as ONE proposal the writer accepts, edits or discards. Nothing is written when you call this: the writer sees the proposed order with each change marked, and Accept applies every change as one undoable step. There is no other way to change a running order. Name parts by their running-order title (as plan.read gives it). Changes apply in the order listed; `at` and `to` are 0-based places in the order as it stands at that point. insert: add a part (an unwritten one, or a file in the folder by its title). move: put a part at place `to`. remove: take a part out of the order (its file stays; nothing is deleted). adopt: add a stray file (by path, from plan.read's strays). materialise: write an unwritten part out into a new file. setRole: set a part's role (section, vignette, appendix, summary or front-matter). Front matter (a title page, a preface) exports before the contents page, is never listed in it and always comes first: a part joins or leaves it by its role, never by a move. If the folder has no Index Note, accepting creates it first. Call plan.read first.",
         "execute": "[function]"
       },
       {
@@ -470,10 +490,8 @@
         "execute": "[function]"
       },
       {
-        "name": "prose.edit",
         "label": "propose prose edit",
         "risk": "write",
-        "description": "Propose ONE contiguous prose edit to an existing file as an exact text replacement. Staged for the writer to accept or reject. Each prose.edit must change at most ONE sentence or a short phrase — its oldText should not span more than one sentence. Rewriting a paragraph is therefore SEVERAL prose.edit calls, one per sentence you actually change, leaving the sentences you do not touch out of the edits entirely. A copy-edit pass is dozens of these small edits — a typo here, a wording tweak there — NEVER one big replacement, and NEVER the whole document or a whole section as a single edit. The writer accepts or rejects each one on its own, so keep them small and independent.",
         "parameters": {
           "type": "object",
           "required": [
@@ -537,13 +555,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "prose.edit",
+        "description": "Propose ONE contiguous prose edit to an existing file as an exact text replacement. Staged for the writer to accept or reject. Each prose.edit must change at most ONE sentence or a short phrase — its oldText should not span more than one sentence. Rewriting a paragraph is therefore SEVERAL prose.edit calls, one per sentence you actually change, leaving the sentences you do not touch out of the edits entirely. A copy-edit pass is dozens of these small edits — a typo here, a wording tweak there — NEVER one big replacement, and NEVER the whole document or a whole section as a single edit. The writer accepts or rejects each one on its own, so keep them small and independent.",
         "execute": "[function]"
       },
       {
-        "name": "prose.insert",
         "label": "propose prose insertion",
         "risk": "write",
-        "description": "Propose NEW prose to ADD to an existing file — content that does not replace anything. This is the ONLY way to add text: use it to write into an empty or near-empty document, to add a paragraph, or to place a passage at a specific point. prose.edit REPLACES existing unique text and cannot express an insertion, so never fabricate an oldText just to add content — use prose.insert. `text` is the new prose; `insertAfter` is the exact unique existing text the new content should follow, or an EMPTY string to append at the end of the document (an empty string is also how you fill a blank file). Staged for the writer to accept or reject, and shown inline in the document as pending inserted text.",
         "parameters": {
           "type": "object",
           "required": [
@@ -607,13 +625,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "prose.insert",
+        "description": "Propose NEW prose to ADD to an existing file — content that does not replace anything. This is the ONLY way to add text: use it to write into an empty or near-empty document, to add a paragraph, or to place a passage at a specific point. prose.edit REPLACES existing unique text and cannot express an insertion, so never fabricate an oldText just to add content — use prose.insert. `text` is the new prose; `insertAfter` is the exact unique existing text the new content should follow, or an EMPTY string to append at the end of the document (an empty string is also how you fill a blank file). Staged for the writer to accept or reject, and shown inline in the document as pending inserted text.",
         "execute": "[function]"
       },
       {
-        "name": "prose.move",
         "label": "propose prose move",
         "risk": "write",
-        "description": "Propose ONE contiguous prose move inside an existing Markdown file. Use this when text should be relocated rather than rewritten: it stages as a single move Change, never as delete plus insert. `text` is the exact unique block to relocate; `insertAfter` is the exact unique destination anchor that the block should land after, and it must not overlap the moved text.",
         "parameters": {
           "type": "object",
           "required": [
@@ -643,6 +661,84 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "prose.move",
+        "description": "Propose ONE contiguous prose move inside an existing Markdown file. Use this when text should be relocated rather than rewritten: it stages as a single move Change, never as delete plus insert. `text` is the exact unique block to relocate; `insertAfter` is the exact unique destination anchor that the block should land after, and it must not overlap the moved text.",
+        "execute": "[function]"
+      },
+      {
+        "label": "capture to research",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "project",
+            "title",
+            "kind",
+            "body"
+          ],
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Workspace-relative path of the Piece being worked on (or a folder: the Folio folder or a Folder Piece). A file is filed in its Folio's research/ folder, else beside it."
+            },
+            "title": {
+              "type": "string",
+              "description": "A short title for the unit"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "evidence"
+                },
+                {
+                  "type": "string",
+                  "const": "table"
+                },
+                {
+                  "type": "string",
+                  "const": "visualisation"
+                },
+                {
+                  "type": "string",
+                  "const": "snippet"
+                },
+                {
+                  "type": "string",
+                  "const": "search"
+                },
+                {
+                  "type": "string",
+                  "const": "widget"
+                }
+              ],
+              "description": "What the unit is"
+            },
+            "prompt": {
+              "type": "string",
+              "description": "The question that produced it"
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Provenance: `scout:<passage id>`, a URL, or `file:<path>`"
+            },
+            "artefact": {
+              "type": "string",
+              "description": "Workspace-relative path of a non-Markdown file (an HTML widget, a PNG, a CSV) to copy into research/ beside the description"
+            },
+            "body": {
+              "type": "string",
+              "description": "The unit itself, as Markdown"
+            }
+          }
+        },
+        "touchedPaths": "[function]",
+        "preview": "[function]",
+        "name": "research.capture",
+        "description": "File ONE reusable unit — a table, a visualisation, a piece of evidence, a snippet, a search result or a widget description — as its own Markdown file in the research/ folder beside a Piece (or in its Folio's research/ folder), with its sources, and index it for search. Nothing existing is changed: it only ever makes a new file, and the writer can delete it. Give the Piece's path (or a folder) as `project`. Put the unit itself in `body`; list where it came from in `sources` (a scout passage id as `scout:<id>`, a URL, or `file:<path>`); never retype a search hit without its passage id.",
         "execute": "[function]"
       },
       {
@@ -896,21 +992,19 @@
     "systemPromptPreamble": "You are WriteFlex's in-app writing agent. The human writes; you keep house.\nBe conservative: make the SMALLEST change that fixes a real error, and do not rewrite for style, tone, or flow unless the writer explicitly asks. When the writer limits the scope of a request — 'spelling only', 'just proofread', 'only the second paragraph' — stay strictly inside it and change nothing else, even if you notice other issues; mention them in your reply instead of editing them.\nProse changes — anything a reader would notice in the rendered document, including heading text — must go through prose.edit. Stage MANY small edits, one prose.edit per SENTENCE or short phrase you change (its oldText must not span more than one sentence), each categorised as typo, grammar, wording, structure, clarity, tone, or other as a last-resort fallback when none of those fit. Rewriting a paragraph is several prose.edit calls, one per changed sentence — a copy-edit pass is dozens of small edits, a typo here, a wording tweak there, NEVER one big replacement and NEVER a whole section as a single edit. Judge the boundaries of each distinct change and stage them separately so the writer can accept/reject each on its own. prose.edit calls are staged for the writer to review; never expect them to apply immediately.\nAdding NEW text is prose.insert, never prose.edit. prose.edit REPLACES existing unique text; to write into an empty or near-empty file, add a paragraph, or place a new passage, use prose.insert with the exact unique text to follow as insertAfter, or an empty insertAfter to append at the end (also how you fill a blank file). Never invent an oldText that is not actually in the file just to satisfy prose.edit — that edit cannot be shown in the document and is a bug.\nPrefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations; it validates inner markup before staging and owns any required fences.\nPrefer frontmatter.set over prose edits for document metadata. Use it to set or add keys; pass lists as arrays.\nRelocations are prose.move, not delete plus insert: provide the exact unique block as text and the exact unique destination anchor as insertAfter. A move is categorised as structure and remains one reviewable operation.\nYou can correct your OWN staged work: every staged call's result names its suggestion id, and suggestions.retract(id) withdraws it. If an edit you staged this turn was wrong or over-reached, or the writer asks you to undo a change you proposed, retract it — do NOT stack another edit on top to paper over it. To amend a staged edit, retract it and then stage the corrected version.\nWidgets. A widget is an interactive HTML page (a calculator, chart, simulation, quiz, any interactive thing) that runs live inside the document as a block. It is one self-contained HTML file inside the Workspace, referred to from the text by one line of its own, with blank lines around it, outside code, lists and quotes: `[Simulation: assets/compound-interest.html]` (path relative to the document's folder). Typed or pasted HTML in the text is only ever shown as text, so an embed line is the only way to make something run. When the writer asks for a calculator, chart, simulation or any interactive X in a document, make a widget: use widgets.create (you write the whole page; WriteFlex saves it in assets/ beside the document and adds the line). Other widget verbs: widgets.list reads the document's widgets (ordinal, line, path, whether it resolves); widgets.insert embeds an HTML file that already exists in the Workspace; widgets.remove takes one embed line out (the file stays). widgets.create, widgets.insert and widgets.remove are proposals: the writer accepts or discards them, and nothing is written until they accept; for widgets.create the writer is shown the new file's path and full source first. Widget rules: one file with inline CSS and JavaScript and a <title>; no network of any kind (no http(s): or //host addresses, no fetch, XMLHttpRequest, WebSocket or import, no external scripts, fonts, stylesheets or images; data: and blob: URLs only). The widget runs sealed: its frame has no network and it cannot read or change the document, other files, storage or the app. A page that obviously reaches for the network is refused straight away with the reason, but that check only catches the obvious cases; it is the sealed frame that keeps a widget offline, so a page that gets past the check still has no network and just does not work. Size: the block sizes to its content, so keep it compact (a widget taller than about seven tenths of the editor scrolls inside its block); give controls visible labels. Keyboard: typing belongs to the document until the writer clicks into the widget, which then takes the keyboard; Esc, or a click in the text, hands it back, so a widget must also make sense with no keyboard focus. Do not change the sealing or try to work around it.\nHousekeeping — new files, renames/moves — applies immediately under snapshot and audit.\nNever overwrite an existing file wholesale: propose prose.edit changes instead.\nThe hidden Writer situation context describes the open piece, selection, mode and session. When the writer does not name a file, act on that piece. Briefly name the file you acted on.\nAll paths are relative to the Workspace root. Keep final replies brief and say what changed or what was staged.",
     "capabilities": [
       {
-        "name": "files.list",
         "label": "list files",
         "risk": "read",
-        "description": "List every Markdown file in the Workspace (relative paths).",
         "parameters": {
           "type": "object",
           "properties": {}
         },
+        "name": "files.list",
+        "description": "List every Markdown file in the Workspace (relative paths).",
         "execute": "[function]"
       },
       {
-        "name": "files.read",
         "label": "read file",
         "risk": "read",
-        "description": "Read a Markdown file from the Workspace, including reference material the writer keeps under research/ (the Sources pane) — read it there for context before drafting.",
         "parameters": {
           "type": "object",
           "required": [
@@ -923,13 +1017,13 @@
             }
           }
         },
+        "name": "files.read",
+        "description": "Read a Markdown file from the Workspace, including reference material the writer keeps under research/ (the Sources pane) — read it there for context before drafting.",
         "execute": "[function]"
       },
       {
-        "name": "folio.create_manifest",
         "label": "create Folio manifest",
         "risk": "write",
-        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
         "parameters": {
           "type": "object",
           "required": [
@@ -944,13 +1038,33 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "folio.create_manifest",
+        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. When .folio-backup.json exists, restore it: drop entries whose files no longer exist, append new files at the end as sections, and keep everything else byte-for-byte. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
         "execute": "[function]"
       },
       {
-        "name": "frontmatter.normalise",
+        "description": "Turn a Folio back into a collection. Keep its manifest as .folio-backup.json inside the folder; the backup does not make the folder a Folio. Make a Folio restores that backup, drops entries whose files no longer exist, appends new files at the end as sections, and keeps everything else byte-for-byte. Remove WriteFlex’s Folio instruction block. Remove its generated CLAUDE.md only while it matches the recorded content hash; keep edited CLAUDE.md unchanged. Keep edited instructions without their markers, all documents, the Index Note and your own instructions.",
+        "execute": "[function]",
+        "label": "Turn back into a collection",
+        "name": "folio.turn_back",
+        "parameters": {
+          "properties": {
+            "dir": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dir"
+          ],
+          "type": "object"
+        },
+        "preview": "[function]",
+        "risk": "write",
+        "touchedPaths": "[function]"
+      },
+      {
         "label": "normalise frontmatter",
         "risk": "write",
-        "description": "Canonicalise and reorder an EXISTING frontmatter block only; never use this to add or set metadata keys. Use frontmatter.set for metadata changes.",
         "parameters": {
           "type": "object",
           "required": [
@@ -965,13 +1079,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "frontmatter.normalise",
+        "description": "Canonicalise and reorder an EXISTING frontmatter block only; never use this to add or set metadata keys. Use frontmatter.set for metadata changes.",
         "execute": "[function]"
       },
       {
-        "name": "frontmatter.set",
         "label": "set frontmatter",
         "risk": "write",
-        "description": "Set or add document metadata (frontmatter) keys; lists as arrays. Example: { path: \"draft.md\", set: { status: \"draft\", tags: [\"essay\", \"review\"] } }. STAGED for review.",
         "parameters": {
           "type": "object",
           "required": [
@@ -1010,13 +1124,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "frontmatter.set",
+        "description": "Set or add document metadata (frontmatter) keys; lists as arrays. Example: { path: \"draft.md\", set: { status: \"draft\", tags: [\"essay\", \"review\"] } }. STAGED for review.",
         "execute": "[function]"
       },
       {
-        "name": "housekeeping.create_file",
         "label": "create file",
         "risk": "write",
-        "description": "Create a NEW Markdown file with complete content. Fails if the file already exists — never use this to overwrite.",
         "parameters": {
           "type": "object",
           "required": [
@@ -1036,13 +1150,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "housekeeping.create_file",
+        "description": "Create a NEW Markdown file with complete content. Fails if the file already exists — never use this to overwrite.",
         "execute": "[function]"
       },
       {
-        "name": "housekeeping.rename_file",
         "label": "rename file",
         "risk": "write",
-        "description": "Rename or move a Markdown file inside the Workspace.",
         "parameters": {
           "type": "object",
           "required": [
@@ -1062,15 +1176,19 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "housekeeping.rename_file",
+        "description": "Rename or move a Markdown file inside the Workspace.",
         "execute": "[function]"
       },
       {
-        "name": "notes.create",
         "label": "create agent note",
         "risk": "write",
-        "description": "Write a note ABOUT a Workspace document — a review, comments, feedback — as a new file the app files under agent-notes/ beside that document, with frontmatter marking it agent-authored (author, kind, source document, skill). You never choose the path: give the document, a short kind and the note body. Never use housekeeping.create_file for notes about a document.",
         "parameters": {
           "type": "object",
+          "required": [
+            "sourceDocument",
+            "body"
+          ],
           "properties": {
             "sourceDocument": {
               "type": "string",
@@ -1088,21 +1206,17 @@
               "type": "string",
               "description": "The note as Markdown"
             }
-          },
-          "required": [
-            "sourceDocument",
-            "body"
-          ]
+          }
         },
-        "execute": "[function]",
         "preview": "[function]",
-        "touchedPaths": "[function]"
+        "touchedPaths": "[function]",
+        "name": "notes.create",
+        "description": "Write a note ABOUT a Workspace document — a review, comments, feedback — as a new file the app files under agent-notes/ beside that document, with frontmatter marking it agent-authored (author, kind, source document, skill). You never choose the path: give the document, a short kind and the note body. Never use housekeeping.create_file for notes about a document.",
+        "execute": "[function]"
       },
       {
-        "name": "objects.insert",
         "label": "propose object insertion",
         "risk": "write",
-        "description": "Propose a validated Markdown object, staged for review; prefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations. Supply INNER markup only; this capability owns fences. table: `| A | B |\\n| --- | --- |\\n| 1 | 2 |`. mermaid: `flowchart LR\\n  A --> B`. markmap: `- Root\\n  - Child`. SVG: `<svg viewBox=\"0 0 10 10\"><rect/></svg>`. SVG is untrusted and is sanitised before every render.",
         "parameters": {
           "type": "object",
           "required": [
@@ -1151,6 +1265,8 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "objects.insert",
+        "description": "Propose a validated Markdown object, staged for review; prefer objects.insert over prose.insert for tables, diagrams, mind maps, and SVG illustrations. Supply INNER markup only; this capability owns fences. table: `| A | B |\\n| --- | --- |\\n| 1 | 2 |`. mermaid: `flowchart LR\\n  A --> B`. markmap: `- Root\\n  - Child`. SVG: `<svg viewBox=\"0 0 10 10\"><rect/></svg>`. SVG is untrusted and is sanitised before every render.",
         "execute": "[function]"
       },
       {
@@ -1338,7 +1454,7 @@
         "validateStage": "[function]",
         "touchedPaths": "[function]",
         "name": "plan.propose",
-        "description": "Propose changes to a report folder's running order as ONE proposal the writer accepts, edits or discards. Nothing is written when you call this: the writer sees the proposed order with each change marked, and Accept applies every change as one undoable step. There is no other way to change a running order. Name parts by their running-order title (as plan.read gives it). Changes apply in the order listed; `at` and `to` are 0-based places in the order as it stands at that point. insert: add a part (an unwritten one, or a file in the folder by its title). move: put a part at place `to`. remove: take a part out of the order (its file stays; nothing is deleted). adopt: add a stray file (by path, from plan.read's strays). materialise: write an unwritten part out into a new file. setRole: set a part's role (section, vignette, appendix or summary). If the folder has no Index Note, accepting creates it first. Call plan.read first.",
+        "description": "Propose changes to a report folder's running order as ONE proposal the writer accepts, edits or discards. Nothing is written when you call this: the writer sees the proposed order with each change marked, and Accept applies every change as one undoable step. There is no other way to change a running order. Name parts by their running-order title (as plan.read gives it). Changes apply in the order listed; `at` and `to` are 0-based places in the order as it stands at that point. insert: add a part (an unwritten one, or a file in the folder by its title). move: put a part at place `to`. remove: take a part out of the order (its file stays; nothing is deleted). adopt: add a stray file (by path, from plan.read's strays). materialise: write an unwritten part out into a new file. setRole: set a part's role (section, vignette, appendix, summary or front-matter). Front matter (a title page, a preface) exports before the contents page, is never listed in it and always comes first: a part joins or leaves it by its role, never by a move. If the folder has no Index Note, accepting creates it first. Call plan.read first.",
         "execute": "[function]"
       },
       {
@@ -1361,10 +1477,8 @@
         "execute": "[function]"
       },
       {
-        "name": "prose.edit",
         "label": "propose prose edit",
         "risk": "write",
-        "description": "Propose ONE contiguous prose edit to an existing file as an exact text replacement. Staged for the writer to accept or reject. Each prose.edit must change at most ONE sentence or a short phrase — its oldText should not span more than one sentence. Rewriting a paragraph is therefore SEVERAL prose.edit calls, one per sentence you actually change, leaving the sentences you do not touch out of the edits entirely. A copy-edit pass is dozens of these small edits — a typo here, a wording tweak there — NEVER one big replacement, and NEVER the whole document or a whole section as a single edit. The writer accepts or rejects each one on its own, so keep them small and independent.",
         "parameters": {
           "type": "object",
           "required": [
@@ -1428,13 +1542,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "prose.edit",
+        "description": "Propose ONE contiguous prose edit to an existing file as an exact text replacement. Staged for the writer to accept or reject. Each prose.edit must change at most ONE sentence or a short phrase — its oldText should not span more than one sentence. Rewriting a paragraph is therefore SEVERAL prose.edit calls, one per sentence you actually change, leaving the sentences you do not touch out of the edits entirely. A copy-edit pass is dozens of these small edits — a typo here, a wording tweak there — NEVER one big replacement, and NEVER the whole document or a whole section as a single edit. The writer accepts or rejects each one on its own, so keep them small and independent.",
         "execute": "[function]"
       },
       {
-        "name": "prose.insert",
         "label": "propose prose insertion",
         "risk": "write",
-        "description": "Propose NEW prose to ADD to an existing file — content that does not replace anything. This is the ONLY way to add text: use it to write into an empty or near-empty document, to add a paragraph, or to place a passage at a specific point. prose.edit REPLACES existing unique text and cannot express an insertion, so never fabricate an oldText just to add content — use prose.insert. `text` is the new prose; `insertAfter` is the exact unique existing text the new content should follow, or an EMPTY string to append at the end of the document (an empty string is also how you fill a blank file). Staged for the writer to accept or reject, and shown inline in the document as pending inserted text.",
         "parameters": {
           "type": "object",
           "required": [
@@ -1498,13 +1612,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "prose.insert",
+        "description": "Propose NEW prose to ADD to an existing file — content that does not replace anything. This is the ONLY way to add text: use it to write into an empty or near-empty document, to add a paragraph, or to place a passage at a specific point. prose.edit REPLACES existing unique text and cannot express an insertion, so never fabricate an oldText just to add content — use prose.insert. `text` is the new prose; `insertAfter` is the exact unique existing text the new content should follow, or an EMPTY string to append at the end of the document (an empty string is also how you fill a blank file). Staged for the writer to accept or reject, and shown inline in the document as pending inserted text.",
         "execute": "[function]"
       },
       {
-        "name": "prose.move",
         "label": "propose prose move",
         "risk": "write",
-        "description": "Propose ONE contiguous prose move inside an existing Markdown file. Use this when text should be relocated rather than rewritten: it stages as a single move Change, never as delete plus insert. `text` is the exact unique block to relocate; `insertAfter` is the exact unique destination anchor that the block should land after, and it must not overlap the moved text.",
         "parameters": {
           "type": "object",
           "required": [
@@ -1534,13 +1648,89 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "prose.move",
+        "description": "Propose ONE contiguous prose move inside an existing Markdown file. Use this when text should be relocated rather than rewritten: it stages as a single move Change, never as delete plus insert. `text` is the exact unique block to relocate; `insertAfter` is the exact unique destination anchor that the block should land after, and it must not overlap the moved text.",
         "execute": "[function]"
       },
       {
-        "name": "scraps.add",
+        "label": "capture to research",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "project",
+            "title",
+            "kind",
+            "body"
+          ],
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Workspace-relative path of the Piece being worked on (or a folder: the Folio folder or a Folder Piece). A file is filed in its Folio's research/ folder, else beside it."
+            },
+            "title": {
+              "type": "string",
+              "description": "A short title for the unit"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "evidence"
+                },
+                {
+                  "type": "string",
+                  "const": "table"
+                },
+                {
+                  "type": "string",
+                  "const": "visualisation"
+                },
+                {
+                  "type": "string",
+                  "const": "snippet"
+                },
+                {
+                  "type": "string",
+                  "const": "search"
+                },
+                {
+                  "type": "string",
+                  "const": "widget"
+                }
+              ],
+              "description": "What the unit is"
+            },
+            "prompt": {
+              "type": "string",
+              "description": "The question that produced it"
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Provenance: `scout:<passage id>`, a URL, or `file:<path>`"
+            },
+            "artefact": {
+              "type": "string",
+              "description": "Workspace-relative path of a non-Markdown file (an HTML widget, a PNG, a CSV) to copy into research/ beside the description"
+            },
+            "body": {
+              "type": "string",
+              "description": "The unit itself, as Markdown"
+            }
+          }
+        },
+        "touchedPaths": "[function]",
+        "preview": "[function]",
+        "name": "research.capture",
+        "description": "File ONE reusable unit — a table, a visualisation, a piece of evidence, a snippet, a search result or a widget description — as its own Markdown file in the research/ folder beside a Piece (or in its Folio's research/ folder), with its sources, and index it for search. Nothing existing is changed: it only ever makes a new file, and the writer can delete it. Give the Piece's path (or a folder) as `project`. Put the unit itself in `body`; list where it came from in `sources` (a scout passage id as `scout:<id>`, a URL, or `file:<path>`); never retype a search hit without its passage id.",
+        "execute": "[function]"
+      },
+      {
         "label": "add scrap",
         "risk": "write",
-        "description": "File a cutting into the writer’s Scraps under an origin file. Housekeeping — applies immediately under snapshot.",
         "parameters": {
           "type": "object",
           "required": [
@@ -1560,13 +1750,13 @@
         },
         "preview": "[function]",
         "touchedPaths": "[function]",
+        "name": "scraps.add",
+        "description": "File a cutting into the writer’s Scraps under an origin file. Housekeeping — applies immediately under snapshot.",
         "execute": "[function]"
       },
       {
-        "name": "scraps.list",
         "label": "list scraps",
         "risk": "read",
-        "description": "List the writer’s scraps (cuttings set aside), optionally filtered to one origin file’s scraps.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1576,6 +1766,8 @@
             }
           }
         },
+        "name": "scraps.list",
+        "description": "List the writer’s scraps (cuttings set aside), optionally filtered to one origin file’s scraps.",
         "execute": "[function]"
       },
       {

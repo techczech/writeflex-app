@@ -2,6 +2,10 @@ import { test, expect } from 'bun:test'
 import {
   activateTab,
   closeTab,
+  isSurfaceTabId,
+  isWidgetWorkbenchTabId,
+  widgetWorkbenchTabId,
+  workbenchDocumentOf,
   closeTabIntent,
   cycleTab,
   emptyTabState,

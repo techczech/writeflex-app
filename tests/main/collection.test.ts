@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import { Workspace } from '../../src/main/workspace'
-import { collectionPattern, collectionPieces, collectionStatus, isStub, listCollection, createIndexNote, createPiece, localCalendarDate, unresolvedFolderPieces, resolvedCollectionPattern, setCollectionPieceMode, setCollectionPieceStatus } from '../../src/main/collection'
+import { collectionPattern, collectionPieces, collectionStatus, isStub, listCollection, collectionSubfolders, createIndexNote, createPiece, localCalendarDate, unresolvedFolderPieces, resolvedCollectionPattern, setCollectionPieceMode, setCollectionPieceStatus } from '../../src/main/collection'
 import { normaliseCollectionStatus } from '../../src/shared/collection-status'
 import { frontmatterKeys, parseFrontmatter } from '../../src/main/frontmatter'
 import { UNSORTED_STATUS } from '../../src/shared/collection-status'
@@ -801,4 +801,44 @@ test('a Folder Piece never takes its main document from a manifest entry outside
     { path: 'series/report/contents/01-intro.md', folderPath: 'series/report' },
     { path: 'series/root-escape/private.md', folderPath: undefined },
   ])
+})
+
+test('collectionSubfolders lists direct subfolders with piece counts, newest mtime and work metadata', () => {
+  const files = [
+    { path: 'w/a/one.md', name: 'one.md', modifiedAt: 5 },
+    { path: 'w/a/deep/two.md', name: 'two.md', modifiedAt: 9 },
+    { path: 'w/a/_a_INDEX.md', name: '_a_INDEX.md', modifiedAt: 99 },
+    { path: 'w/b/x.md', name: 'x.md', modifiedAt: 3 },
+    { path: 'w/hidden/y.md', name: 'y.md', modifiedAt: 1 },
+    { path: 'w/piece/main.md', name: 'main.md', modifiedAt: 1 },
+    { path: 'w/loose.md', name: 'loose.md', modifiedAt: 1 },
+  ]
+  const folders = ['w', 'w/a', 'w/a/deep', 'w/b', 'w/hidden', 'w/piece', 'other']
+  const vault = {
+    works: [{ path: 'w/b', kind: 'folder-piece' as const, title: 'Bee', status: 'draft', mainPath: 'w/b/x.md', parts: [], sidecars: [], support: [] }],
+    hidden: { paths: ['w/hidden'] },
+  }
+  const out = collectionSubfolders('w', folders, files, new Set(['w/piece']), vault)
+  expect(out.map((s) => s.path)).toEqual(['w/a', 'w/b'])
+  expect(out[0]).toMatchObject({ name: 'a', title: null, status: null, work: null, pieces: 2, modified: 9 })
+  expect(out[1]).toMatchObject({ title: 'Bee', status: 'draft', work: 'folder-piece', pieces: 1 })
+  // Without a vault nothing is hidden by rule; folder pieces still show as rows, not as subfolders.
+  expect(collectionSubfolders('w', folders, files, new Set(['w/piece']), null).map((s) => s.path)).toEqual(['w/a', 'w/b', 'w/hidden'])
+  // The root lists top-level folders only.
+  expect(collectionSubfolders('', folders, files, new Set(), null).map((s) => s.path)).toEqual(['other', 'w'])
+})
+
+test('listCollection returns the direct subfolders beside the loose pieces', async () => {
+  await write('j/loose.md', '# Loose\n')
+  await write('j/sub1/a.md', '# A\n')
+  await write('j/sub2/b.md', '# B\n')
+  const c = await listCollection(ws, 'j')
+  expect(c.rows.map((r) => r.path)).toEqual(['j/loose.md'])
+  expect(c.subfolders.map((s) => [s.name, s.pieces])).toEqual([['sub1', 1], ['sub2', 1]])
+})
+
+test('collection body search data is opt-in', async () => {
+  await writeFile(join(root, 'a.md'), '# A\n\nPrivate body sentence.\n')
+  expect((await listCollection(ws, '')).rows[0]).not.toHaveProperty('searchText')
+  expect((await listCollection(ws, '', null, { includeSearchText: true })).rows[0].searchText).toContain('Private body sentence.')
 })

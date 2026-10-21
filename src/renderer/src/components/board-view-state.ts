@@ -40,3 +40,24 @@ export function setSourcesCollapsed(dir: string, collapsed: boolean): void {
     // Storage unavailable: the choice lasts until the Board remounts.
   }
 }
+
+const COLUMN_ORDER = 'writeflex.board.columnOrder:'
+export function columnOrder(dir: string): string[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(`${COLUMN_ORDER}${dir}`) ?? '[]')
+    return Array.isArray(value) && value.every((s) => typeof s === 'string') ? [...new Set(value)] : []
+  } catch { return [] }
+}
+export function setColumnOrder(dir: string, order: string[]): void {
+  try { localStorage.setItem(`${COLUMN_ORDER}${dir}`, JSON.stringify(order)) } catch { /* Session only when storage is unavailable. */ }
+}
+export function orderColumns<T extends { status: string }>(columns: T[], order: string[]): T[] {
+  const rank = new Map(order.map((s, i) => [s.toLowerCase(), i]))
+  return [...columns].sort((a, b) => (rank.get(a.status.toLowerCase()) ?? Infinity) - (rank.get(b.status.toLowerCase()) ?? Infinity))
+}
+export function moveColumn(order: string[], status: string, direction: -1 | 1): string[] {
+  const from = order.indexOf(status), to = from + direction
+  const next = [...order]
+  if (from >= 0 && to >= 0 && to < next.length) [next[from], next[to]] = [next[to], next[from]]
+  return next
+}

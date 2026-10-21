@@ -87,6 +87,43 @@ async function sameFileInside(realRoot: string, relativePath: string, dev: numbe
   return walked.kind === 'file' && walked.dev === dev && walked.ino === ino
 }
 
+export type ContainedFileRead =
+  | { ok: true; bytes: Buffer }
+  /** `link`: a symlink (or a non-folder) stands somewhere on the path; `not-file`: the leaf is a folder or a
+   *  special file; `changed`: what was opened is not the file the walk found; `too-large`: over `maxBytes`. */
+  | { ok: false; reason: 'missing' | 'link' | 'not-file' | 'changed' | 'too-large' | 'unreadable' }
+
+/**
+ * Read a workspace file by its relative path so that what is read is the contained file and nothing a link
+ * leads to (contracts §1, steps 2 and 3): a no-follow walk, an open that follows nothing, the descriptor
+ * checked to be a regular file and the very file a second walk finds (same device and inode), then the bytes
+ * from that descriptor. Never follows a link anywhere on the path, the leaf included.
+ */
+export async function readContainedFile(realRoot: string, relativePath: string, maxBytes: number): Promise<ContainedFileRead> {
+  const walked = walkNoFollowSync(realRoot, relativePath)
+  if (walked.kind === 'missing') return { ok: false, reason: 'missing' }
+  if (walked.kind === 'refused') return { ok: false, reason: 'link' }
+  if (walked.kind !== 'file') return { ok: false, reason: 'not-file' }
+  let handle: Awaited<ReturnType<typeof open>> | null = null
+  try {
+    try { handle = await open(join(realRoot, ...relativePath.split('/')), OPEN_FLAGS) } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      return { ok: false, reason: code === 'ENOENT' ? 'missing' : code === 'ELOOP' ? 'link' : 'unreadable' }
+    }
+    const info = await handle.stat()
+    if (!info.isFile()) return { ok: false, reason: 'not-file' }
+    if (!(await sameFileInside(realRoot, relativePath, info.dev, info.ino).catch(() => false))) return { ok: false, reason: 'changed' }
+    if (info.size > maxBytes) return { ok: false, reason: 'too-large' }
+    const bytes = await handle.readFile()
+    if (bytes.byteLength > maxBytes) return { ok: false, reason: 'too-large' }
+    return { ok: true, bytes }
+  } catch {
+    return { ok: false, reason: 'unreadable' }
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+}
+
 /** Resolve, open, verify the open file, and read it. */
 export async function readWidgetFile(root: string, documentPath: string, rawPath: string): Promise<WidgetFileRead> {
   assertRelativeWorkspacePath(documentPath)

@@ -1,13 +1,19 @@
+import { addCollectionBatchToFolio, runCollectionBatch } from './collection-bulk'
+import { COLLECTION_PAGE_COMMANDS, collectionPageMenuCommand, dispatchCollectionPageCommand } from '../components/collection-page-commands'
 import { flushUntilClean, type CloseFlushResult } from './close-flush'
-import { closeWindowIfClean, closeWithEditor, editorIsPresent, setEditorPresent, unsaved } from './unsaved-text'
-import { mainWroteDocument, replayAcceptRedo, type MainWrotePorts } from './main-wrote-document'
+import { researchCaptureTarget } from './research-capture-target'
+import { reportRendererError } from './RendererErrorBoundary'
+import { closeWindowIfClean, closeWithEditor, editorIsPresent, queueCloseRetry, setEditorPresent, setSaveBasisSource, takeCloseRetry, unsaved } from './unsaved-text'
+import { acceptThroughOwner as acceptRoute, replayAcceptRedo, resolveProposalThroughOwner, type AcceptAnswer, type AcceptRouteResult } from './resolution-routes'
+import { createDocumentOwner, type DocumentOwner, type MainWriteOutcome, type OutsideOutcome, type Snapshot } from './document-owner'
+import { documentsUnder as documentsUnderFrom, folderPrefix, renameMembers } from './documents-under'
 import { useAmbientSnapshot } from '../hooks/useAmbientSnapshot'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { StateCommand } from '@codemirror/state'
+import { Transaction, type StateCommand } from '@codemirror/state'
 import type { Command as EditorViewCommand } from '@codemirror/view'
-import { redo } from '@codemirror/commands'
+import { isolateHistory, redo, undo, undoDepth } from '@codemirror/commands'
 import type { AgentObjectNote, AttributedChange, Change, CollectionTarget, ExplicitSessionState, FileReadResult, ProseEditInput, RenameFileResult, Scrap, SearchMatch, SettingValue, ShelfRow, SkillMeta, Suggestion, ThreadRunComplete, Version, VersionCompareEndpointId, VersionCompareResult } from '../../../preload'
-import type { ClipboardKind } from '../../../preload'
+import type { ClipboardKind, FileRenamePlan } from '../../../preload'
 import type { ReadingRoomWriteRefusal, ReadingRoomWriteResult } from '../../../preload'
 import { createOutboxSyncRunner } from '../reading-room-sync'
 import { applyReadingRoomSetting } from '../reading-room-settings'
@@ -68,6 +74,7 @@ import {
   PanelRightOpen,
   PanelTop,
   Plus,
+  GitMerge,
   RefreshCw,
   Quote,
   RotateCcw,
@@ -101,6 +108,11 @@ import {
   Compass,
   AppWindow,
   FolderOpen,
+  Rows3,
+  Send,
+  History,
+  Pencil,
+  BookOpenCheck,
 } from 'lucide-react'
 import { documentIdentityLabel, Toolbar } from '../components/Toolbar'
 import { ActionBar } from '../components/ActionBar'
@@ -119,6 +131,7 @@ import {
   serialiseActionBarItems,
 } from '../../../shared/action-bar-settings'
 import { StatusBar } from '../components/StatusBar'
+import type { ReviewAsk } from '../components/ReviewBulkPopovers'
 import { FocusPicker } from '../components/FocusPicker'
 import { applyLineOverlaySetting, DEFAULT_LINE_OVERLAY, LINE_OVERLAY_SETTINGS, RULER_OPACITY_STEP, normaliseRulerOpacity, resolveExclusive, type LineOverlayConfig, type RulerCovers, type LineFocusSize } from '../editor/line-overlay'
 import { SessionStarter } from '../components/SessionStarter'
@@ -130,8 +143,9 @@ import { jumpToBlock } from '../editor/live-preview'
 import { noteDocumentInteraction, noteFileOpened, OUTLINE_SWITCH_IDLE, type OpenSource, type OutlineSwitchState } from './outline-switch'
 import { askFolioPlace } from './folio-place-request'
 import { useFolioRunningOrder, type FlashAction } from './folio-running-order'
-import { inFolioFolder, saveQueuedBehindFolioWriteMayRun, writeFolioThroughSaveQueue } from '../../../shared/folio-write-preparation'
-import { ORDER_IN_PLAN_LINE, commandTarget, type FocusedFolioRow } from '../../../shared/folio-running-order'
+import { planDirFor } from './plan-dir'
+import { changedOnDiskMessage, inFolioFolder, saveQueuedBehindFolioWriteMayRun, writeFolioThroughSaveQueue } from '../../../shared/folio-write-preparation'
+import { ORDER_IN_PLAN_LINE, blockCommandTarget, commandTarget, type FocusedFolioRow } from '../../../shared/folio-running-order'
 import { createPlayer, normaliseReadAloudRate, type Player, type PlayerState } from '../editor/read-aloud-player'
 import { normaliseReadAloudScrollMode, type ReadAloudScrollMode } from '../editor/read-aloud'
 import {
@@ -168,7 +182,7 @@ import {
 import { clampVolume, normaliseTypingScheme, SoundEngine, type AmbientLoop, type TypingScheme } from './sounds'
 import { documentTitle, parseFrontmatter, parseGoal } from '../../../main/frontmatter'
 import { formatRenameRepairMessage } from '../../../shared/rename-repair-message'
-import { EditorBaselines, isTextChange } from '../../../shared/line-endings'
+import { isTextChange } from '../../../shared/line-endings'
 import { OBJECTS_LESSON } from '../../../shared/example-files'
 import { countUnits, countWords } from '../editor/word-count'
 import { DocumentFind, type FindStatus } from '../components/DocumentFind'
@@ -179,20 +193,40 @@ import ArchiveSearchDock from '../components/ArchiveSearchDock'
 import { archiveLinkInsert, archiveQuoteInsert, insertedRange } from '../editor/archive-insert'
 import type { ArchiveResult } from '../../../shared/scout'
 import { RemoveExampleConfirm, REMOVE_EXAMPLE_TEXT } from '../components/RemoveExampleConfirm'
+import { DiskMergeSheet } from '../components/DiskMergeSheet'
+import { applyDiskMerge, beginDiskMerge, diskMergeMessage, offersMerge, type DiskMergeSession } from './disk-merge'
+import type { ConflictPick } from '../../../shared/three-way-merge'
 import { StartScreen } from '../components/StartScreen'
 import { WorkspaceEmpty } from '../components/WorkspaceEmpty'
 import { EditorPane, type EditorHandle } from '../components/EditorPane'
+import { readPreferredView, type MarginControl } from '../components/ReviewMargin'
+import { readTextRoom, setPreferredView, usePreferredView, useTextRoom } from './margin-view-store'
+import { effectiveMarginView, marginFits } from './margin-geometry'
 import { citationChip, citationForReaderText } from '../editor/citation'
 import { CollectionView } from '../components/CollectionView'
+import { SharingSetup } from '../components/sharing/SharingSetup'
+import { SharingPage } from '../components/sharing/SharingPage'
+import { SharesList } from '../components/sharing/SharesList'
+import type { PieceSharingView, ShareMark } from '../../../shared/sharing-links'
+import { MakeVaultSheet } from '../components/MakeVaultSheet'
+import { useVaultPresence } from '../hooks/useVaultPresence'
+import { useVaultSidebarPrefs } from '../hooks/useVaultSidebarPrefs'
+import type { SwitcherChoice } from '../components/VaultSwitcherMenu'
+import { SWITCH_CLOSE_TIMED_OUT_MESSAGE, switchStayedMessage, type CloseKept, type RootSwitchTarget } from '../../../shared/vault-switcher'
 import { dispatchPlanCommand } from '../plan/plan-commands'
 import { dispatchBoardCommand } from '../components/board-commands'
 import { PieceSourcesPopover } from '../components/PieceSources'
 import { Board } from '../components/Board'
 import { Rail, type QueryInsertionContext } from '../components/Rail'
 import { InsertQueryConfirm } from '../components/InsertQueryConfirm'
+import { folioOpenTarget, readFolioOpenParts } from '../components/FolioOpenButton'
+import { exportPlaceFor } from './export-collection-dir'
 import { OutlinePane, type OutlineRequest } from '../components/OutlinePane'
 import { CommandPalette, type AppCommand } from '../components/CommandPalette'
 import { WidgetPicker } from '../components/WidgetPicker'
+import { StandardWidgetWorkbench, type WorkbenchStep } from '../components/StandardWidgetWorkbench'
+import { embedTarget, undoesWidgetCreate } from '../widgets/standard-widget-model'
+import { EDIT_STANDARD_WIDGET_EVENT } from '../widgets/widget-block'
 import { insertWidgetLine } from '../editor/insert-widget'
 import { ActionsHereContext, type ActionsHereApi } from '../components/ActionsHere'
 import { FolderPieceChooser, type FolderPieceChoice } from '../components/FolderPieceChooser'
@@ -202,7 +236,8 @@ import { SkillCompletionToast, orderSkills, skillDisplayName, type SkillToast } 
 import { REPORT_SKILL, REPORT_SKILL_COMMAND, skillLaunchTarget } from '../plan/report-skill'
 import { SkillsManager, SkillProvenanceBelt, activeSkillForPath } from '../components/SkillsManager'
 import { ScratchpadPane } from '../components/ScratchpadPane'
-import { ChangeDock } from '../components/ChangeDock'
+import { VersionsPane } from '../components/VersionsPane'
+import { summariseRun } from '../../../engine'
 import { ComparePane } from '../components/ComparePane'
 import { compareHighlightsForEditor, compareToColumnMode, shouldRefreshWorkingCompare } from '../components/compare-live'
 import { SuggestionCallout, type CalloutViewRequest } from '../components/SuggestionCallout'
@@ -210,20 +245,25 @@ import { SettingsWindow } from '../components/SettingsWindow'
 import { classifyExternalDrop, type DroppedPath } from '../external-drop'
 import { CheatSheet } from '../components/CheatSheet'
 import { ExportSheet, type ExportPresetOpenAction, type ExportScope, type ExportSheetOutcome } from '../components/ExportSheet'
-import type { ExportFormat, FolioLeftOut, FolioPlace, HtmlExportOptions } from '../../../preload'
+import type { ExportFormat, FolioLeftOut, FolioPlace, HtmlExportOptions, TocDepthScope, TocDepthSource } from '../../../preload'
+import type { ExportTocDepthHome } from '../components/export-sheet-options'
+import { tocDepthOf } from '../../../shared/toc-depth'
 import { IdeaCapture } from '../components/IdeaCapture'
+import { CaptureResearchSheet } from '../components/CaptureResearchSheet'
 import { IdeaMaterialise } from '../components/IdeaMaterialise'
 import { useAgent } from '../hooks/useAgent'
 import { useScraps } from '../hooks/useScraps'
 import { useSources } from '../hooks/useSources'
 import { useSettings } from '../hooks/useSettings'
 import { useWorkspace } from '../hooks/useWorkspace'
+import { WidgetStepLeftoverNotice } from '../components/WidgetStepLeftoverNotice'
 import { useChecklistProgress } from '../hooks/useChecklistProgress'
+import { useStableCallbacks } from '../hooks/useStableCallbacks'
 import { useFolderFocus } from '../hooks/useFolderFocus'
 import { FocusPathBar } from '../components/FocusPathBar'
 import { useTabs } from '../hooks/useTabs'
 import { MANIFEST_NAME } from '../../../shared/folio-constants'
-import { BOARD_TAB_ID, closeTabIntent, isBoardTabId, sameTabList } from '../hooks/tab-state'
+import { BOARD_TAB_ID, closeTabIntent, isBoardTabId, isSurfaceTabId, isWidgetWorkbenchTabId, sameTabList, widgetWorkbenchTabId, workbenchDocumentOf } from '../hooks/tab-state'
 import { createTargetDirectory, folderBrowsePath, isInFocus } from '../sidebar-tree'
 import { useFavourites } from '../hooks/useFavourites'
 import { useSession } from '../hooks/useSession'
@@ -240,11 +280,21 @@ import { runRefreshModelsCommand } from '../commands/model-refresh-command'
 import { APP_DISPATCHED_EDITOR_IDS, parseOverrides, resolveChord, SHORTCUT_OVERRIDES_KEY, shortcutCaptureActive } from '../commands/chords'
 import { suggestionAnchors, uniqueRange } from '../editor/suggestion-anchor'
 import { flashApplied, minimisedAppliedRange } from '../editor/applied-flash'
-import { diskNoticeRefusalMessage, externalContentReconcileAction, mayWriteUnderDiskNotice, type ExternalDiskNotice } from '../editor/reconcile'
+import { closeRefusalMessage, diskNoticeRefusalMessage, keepMineWrites, mayWriteUnderDiskNotice, minimalReplace, noticeAfterRefusal, refusalMayReload, removedTabDiscardQuestion, sameDiskNotice, type ExternalDiskNotice } from '../editor/reconcile'
+import { basisFromBaseline } from '../../../shared/save-basis'
 import { normaliseEditorViewMode, type EditorViewMode } from '../editor/view-mode'
 import type { SuggestionResolutionEffect } from '../editor/suggestion-resolution-history'
 import { materialiseSeed, type WikilinkRange } from '../editor/wikilinks'
 import { useReviewActions } from './review-actions'
+import { keepTitleInMetadataOnlySteps, CLOSE_REFUSED_MESSAGE } from './keep-title-in-metadata'
+import { buildMarginModel, isUnfiltered, makeAnchorResolver } from './margin-model'
+import { myEditsSessionIds, reviewModeOf, toggleMode, trackWaitingAgain, withMode, type ReviewMode } from './margin-mode'
+import { kindSegmentOf, shownIds, withKindSegment, withoutKinds, type KindSegment } from './margin-filter'
+import { reviewLine, reviewLineCompact } from '../components/status-bar-model'
+import { countMenu, viewCountsOf, whoChipLabel, withoutWho, type CountMenuAction } from './margin-count-menu'
+import { batchProgress, bulkTargets, declineQuestion, EMPTY_BATCH, nextBatch, runTargets, sendBackScope, visibleSelection, waitingEditIds, type DeclineQuestion, type ReviewBatch, type SendBackScope } from './margin-bulk'
+import { EMPTY_HEAD_FILTER, type HeadFilterState } from './margin-head-state'
+import { useDismissedNotApplied, useOutsideDock } from './outside-dock'
 import { reviseSuggestionWithWarning } from './revise-suggestion'
 import { findLiveSuggestionForChange } from './change-suggestion-match'
 import { ReviewCursor, owedReveal } from './review-cursor'
@@ -267,7 +317,10 @@ import {
   sessionRecallKind,
   type HistoricalView,
 } from './historical-view'
-import { eventToChord, formatShortcutKey, isCheatSheetShortcut, isWriterModeToggleShortcut, skillChordIntent, OPEN_CHEAT_SHEET_EVENT, type ShortcutLike } from './shortcuts'
+import { TitleConflictContext, useTitleConflictActions } from './title-conflict-actions'
+import { TitleConflictBar } from '../components/TitleConflictBar'
+import { titleConflict, titleConflictKey, titleHeadingInsertable, withTitleFixed, type TitleConflict, type TitleFixDirection } from '../../../shared/title-conflict'
+import { backspaceChord, canonicalChord, eventToChord, formatShortcutKey, isCheatSheetShortcut, isWriterModeToggleShortcut, skillChordIntent, OPEN_CHEAT_SHEET_EVENT, type ShortcutLike } from './shortcuts'
 
 /** Lucide glyph for each editing command id (paletteCommands carries no icon); Command is the fallback. */
 const COMMAND_ICONS: Record<string, LucideIcon> = {
@@ -306,6 +359,7 @@ const HIDE_INSERTS_COMMAND = registryCommand('view.hideInserts')
 const OPEN_TABS_COMMAND = registryCommand('view.openTabs')
 const OPEN_BOARD_COMMAND = registryCommand('collection.openBoard')
 const ACCEPT_SESSION_COMMAND = registryCommand('writer.acceptSession')
+const EMPTY_ID_SET: ReadonlySet<string> = new Set()
 const REVERT_TO_ACTIVE_COMMAND = registryCommand('change.revertToActive')
 const SEND_ORIGINAL_TO_SCRATCHPAD_COMMAND = registryCommand('change.sendOriginalToScratchpad')
 const ACTION_BAR_COMMAND = registryCommand('view.actionBar')
@@ -426,6 +480,9 @@ async function statusBarCollectionDirFor(path: string, resolvedCollectionDir: st
   }
 }
 
+/** Commands the app chord table dispatches on a modified ⌫ (eventToChord produces no ⌫ chord). */
+const BACKSPACE_APP_CHORDS = new Set(['review.declineAll'])
+
 export default function App(): JSX.Element {
   const [readingRoomOpen, setReadingRoomOpen] = useState(false)
   const [readingRoomSide, setReadingRoomSide] = useState<'left' | 'right'>('left')
@@ -452,7 +509,8 @@ export default function App(): JSX.Element {
    *  attempt?" is what decides whether a drain has just become news worth telling him. */
   const outboxWaitingRef = useRef(0)
   const outboxAutomaticSyncAttemptsRef = useRef(0)
-  const e2eSaveBehaviourRef = useRef<'normal' | 'slow' | 'fail' | 'hold-redo'>('normal')
+  const e2eSaveBehaviourRef = useRef<'normal' | 'slow' | 'fail' | 'hold-redo' | 'hold-move' | 'hold-accept' | 'hold-export'>('normal')
+  const e2eSavesSentRef = useRef<Array<{ path: string; content: string }>>([])
   const e2eSlowSaveReleaseRef = useRef<(() => void) | null>(null)
   const [sidebarFilterFocusTick, setSidebarFilterFocusTick] = useState(0)
   const [outlineOpen, setOutlineOpen] = useState(true)
@@ -479,6 +537,25 @@ export default function App(): JSX.Element {
   const [changesPath, setChangesPath] = useState<string | null>(null)
   const [reviewCursorState, setReviewCursorState] = useState({ id: null as string | null, revealId: null as string | null, revealSerial: 0 })
   const reviewCursorRef = useRef<ReviewCursor | null>(null)
+  // The margin's bulk controls while one is mounted.
+  const marginControlRef = useRef<MarginControl | null>(null)
+  const marginCommandRef = useRef<(what: 'focus' | 'accept' | 'decline' | 'send-back') => void>(() => {})
+  const runMarginCommand = useCallback((what: 'focus' | 'accept' | 'decline' | 'send-back') => marginCommandRef.current(what), [])
+  // Show or hide the review margin (⇧⌥⌘M), remembered for this window. Hidden, ⇧⌘C shows it again.
+  const [marginHidden, setMarginHidden] = useState<boolean>(() => { try { return window.localStorage.getItem('writeflex-margin-hidden') === '1' } catch { return false } })
+  const toggleMargin = useCallback(() => {
+    setMarginHidden((hidden) => {
+      try { window.localStorage.setItem('writeflex-margin-hidden', hidden ? '0' : '1') } catch { /* the choice just is not kept */ }
+      return !hidden
+    })
+  }, [])
+  const marginHiddenRef = useRef(marginHidden)
+  marginHiddenRef.current = marginHidden
+  // Switch Margin / Inline; with the margin hidden the first press shows it.
+  const switchMarginView = useCallback(() => {
+    if (marginHiddenRef.current) { toggleMargin(); return }
+    marginControlRef.current?.switchView()
+  }, [toggleMargin])
   if (reviewCursorRef.current === null) {
     reviewCursorRef.current = new ReviewCursor(({ id, reveal }) => {
       setReviewCursorState((current) => ({
@@ -500,6 +577,14 @@ export default function App(): JSX.Element {
   // palette, Settings → Get started, a chapter link): then it is last in the row and selected. Not kept
   // across launches; it leaves the row when the example is removed or brought back (ticket 10).
   const [guideOpen, setGuideOpen] = useState(false)
+  // Set up sharing (0.24 ticket 02): the set-up steps as a page over the text. Ticket 03 mounts the
+  // same component on the Sharing page.
+  const [sharingSetupOpen, setSharingSetupOpen] = useState(false)
+  // The Sharing page of the open piece (0.24 ticket 03), and the open piece's Shared mark.
+  const [sharingPageOpen, setSharingPageOpen] = useState(false)
+  // The collection's Shares list (0.24 ticket 10): the Sharing page one level up.
+  const [sharesListOpen, setSharesListOpen] = useState(false)
+  const [shareMark, setShareMark] = useState<ShareMark | null>(null)
   const guideInRow = guideOpen
   const [exampleChanges, setExampleChanges] = useState(0)
   // Main asked this window to open its Guide tab (it is taken with the next Guide-context read).
@@ -528,7 +613,7 @@ export default function App(): JSX.Element {
     },
     onRightTabOpened: (tab) => {
       if (tab === 'agent' || tab === 'scratchpad') setAgentOpen(true)
-      if (tab === 'review' || tab === 'agent-notes' || tab === 'versions') setChangesOpen(true)
+      if (tab === 'agent-notes' || tab === 'versions') setChangesOpen(true)
     },
   })
   // The narrow-window rule (ticket 07, state 34): with the Guide open and the window too narrow to keep the
@@ -539,6 +624,9 @@ export default function App(): JSX.Element {
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
+  // Where the review cards sit (the writer's choice, Margin by default) and the room the editor leaves beside the margin: the status bar's Margin | Inline switch reads both.
+  const preferredMarginView = usePreferredView()
+  const marginTextRoom = useTextRoom()
   const guideCrowded = guideContext.shown && rightTab === 'guide' && !rightPaneCollapsed
     && guideNeedsRoom({ viewportWidth, leftWidth: leftPaneWidth, rightWidth: rightPaneWidth })
   useEffect(() => { if (guideCrowded) collapseLeftPane() }, [guideCrowded, collapseLeftPane])
@@ -552,7 +640,12 @@ export default function App(): JSX.Element {
   // The window's ONE workspace instance — useTabs/useFavourites take root/files as arguments so a
   // post-mount bind (start screen → Open dialog / Open Recent → refresh()) reaches every consumer.
   // A hook privately instantiating useWorkspace would only ever see the mount-time pull (fix wave 1).
-  const { root, files, folders, assetBaseUrl, refresh } = useWorkspace()
+  const { root, files, folders, assetBaseUrl, refresh, applyCollectionChange } = useWorkspace()
+  // The page has loaded its workspace view: main shows a window the vault switcher opened hidden only
+  // once this names the root it bound (vaults 06 review round 2). Again on every change of root.
+  useEffect(() => {
+    if (root !== undefined) void window.writeflex.reportRendererReady(root).catch(() => {})
+  }, [root])
   useEffect(() => {
     let live = true
     void window.writeflex.getGuideContext().then((got) => {
@@ -569,9 +662,21 @@ export default function App(): JSX.Element {
   const { focus: folderFocus, setFocus: setFolderFocus } = useFolderFocus(root, folders)
   // The Board's Collection folder; declared before useTabs because the Board tab joins that folder's group.
   const [boardDir, setBoardDir] = useState('')
+  // The record browser's Source and preview tab (ticket 04b): which document and widget it holds, and the last widget step to undo.
+  const [workbench, setWorkbench] = useState<{ documentPath: string; recipePath: string | null; caretLine?: number | null } | null>(null)
+  const [lastWidgetStep, setLastWidgetStep] = useState<WorkbenchStep | null>(null)
+  const workbenchRef = useRef(workbench)
+  workbenchRef.current = workbench
+  const lastWidgetStepRef = useRef<WorkbenchStep | null>(null)
+  lastWidgetStepRef.current = lastWidgetStep
+  /** The rename path's hold and buffer follow, for a widget step that moves documents (set below, where they are made). */
+  const moveHoldRef = useRef<{
+    withPathsSaved: <T>(paths: readonly string[] | (() => readonly string[]), act: () => Promise<T>) => Promise<{ result: T } | null>
+    afterMainMoved: (from: string, to: string) => void
+  } | null>(null)
   // The "List this piece's sources" popover (scraps ticket 04): the piece, and its collection when the Board knows it.
   const [pieceSourcesRequest, setPieceSourcesRequest] = useState<{ path: string; dir?: string } | null>(null)
-  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, close, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, boardDir)
+  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, close, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, boardDir, (path) => unsaved.textOf(path) !== undefined)
   const [visibleTabStripPaths, setVisibleTabStripPaths] = useState<string[]>([])
   const [modeDrawerOpen, setModeDrawerOpen] = useState(false)
   const [distractionFree, setDistractionFree] = useState(false)
@@ -584,8 +689,9 @@ export default function App(): JSX.Element {
     setVisibleTabStripPaths((current) => sameTabList(current, paths) ? current : paths)
   }, [])
   const boardActive = isBoardTabId(activeTab)
-  // File-owned effects see null for the Board sentinel, so it can never reach read/save/version IPC.
-  const active = boardActive ? null : activeTab
+  const workbenchActive = isWidgetWorkbenchTabId(activeTab)
+  // File-owned effects see null for the Board and widget-workbench sentinels, so they can never reach read/save/version IPC.
+  const active = boardActive || workbenchActive ? null : activeTab
   // The Folio or Collection the open file belongs to — its tab group, the one on the strip — which
   // is what “Focus on the open file’s Collection” focuses. The Board's own Collection when it is open.
   const activeCollectionFolder = useMemo(() => {
@@ -647,6 +753,12 @@ export default function App(): JSX.Element {
   useEffect(() => window.writeflex.onFileChangedOnDisk((paths) => {
     if (paths.some((path) => path.endsWith(MANIFEST_NAME))) refreshFolioPlace()
   }), [refreshFolioPlace])
+  // Opening a Folio checks its parts' titles once (main remembers it per window): proposals wait in the Changes.
+  const folioPlaceDir = folioPlace?.dir
+  useEffect(() => {
+    if (folioPlaceDir === undefined || !folioPlacePath) return
+    void window.writeflex.checkFolioPartTitles(folioPlacePath).catch(() => undefined)
+  }, [folioPlaceDir, folioPlacePath])
   const [railOpen, setRailOpen] = useState(false)
   const [railFocusRequest, setRailFocusRequest] = useState(0)
   const [queryInsertionContext, setQueryInsertionContext] = useState<QueryInsertionContext | null>(null)
@@ -663,7 +775,7 @@ export default function App(): JSX.Element {
   const [activeCollectionPath, setActiveCollectionPath] = useState<string | null>(null)
   const [statusBarCollectionDir, setStatusBarCollectionDir] = useState('')
   const workspaceName = root?.split('/').filter(Boolean).at(-1) ?? null
-  const activeDocumentName = boardActive ? 'Board' : active?.split('/').at(-1) ?? null
+  const activeDocumentName = boardActive ? 'Board' : workbenchActive ? 'Widget workbench' : active?.split('/').at(-1) ?? null
   const activeParentDir = active?.includes('/') ? active.slice(0, active.lastIndexOf('/')) : ''
   const shownCollectionDir = boardActive ? boardDir : active ? (activeCollectionDir || activeParentDir) : collectionDir
   const shownStatusBarCollectionDir = boardActive ? boardDir : active ? statusBarCollectionDir : collectionDir
@@ -702,11 +814,16 @@ export default function App(): JSX.Element {
       setOutboxWaiting(waiting)
       setOutboxRejected(rejected)
     }
-    api.setSaveBehaviour = (behaviour) => { e2eSaveBehaviourRef.current = behaviour }
-    api.releaseSlowSave = () => {
-      e2eSlowSaveReleaseRef.current?.()
-      e2eSlowSaveReleaseRef.current = null
-      e2eSaveBehaviourRef.current = 'normal'
+    // The write hooks (hold or fail a save, a rename, an accept, an export) exist only in an unpackaged e2e
+    // run (shared/e2e-write-hooks.ts): a packaged build never installs them, whatever its environment.
+    if (window.writeflex.e2eWriteHooks) {
+      api.setSaveBehaviour = (behaviour) => { e2eSaveBehaviourRef.current = behaviour }
+      api.savesSent = () => [...e2eSavesSentRef.current]
+      api.releaseSlowSave = () => {
+        e2eSlowSaveReleaseRef.current?.()
+        e2eSlowSaveReleaseRef.current = null
+        e2eSaveBehaviourRef.current = 'normal'
+      }
     }
     api.collectionQueryCount = window.writeflex.e2eCollectionQueryCount
     api.focusEditor = () => { editorRef.current?.view()?.focus() }
@@ -719,16 +836,17 @@ export default function App(): JSX.Element {
       delete api.resetOutboxAutomaticSyncAttempts
       delete api.setStatusBarEvents
       delete api.setSaveBehaviour
+      delete api.savesSent
       // releaseSlowSave stays: a write held when the app is unmounted by an error must still be releasable.
       delete api.collectionQueryCount
       delete api.resetCollectionQueryCount
       delete api.focusEditor
     }
   }, [])
-  // Per-path saved (on-disk) content: the dirty baseline. A buffer is dirty when it differs from
-  // this, so undoing back to the saved text clears the dot rather than leaving it stuck. Held in the
-  // editor's LF form (EditorBaselines), so a CRLF or mixed-ending file is not "changed" on open (bug 01).
-  const savedContent = useRef<Map<string, string>>(new EditorBaselines())
+  // The document owner (document-owner.ts) holds every open document's saved baseline, generation, dirty
+  // dot and queue, and is the only one that rebases, replaces or forgets a buffer. It is created once
+  // (below, with its ports); `ownerRef` lets callbacks declared before it reach it.
+  const ownerRef = useRef<DocumentOwner | null>(null)
   // The path whose buffer the editor view currently shows. Guards save() against writing the
   // PREVIOUS file's buffer to a just-activated tab whose readFile hasn't resolved yet.
   const loadedPath = useRef<string | null>(null)
@@ -755,10 +873,8 @@ export default function App(): JSX.Element {
   const [externalDiskNotices, setExternalDiskNotices] = useState<Map<string, ExternalDiskNotice>>(
     () => new Map(),
   )
-  // The native window-close guard reads the dirty set at the instant of a close, so it must be exact
-  // even between renders — setDirty maintains dirtyPathsRef synchronously (Codex review P1). activeRef
-  // only picks how a buffer is read when saving, so a one-render lag there is harmless.
-  const dirtyPathsRef = useRef(dirtyPaths)
+  // The dirty set is the owner's, exact between renders (owner.isDirty). activeRef only picks how a buffer
+  // is read when saving, so a one-render lag there is harmless.
   const activeRef = useRef(active)
   activeRef.current = active
   const tabsRef = useRef(tabs)
@@ -915,44 +1031,112 @@ export default function App(): JSX.Element {
     setAgentActionRequest((request) => ({ tick: request.tick + 1, action }))
   }, [openRightTab])
 
-  // The dirty dot and save chip, and what schedules a flush on a tab switch or tab close. dirtyPathsRef
-  // is updated here synchronously, ahead of the React commit, so those read the set as it is now
-  // (Codex review P1). It does NOT decide a window close: that is the registry's alone (unsaved-text.ts).
-  const setDirtyDot = useCallback((path: string, dirty: boolean) => {
-    const prev = dirtyPathsRef.current
-    if (prev.has(path) === dirty) return
-    const next = new Set(prev)
-    if (dirty) next.add(path)
-    else next.delete(path)
-    dirtyPathsRef.current = next
-    setDirtyPaths(next)
+  // Late-bound writer-facing report for a structured main-process refusal: flash is declared below.
+  const flashRef = useRef<((message: string) => void) | null>(null)
+  const guardRefusalPath = useRef<string | null>(null)
+  // Why the last write of each path was refused, in the words the writer was shown: a closing window
+  // names every path it could not write with its own reason (a reason for one path never stands for another).
+  const refusalReasons = useRef(new Map<string, string>())
+  // Late-bound (declared with the notices below): main refused a write because the disk no longer holds
+  // the version the buffer was based on. `answering`: the write was Keep mine to that notice.
+  const diskChangedUnderBufferRef = useRef<((path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice) => void) | null>(null)
+  // Late-bound (declared with the notices below): the file read back after a write is not what was
+  // written. Another program wrote it in between: an outside change, asked about like any other.
+  const outsideAfterWriteRef = useRef<((path: string, diskText: string) => void) | null>(null)
+  // The per-render values the owner's reports use (stable callbacks read them through this).
+  const noteUserSaveRef = useRef(agent.noteUserSave)
+  noteUserSaveRef.current = agent.noteUserSave
+  // The document owner itself (document-owner.ts), created once. Its ports read this app's state when
+  // they are called: the live editor, the notices, the unsaved registry, main's file:save.
+  if (!ownerRef.current) {
+    ownerRef.current = createDocumentOwner({
+      buffer: (p) => {
+        const editor = editorRef.current
+        if (!editor) return undefined
+        const live = activeRef.current === p && loadedPath.current === p
+        return (live ? editor.currentDoc() : editor.docFor(p)) ?? null
+      },
+      notice: (p) => externalDiskNoticesRef.current.get(p),
+      registry: unsaved,
+      write: (p, doc, basis) => {
+        // e2e only: every save the owner sends to main, in order (autosave.spec.ts reads it; review S3).
+        if (window.writeflex.e2eWriteHooks) e2eSavesSentRef.current.push({ path: p, content: doc })
+        return window.writeflex.saveFile(p, doc, basis)
+      },
+      beforeSave: window.writeflex.e2eWriteHooks
+        ? async () => {
+            if (e2eSaveBehaviourRef.current === 'slow') {
+              await new Promise<void>((resolve) => { e2eSlowSaveReleaseRef.current = resolve })
+            }
+            if (e2eSaveBehaviourRef.current === 'fail') {
+              e2eSaveBehaviourRef.current = 'normal'
+              throw new Error('Simulated save failure')
+            }
+          }
+        : undefined,
+      setReadOnly: (paths, readOnly) => editorRef.current?.setReadOnly(paths, readOnly),
+      forgetBuffer: (p) => {
+        editorRef.current?.forget(p)
+        if (loadedPath.current === p) loadedPath.current = null
+      },
+      renameBuffer: (from, to) => editorRef.current?.renamePath(from, to),
+      replaceBuffer: (p, diskText, discardLocal) => editorRef.current?.setContent(p, diskText, { silent: true, ...(discardLocal ? { discardLocal: true } : {}) }),
+      dirtyChanged: (paths) => setDirtyPaths(new Set(paths)),
+      report: {
+        slow: (p, slow) => setSlowSavePaths((current) => {
+          if (current.has(p) === slow) return current
+          const next = new Set(current)
+          if (slow) next.add(p)
+          else next.delete(p)
+          return next
+        }),
+        refusedByNotice: (p, message) => {
+          guardRefusalPath.current = p // the callers' own "could not save" lines give way to this one
+          refusalReasons.current.set(p, message)
+          flashRef.current?.(message)
+        },
+        refusedByMain: (p, message) => {
+          guardRefusalPath.current = p
+          refusalReasons.current.set(p, message)
+          setSaveFailures((current) => (current.has(p) ? current : new Set(current).add(p)))
+          flashRef.current?.(message)
+        },
+        diskChanged: (p, diskText, buffer, answering) => {
+          guardRefusalPath.current = p
+          diskChangedUnderBufferRef.current?.(p, diskText, buffer, answering)
+        },
+        saved: (p, changed) => {
+          refusalReasons.current.delete(p)
+          if (guardRefusalPath.current === p) guardRefusalPath.current = null
+          setSaveFailures((current) => {
+            if (!current.has(p)) return current
+            const next = new Set(current)
+            next.delete(p)
+            return next
+          })
+          setLastSavedAt((current) => new Map(current).set(p, Date.now()))
+          setSavedTick((n) => n + 1) // disk moved: the disk-backed folder outline re-scans
+          // A user save disarms ⌘⇧Z (T16): one that put the writer's text on disk. A write that found the
+          // buffer already there changed nothing an Undo turn would rewind (a flush before an accept).
+          if (changed) noteUserSaveRef.current()
+        },
+        outsideAfterWrite: (p, diskText) => outsideAfterWriteRef.current?.(p, diskText),
+        unknown: (p) => {
+          refusalReasons.current.delete(p)
+          if (guardRefusalPath.current === p) guardRefusalPath.current = null
+          setSaveFailures((current) => (current.has(p) ? current : new Set(current).add(p)))
+          flashRef.current?.(`Could not save ${p.split('/').at(-1) ?? p}.`)
+        },
+      },
+    })
+  }
+  const owner = ownerRef.current
+  // A path's buffer as it is now (the live editor, or the tab's cache), or null when none is held.
+  const bufferNow = useCallback((path: string): string | null => {
+    const editor = editorRef.current
+    if (!editor) return null
+    return activeRef.current === path && loadedPath.current === path ? editor.currentDoc() ?? null : editor.docFor(path) ?? null
   }, [])
-  // The buffer's standing against the disk, reported to the registry with the text it is about, and
-  // the dot with it. `text` is the buffer's text now; null when the document has left this window (its
-  // tab was closed, it was deleted or renamed). The registry decides for itself whether "not dirty"
-  // is to be believed: with a write of other text in flight it keeps the text (unsaved-registry.ts).
-  const setDirty = useCallback((path: string, dirty: boolean, text: string | null) => {
-    if (text === null) unsaved.discard(path)
-    else if (dirty) unsaved.typed(path, text)
-    else unsaved.matchesDisk(path, text)
-    setDirtyDot(path, dirty)
-  }, [setDirtyDot])
-
-  // Main wrote a document that is open here and the editor took its text as an undoable edit (accepting
-  // a suggestion, by either route, and redoing an undone accept): main-wrote-document.ts. The file
-  // returned is the saved baseline, and the buffer as it is now is reported against it.
-  const mainWrotePorts = useMemo<MainWrotePorts>(() => ({
-    setBaseline: (path, content) => { savedContent.current.set(path, content) },
-    bufferOf: (path) => {
-      const editor = editorRef.current
-      if (!editor) return null
-      return activeRef.current === path && loadedPath.current === path ? editor.currentDoc() ?? null : editor.docFor(path) ?? null
-    },
-    setDirty,
-    heldText: (path) => unsaved.textOf(path),
-    keep: (path, text) => unsaved.typed(path, text),
-  }), [setDirty])
-  const documentWrittenByMain = useCallback((file: FileReadResult) => mainWroteDocument(mainWrotePorts, file), [mainWrotePorts])
 
   const setSaveFailed = useCallback((path: string, failed: boolean) => {
     setSaveFailures((current) => {
@@ -980,144 +1164,27 @@ export default function App(): JSX.Element {
     setSlowSavePaths(new Set())
   }, [active])
 
-  // Tier 1 (ADR-0013): the raw write of one path's buffer to disk. Reads the buffer at CALL TIME — the
-  // active tab's text from the live view, a background tab's from EditorPane's cache (docFor) — so whoever
-  // runs it persists the latest text. It NEVER snapshots (history is tier 2, below). Returns false on a
-  // failed write so a caller can keep the buffer rather than lose it. NOT called directly — go through
-  // savePath, which serialises writes per path.
-  // Late-bound writer-facing report for a structured main-process refusal: flash is declared below.
-  const flashRef = useRef<((message: string) => void) | null>(null)
-  const guardRefusalPath = useRef<string | null>(null)
-  const writePath = useCallback(
-    async (path: string, answered?: ExternalDiskNotice): Promise<boolean> => {
-      // The disk changed (or could not be read) under this buffer's unsaved text and the writer has not
-      // chosen between the two: nothing writes it but the answer "Keep mine" to that very notice. Asked
-      // when the write runs, so a save queued before the notice was raised is stopped as well.
-      const notice = externalDiskNoticesRef.current.get(path)
-      if (notice && !mayWriteUnderDiskNotice(notice, answered)) {
-        guardRefusalPath.current = path // the callers' own "could not save" lines give way to this one
-        flashRef.current?.(diskNoticeRefusalMessage(path, notice))
-        return false
-      }
-      const live = activeRef.current === path && loadedPath.current === path
-      const editor = editorRef.current
-      let doc = live ? editor?.currentDoc() ?? null : editor?.docFor(path) ?? null
-      if (doc == null) {
-        // With no editor at all (the app was unmounted by an error) this app can write nothing:
-        // unsaved-text.ts holds the text and answers the close.
-        if (!editor) return true
-        // Buffer not resident. Text the registry still holds for the path is the writer's latest and
-        // is written from there; with none there is nothing to lose.
-        const kept = unsaved.textOf(path)
-        if (kept === undefined) {
-          setDirtyDot(path, false)
-          return true
-        }
-        doc = kept
-      } else if (isTextChange(savedContent.current.get(path), doc)) {
-        unsaved.typed(path, doc) // whatever marked it, text that differs from the disk is unsaved until written
-      }
-      // Announced in the turn the buffer was read: from here until it settles, the registry knows a
-      // write of this text is in flight, and nothing may call the path saved on the strength of
-      // what was on disk before it.
-      const write = unsaved.beginWrite(path, doc)
-      const slowTimer = setTimeout(() => setSaveSlow(path, true), 2000)
-      try {
-        if (window.writeflex.e2eEnabled && e2eSaveBehaviourRef.current === 'slow') {
-          await new Promise<void>((resolve) => { e2eSlowSaveReleaseRef.current = resolve })
-        }
-        if (window.writeflex.e2eEnabled && e2eSaveBehaviourRef.current === 'fail') {
-          e2eSaveBehaviourRef.current = 'normal'
-          throw new Error('Simulated save failure')
-        }
-        const result = await window.writeflex.saveFile(path, doc)
-        if ('refused' in result) {
-          write.failed() // refused before anything was written: the disk is as it was
-          guardRefusalPath.current = path
-          setSaveFailed(path, true)
-          flashRef.current?.(result.message)
-          return false
-        }
-        const { content } = result
-        write.succeeded()
-        if (guardRefusalPath.current === path) guardRefusalPath.current = null
-        setSaveFailed(path, false)
-        setLastSavedAt((current) => {
-          const next = new Map(current)
-          next.set(path, Date.now())
-          return next
-        })
-        savedContent.current.set(path, content)
-        // What came back is what is on disk. It is not the text written when another program wrote the
-        // file between the write and its readback, and keystrokes may have arrived meanwhile: compare
-        // the buffer as it is now, read as the write read it but with the tab's standing as it is now
-        // (the writer may have switched tabs during the write). A buffer that differs goes back into
-        // the registry, so no close passes on the strength of `succeeded` above. With no buffer to
-        // read (the app was unmounted, or the tab is not resident) the returned content must never
-        // stand in for one and clear text the registry holds: the registry is only added to, with
-        // the text this write made, when that is not what came back and the registry holds nothing
-        // later for the document.
-        const editorNow = editorRef.current
-        const liveNow = activeRef.current === path && loadedPath.current === path
-        const now = editorNow ? (liveNow ? editorNow.currentDoc() : editorNow.docFor(path)) : null
-        if (now != null) setDirty(path, isTextChange(content, now), now)
-        else {
-          const notOnDisk = isTextChange(content, doc)
-          if (notOnDisk && unsaved.textOf(path) === undefined) unsaved.typed(path, doc)
-          setDirtyDot(path, notOnDisk)
-        }
-        setSavedTick((n) => n + 1) // disk moved: the disk-backed folder outline re-scans
-        agent.noteUserSave() // a user save disarms ⌘⇧Z (T16)
-        return true
-      } catch {
-        // A save that threw may have been made all the same (main's SavedButNotReadBack: the file was
-        // written and could not be read back), and savedContent still holds what was on disk before
-        // it. Whether it was made is not known here. The registry keeps the document's text and no
-        // longer takes "the buffer equals the saved text" as clean, until a save is read back.
-        write.unknown() // nothing after `succeeded`
-        if (guardRefusalPath.current === path) guardRefusalPath.current = null
-        setSaveFailed(path, true)
-        flashRef.current?.(`Could not save ${path.split('/').at(-1) ?? path}.`)
-        return false
-      } finally {
-        clearTimeout(slowTimer)
-        setSaveSlow(path, false)
-      }
-    },
-    [setDirty, setDirtyDot, setSaveFailed, setSaveSlow, agent.noteUserSave],
-  )
-
-  // Serialise writes PER PATH (Codex P1): auto-save is debounced and fire-and-forget, so without a queue
-  // a slow earlier write could land after — and clobber with stale text — a newer write or the close
-  // flush for the same file. Each queued write chains after the previous and reads the buffer when it
-  // RUNS, so disk always ends on the latest text. The returned promise resolves to THIS write's result,
-  // so `await savePath(p)` (close/tab-close) still knows whether its own flush succeeded.
-  const saveChains = useRef(new Map<string, Promise<boolean>>())
+  // Tier 1 (ADR-0013): a write of one path's buffer, queued in the owner's per-path queue (Codex P1: a slow
+  // earlier write can never land after a newer one). The write reads the buffer when it RUNS, so whoever
+  // asks persists the latest text; it never snapshots (history is tier 2, below). The promise resolves to
+  // THIS write's result: false = not written, the reason was shown, the buffer is kept.
   // The Folio folders whose running order is being written just now (one entry per write in flight).
   const folioWritesInFlight = useRef<string[]>([])
   const savePath = useCallback(
     (path: string, answered?: ExternalDiskNotice): Promise<boolean> => {
-      const prev = saveChains.current.get(path) ?? Promise.resolve(true)
       // A save asked for while a running-order write of this file's Folio is under way runs after it, and
       // then writes only if the disk still holds what this buffer was last saved as: the buffer was read
       // before that write, so it carries the old running order (shared/folio-write-preparation.ts).
       const behindFolioWrite = folioWritesInFlight.current.some((dir) => inFolioFolder(path, dir))
-      const run = behindFolioWrite
-        ? async (): Promise<boolean> => (await saveQueuedBehindFolioWriteMayRun(
-            savedContent.current.get(path),
+      return owner.save(path, answered, behindFolioWrite
+        ? () => saveQueuedBehindFolioWriteMayRun(
+            owner.baselineOf(path),
             async () => (await window.writeflex.readFile(path)).content,
             isTextChange,
-          )) ? writePath(path, answered) : false
-        : () => writePath(path, answered)
-      const next = prev.then(run, run)
-      saveChains.current.set(path, next)
-      // Drop the entry once this is the settled tail, so the map can't grow without bound.
-      void next.finally(() => {
-        if (saveChains.current.get(path) === next) saveChains.current.delete(path)
-      })
-      return next
+          )
+        : undefined)
     },
-    [writePath],
+    [owner],
   )
 
   // Tier 2 (ADR-0013): the paths edited since their last CHECKPOINT. Tracked apart from the dirty-vs-disk
@@ -1169,6 +1236,45 @@ export default function App(): JSX.Element {
     autosaveTimer.current = null
   }, [])
 
+  // A document under a changed-on-disk notice with nothing typed over its version: it cannot be written
+  // until the writer answers. The structural routes (rename, move, duplicate) hold it unwritten and the
+  // notice goes with it; no other route uses this exception (2b review P2: the dot and the registry do not
+  // prove the file is what is on screen, so an export or the Board must not proceed as if it were).
+  const cleanUnderNotice = useCallback(
+    (p: string): boolean => externalDiskNoticesRef.current.has(p) && !owner.isDirty(p) && unsaved.textOf(p) === undefined,
+    [owner],
+  )
+  // The documents a folder-scoped operation covers (a folder's rename or trash, a collection's export): every
+  // path under the prefix the app has any record of (the owner's records, unresolved notices, registry
+  // entries, tabs), never the dots or the tabs alone (2b round 3 ruling). `prefix` ends in `/`, or is ''.
+  const documentsUnder = useCallback(
+    (prefix: string): string[] => documentsUnderFrom(prefix, {
+      owned: owner.pathsUnder(prefix),
+      notices: externalDiskNoticesRef.current.keys(),
+      registry: unsaved.pending(),
+      tabs: tabsRef.current.filter((path) => !isSurfaceTabId(path)),
+    }),
+    [owner],
+  )
+  // The routes that need the file on disk to be what is on screen (the Board, the Plan, a folder's
+  // Collection, an export) write the buffers first, through the owner (document-owner.ts, `flush`). A
+  // document under an unanswered changed-on-disk notice cannot be written, so the route is refused (the
+  // notice's own line says why) until the writer answers it: the file is never taken as the screen's text
+  // while the two may differ (2b review P2).
+  const flushPaths = useCallback(
+    (paths: readonly string[]) => {
+      for (const p of paths) cancelAutosaveFor(p)
+      return owner.flush(paths)
+    },
+    [cancelAutosaveFor, owner],
+  )
+
+  useEffect(() => window.writeflex.onFolioFlushRequested(({ id, dir }) => {
+    const paths = ['AGENTS.md', 'CLAUDE.md'].map(name => dir ? `${dir}/${name}` : name)
+    void flushPaths(paths).then(result => window.writeflex.replyFolioFlush(id, result.status === 'saved'))
+      .catch(() => { void window.writeflex.replyFolioFlush(id, false) })
+  }), [flushPaths])
+
   const queueLiveCompareRefresh = useCallback((path: string) => {
     if (!shouldRefreshWorkingCompare(compareViewRef.current, activeRef.current, path)) return
     if (liveCompareRefreshTimer.current) clearTimeout(liveCompareRefreshTimer.current)
@@ -1186,10 +1292,12 @@ export default function App(): JSX.Element {
   )
 
   const diaryActivityTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
-  const diaryActivityPending = useRef(new Map<string, { beforeWords: number; words: number }>())
-  const queueDiaryActivity = useCallback((path: string, beforeWords: number, words: number) => {
+  // The texts are held and counted once per pause: a word count is a whole-document pass, too dear
+  // for every keystroke. `beforeDoc` is the text before the FIRST change of the burst, as before.
+  const diaryActivityPending = useRef(new Map<string, { beforeDoc: string; doc: string }>())
+  const queueDiaryActivity = useCallback((path: string, beforeDoc: string, doc: string) => {
     const prior = diaryActivityPending.current.get(path)
-    diaryActivityPending.current.set(path, { beforeWords: prior?.beforeWords ?? beforeWords, words })
+    diaryActivityPending.current.set(path, { beforeDoc: prior?.beforeDoc ?? beforeDoc, doc })
     const timer = diaryActivityTimers.current.get(path)
     if (timer) clearTimeout(timer)
     diaryActivityTimers.current.set(path, setTimeout(() => {
@@ -1197,7 +1305,9 @@ export default function App(): JSX.Element {
       const pending = diaryActivityPending.current.get(path)
       diaryActivityPending.current.delete(path)
       if (!pending) return
-      void window.writeflex.diary.activity(path, pending.words, undefined, pending.beforeWords)
+      const words = countWords(pending.doc, { excludeCommentLines: true })
+      const beforeWords = countWords(pending.beforeDoc, { excludeCommentLines: true })
+      void window.writeflex.diary.activity(path, words, undefined, beforeWords)
         .catch((error: unknown) => flashRef.current?.(humanReadableError(error, 'Could not update the Diary.')))
     }, 500))
   }, [])
@@ -1211,29 +1321,30 @@ export default function App(): JSX.Element {
   const handleDocChanged = useCallback(
     (path: string, doc: string, beforeDoc: string) => {
       lastWriterEditAt.current = new Date().toISOString()
-      const dirty = isTextChange(savedContent.current.get(path), doc)
-      setDirty(path, dirty, doc) // the latest text, held where a broken app cannot take it
+      // The owner counts the change (its generation) and holds the latest text where a broken app cannot
+      // take it; `dirty` is the dot (the text differs from the baseline). A transaction that left the text
+      // to be saved as it was (the writer-review marks settling, a mode switch) is not a change of the
+      // document: counted, it would make a saved buffer unsaved with nothing to write, and a main write's
+      // route would then refuse to replace it (document-owner plan, parcel 2a).
+      const dirty = doc === beforeDoc ? owner.isDirty(path) : owner.edited(path, doc)
+      if (doc !== beforeDoc) scheduleTitleConflictReadRef.current?.()
       if (dirty) {
         // Only a genuine writer mutation feeds either session tracker. Buffer loads, reloads, agent
         // reconciles, and suggestion acceptance are deliberately silent for Diary capture.
         session.observe(path, doc)
-        queueDiaryActivity(
-          path,
-          countWords(beforeDoc, { excludeCommentLines: true }),
-          countWords(doc, { excludeCommentLines: true }),
-        )
+        queueDiaryActivity(path, beforeDoc, doc)
         uncheckpointed.current.add(path) // tier 2: a ⌘S/close checkpoint will snapshot this (ADR-0013)
         queueAutosave(path) // tier 1: no manual save needed
-      } else if (unsaved.textOf(path) !== undefined) {
-        // Back at the saved text while a write of other text is in flight (an undo during a save):
-        // that write will change the disk, so this text is written after it.
+      } else if (!owner.isSaved(path)) {
+        // Back at the saved text (an undo), but changed since the last confirmed write (or a write of other
+        // text is in flight): written after it, so the disk ends on this text and the owner knows it.
         queueAutosave(path)
       }
       queueLiveCompareRefresh(path)
       if (wikilinkRefreshTimer.current) clearTimeout(wikilinkRefreshTimer.current)
       wikilinkRefreshTimer.current = setTimeout(() => setWikilinkRefreshTick((tick) => tick + 1), 140)
     },
-    [setDirty, session.observe, queueDiaryActivity, queueAutosave, queueLiveCompareRefresh],
+    [owner, session.observe, queueDiaryActivity, queueAutosave, queueLiveCompareRefresh],
   )
   useEffect(() => () => { if (wikilinkRefreshTimer.current) clearTimeout(wikilinkRefreshTimer.current) }, [])
 
@@ -1353,7 +1464,7 @@ export default function App(): JSX.Element {
     void (async () => {
       // A Board status write must never race an outgoing autosave and later be overwritten by it.
       const current = activeRef.current
-      if (current && dirtyPathsRef.current.has(current) && !(await savePath(current))) {
+      if (current && (await flushPaths([current])).status !== 'saved') {
         flash('Could not save the current Piece — the Board stayed closed.')
         return
       }
@@ -1369,22 +1480,28 @@ export default function App(): JSX.Element {
       }
       openTab(BOARD_TAB_ID)
     })()
-  }, [activeCollectionDir, boardActive, boardDir, collectionDir, flash, openTab, savePath])
+  }, [activeCollectionDir, boardActive, boardDir, collectionDir, flash, openTab, flushPaths])
 
   /** Open the Plan. `folioDir` is the Folio's own folder (the line and title-bar button pass it: a
    *  piece in a sub-folder can belong to a different Collection than the Folio it names). */
   const openPlanIn = useCallback((folioDir?: string) => {
     void (async () => {
       const current = activeRef.current
-      if (current && dirtyPathsRef.current.has(current) && !(await savePath(current))) {
-        flash('Could not save the current Piece — the Plan stayed closed.')
+      if (current && (await flushPaths([current])).status !== 'saved') {
+        flash('Could not save the current Piece — the Folio outline stayed closed.')
         return
       }
-      const targetDir = folioDir ?? collectionDir ?? (boardActive ? boardDir : current ? await collectionDirFor(current) : activeCollectionDir)
+      // The Folio the open folder or file belongs to, by main's rule (the Outline's): a part in `contents/` opens its Folio.
+      const planApi = { folioDirOf: (dir: string) => window.writeflex.readFolioDir(dir), collectionDirFor }
+      const targetDir = folioDir ?? (collectionDir !== null
+        ? await planDirFor({ folder: collectionDir }, planApi)
+        : boardActive ? await planDirFor({ folder: boardDir }, planApi)
+          : current ? await planDirFor({ file: current }, planApi)
+            : await planDirFor({ folder: activeCollectionDir }, planApi))
       if (boardActive) {
         const editable = lastEditablePath && tabsRef.current.includes(lastEditablePath)
           ? lastEditablePath
-          : tabsRef.current.find((path) => !isBoardTabId(path)) ?? null
+          : tabsRef.current.find((path) => !isSurfaceTabId(path)) ?? null
         if (editable) activateTab(editable)
         else close(BOARD_TAB_ID)
       }
@@ -1392,47 +1509,136 @@ export default function App(): JSX.Element {
       setOpenPlanRequested(true)
       setCollectionDir(targetDir)
     })()
-  }, [activeCollectionDir, activateTab, boardActive, boardDir, close, collectionDir, flash, lastEditablePath, savePath])
+  }, [activeCollectionDir, activateTab, boardActive, boardDir, close, collectionDir, flash, lastEditablePath, flushPaths])
   // The palette and the Board/Collection buttons call this with no argument: the folder is then found as before.
   const openPlan = useCallback(() => openPlanIn(), [openPlanIn])
   const openFolioPlan = useCallback(() => { if (folioPlace) openPlanIn(folioPlace.dir) }, [folioPlace, openPlanIn])
+  // Open Folio (the Folio page's big button and the palette command): open a part AND show the sidebar Outline in its Folio part.
+  const openFolioAt = useCallback((path: string) => { open(path); requestOutline('showFolio') }, [open, requestOutline])
+  // The Folio the palette command works on: the dashboard on screen, else the open file's Folio.
+  const openFolioDir = collectionDir ?? folioPlace?.dir ?? null
+  const openFolio = useCallback(() => {
+    if (openFolioDir === null) return
+    void readFolioOpenParts(openFolioDir).then((parts) => {
+      const target = folioOpenTarget(parts)
+      if (target === null) flash('This folder is not a Folio with parts to open.')
+      else openFolioAt(target)
+    })
+  }, [openFolioDir, openFolioAt, flash])
   // Running order from the Outline: the writes go through main by path (see main/folio-running-order.ts).
   const [folioRefreshTick, setFolioRefreshTick] = useState(0)
   // Late-bound: the reconciliation with the disk is declared below.
   const reconcileWithDiskRef = useRef<((paths: string[]) => Promise<void>) | null>(null)
   const folioRunningOrder = useFolioRunningOrder({
     say: flashWithAction,
-    // The Undo step belongs to the Folio on screen: this workspace, the open file's Folio folder.
+    // The Undo step belongs to the Folio it was made in: this workspace, and the open file's Folio folder
+    // (the Outline) or the folder whose Plan is on screen (the Plan's Sort and Add all).
     root: root ?? null,
     openDir: folioPlace?.dir ?? null,
+    planDir: collectionDir,
     // Every open buffer of the Folio (its Index Note and its pieces, active or not) is saved first, and the
     // request then takes its turn in the save queue of each of them, so no save interleaves with it. With the
     // queue held, the buffers are looked at once more in the turn main is asked; see the shared module.
     write: (dir, call) => writeFolioThroughSaveQueue(dir, {
-      open: () => [...new Set([...tabsRef.current, ...dirtyPathsRef.current])].filter((path) => !isBoardTabId(path)),
-      isDirty: (path) => dirtyPathsRef.current.has(path),
-      settled: (path) => saveChains.current.get(path) ?? Promise.resolve(true),
+      // Every document the app has a record of (the module keeps the Folio's folder): one with an accept in
+      // flight and no tab or dot is waited for and held too (2b round 3 root rule; not tabs and dots).
+      open: () => documentsUnder(''),
+      // The owner's savedness, not the dot: a buffer undone to its baseline under an unanswered notice is
+      // not saved, and the change is refused with the notice's sentence (2b round 3 root rule).
+      isSaved: (path) => owner.isSaved(path),
+      refusedUnderNotice: (path) => {
+        const notice = externalDiskNoticesRef.current.get(path)
+        return notice ? changedOnDiskMessage(path, notice.kind) : undefined
+      },
+      settled: (path) => owner.settled(path),
       save: savePath,
       exclusive: (paths, run) => {
-        const before = paths.map((path) => saveChains.current.get(path) ?? Promise.resolve(true))
-        // From here until main has answered, a save asked for in this Folio is one queued behind this write.
+        // From here until main has answered, a save asked for in this Folio is one queued behind this write
+        // (the owner holds the files' queues).
         folioWritesInFlight.current.push(dir)
-        const result = Promise.allSettled(before).then(run).finally(() => {
+        return owner.exclusive(paths, run).finally(() => {
           const at = folioWritesInFlight.current.indexOf(dir)
           if (at >= 0) folioWritesInFlight.current.splice(at, 1)
         })
-        const gate = result.then(() => true, () => true)
-        for (const path of paths) {
-          saveChains.current.set(path, gate)
-          void gate.finally(() => { if (saveChains.current.get(path) === gate) saveChains.current.delete(path) })
-        }
-        return result
       },
       // Still inside the hold: unedited buffers take the new text, an edited one is marked changed on disk.
       afterWrite: async (paths) => { await reconcileWithDiskRef.current?.(paths.filter((path) => !path.includes('://'))) },
     }, call),
     refresh: () => setFolioRefreshTick((tick) => tick + 1),
   })
+  // Title-conflict buttons (2026-10-19). The Plan's and the Outline's fixes are main's writes, with one Undo
+  // step (title-conflict-actions.ts); a part open with unsaved edits is refused. The open document's bar edits
+  // the buffer instead: one CodeMirror transaction, undone with ⌘Z, never a disk write under the buffer.
+  const titleConflictActions = useTitleConflictActions({
+    say: flashWithAction,
+    unsaved: (path) => owner.isDirty(path) || unsaved.textOf(path) !== undefined,
+    // The Undo step is the Folio's it was made in, offered only while that Folio is on screen (as the running order's).
+    root: root ?? null,
+    openDir: folioPlace?.dir ?? null,
+    planDir: collectionDir,
+  })
+  const [openTitleConflict, setOpenTitleConflict] = useState<{ path: string; conflict: TitleConflict } | null>(null)
+  // A title and no heading at the top of the body: no bar (nothing differs), but ⌃⌥⌘T inserts `# Title` at the top.
+  const [openTitleInsertablePath, setOpenTitleInsertablePath] = useState<string | null>(null)
+  // ✕ on the bar: hidden for this document while the conflict is the same one (`titleConflictKey`).
+  const [dismissedTitleConflicts, setDismissedTitleConflicts] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const titleConflictTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const openDocumentIsPart = folioPlace?.kind === 'piece'
+  // A Folio's front matter (a title page) has no heading by design: it never shows the bar (main says which, folio-place.ts).
+  const openDocumentIsFrontMatter = folioPlace?.frontMatter === true
+  const readOpenTitleConflict = useCallback(() => {
+    const path = activeRef.current
+    const text = path ? bufferNow(path) : null
+    const readable = path && text !== null && !path.includes('://') && !openDocumentIsFrontMatter
+    const conflict = readable ? titleConflict(text, path, { part: openDocumentIsPart }) : null
+    // A Folio part that does not open with a heading has the waiting "Add the heading" change instead (folio-part-proposals.ts):
+    // inserting here as well would leave that change behind to add the heading twice.
+    setOpenTitleInsertablePath(readable && !conflict && !openDocumentIsPart && titleHeadingInsertable(text, path, { part: false }) ? path : null)
+    setOpenTitleConflict((current) => {
+      if (!conflict || !path) return null
+      return current && current.path === path && titleConflictKey(current.conflict) === titleConflictKey(conflict) ? current : { path, conflict }
+    })
+  }, [bufferNow, openDocumentIsPart, openDocumentIsFrontMatter])
+  // Read again a moment after typing stops (never per keystroke), and whenever the open file or its Folio place changes.
+  const scheduleTitleConflictRead = useCallback(() => {
+    if (titleConflictTimer.current) clearTimeout(titleConflictTimer.current)
+    titleConflictTimer.current = setTimeout(readOpenTitleConflict, 300)
+  }, [readOpenTitleConflict])
+  const scheduleTitleConflictReadRef = useRef(scheduleTitleConflictRead)
+  scheduleTitleConflictReadRef.current = scheduleTitleConflictRead
+  useEffect(() => { readOpenTitleConflict() }, [readOpenTitleConflict, active, loadedFile])
+  useEffect(() => () => { if (titleConflictTimer.current) clearTimeout(titleConflictTimer.current) }, [])
+  const shownTitleConflict = openTitleConflict && openTitleConflict.path === active && collectionDir === null && !historicalView
+    && dismissedTitleConflicts.get(openTitleConflict.path) !== titleConflictKey(openTitleConflict.conflict)
+    ? openTitleConflict : null
+  const titleHeadingCanBeInserted = openTitleInsertablePath !== null && openTitleInsertablePath === active && collectionDir === null && !historicalView
+  /** The bar's fix: the open buffer is changed in one transaction, its own ⌘Z step; autosave writes it as any edit. */
+  const fixOpenDocumentTitle = useCallback((direction: TitleFixDirection) => {
+    const path = activeRef.current
+    const view = editorRef.current?.view()
+    if (!path || !view || loadedPath.current !== path) { flash('Open the document first.'); return }
+    if (view.state.readOnly) { flash('This document cannot be edited here, so its title was not changed.'); return }
+    if (openDocumentIsFrontMatter) { flash('This part is front matter: its title comes from its frontmatter and it has no heading, so there is nothing to match.'); return }
+    const doc = view.state.doc.toString()
+    const fixed = withTitleFixed(doc, path, direction, { part: openDocumentIsPart })
+    if (!fixed.ok) { flash(fixed.message); return }
+    let from = 0
+    while (from < doc.length && from < fixed.next.length && doc[from] === fixed.next[from]) from += 1
+    let tail = 0
+    while (tail < doc.length - from && tail < fixed.next.length - from && doc[doc.length - 1 - tail] === fixed.next[fixed.next.length - 1 - tail]) tail += 1
+    view.dispatch({
+      changes: { from, to: doc.length - tail, insert: fixed.next.slice(from, fixed.next.length - tail) },
+      annotations: [isolateHistory.of('full'), Transaction.userEvent.of('input.title-conflict')],
+    })
+    const inserted = direction === 'title-to-heading' && titleConflict(doc, path, { part: openDocumentIsPart }) === null
+    readOpenTitleConflict()
+    flash(`${direction === 'heading-to-title' ? 'The title now matches the heading.' : inserted ? 'The title is now the heading at the top.' : 'The heading now matches the title.'} ${formatShortcutKey('Mod-z')} undoes it.`)
+  }, [flash, openDocumentIsPart, openDocumentIsFrontMatter, readOpenTitleConflict])
+  const dismissOpenTitleConflict = useCallback(() => {
+    if (!openTitleConflict) return
+    const { path, conflict } = openTitleConflict
+    setDismissedTitleConflicts((current) => new Map(current).set(path, titleConflictKey(conflict)))
+  }, [openTitleConflict])
   const runFolioCommand = useCallback(async (command: 'up' | 'down' | 'add' | 'addAll') => {
     // The row with keyboard focus, read before anything else changes focus.
     const rowEl = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>('[data-fo-path]') : null
@@ -1449,7 +1655,8 @@ export default function App(): JSX.Element {
       await folioRunningOrder.addPieces(seen, files)
       return
     }
-    const target = commandTarget(command, focused, path, outline)
+    // A move stays on its side of the front-matter boundary (ADR-0046).
+    const target = command === 'add' ? commandTarget(command, focused, path, outline) : blockCommandTarget(command, focused, path, outline)
     if ('message' in target) { flash(target.message); return }
     if (command === 'add') await folioRunningOrder.addPieces(seen, [{ path: target.path, title: target.title }])
     else await folioRunningOrder.movePiece(seen, target.path, target.beforePath)
@@ -1457,10 +1664,10 @@ export default function App(): JSX.Element {
   // The status bar's Undo is the running-order step's (the only flash with an action). Once that step
   // cannot be used for the Folio on screen (another Folio or none came up), the line and its button go.
   useEffect(() => {
-    if (folioRunningOrder.canUndo || !statusAction) return
+    if (folioRunningOrder.canUndo || titleConflictActions.canUndo || !statusAction) return
     setStatusAction(null)
     setStatus('')
-  }, [folioRunningOrder.canUndo, statusAction])
+  }, [folioRunningOrder.canUndo, titleConflictActions.canUndo, statusAction])
   // The Outline's Folder part names how many files it lists: those under the open file's folder (the whole collection for a root file).
   const outlineFolderFileCount = useMemo(() => {
     if (!active) return 0
@@ -1484,53 +1691,236 @@ export default function App(): JSX.Element {
     externalDiskNoticesRef.current.set(path, notice)
     setExternalDiskNotices((current) => new Map(current).set(path, notice))
   }, [])
+  // The app renamed or moved a file: its notice (the same object, so a Keep mine on it stays its answer)
+  // now stands for the new path, and none is left behind on the old one.
+  const moveExternalDiskNotice = useCallback((from: string, to: string) => {
+    const notice = externalDiskNoticesRef.current.get(from)
+    if (!notice || from === to) return
+    clearExternalDiskNotice(from)
+    raiseExternalDiskNotice(to, notice)
+  }, [clearExternalDiskNotice, raiseExternalDiskNotice])
+  // A notice is dropped with its tab. A tab also closes when its file leaves the tree (useTabs prunes it on
+  // a removal): once a path is neither open nor listed, its notice must not stop the saves of a file made
+  // there later. (A rename's notice has moved on first; the new path is listed before its tab opens.)
+  useEffect(() => {
+    const listed = new Set(files.map((file) => file.path))
+    for (const path of [...externalDiskNoticesRef.current.keys()]) {
+      if (!tabs.includes(path) && !listed.has(path)) clearExternalDiskNotice(path)
+    }
+  }, [tabs, files, clearExternalDiskNotice])
 
-  const reconcileExternalDiskChanges = useCallback(async (paths: string[]): Promise<void> => {
-    for (const path of paths) {
-      if (!tabsRef.current.includes(path)) continue
-      try {
-        const file = await window.writeflex.readFile(path)
-        if (!tabsRef.current.includes(path)) continue
-        const baseline = savedContent.current.get(path)
-        const buffer = activeRef.current === path && loadedPath.current === path
-          ? editorRef.current?.currentDoc() ?? null
-          : editorRef.current?.docFor(path) ?? null
-        if (buffer === null) continue // activation's own disk read will seed this not-yet-live tab
-        const action = externalContentReconcileAction({ buffer, baseline, disk: file.content })
-        if (action === 'none') {
-          // Cloud providers may echo WriteFlex's own save long after the watcher's time window. If the
-          // bytes already match the live buffer (or its saved baseline), this event is a complete no-op:
-          // no editor reconcile, no state replacement, no banner, and no viewport movement.
-          clearExternalDiskNotice(path)
-          continue
+  // The watcher (and a refused save over a clean buffer) asks the owner to apply what is on disk now. It
+  // runs in the path's queue, after any route holding it (document-owner.ts); the owner replaces a buffer
+  // only when it is saved, and says what the app should raise. `now`: from inside a hold (a Folio
+  // running-order write's own reconcile), where queueing behind that hold would wait for itself.
+  // What the app raises for the owner's answer to a read of the disk (the watcher's, and a file main
+  // returned after writing it: reconcileAppliedFile).
+  const raiseForOutside = useCallback((path: string, outcome: OutsideOutcome): void => {
+    switch (outcome.kind) {
+      case 'skipped': return // activation's own disk read will seed a tab not yet live
+      case 'none':
+        // Cloud providers may echo WriteFlex's own save long after the watcher's time window. If the
+        // bytes already match the live buffer (or its saved baseline), this event is a complete no-op:
+        // no editor reconcile, no state replacement, no banner, and no viewport movement.
+        clearExternalDiskNotice(path)
+        return
+      case 'adopted':
+        // The disk holds the buffer's own document in another form (or the buffer caught up with it).
+        clearExternalDiskNotice(path)
+        return
+      case 'conflict':
+        // Freeze the pending automatic write: the other version stays on disk until the writer
+        // explicitly chooses Reload or Keep mine. The same version as the banner already up: that notice
+        // stays (a Keep mine clicked on it stays its answer).
+        cancelAutosaveFor(path)
+        if (!sameDiskNotice(externalDiskNoticesRef.current.get(path), 'changed', outcome.diskText)) {
+          raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText: outcome.diskText })
         }
-        if (action === 'conflict') {
-          // Freeze the pending automatic write: the other agent's version stays on disk until the
-          // writer explicitly chooses Reload or Keep mine.
-          cancelAutosaveFor(path)
-          raiseExternalDiskNotice(path, { kind: 'changed', dirty: true })
-          continue
-        }
-        savedContent.current.set(path, file.content)
-        editorRef.current?.setContent(path, file.content, { silent: true })
-        setDirty(path, false, file.content)
+        return
+      case 'replaced':
         clearExternalDiskNotice(path)
         setSavedTick((tick) => tick + 1)
         queueLiveCompareRefresh(path)
-      } catch {
-        if (!tabsRef.current.includes(path)) continue
-        const baseline = savedContent.current.get(path)
-        const buffer = activeRef.current === path && loadedPath.current === path
-          ? editorRef.current?.currentDoc() ?? null
-          : editorRef.current?.docFor(path) ?? null
-        const dirty = buffer !== null && baseline !== undefined && isTextChange(baseline, buffer)
+        return
+      case 'removed': {
         cancelAutosaveFor(path)
-        raiseExternalDiskNotice(path, { kind: 'removed', dirty })
+        // A file gone from disk is a question whether or not the buffer held unsaved text: no automatic
+        // write recreates it until the writer chooses Keep mine (reconcile.ts, mayWriteUnderDiskNotice).
+        const standing = externalDiskNoticesRef.current.get(path)
+        if (!sameDiskNotice(standing, 'removed', null) || (outcome.dirty && !standing?.dirty)) {
+          raiseExternalDiskNotice(path, { kind: 'removed', dirty: outcome.dirty, diskText: null })
+        }
       }
     }
-  }, [cancelAutosaveFor, clearExternalDiskNotice, queueLiveCompareRefresh, raiseExternalDiskNotice, setDirty])
+  }, [cancelAutosaveFor, clearExternalDiskNotice, queueLiveCompareRefresh, raiseExternalDiskNotice])
+  // --- Record browser: Source and preview tab, edit from a made widget, undo (ticket 04b) ---------------------
+  // The engine writes the widget and its embed line to disk (main, one undoable step) and announces the changed
+  // files; the open buffer takes the change through the changed-on-disk path above, so no second copy is inserted.
+  // The document is saved first, so the engine starts from the disk's text and a dirty buffer is never overwritten.
+  const openWorkbench = useCallback((documentPath: string, recipePath: string | null, caretLine: number | null = null) => {
+    void (async () => {
+      // Like the Board and the Plan: what the document holds is saved before the tab takes over its place.
+      if (tabsRef.current.includes(documentPath) && (await flushPaths([documentPath])).status !== 'saved') {
+        flash(`Could not save ${documentPath.split('/').at(-1) ?? documentPath} — the record browser stayed closed.`)
+        return
+      }
+      setWorkbench({ documentPath, recipePath, caretLine })
+      open(widgetWorkbenchTabId(documentPath))
+    })()
+  }, [open, flushPaths, flash])
+  const leaveWorkbench = useCallback((documentPath: string) => {
+    close(widgetWorkbenchTabId(documentPath))
+    setWorkbench((current) => (current?.documentPath === documentPath ? null : current))
+    if (tabsRef.current.includes(documentPath)) activate(documentPath)
+    else open(documentPath)
+  }, [close, activate, open])
+  const flushWidgetDocument = useCallback(async (path: string): Promise<{ ok: true } | { ok: false; message: string }> => {
+    const name = path.split('/').at(-1) ?? path
+    if (tabsRef.current.includes(path)) {
+      const flushed = await flushPaths([path])
+      if (flushed.status !== 'saved') return { ok: false, message: `${name} could not be saved first, so the widget was not made.` }
+    }
+    if (owner.isDirty(path) || externalDiskNoticesRef.current.has(path)) return { ok: false, message: `${name} has text that is not saved or a changed-on-disk notice waiting. Answer it in the document, then try again.` }
+    return { ok: true }
+  }, [flushPaths, owner])
+  const newRecordBrowser = useCallback(() => {
+    if (active && typeof root === 'string') {
+      // The new widget goes in at the caret's line (the engine checks it against the text it writes over).
+      const view = editorRef.current?.path() === active ? editorRef.current?.view() : null
+      openWorkbench(active, null, view ? view.state.doc.lineAt(view.state.selection.main.head).number : null)
+    } else flash('Open a document to put a record browser in it')
+  }, [active, root, openWorkbench, flash])
+  /** Edit the made widget at the caret (or the one a caption button names). */
+  const editRecordBrowser = useCallback((named?: { documentPath: string; rawPath: string }) => {
+    const documentPath = named?.documentPath ?? active
+    if (!documentPath) { flash('Open a document with a record browser in it'); return }
+    let target: ReturnType<typeof embedTarget> = null
+    if (named) target = embedTarget(documentPath, `[Simulation: ${named.rawPath}]`)
+    else {
+      const view = editorRef.current?.view()
+      if (view) target = embedTarget(documentPath, view.state.doc.lineAt(view.state.selection.main.head).text)
+    }
+    if (!target) { flash('Put the cursor on a record browser to edit it'); return }
+    openWorkbench(documentPath, target.recipePath)
+  }, [active, flash, openWorkbench])
+  useEffect(() => {
+    const listener = (event: Event): void => {
+      const detail = (event as CustomEvent<{ documentPath?: string; rawPath?: string }>).detail
+      if (detail?.documentPath && detail.rawPath) editRecordBrowser({ documentPath: detail.documentPath, rawPath: detail.rawPath })
+    }
+    window.addEventListener(EDIT_STANDARD_WIDGET_EVENT, listener)
+    return () => window.removeEventListener(EDIT_STANDARD_WIDGET_EVENT, listener)
+  }, [editRecordBrowser])
+  const undoWidgetStep = useCallback(async () => {
+    const step = lastWidgetStepRef.current
+    if (!step) { flash('There is no widget step to undo'); return }
+    let result: Awaited<ReturnType<typeof window.writeflex.undoStandardWidgetStep>>
+    const moved = step.moved ?? []
+    const hold = moveHoldRef.current
+    if (moved.length > 0 && hold) {
+      // Documents the step moved go back: held like a rename (saved first, so the undo compares the disk with what
+      // the step wrote), and their buffers follow them back before the hold is let go.
+      const wereOpen = moved.map((move) => move.to).filter((path) => tabsRef.current.includes(path))
+      const flushed = await hold.withPathsSaved(() => [...new Set([...moved.map((move) => move.to), ...documentsUnder('')])], async () => {
+        const answer = await window.writeflex.undoStandardWidgetStep(step.undoId)
+        if (answer.ok) for (const back of answer.movedBack) hold.afterMainMoved(back.from, back.to)
+        return answer
+      })
+      if (!flushed) return
+      result = flushed.result
+      if (result.ok && result.movedBack.length > 0) {
+        await refresh()
+        for (const back of result.movedBack) if (wereOpen.includes(back.from)) open(back.to)
+      }
+    } else {
+      // What the buffer holds goes to disk first, so the undo compares the disk with what the step wrote.
+      if (tabsRef.current.includes(step.documentPath)) await flushPaths([step.documentPath])
+      result = await window.writeflex.undoStandardWidgetStep(step.undoId)
+    }
+    if (!result.ok) { flash(result.message); return }
+    setLastWidgetStep(null)
+    // A workbench open on the widget just taken out has nothing left to edit.
+    if (step.kind === 'create' && workbenchRef.current?.recipePath === step.recipePath) {
+      close(widgetWorkbenchTabId(step.documentPath))
+      setWorkbench(null)
+    }
+    flash(step.kind === 'create' ? (moved.length > 0 ? 'Took the record browser back out and put the documents back' : 'Took the record browser back out') : 'Put the widget settings back')
+  }, [flash, flushPaths, close, documentsUnder, refresh, open])
+  // ⌘Z right after Create, with the keyboard in that document and its undo history where the Create left it (taken
+  // as `historyDepth` when the keyboard goes back to the document), takes the widget back out
+  // through the engine's undo (the insert came from disk, so it is not in the editor's own history). Every other
+  // ⌘Z is the editor's. Capture phase, so the decision is made before CodeMirror's keymap sees the key.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const view = editorRef.current?.view()
+      const inEditor = view !== null && view !== undefined && event.target instanceof Node && view.dom.contains(event.target)
+      const editor = { inEditor, documentPath: editorRef.current?.path() ?? null, text: inEditor ? view!.state.doc.toString() : '', undoDepth: inEditor ? undoDepth(view!.state) : null }
+      if (!undoesWidgetCreate(event, lastWidgetStepRef.current, editor)) return
+      event.preventDefault()
+      event.stopPropagation()
+      void undoWidgetStep()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [undoWidgetStep])
 
-  reconcileWithDiskRef.current = reconcileExternalDiskChanges
+  const reconcileExternalDiskChanges = useCallback(async (paths: string[], options: { now?: boolean } = {}): Promise<void> => {
+    await Promise.all(paths.map(async (path) => {
+      if (!tabsRef.current.includes(path)) return
+      const outcome = await owner.applyOutside(path, async () => (await window.writeflex.readFile(path)).content, options)
+      if (!tabsRef.current.includes(path)) return
+      raiseForOutside(path, outcome)
+    }))
+  }, [owner, raiseForOutside])
+
+  reconcileWithDiskRef.current = (paths) => reconcileExternalDiskChanges(paths, { now: true })
+
+  // Main refused a write because the file changed after main read it (an accept's refusal): the owner reads
+  // the disk and the writer is asked with the notice, whatever the watcher delivers (it holds events back
+  // for a while after a write of ours). Final review round 2, finding 2.
+  const askAboutRefusedWrite = useCallback(async (path: string, options: { now: boolean }): Promise<void> => {
+    if (!tabsRef.current.includes(path)) return
+    const outcome = await owner.refusedOnDisk(path, async () => (await window.writeflex.readFile(path)).content, options)
+    if (!tabsRef.current.includes(path)) return
+    raiseForOutside(path, outcome)
+  }, [owner, raiseForOutside])
+
+  // Main refused a write: the disk no longer holds the version the buffer was based on (its basis). The
+  // buffer is kept and the writer is asked, as for any outside change; automatic saves stop. A buffer with
+  // nothing unsaved simply takes the disk version, as the watcher would give it.
+  // "Nothing unsaved" needs the baseline to be known: after a write of unknown outcome it is not (Sol M2),
+  // and the buffer is replaced only by the writer's choice.
+  const noteDiskChangedUnderBuffer = useCallback((path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice) => {
+    cancelAutosaveFor(path)
+    const baseline = owner.baselineOf(path)
+    if (refusalMayReload({ baseline, buffer, diskUnknown: unsaved.diskIsUnknown(path), answering }) && owner.unchangedSinceSave(path)) {
+      void reconcileExternalDiskChanges([path])
+      return
+    }
+    // The notice already up for exactly this disk text stays (a Keep mine clicked on it stays its answer).
+    const standing = externalDiskNoticesRef.current.get(path)
+    const notice = noticeAfterRefusal(standing, diskText, answering)
+    if (notice !== standing) raiseExternalDiskNotice(path, notice)
+    const message = diskNoticeRefusalMessage(path, notice)
+    refusalReasons.current.set(path, message)
+    flash(message)
+  }, [owner, cancelAutosaveFor, flash, raiseExternalDiskNotice, reconcileExternalDiskChanges])
+  diskChangedUnderBufferRef.current = noteDiskChangedUnderBuffer
+  // A write was made and the file read back holds other text: another program wrote it between the
+  // commit and the readback. The buffer stays based on what was written, and the writer is asked
+  // whether or not the buffer has typing since: their text was replaced on disk without their seeing it.
+  const noteOutsideAfterWrite = useCallback((path: string, diskText: string) => {
+    cancelAutosaveFor(path)
+    if (!sameDiskNotice(externalDiskNoticesRef.current.get(path), 'changed', diskText)) {
+      raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText })
+    }
+    const name = path.split('/').at(-1) ?? path
+    const message = `${name} was changed on disk by another program just after it was saved. Choose Reload or Keep mine above the text.`
+    guardRefusalPath.current = path // the callers' own "could not save" lines give way to this one
+    refusalReasons.current.set(path, message)
+    flash(message)
+  }, [cancelAutosaveFor, flash, raiseExternalDiskNotice])
+  outsideAfterWriteRef.current = noteOutsideAfterWrite
   useEffect(
     () => window.writeflex.onFileChangedOnDisk((paths) => { void reconcileExternalDiskChanges(paths) }),
     [reconcileExternalDiskChanges],
@@ -1540,22 +1930,22 @@ export default function App(): JSX.Element {
     const path = activeRef.current
     if (!path) return
     cancelAutosaveFor(path)
-    try {
-      const file = await window.writeflex.readFile(path)
-      if (activeRef.current !== path || loadedPath.current !== path) return
-      savedContent.current.set(path, file.content)
-      editorRef.current?.setContent(path, file.content, { silent: true, discardLocal: true })
+    // The writer's choice: the owner replaces the buffer with the disk version, in the path's queue.
+    const reloaded = await owner.reload(path, async () => (await window.writeflex.readFile(path)).content)
+    if (reloaded.ok) {
       uncheckpointed.current.delete(path)
-      setDirty(path, false, file.content)
       clearExternalDiskNotice(path)
       setSavedTick((tick) => tick + 1)
       queueLiveCompareRefresh(path)
       flash(`Reloaded ${path} from disk`)
-    } catch {
-      raiseExternalDiskNotice(path, { kind: 'removed', dirty: dirtyPathsRef.current.has(path) })
+    } else if (reloaded.reason === 'typed') {
+      // Typing after Reload was pressed is kept: nothing replaced, the notice stays up for the new text.
+      flash(`${path} was not reloaded: you typed after choosing Reload. Choose Reload or Keep mine again.`)
+    } else {
+      raiseExternalDiskNotice(path, { kind: 'removed', dirty: owner.isDirty(path), diskText: null })
       flash(`${path} is no longer on disk`)
     }
-  }, [cancelAutosaveFor, clearExternalDiskNotice, flash, queueLiveCompareRefresh, raiseExternalDiskNotice, setDirty])
+  }, [owner, cancelAutosaveFor, clearExternalDiskNotice, flash, queueLiveCompareRefresh, raiseExternalDiskNotice])
 
   // "Keep mine": the writer's choice, and the one write a notice over unsaved text lets through. The
   // buffer goes to disk over the other version, as the answer to the notice that was on screen; the
@@ -1564,10 +1954,13 @@ export default function App(): JSX.Element {
     const path = activeRef.current
     if (!path) return
     const notice = externalDiskNoticesRef.current.get(path)
-    if (notice && dirtyPathsRef.current.has(path)) {
+    // Keep mine is the writer's explicit choice and is carried out against the notice whatever the dirty
+    // dot says now (Sol S5: an undo can clear the dot while the disk holds another version). Only a notice
+    // raised over a buffer with nothing unsaved, that still has nothing unsaved, is answered by dismissing it.
+    if (keepMineWrites(notice, owner.isDirty(path) || unsaved.textOf(path) !== undefined || !owner.unchangedSinceSave(path))) {
       cancelAutosaveFor(path)
       if (guardRefusalPath.current === path) guardRefusalPath.current = null
-      if (!(await savePath(path, notice))) {
+      if (!notice || !(await owner.keepMine(path, notice))) {
         if (guardRefusalPath.current !== path) flash(`Could not save ${path.split('/').at(-1) ?? path}. Your version is still only in this tab.`)
         return
       }
@@ -1575,7 +1968,103 @@ export default function App(): JSX.Element {
     }
     clearExternalDiskNotice(path)
     flash(`Kept your version of ${path}`)
-  }, [cancelAutosaveFor, clearExternalDiskNotice, flash, savePath])
+  }, [owner, cancelAutosaveFor, clearExternalDiskNotice, flash])
+
+  // The shared overlay guard: while a sheet is up the window's own capture-phase shortcuts stand
+  // down (they read isOpenRef below). Reused by Tasks 15/17 for their overlays, and by the Merge sheet.
+  const overlay = useOverlayGuard()
+  const { active: overlayActive, isOpenRef: overlayOpenRef, open: openOverlay, close: closeOverlay, hold: holdOverlay } = overlay
+
+  // "Merge" (disk-merge.ts): the sheet shows both versions against the one they began from; opening and
+  // cancelling it write nothing. Merging keeps exactly the disk version and the writer's (main returns a
+  // History receipt for each; with no History nothing is written), writes the writer's over exactly the disk version,
+  // then the merged text through the normal save.
+  const [diskMerge, setDiskMerge] = useState<DiskMergeSession | null>(null)
+  const [diskMergeBusy, setDiskMergeBusy] = useState(false)
+  const openDiskMerge = useCallback(() => {
+    const path = activeRef.current
+    if (!path) return
+    const view = editorRef.current?.view()
+    // Pending tracked changes (Reviewing) make the editor's text differ from the text that is saved, and
+    // the merge is placed into the editor's text: it waits until they are settled.
+    if (view && loadedPath.current === path && view.state.doc.toString() !== bufferNow(path)) {
+      flash('Settle the tracked changes in this document first, then choose Merge.')
+      return
+    }
+    const session = beginDiskMerge({ path, notice: externalDiskNoticesRef.current.get(path), buffer: bufferNow(path), baseline: owner.baselineOf(path) })
+    if (!session) { flash('There is nothing on disk to merge with.'); return }
+    cancelAutosaveFor(path)
+    setDiskMerge(session)
+    // Through the shared overlay guard, as every sheet: it replaces any other overlay, the window's own
+    // shortcuts stand down behind it, and an overlay raised over it (⌘, or the palette) dismisses it.
+    openOverlay('diskMerge')
+  }, [owner, bufferNow, cancelAutosaveFor, flash, openOverlay])
+  const cancelDiskMerge = useCallback(() => {
+    setDiskMerge(null)
+    closeOverlay()
+    editorRef.current?.view()?.focus() // back to the text, where the banner still asks
+  }, [closeOverlay])
+  const runDiskMerge = useCallback(async (session: DiskMergeSession, picks: ConflictPick[]) => {
+    setDiskMergeBusy(true)
+    // While it writes, the sheet is held up: no other overlay replaces it mid-write.
+    holdOverlay(true)
+    try {
+      const outcome = await applyDiskMerge({
+        notice: (p) => externalDiskNoticesRef.current.get(p),
+        buffer: bufferNow,
+        preserve: (p, text) => window.writeflex.preserveVersion(p, text),
+        saved: (p) => ({ editor: owner.baselineOf(p), disk: owner.baselineDiskOf(p) }),
+        checkpoint: (p) => window.writeflex.checkpoint(p),
+        keepMine: (p, notice) => {
+          cancelAutosaveFor(p)
+          if (guardRefusalPath.current === p) guardRefusalPath.current = null
+          return owner.keepMine(p, notice)
+        },
+        answered: clearExternalDiskNotice,
+        placeMerged: (p, merged) => {
+          const view = editorRef.current?.view()
+          if (!view || activeRef.current !== p || loadedPath.current !== p || view.state.readOnly) return false
+          const doc = view.state.doc.toString()
+          if (doc !== bufferNow(p)) return false // tracked changes appeared meanwhile
+          const change = minimalReplace(doc, merged)
+          if (change) {
+            view.dispatch({ changes: change, annotations: [isolateHistory.of('full'), Transaction.userEvent.of('input.merge')] })
+          }
+          return true
+        },
+        save: (p) => savePath(p),
+      }, session, picks)
+      if (outcome.kind === 'merged') {
+        uncheckpointed.current.delete(session.path)
+        queueLiveCompareRefresh(session.path)
+      }
+      holdOverlay(false)
+      if (outcome.kind !== 'unresolved') {
+        setDiskMerge(null)
+        closeOverlay()
+        editorRef.current?.view()?.focus()
+      }
+      const message = diskMergeMessage(session.path, outcome)
+      if (message) flash(message)
+    } finally {
+      holdOverlay(false)
+      setDiskMergeBusy(false)
+    }
+  }, [owner, bufferNow, cancelAutosaveFor, clearExternalDiskNotice, closeOverlay, flash, holdOverlay, queueLiveCompareRefresh, savePath])
+  // The sheet answers one document's notice: it closes when that tab is no longer the one shown.
+  // It closes too when the disk moves again under it (a newer notice): the merge it shows is out of date.
+  // Another overlay raised over it (⌘, or the palette) replaced it in the shared guard: it is dismissed,
+  // as Cancel would (nothing written).
+  useEffect(() => {
+    if (!diskMerge || diskMergeBusy) return
+    if (overlayActive !== 'diskMerge') { setDiskMerge(null); return }
+    if (active !== diskMerge.path) { setDiskMerge(null); closeOverlay(); return }
+    if (externalDiskNotices.get(diskMerge.path) !== diskMerge.notice) {
+      setDiskMerge(null)
+      closeOverlay()
+      flash(`${diskMerge.path.split('/').at(-1) ?? diskMerge.path} changed on disk again while you were merging, so nothing was written. Choose Merge again to see the newer version.`)
+    }
+  }, [active, closeOverlay, diskMerge, diskMergeBusy, externalDiskNotices, flash, overlayActive])
 
   // ── Change Ledger dock (Task 4) ──────────────────────────────────────────────────────────────
   // The dock lists the ACTIVE document's changes; reload when the document changes or main pushes
@@ -1661,6 +2150,8 @@ export default function App(): JSX.Element {
     openedAtForFile,
     currentSessionIdForFile,
     cancelPendingFlush,
+    flushWriterChangesNow,
+    writerChangesIdle,
     clearFileWriterState,
     recordedWriterChanges,
   } = useWriterMode({
@@ -1673,12 +2164,11 @@ export default function App(): JSX.Element {
     flash,
   })
 
-  const toggleChanges = useCallback(() => openRightTab('review'), [openRightTab])
   const reviewSkillChanges = useCallback(() => {
     changeWriterMode('reviewing')
-    openRightTab('review')
+    runMarginCommand('focus')
     setSkillToast(null)
-  }, [changeWriterMode, openRightTab])
+  }, [changeWriterMode, runMarginCommand])
   const dismissSkillToast = useCallback(() => setSkillToast(null), [])
   const openSkillNotes = useCallback((path: string) => {
     setSkillToast(null)
@@ -1785,33 +2275,77 @@ export default function App(): JSX.Element {
       flash('Viewing a past session read-only')
     })()
   }, [active, changeWriterMode, currentSessionIdForFile, flash, historicalView])
+  // Restore a version as the open document (Muse M2): like every editor write it replaces only the version
+  // the buffer is based on. The buffer is flushed first through the guarded save (a standing notice or a
+  // refusal stops the restore, and the writer is told why); the restore then carries that baseline as its
+  // basis, and main compares it before the pre-restore checkpoint and again at the rename. Text typed
+  // while the restore ran is not replaced: the restored version is then an outside change to it.
+  const restoreVersionOverBuffer = useCallback(async (path: string, request: { id: string; snapshotId?: string }, name: string): Promise<boolean> => {
+    cancelAutosaveFor(path)
+    if (guardRefusalPath.current === path) guardRefusalPath.current = null
+    // A route of the document owner (parcel 2a): the buffer is written until saved, and the restore runs
+    // holding the document's queue, so no save of it interleaves. The basis is the baseline the flush
+    // left, read in the turn of its last check (Sol M1, round 2); the buffer takes the restored text only
+    // from the restore's own receipt, and only when nothing was typed while it ran.
+    type Restored = { kind: 'failed' } | { kind: 'refused'; diskText: string | null } | { kind: 'restored'; outcome: MainWriteOutcome }
+    const flushed = await owner.withFlushed([path], async (snapshots): Promise<Restored> => {
+      const snapshot = snapshots.get(path)!
+      const result = await window.writeflex.restoreVersion({ ...request, basis: basisFromBaseline(snapshot.baselineDisk) })
+      if (!result) return { kind: 'failed' }
+      if ('refused' in result) return { kind: 'refused', diskText: result.diskText }
+      return { kind: 'restored', outcome: owner.replaceFromMain(path, result, { since: snapshot.gen, mode: 'replace' }) }
+    })
+    if (flushed.status !== 'acted') {
+      const reason = guardRefusalPath.current === path ? refusalReasons.current.get(path) : undefined
+      const fallback = flushed.status === 'still-unsaved'
+        ? `${path.split('/').at(-1) ?? path} was still being edited while it was saved.`
+        : `Could not save ${path.split('/').at(-1) ?? path} first.`
+      flash(`“${name}” was not restored. ${reason ?? fallback}`)
+      return false
+    }
+    const done = flushed.result
+    if (done.kind === 'failed') {
+      flash(`Could not restore “${name}”.`)
+      return false
+    }
+    if (done.kind === 'refused') {
+      const buffer = bufferNow(path)
+      if (buffer !== null) noteDiskChangedUnderBuffer(path, done.diskText, buffer)
+      flash(`“${name}” was not restored: ${path.split('/').at(-1) ?? path} changed on disk. Choose Reload or Keep mine above the text.`)
+      return false
+    }
+    if (done.outcome.kind === 'moved') {
+      // Typing arrived while the restore ran: kept, and asked about against the restored version.
+      cancelAutosaveFor(path)
+      raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText: done.outcome.diskText })
+      return true
+    }
+    // The owner raised the banner for a readback that is not the receipt; otherwise the buffer is the restore.
+    if (done.outcome.kind !== 'outside') clearExternalDiskNotice(path)
+    return true
+  }, [owner, bufferNow, cancelAutosaveFor, clearExternalDiskNotice, flash, noteDiskChangedUnderBuffer, raiseExternalDiskNotice])
   const restoreHistoricalVersion = useCallback(() => {
     void (async () => {
       if (!historicalView || historicalView.kind !== 'version') return
       if (!window.confirm(`Restore “${historicalView.version.name}” as the current document?`)) return
       const restore = restoreHistoricalView(historicalView)
-      const file = await window.writeflex.restoreVersion({
-        id: restore.versionId,
-        ...(restore.snapshotId ? { snapshotId: restore.snapshotId } : {}),
-        currentContent: restore.preRestoreContent,
-      })
-      if (!file) {
-        flash(`Could not restore “${historicalView.version.name}”.`)
-        return
-      }
+      // The live buffer (kept aside while the view shows the past) is what the flush writes.
       editorRef.current?.exitHistorical()
       setHistoricalView(null)
-      savedContent.current.set(file.file.path, file.content)
-      editorRef.current?.setContent(file.file.path, file.content, { silent: true })
-      setDirty(file.file.path, false, file.content)
-      uncheckpointed.current.delete(file.file.path)
+      const restored = await restoreVersionOverBuffer(
+        restore.path,
+        { id: restore.versionId, ...(restore.snapshotId ? { snapshotId: restore.snapshotId } : {}) },
+        historicalView.version.name,
+      )
+      if (!restored) return
+      uncheckpointed.current.delete(restore.path)
       setSavedTick((n) => n + 1)
       agent.noteUserSave()
       await reloadChanges()
       await reloadVersions()
       flash(`Restored “${historicalView.version.name}”`)
     })()
-  }, [historicalView, flash, setDirty, agent.noteUserSave, reloadChanges, reloadVersions])
+  }, [historicalView, flash, restoreVersionOverBuffer, agent.noteUserSave, reloadChanges, reloadVersions])
   // Restore straight from a version row — the same flow as the view banner's Restore, without
   // requiring the read-only view first (walk find 2026-07-11: "no restore on old versions").
   const restoreVersionFromRow = useCallback(
@@ -1822,24 +2356,17 @@ export default function App(): JSX.Element {
           return
         }
         if (!window.confirm(`Restore “${version.name}” as the current document?`)) return
-        const preRestoreContent = editorRef.current?.currentDoc() ?? ''
-        const file = await window.writeflex.restoreVersion({
-          id: version.id,
-          ...(version.snapshotId ? { snapshotId: version.snapshotId } : {}),
-          currentContent: preRestoreContent,
-        })
-        if (!file) {
-          flash(`Could not restore “${version.name}”.`)
-          return
-        }
         if (historicalView) {
           editorRef.current?.exitHistorical()
           setHistoricalView(null)
         }
-        savedContent.current.set(file.file.path, file.content)
-        editorRef.current?.setContent(file.file.path, file.content, { silent: true })
-        setDirty(file.file.path, false, file.content)
-        uncheckpointed.current.delete(file.file.path)
+        const restored = await restoreVersionOverBuffer(
+          version.path,
+          { id: version.id, ...(version.snapshotId ? { snapshotId: version.snapshotId } : {}) },
+          version.name,
+        )
+        if (!restored) return
+        uncheckpointed.current.delete(version.path)
         setSavedTick((n) => n + 1)
         agent.noteUserSave()
         await reloadChanges()
@@ -1847,7 +2374,7 @@ export default function App(): JSX.Element {
         flash(`Restored “${version.name}”`)
       })()
     },
-    [active, flash, historicalView, setDirty, agent.noteUserSave, reloadChanges, reloadVersions],
+    [active, flash, historicalView, restoreVersionOverBuffer, agent.noteUserSave, reloadChanges, reloadVersions],
   )
   const compareVersionRange = useCallback(
     (fromId: VersionCompareEndpointId, toId: VersionCompareEndpointId) => {
@@ -1945,6 +2472,20 @@ export default function App(): JSX.Element {
   const toggleHideStrikes = useCallback(() => setHideStrikes((v) => !v), [])
   const toggleHideInserts = useCallback(() => setHideInserts((v) => !v), [])
   const selectChange = useCallback((id: string) => { reviewCursorRef.current?.select(id) }, [])
+  // Ticket 09 (from 01): stepping puts DOM focus in the card, so the caret leaves the text and A / D / R act at once;
+  // Esc gives the caret back. The card may not be drawn for a frame or two (a piece opening, a mode changing), so ask
+  // a few times before giving up.
+  const focusCardSoon = useCallback((id: string | null, tries = 4) => {
+    if (id === null) return
+    window.requestAnimationFrame(() => {
+      if (marginControlRef.current?.focusCard(id)) return
+      if (tries > 1) focusCardSoon(id, tries - 1)
+    })
+  }, [])
+  const showChangeInText = useCallback((id: string) => {
+    reviewCursorRef.current?.select(id)
+    restoreEditorFocus()
+  }, [restoreEditorFocus])
   const settleReviewChange = useCallback((id: string, advance: boolean) => {
     reviewCursorRef.current?.settle(id, advance)
   }, [])
@@ -1953,30 +2494,12 @@ export default function App(): JSX.Element {
   // proven apply-and-reconcile path (which refreshes the editor buffer, flashes, arms undo), not a
   // status-only move.
 
-  // The document end of the link (Task 5): mark the active file's changes in the editor while the dock is
-  // open, cross-highlighting the selected one, and clear them when it closes. Runs off the Change set and
-  // selection; between runs the marks map through the writer's edits (editor/change-marks.ts).
-  useEffect(() => {
-    // Only render marks when the Change list belongs to the buffer that landed (changesPath === loadedFile),
-    // so neither a stale-buffer resolve (list beats content) nor a stale-list projection (content beats
-    // list, on a fast tab switch) can decorate the wrong file.
-    const forLoaded = changesPath === loadedFile
-    const show = changesOpen && forLoaded && !historicalActive
-    const currentRun = changes.filter((change) => !change.snapshotId && change.status !== 'rejected')
-    // Inline widgets own every pending agent proposal, including C3 move pairs, so the dock↔document link
-    // stays consistent: click/select highlights the inline rendering; change-marks covers non-inline spans.
-    // ADR-0025 §1: a writer record has its OWN representation — invisible in Drafting, struck-old/
-    // highlighted-new in Reviewing — so it must NEVER also wear the dock↔document dotted underline
-    // (which was double-decorating the reveal and, in Drafting, was pure noise).
-    const markChanges = currentRun.filter((c) =>
-      !(c.provenance === 'agent' && c.status === 'pending') && c.provenance !== 'writer')
-    editorRef.current?.setChangeMarks(show ? markChanges : [], show ? selectedChangeId : null)
-  }, [changes, selectedChangeId, changesOpen, loadedFile, changesPath, historicalActive])
+  // The document end of the link: the quiet marks in the text (ticket 13) are pushed by the review margin
+  // itself (components/ReviewMargin.tsx), which knows the filter, the marker numbers and the focused card.
 
-  // Inline track-changes — the DEFAULT agent-review surface (replaces the popup). Every PENDING AGENT
-  // change renders in the prose (struck original + proposed + per-change action bar), always on, so the
-  // writer reviews where the text lives. Only agent proposals show as track-changes: a writer/reviewer
-  // edit is already in the document (that's Task 6's inline treatment), and resolved changes are gone.
+  // Pending agent changes go to the editor's inline layer as data (where each proposal sits: the keymap,
+  // live preview and the "could not be placed" flag read it). Since ticket 13 it draws no struck or inserted
+  // words in the prose; an agent's proposed object is the one thing still staged over its render (ADR-0024).
   // The dock shows the ACTIVE file's changes, gated at RENDER (not an effect) on the path the list belongs
   // to — so a tab switch can't paint the previous file's cards for a frame before the reload resettles.
   // Rejected-but-unstamped changes stay in the list: the review pane folds them away with a Reopen
@@ -1989,6 +2512,176 @@ export default function App(): JSX.Element {
   useEffect(() => {
     reviewCursorRef.current?.sync(dockChanges, editorRef.current?.currentDoc() ?? '')
   }, [dockChanges, loadedFile])
+
+  // Changes from outside (command line, locked dock design 2026-10-07): the margin also lists the
+  // outside changes of OTHER documents, the ledger's counts, the arrival notice and the writer's
+  // dismissed "could not be applied" records. `dockChanges` stays the open document's list, so every
+  // run action below (accept all, discard, by kind, the keys) acts on the open document only.
+  const outsideDock = useOutsideDock(active, root)
+  const dismissedNotApplied = useDismissedNotApplied(root)
+  // A card for a document that is not open: open it, then select the change once its list has loaded.
+  const changeToSelectOnLoad = useRef<string | null>(null)
+  const openChangeAt = useCallback((change: Change) => {
+    changeToSelectOnLoad.current = change.id
+    open(change.path)
+  }, [open])
+  useEffect(() => {
+    const id = changeToSelectOnLoad.current
+    if (!id || loadedFile !== active || !dockChanges.some((change) => change.id === id)) return
+    changeToSelectOnLoad.current = null
+    reviewCursorRef.current?.select(id)
+  }, [dockChanges, loadedFile, active])
+  const rejectOutside = useCallback((which: Parameters<typeof window.writeflex.rejectOutsideChanges>[0]) => {
+    void window.writeflex.rejectOutsideChanges(which).then(
+      ({ rejected }) => flash(`Rejected ${rejected} change${rejected === 1 ? '' : 's'}`),
+      (error) => flash(error instanceof Error ? error.message : 'Could not reject those changes.'),
+    )
+  }, [flash])
+  // The margin's outside rows (ticket 04): waiting items in other pieces, the arrival "Show", and the next piece.
+  const waitingElsewhere = useMemo(() => outsideDock.others.filter((change) => change.status === 'pending' || change.status === 'held'), [outsideDock.others])
+  // The margin's filter (the head's state), owned here so the status bar's All / Comments / Edits and the head's own
+  // Kind chips drive one value. It starts clean for each piece.
+  const [marginFilterState, setMarginFilterState] = useState<HeadFilterState>(EMPTY_HEAD_FILTER)
+  useEffect(() => { setMarginFilterState(EMPTY_HEAD_FILTER) }, [active])
+  // Ticket 04: the cards picked for a bulk action (Space or ⌘-click on a card), owned here so the status bar's
+  // "N selected · Accept · Decline · Clear" and ⇧⌘A / ⇧⌘⌫ act on them. A new piece starts with none.
+  const [pickedCards, setPickedCards] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => { setPickedCards((current) => (current.size === 0 ? current : new Set())) }, [active])
+  // The agent's items sent back with a note: their cards say Sent back until they are settled (renderer memory only).
+  const [sentBackIds, setSentBackIds] = useState<ReadonlySet<string>>(() => new Set())
+  // The Decline all confirmation or the Send back popover over the review line. Decline holds the ids it asked about.
+  const [reviewAskState, setReviewAskState] = useState<{ kind: 'decline'; ids: string[]; question: DeclineQuestion; whole?: boolean } | { kind: 'send-back'; scope: SendBackScope } | null>(null)
+  // Ticket 06 (from 14): Accepts main refused because the change could not be placed. The item still waits; its card says
+  // Could not be applied, with the reason, until the writer declines it or the text changes (then Accept is offered again).
+  const [refusedAccepts, setRefusedAccepts] = useState<ReadonlyMap<string, { reason: string; doc: string | null }>>(() => new Map())
+  const refusedDocRef = useRef<string | null>(null)
+  refusedDocRef.current = snapshot?.docText ?? null
+  const noteAcceptRefused = useCallback((id: string, reason: string) => {
+    setRefusedAccepts((current) => new Map(current).set(id, { reason, doc: refusedDocRef.current }))
+  }, [])
+  useEffect(() => {
+    if (refusedAccepts.size === 0) return
+    const doc = snapshot?.docText ?? null
+    const waiting = new Set(dockChanges.filter((change) => change.status === 'pending' || change.status === 'held').map((change) => change.id))
+    const kept = [...refusedAccepts].filter(([id, entry]) => waiting.has(id) && entry.doc === doc)
+    if (kept.length !== refusedAccepts.size) setRefusedAccepts(new Map(kept))
+  }, [refusedAccepts, dockChanges, snapshot?.docText])
+  const refusedReasons = useMemo(() => new Map([...refusedAccepts].map(([id, entry]) => [id, entry.reason])), [refusedAccepts])
+  // The edits this review pass is working through, for "M of N settled".
+  const [reviewBatch, setReviewBatch] = useState<ReviewBatch>(EMPTY_BATCH)
+  const marginFilter = marginFilterState.filter
+  // Ticket 08: Settled today and My edits are modes held in the margin's filter state. Items reopened while Settled today
+  // is on stay in it as Open cards ("waiting again"); leaving the mode or opening another piece forgets them.
+  const reviewMode: ReviewMode = reviewModeOf(marginFilterState)
+  const [waitingAgainState, setWaitingAgainState] = useState<{ key: string | null; seen: ReadonlySet<string>; again: ReadonlySet<string> }>(() => ({ key: null, seen: new Set(), again: new Set() }))
+  const waitingAgain = reviewMode === 'settled' && waitingAgainState.key === active ? waitingAgainState.again : EMPTY_ID_SET
+  // The status bar's review line is drawn from the same model the margin builds (same filter, same Yours / quiet-fix switches).
+  // The four models below read the same text; they find each change's words in it once (ticket 16).
+  const reviewResolver = useMemo(() => makeAnchorResolver(snapshot?.docText ?? ''), [snapshot?.docText])
+  const reviewModels = useMemo(() => {
+    if (active === null || collectionDir !== null) return null
+    const common = { resolver: reviewResolver, changes: dockChanges, document: snapshot?.docText ?? '', view: 'margin' as const, showOwnEdits: marginFilterState.showOwnEdits, showQuietFixes: marginFilterState.showQuiet, others: waitingElsewhere, dismissedIds: dismissedNotApplied.ids }
+    const shown = buildMarginModel({ ...common, selectedId: selectedChangeId, filter: marginFilter, mode: reviewMode, waitingAgain })
+    return {
+      shown,
+      unfiltered: buildMarginModel({ ...common }),
+      kinds: buildMarginModel({ ...common, filter: withoutKinds(marginFilter) }),
+      // What review would show, for the counts beside Settled today, My edits and Show quiet fixes while a mode is on.
+      review: reviewMode === 'review' ? shown : buildMarginModel({ ...common, showOwnEdits: false, filter: {} }),
+    }
+  }, [active, collectionDir, reviewResolver, dockChanges, snapshot?.docText, waitingElsewhere, dismissedNotApplied.ids, marginFilterState.showOwnEdits, marginFilterState.showQuiet, marginFilter, selectedChangeId, reviewMode, waitingAgain])
+  useEffect(() => {
+    if (reviewMode !== 'settled' || !reviewModels) {
+      setWaitingAgainState((current) => (current.key === null && current.seen.size === 0 ? current : { key: null, seen: EMPTY_ID_SET, again: EMPTY_ID_SET }))
+      return
+    }
+    const settledIds = [...reviewModels.review.settledToday, ...reviewModels.review.quietApplied].map((change) => change.id)
+    setWaitingAgainState((current) => {
+      const base = current.key === active ? current : { key: active, seen: EMPTY_ID_SET, again: EMPTY_ID_SET }
+      const next = trackWaitingAgain(base, settledIds, dockChanges)
+      return next.seen === base.seen && next.again === base.again && base === current ? current : { key: active, ...next }
+    })
+  }, [reviewMode, reviewModels, dockChanges, active])
+  // A picked card that was settled or that a filter hid drops out of the pick.
+  useEffect(() => {
+    if (!reviewModels || pickedCards.size === 0) return
+    const kept = visibleSelection(reviewModels.shown, pickedCards)
+    if (kept.length !== pickedCards.size) setPickedCards(new Set(kept))
+  }, [reviewModels, pickedCards])
+  // A settled item is no longer Sent back.
+  useEffect(() => {
+    if (sentBackIds.size === 0) return
+    const settled = new Set(dockChanges.filter((change) => change.status !== 'pending' && change.status !== 'held').map((change) => change.id))
+    if ([...sentBackIds].some((id) => settled.has(id))) setSentBackIds(new Set([...sentBackIds].filter((id) => !settled.has(id))))
+  }, [dockChanges, sentBackIds])
+  const batchWaiting = useMemo(() => (reviewModels ? waitingEditIds(reviewModels.unfiltered) : []), [reviewModels])
+  useEffect(() => { setReviewBatch((batch) => nextBatch(batch, active, batchWaiting)) }, [active, batchWaiting])
+  const statusReview = useMemo(() => {
+    if (!reviewModels) return null
+    if (reviewMode === 'settled') {
+      const again = reviewModels.shown.cards.length + reviewModels.shown.unplaced.length
+      return reviewLine({ waiting: 0, shown: 0, filtered: false, kind: 'all', counts: { all: 0, comments: 0, edits: 0 }, position: null, newCount: 0, otherPieces: 0, mode: { kind: 'settled', settled: reviewModels.shown.settled.length + again, again } })
+    }
+    if (reviewMode === 'mine') {
+      return reviewLine({ waiting: 0, shown: 0, filtered: false, kind: 'all', counts: { all: 0, comments: 0, edits: 0 }, position: null, newCount: 0, otherPieces: 0, mode: { kind: 'mine', recorded: reviewModels.shown.counts.shown, others: reviewModels.shown.othersWaiting } })
+    }
+    const pickedShown = visibleSelection(reviewModels.shown, pickedCards).length
+    return reviewLine({
+      picked: pickedShown,
+      acceptable: pickedShown > 0 ? 0 : runTargets(reviewModels.shown, pickedCards, marginFilter, 'accept').edits,
+      batch: reviewBatch.key === active ? batchProgress(reviewBatch, batchWaiting) : null,
+      waiting: reviewModels.unfiltered.counts.shown,
+      shown: reviewModels.shown.counts.shown,
+      filtered: !isUnfiltered(marginFilter),
+      kind: kindSegmentOf(marginFilter),
+      counts: { all: reviewModels.kinds.counts.shown, comments: reviewModels.kinds.counts.byKind.note, edits: reviewModels.kinds.counts.byKind.edit },
+      position: reviewModels.shown.position,
+      newCount: outsideDock.arrived.length,
+      otherPieces: reviewModels.unfiltered.otherPieces.length,
+      who: whoChipLabel(marginFilter, reviewModels.unfiltered),
+      notPlaced: reviewModels.unfiltered.notPlaced.length,
+    })
+  }, [reviewModels, marginFilter, outsideDock.arrived.length, pickedCards, reviewBatch, batchWaiting, active, reviewMode])
+  // Next / previous step through what the margin shows; with a filter on, the cursor is told which ids those are.
+  const shownReviewIds = useMemo(() => (reviewModels ? shownIds(reviewModels.shown, marginFilter) : null), [reviewModels, marginFilter])
+  useEffect(() => { reviewCursorRef.current?.setShown(shownReviewIds) }, [shownReviewIds])
+  const shownReviewIdsRef = useRef(shownReviewIds)
+  shownReviewIdsRef.current = shownReviewIds
+  const setReviewKind = useCallback((segment: KindSegment, toggle: boolean) => {
+    setMarginFilterState((state) => ({ ...state, filter: withKindSegment(state.filter, segment, toggle) }))
+  }, [])
+  const waitingCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const change of [...dockChanges, ...waitingElsewhere]) {
+      if (change.outsideSource && (change.status === 'pending' || change.status === 'held')) counts[change.path] = (counts[change.path] ?? 0) + 1
+    }
+    return counts
+  }, [dockChanges, waitingElsewhere])
+  const openPieceAt = useCallback((path: string, firstId: string) => {
+    changeToSelectOnLoad.current = firstId
+    open(path)
+  }, [open])
+  const nextPieceWithItems = useCallback(() => {
+    const paths = [...new Set(waitingElsewhere.map((change) => change.path))].sort()
+    if (paths.length === 0) { flash('Nothing is waiting in other pieces'); return }
+    const path = paths.find((candidate) => active === null || candidate > active) ?? paths[0]
+    const first = waitingElsewhere.find((change) => change.path === path)
+    if (first) openPieceAt(path, first.id)
+  }, [waitingElsewhere, active, openPieceAt, flash])
+  const showArrivedInMargin = useCallback(() => {
+    const first = outsideDock.arrived[0]
+    outsideDock.clearArrived()
+    if (!first) return
+    // An arrival the filter hides would not be selectable: show everything again first.
+    if (first.path === active && shownReviewIdsRef.current && !shownReviewIdsRef.current.has(first.id)) setMarginFilterState((state) => withMode({ ...state, filter: {} }, 'review'))
+    if (first.path !== active) openChangeAt(first)
+    else selectChange(first.id)
+  }, [outsideDock, active, openChangeAt, selectChange])
+  // Next / previous from the status bar and the chords: the first arrival comes first, then the shown items in order.
+  const stepReview = useCallback((direction: -1 | 1) => {
+    if (direction === 1 && outsideDock.arrived.length > 0) { showArrivedInMargin(); focusCardSoon(reviewCursorRef.current?.currentId ?? null); return }
+    if (reviewCursorRef.current?.move(direction)) focusCardSoon(reviewCursorRef.current.currentId)
+  }, [outsideDock.arrived.length, showArrivedInMargin, focusCardSoon])
   const acceptWriterSession = useCallback(async (sessionChanges?: Change[]): Promise<void> => {
     const path = active
     const pendingWriterRecords = sessionChanges ?? dockChanges
@@ -2006,6 +2699,18 @@ export default function App(): JSX.Element {
     await reloadChanges()
     flash(`Accepted ${count} session ${count === 1 ? 'edit' : 'edits'} — document unchanged`)
   }, [active, dockChanges, reloadChanges, flash, editorRef])
+  // Ticket 08: Settled today and My edits, from the count menu, the palette and Esc. A mode asks for the margin, so a
+  // hidden margin comes back with it (it draws even with nothing waiting).
+  const switchReviewMode = useCallback((mode: Exclude<ReviewMode, 'review'>) => {
+    setMarginFilterState((state) => toggleMode(state, mode))
+    if (marginHiddenRef.current) toggleMargin()
+  }, [toggleMargin])
+  const leaveReviewMode = useCallback(() => {
+    setMarginFilterState((state) => (reviewModeOf(state) === 'review' ? state : withMode(state, 'review')))
+  }, [])
+  const toggleQuietFixes = useCallback(() => {
+    setMarginFilterState((state) => ({ ...state, showQuiet: !state.showQuiet }))
+  }, [])
   const revertToActive = useCallback(async (change: Change): Promise<void> => {
     if (change.status !== 'accepted') {
       flash('Select an accepted change to return it to active review')
@@ -2047,6 +2752,7 @@ export default function App(): JSX.Element {
   // Pending agent changes whose original text has DRIFTED out of the buffer (edited away, superseded)
   // cannot render inline; the review pane badges those cards so a pane-only change is never a mystery.
   const [unanchoredIds, setUnanchoredIds] = useState<string[]>([])
+  const unanchoredSet = useMemo(() => new Set(unanchoredIds), [unanchoredIds])
   const pushInlineChangeProjection = useCallback(
     (list: Change[], path: string | null, suggestions: Suggestion[]) => {
       const pending = list.filter((c) => !c.snapshotId && c.provenance === 'agent' && c.status === 'pending')
@@ -2088,25 +2794,29 @@ export default function App(): JSX.Element {
     pushInlineChangeProjection(freshChanges, path, freshAgentState.suggestions)
   }, [pushInlineChangeProjection])
 
-  // Undo and redo of a suggestion's resolution, each sent to main at once so that main receives every
-  // resolution of a change (these, and Apply or Discard from the review pane) in the order asked for.
+  // Undo and redo of a suggestion's resolution, each run in the document owner's queue for its path, as
+  // every resolution of a change is (these, and Apply or Discard from the review pane), so that main
+  // receives them in the order asked for and none interleaves with a save of the document (parcel 2a).
   const replaySuggestionResolution = useCallback(async (effect: SuggestionResolutionEffect): Promise<void> => {
     if (!effect.resolved) {
-      await window.writeflex.setChangeStatus(effect.id, 'pending')
+      await owner.inQueue(effect.path, () => window.writeflex.setChangeStatus(effect.id, 'pending'))
     } else if (effect.action === 'accept') {
-      // Redoing an accept writes the document's file directly, under a hold in the unsaved registry
-      // so that a close waits for it: main-wrote-document.ts.
+      // Redoing an accept writes the document's file through main, in the path's queue, under a hold in
+      // the unsaved registry so that a close waits for it: accept-redo.ts.
       const applied = await replayAcceptRedo({
-        ...mainWrotePorts,
+        owner,
+        bufferOf: bufferNow,
+        heldText: (path) => unsaved.textOf(path),
         hold: (path) => unsaved.hold(path),
-        unknown: (path, text) => {
-          unsaved.beginWrite(path, text).unknown()
-          setDirtyDot(path, true)
+        diskChanged: (path, diskText, buffer) => {
+          guardRefusalPath.current = path
+          noteDiskChangedUnderBuffer(path, diskText, buffer)
         },
+        changedOnDisk: askAboutRefusedWrite,
         editorPresent: editorIsPresent,
         api: window.writeflex,
         flash,
-        ...(window.writeflex.e2eEnabled ? {
+        ...(window.writeflex.e2eWriteHooks ? {
           gate: async () => {
             if (e2eSaveBehaviourRef.current !== 'hold-redo') return
             await new Promise<void>((resolve) => { e2eSlowSaveReleaseRef.current = resolve })
@@ -2116,15 +2826,15 @@ export default function App(): JSX.Element {
       if (!applied) return
       handleAgentWorkspaceChange()
     } else {
-      // A reject writes no document.
-      const result = await window.writeflex.resolveChange(effect.id, effect.action)
+      // A reject writes no document: main returns no receipt for a reject (agent.ts resolveChange).
+      const result = await owner.inQueue(effect.path, () => window.writeflex.resolveChange(effect.id, effect.action))
       if (!result.applied) {
         flash(result.message ?? 'Could not replay that suggestion resolution.')
         return
       }
     }
     await refreshInlineChangesAfterReconcile()
-  }, [flash, handleAgentWorkspaceChange, mainWrotePorts, refreshInlineChangesAfterReconcile, setDirtyDot])
+  }, [owner, bufferNow, flash, handleAgentWorkspaceChange, noteDiskChangedUnderBuffer, askAboutRefusedWrite, refreshInlineChangesAfterReconcile])
 
   // The app version for the status-bar corner — static, fetched once from main (package.json).
   const [appVersion, setAppVersion] = useState<string | null>(null)
@@ -2139,15 +2849,22 @@ export default function App(): JSX.Element {
   const openCollection = useCallback((dir: string) => {
     void (async () => {
       const current = activeRef.current
-      if (current && dirtyPathsRef.current.has(current) && !(await savePath(current))) {
+      if (current && (await flushPaths([current])).status !== 'saved') {
         flash('Could not save the current Piece — the folder stayed closed.')
         return
+      }
+      if (boardActive) {
+        const editable = lastEditablePath && tabsRef.current.includes(lastEditablePath)
+          ? lastEditablePath
+          : tabsRef.current.find((path) => !isSurfaceTabId(path)) ?? null
+        if (editable) activateTab(editable)
+        else close(BOARD_TAB_ID)
       }
       setSelectedFolderPiece(null)
       setOpenPlanRequested(false)
       setCollectionDir(dir)
     })()
-  }, [flash, savePath])
+  }, [flash, flushPaths, boardActive, lastEditablePath, activateTab, close])
   // The Folder dashboard command: the Files tree's keyboard-focused folder row, else the open file's folder,
   // else the whole collection (the same ruling as the New file target, minus a file row's parent).
   const openFolderDashboard = useCallback(() => {
@@ -2159,7 +2876,12 @@ export default function App(): JSX.Element {
     }))
   }, [folderFocus, openCollection])
 
-  useEffect(() => window.writeflex.onCollectionChanged(handleAgentWorkspaceChange), [handleAgentWorkspaceChange])
+  // The main-side push: as handleAgentWorkspaceChange, except that an own save in place patches its one
+  // listing entry instead of re-listing the folder (shared/listing-patch.ts; every other change re-lists).
+  useEffect(() => window.writeflex.onCollectionChanged((change) => {
+    applyCollectionChange(change)
+    setSavedTick((n) => n + 1)
+  }), [applyCollectionChange])
   useEffect(() => {
     if (!root) {
       setSidebarCollectionSummary(null)
@@ -2187,11 +2909,44 @@ export default function App(): JSX.Element {
         await refresh() // the new file must be in `files` before open() (useTabs containment contract)
         open(path)
       } catch {
-        flash('Could not create a new piece.')
+        flash('Could not create a new document.')
       }
     },
     [refresh, open, flash],
   )
+
+  const startNestedFolio = useCallback((dir: string) => {
+    void window.writeflex.createNestedFolio(dir).then((child) => { void refresh(); openPlanIn(child) })
+      .catch((error) => flash(humanReadableError(error, 'Could not create a new Folio.')))
+  }, [refresh, openPlanIn, flash])
+  const conversionTarget = collectionDir ?? (boardActive ? boardDir : folioPlace?.dir ?? null)
+  const [conversionFolio, setConversionFolio] = useState<{ dir: string; root: typeof root } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    setConversionFolio(null)
+    if (conversionTarget !== null) void window.writeflex.readFolio(conversionTarget).then(folio => {
+      if (!cancelled && folio) setConversionFolio({ dir: conversionTarget, root })
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [conversionTarget, root, savedTick])
+  const canTurnBack = conversionFolio !== null && conversionFolio.dir === conversionTarget && conversionFolio.root === root
+  useEffect(() => {
+    void window.writeflex.setCollectionPageActive(collectionDir !== null, collectionDir !== null && canTurnBack)
+  }, [collectionDir, canTurnBack])
+  useEffect(() => () => { void window.writeflex.setCollectionPageActive(false) }, [])
+  const turnBackFolio = useCallback(() => {
+    if (!canTurnBack || conversionTarget === null) return
+    const dir = conversionTarget
+    void (async () => {
+      const paths = ['AGENTS.md', 'CLAUDE.md'].map(name => dir ? `${dir}/${name}` : name)
+      if ((await flushPaths(paths)).status !== 'saved') { flash('Could not save the instructions. The Folio stayed as it was.'); return }
+      if (await window.writeflex.turnBackIntoCollection(dir)) {
+        setOpenPlanRequested(false)
+        openCollection(dir)
+        flash('Turned back into a collection. Make a Folio can turn it into a Folio again.')
+      }
+    })().catch(error => flash(humanReadableError(error, 'Could not turn this Folio back into a collection.')))
+  }, [canTurnBack, conversionTarget, flushPaths, flash, openCollection])
 
   // --- Scrap actions (Task 20) ---
   // ⌘⇧X already removed the selection through a normal (undoable) editor transaction; App stores the
@@ -3161,10 +3916,7 @@ export default function App(): JSX.Element {
   }, [setSetting, flash])
 
   // --- Quick-open + command palette (Task 13) ---
-  // The shared overlay guard: while a sheet is up the window's own capture-phase shortcuts stand
-  // down (they read isOpenRef below). Reused by Tasks 15/17 for their overlays.
-  const overlay = useOverlayGuard()
-  const { active: overlayActive, isOpenRef: overlayOpenRef, open: openOverlay, close: closeOverlay } = overlay
+  // The shared overlay guard is declared above, before the Merge sheet that also goes through it.
 
   const applyFolderPieceMode = useCallback((selection: FolderPieceChoice) => {
     const mode = selection.mode === 'one' ? 'many' : 'one'
@@ -3262,6 +4014,33 @@ export default function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [historicalView, exitHistoricalView, overlayOpenRef])
 
+  // Esc, in the README's order: a popover or menu, the reply composer, focus inside a card, then Settled today / My edits.
+  // Bubble phase, so the popovers and the composer (which take Esc themselves) and every capture-phase Esc win. The card
+  // step works in every mode: the caret goes back to the text, where it was.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || overlayOpenRef.current) return
+      if (window.document.querySelector('.mg-menu, .rcm, .rbp, .rbp-notplaced, .sb-review-menu-wrap [role="dialog"]')) return
+      const focused = window.document.activeElement
+      if (focused instanceof HTMLElement && focused.closest('.wf-margin [data-margin-card], .wf-margin [data-margin-settled-card], .wf-margin [data-margin-settled-row]')) {
+        // Leave the card first: the caret goes back to the text; the next Esc leaves the mode.
+        event.preventDefault()
+        focused.blur()
+        // The caret goes to the start of the item's words (stepping selected them), so the next Esc is not spent collapsing a selection.
+        const editor = editorRef.current?.view()
+        if (editor) editor.dispatch({ selection: { anchor: editor.state.selection.main.from } })
+        restoreEditorFocus()
+        return
+      }
+      if (reviewMode === 'review') return
+      if (focused instanceof HTMLElement && !focused.closest('.cm-editor') && focused.closest('textarea, input, select, [contenteditable="true"]')) return
+      event.preventDefault()
+      leaveReviewMode()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [reviewMode, leaveReviewMode, restoreEditorFocus, overlayOpenRef])
+
   // The palette is a shell surface: only raise it once a Workspace is bound (root is a string).
   const openPalette = useCallback(
     (mode: 'files' | 'commands') => {
@@ -3288,10 +4067,92 @@ export default function App(): JSX.Element {
   // file open. It drops the overlay AND puts the keyboard back somewhere real. Editor commands
   // additionally self-focus the view via view.focus(); that is idempotent with this, so ordering
   // runPaletteCommand as close-then-run is safe.
+  // Vaults ticket 03: is this root a vault (follows `vault:changed`), and the Make-vault sheet that makes it one.
+  const rootIsVault = useVaultPresence(root)
+  // The vault switcher (vaults ticket 06): opened from the sidebar's root name or the palette.
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+  const openSwitcher = useCallback(() => {
+    revealFilesTab()
+    setSwitcherOpen(true)
+  }, [revealFilesTab])
+  // Writing only and Titles | File names, the same choices the sidebar's filter bar shows.
+  const [vaultPrefs, chooseVaultPrefs] = useVaultSidebarPrefs(typeof root === 'string' ? root : '')
+  // Capture to research…: the sheet files one unit through `scout capture` for the open Piece (or the Folio whose Plan is open).
+  const [researchCapture, setResearchCapture] = useState<{ project: string; selection: string } | null>(null)
+  const researchTarget = researchCaptureTarget({ collectionDir, boardActive, boardDir, activePiece: active ?? null })
+  const researchProject = researchTarget?.project ?? null
+  const openResearchCapture = useCallback(() => {
+    if (researchTarget === null) return
+    setResearchCapture({ project: researchTarget.project, selection: researchTarget.withSelection ? (editorRef.current?.selectedText() ?? '') : '' })
+    openOverlay('researchCapture')
+  }, [researchTarget?.project, researchTarget?.withSelection, openOverlay])
+  const openMakeVault = useCallback(() => { if (rootIsVault === false) openOverlay('makeVault') }, [openOverlay, rootIsVault])
   const closePalette = useCallback(() => {
     closeOverlay()
     focusEditor()
   }, [closeOverlay, focusEditor])
+  const openSharingSetup = useCallback(() => {
+    closeOverlay()
+    setSharingSetupOpen(true)
+  }, [closeOverlay])
+  const closeSharingSetup = useCallback(() => {
+    setSharingSetupOpen(false)
+    focusEditor()
+  }, [focusEditor])
+  const sharablePiece = active && /\.(md|markdown)$/i.test(active) ? active : null
+  // Ticket 09 (frame `folio`): with a part of a Folio open (or its Index Note), Share and the Shared mark
+  // are the whole Folio's; a file in no Folio, or in a Folio's folder but not in its running order, is a piece.
+  const sharableFolio = sharablePiece && folioPlace && (folioPlace.kind === 'piece' || folioPlace.kind === 'index')
+    && (folioPlace.dir === '' || sharablePiece.startsWith(`${folioPlace.dir}/`)) ? folioPlace : null
+  const sharingFolioDir = sharableFolio?.dir ?? null
+  const sharingFolioName = sharableFolio?.name ?? null
+  const revealSharingPath = useCallback((path: string, kind: 'file' | 'folder') => {
+    setSharingPageOpen(false)
+    revealTreeRow({ key: path, kind })
+  }, [revealTreeRow])
+  const openSharingPlan = useCallback((dir: string) => {
+    setSharingPageOpen(false)
+    openPlanIn(dir)
+  }, [openPlanIn])
+  const openSharingPage = useCallback(() => {
+    if (!sharablePiece) { flash('Open a piece to share it.'); return }
+    closeOverlay()
+    setSharingSetupOpen(false)
+    setSharesListOpen(false)
+    setSharingPageOpen(true)
+  }, [sharablePiece, closeOverlay, flash])
+  const closeSharingPage = useCallback(() => {
+    setSharingPageOpen(false)
+    focusEditor()
+  }, [focusEditor])
+  /** Ticket 10: the Shares list of the Workspace open in this window (the collection row's Shares, the page's switch, the palette). */
+  const openSharesList = useCallback(() => {
+    if (typeof root !== 'string' || root === '') { flash('Open a collection to see its links.'); return }
+    closeOverlay()
+    setSharingSetupOpen(false)
+    setSharingPageOpen(false)
+    setSharesListOpen(true)
+  }, [root, closeOverlay, flash])
+  const closeSharesList = useCallback(() => {
+    setSharesListOpen(false)
+    focusEditor()
+  }, [focusEditor])
+  /** From the Shares list: open the link's piece (or a part of its Folio) and its Sharing page. */
+  const openSharedPiece = useCallback((path: string) => {
+    setSharesListOpen(false)
+    open(path)
+    setSharingPageOpen(true)
+  }, [open])
+  // The Shared mark follows the open piece and every change to its links or their publishing.
+  useEffect(() => {
+    if (!sharablePiece) { setShareMark(null); setSharingPageOpen(false); return }
+    let live = true
+    const read = (): Promise<PieceSharingView> => (sharingFolioDir !== null ? window.writeflex.sharing.folio(sharingFolioDir) : window.writeflex.sharing.piece(sharablePiece))
+    const ask = (): void => { void read().then((view) => { if (live) setShareMark(view.mark) }).catch(() => {}) }
+    ask()
+    const off = window.writeflex.sharing.onChanged(ask)
+    return () => { live = false; off() }
+  }, [sharablePiece, sharingFolioDir])
   /** Insert widget… (ticket 05): the palette's file-picking step, for the open document. */
   const insertWidget = useCallback((): void => {
     if (active && typeof root === 'string') openOverlay('widgetPicker')
@@ -3592,6 +4453,9 @@ export default function App(): JSX.Element {
   const captured = useCallback(async (path: string, target: CollectionTarget | undefined) => {
     if (target?.current !== false) await refresh()
     else flash(`Saved ${path} in ${target.name}.`)
+    // The active buffer's wikilinks were resolved before this file existed; Capture leaves the buffer
+    // untouched (unlike materialise, which opens the new file), so re-resolve explicitly.
+    setWikilinkRefreshTick((tick) => tick + 1)
     restoreCaptureFocus()
   }, [refresh, restoreCaptureFocus, flash])
   const openCapturedExisting = useCallback((path: string, target: CollectionTarget | undefined) => {
@@ -3627,14 +4491,38 @@ export default function App(): JSX.Element {
     }
     cancelAutosaveFor(path)
     void (async () => {
-      await (saveChains.current.get(path) ?? Promise.resolve(true))
-      const result = await window.writeflex.clearDocument(path)
+      // A route of the document owner (parcel 2a): the typing is written first, so the clear's rescue holds
+      // it, and the clear runs holding the document's queue. The buffer is emptied only from the clear's
+      // own receipt, and only when nothing was typed while the confirmation was up; typing that arrived
+      // then is kept and the cleared file is asked about (Reload or Keep mine).
+      const flushed = await owner.withFlushed([path], async (snapshots) => {
+        const snapshot = snapshots.get(path)!
+        const result = await window.writeflex.clearDocument(path)
+        if (!result || 'refused' in result) return { result, outcome: null }
+        return { result, outcome: owner.replaceFromMain(path, result.file, { since: snapshot.gen, mode: 'replace', discardLocal: true }) }
+      })
+      if (flushed.status !== 'acted') {
+        const reason = guardRefusalPath.current === path ? refusalReasons.current.get(path) : undefined
+        flash(`Nothing was cleared. ${reason ?? `Could not save ${path.split('/').at(-1) ?? path} first.`}`)
+        return
+      }
+      const { result, outcome } = flushed.result
       if (!result) return
-      savedContent.current.set(path, result.file.content)
-      editorRef.current?.setContent(path, result.file.content, { silent: true, discardLocal: true })
+      if ('refused' in result) {
+        // Another version reached the disk while the confirmation was up: it is not cleared (Muse S1).
+        flash(`${path.split('/').at(-1) ?? path} changed on disk while you were confirming. Nothing was cleared.`)
+        void reconcileWithDiskRef.current?.([path])
+        return
+      }
+      if (outcome?.kind === 'moved') {
+        // Typed while the confirmation was up: the typing is kept, and the cleared file is asked about.
+        cancelAutosaveFor(path)
+        raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText: outcome.diskText })
+        flash(`Document cleared on disk. What you typed meanwhile is kept: choose Reload or Keep mine above the text.`)
+        return
+      }
       clearFileWriterState(path)
       uncheckpointed.current.add(path)
-      setDirty(path, false, result.file.content)
       setSavedTick((tick) => tick + 1)
       queueLiveCompareRefresh(path)
       flash(
@@ -3645,7 +4533,7 @@ export default function App(): JSX.Element {
     })().catch((error: unknown) => {
       flash(humanReadableError(error, 'Could not clear the document. The previous content is still intact.'))
     })
-  }, [cancelAutosaveFor, clearFileWriterState, flash, queueLiveCompareRefresh, setDirty])
+  }, [owner, cancelAutosaveFor, clearFileWriterState, flash, queueLiveCompareRefresh, raiseExternalDiskNotice])
 
   // The palette ask-row (Task 15): close the sheet, open the agent panel and hand the typed text to
   // the composer — prefilled and focused, NOT sent; the writer finishes the thought and presses ⏎.
@@ -3863,16 +4751,25 @@ export default function App(): JSX.Element {
     if (!current) return
     const target = folderBrowsePath(files, current, direction)
     if (!target || target === current) return
-    if (dirtyPathsRef.current.has(current) && !(await savePath(current))) {
-      flash(`Could not save ${current.split('/').at(-1) ?? current} — staying on this file`)
+    // The owner writes the buffer until it is saved, detaches it in the turn of the last check, and forgets
+    // it only if nothing moved since (document-owner.ts; Muse M1, round 2): typing during the flush is
+    // written first, or the browse does not happen.
+    cancelAutosaveFor(current)
+    const flushed = await owner.withFlushed([current], () => {
+      if (!owner.forgetIfSaved(current)) return false
+      clearExternalDiskNotice(current) // its tab is replaced: a notice does not outlive it
+      return true
+    }, { detach: true })
+    if (flushed.status !== 'acted' || !flushed.result) {
+      const name = current.split('/').at(-1) ?? current
+      if (guardRefusalPath.current !== current) {
+        flash(flushed.status === 'refused' ? `Could not save ${name} — staying on this file` : `${name} was still being edited while it was saved — staying on this file`)
+      }
       return
     }
-    editorRef.current?.forget(current)
-    savedContent.current.delete(current)
-    setDirty(current, false, null)
     setCollectionDir(null)
     replaceActiveTab(target)
-  }, [files, flash, replaceActiveTab, savePath, setDirty])
+  }, [files, flash, replaceActiveTab, owner, cancelAutosaveFor, clearExternalDiskNotice])
 
   // Writing goal (Round A T5, ADR-0002/0019/0028): a `goal:` in the ACTIVE document's frontmatter
   // upgrades the status-bar count cell into the Goal Gauge — one instrument, upgraded, never a
@@ -3895,16 +4792,40 @@ export default function App(): JSX.Element {
   const setWritingGoal = useCallback(async (target: number | null, due: string | null): Promise<void> => {
     const path = activeRef.current
     if (!path) return
-    if (dirtyPathsRef.current.has(path) && !(await savePath(path))) {
-      throw new Error('Could not save the document, so the goal was not written')
+    // A route of the document owner (parcel 2a): the buffer is written until saved, then the goal is
+    // written holding the document's queue, based on the baseline the flush left (goal:set carries it as
+    // its basis, and main writes only over that version). The buffer takes the file with the goal only
+    // from the goal write's own receipt, and only when nothing was typed while main wrote it.
+    const flushed = await owner.withFlushed([path], async (snapshots) => {
+      const snapshot = snapshots.get(path)!
+      const saved = await window.writeflex.setGoal(path, target, due, basisFromBaseline(snapshot.baselineDisk))
+      if ('refused' in saved) return { saved, outcome: null }
+      return { saved, outcome: owner.replaceFromMain(path, saved, { since: snapshot.gen, mode: 'replace' }) }
+    })
+    if (flushed.status !== 'acted') {
+      throw new Error(flushed.status === 'still-unsaved'
+        ? 'The document was still being edited while it was saved, so the goal was not written'
+        : 'Could not save the document, so the goal was not written')
     }
-    const saved = await window.writeflex.setGoal(path, target, due)
-    savedContent.current.set(saved.file.path, saved.content)
-    editorRef.current?.setContent(saved.file.path, saved.content, { silent: true })
-    setDirty(saved.file.path, false, saved.content)
+    const { saved, outcome } = flushed.result
+    if ('refused' in saved) {
+      // Another version is on disk than the one the buffer was based on: no goal is written over it.
+      const buffer = bufferNow(path)
+      if (buffer !== null) noteDiskChangedUnderBuffer(path, saved.diskText, buffer)
+      throw new Error('The document changed on disk, so the goal was not written. Choose Reload or Keep mine above the text')
+    }
+    if (outcome?.kind === 'moved') {
+      // Typing arrived while main wrote the goal: it is kept (never replaced by the file), and the file
+      // with the goal is asked about like any outside change; the buffer is still based on what it was.
+      cancelAutosaveFor(path)
+      if (!sameDiskNotice(externalDiskNoticesRef.current.get(path), 'changed', outcome.diskText)) {
+        raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText: outcome.diskText })
+      }
+      return
+    }
     setSavedTick((tick) => tick + 1)
     flash(target === null ? 'Writing goal cleared' : 'Writing goal set')
-  }, [savePath, flash, setDirty])
+  }, [owner, bufferNow, flash, cancelAutosaveFor, noteDiskChangedUnderBuffer, raiseExternalDiskNotice])
   const openGoalDialog = useCallback(() => {
     if (activeRef.current) openOverlay('goal')
     else flash('Open a document to set its writing goal')
@@ -3916,66 +4837,114 @@ export default function App(): JSX.Element {
   // piece must never see a choice it cannot make. Both are read BEFORE the sheet opens, so it never
   // redraws under the writer's hand.
   const [exportSubject, setExportSubject] = useState<
-    { workspaceRoot: string; path: string; title: string; words: number; collection: { dir: string; name: string; pieces: number; htmlPieces?: number; leftOut?: FolioLeftOut[] } | null; presetAction?: ExportPresetOpenAction } | null
+    { openId: number; workspaceRoot: string; path: string; title: string; words: number; collection: { dir: string; name: string; pieces: number; htmlPieces?: number; leftOut?: FolioLeftOut[] } | null; inFolio: boolean; presetAction?: ExportPresetOpenAction; tocDepthHomes: Record<ExportScope, ExportTocDepthHome | null> } | null
   >(null)
-  const openExportSheet = useCallback(async (from?: string, presetAction?: ExportPresetOpenAction) => {
+  // Each open of the sheet gets a new id, so the sheet remounts and its scope starts from this open's default.
+  const exportOpenSeq = useRef(0)
+  const openExportSheet = useCallback(async (from?: string, presetAction?: ExportPresetOpenAction, fromCollection?: string) => {
     // The quiet menu exports the ROW it was opened on; the palette exports the active document.
-    const path = from ?? activeRef.current
+    const viewed = fromCollection === undefined ? null : await window.writeflex.listCollection(fromCollection)
+    if (viewed && viewed.rows.length === 0) { flash('There are no documents in this collection to export.'); return }
+    const path = viewed?.rows[0]?.path ?? viewed?.cover?.path ?? from ?? activeRef.current
     if (!path) { flash('Open a document to export it'); return }
     if (!root) { flash('Open a Workspace to export a document'); return }
     const text = path === activeRef.current
       ? editorRef.current?.currentDoc() ?? ''
       : await window.writeflex.readFile(path).then((read) => read.content).catch(() => '')
     let collection: { dir: string; name: string; pieces: number; htmlPieces?: number; leftOut?: FolioLeftOut[] } | null = null
+    let inFolio = false
     try {
-      const dir = await collectionDirFor(path)
+      const place = await exportPlaceFor(path, {
+        folioDirOf: async (of) => (await window.writeflex.readFolioPlace(of))?.dir ?? null,
+        hasManifest: async (of) => (await window.writeflex.readFolioPieces(of)) !== null,
+        collectionDirFor,
+      })
+      const dir = fromCollection ?? place.dir
       // Main resolves the Folio: the pieces HTML will write, and the listed entries it will leave out.
-      // The two counts are what each format writes: Word writes the Collection's own rows (`pieces`),
-      // HTML writes a Folio's listed pieces (`htmlPieces`).
+      // A Folio writes its listed pieces in both formats; any other Collection writes its own rows.
       const folio = await window.writeflex.readFolioPieces(dir)
-      if (folio || (await window.writeflex.collection.status(dir)).collection) {
+      if (fromCollection !== undefined || folio || (await window.writeflex.collection.status(dir)).collection) {
         const listed = await window.writeflex.listCollection(dir)
         const htmlPieces = folio ? folio.pieces.length : listed.rows.length
         if (htmlPieces || listed.rows.length || folio?.leftOut.length) {
-          collection = { dir, name: listed.name, pieces: listed.rows.length, htmlPieces, ...(folio?.leftOut.length ? { leftOut: folio.leftOut } : {}) }
+          const sources = documentsUnder(folderPrefix(dir)).flatMap((path) => {
+            const source = bufferNow(path) ?? unsaved.textOf(path)
+            return source === null || source === undefined ? [] : [{ path, source }]
+          })
+          collection = { dir, name: await window.writeflex.exportTitle({ scope: 'collection', dir, sources }), pieces: htmlPieces, htmlPieces, ...(folio?.leftOut.length ? { leftOut: folio.leftOut } : {}) }
+          inFolio = fromCollection !== undefined || place.inFolio
         }
       }
     } catch {
       collection = null // a folder that cannot be read is simply not a Collection for this sheet
     }
+    // The Contents depth each scope keeps in its own file: the document's `toc_depth`, the Folio's in its
+    // Index Note (none when the folder has no Index Note). An open document's own text is what it says.
+    // Read only: a depth the writer chooses is saved by main when the HTML export runs.
+    const readHome = (input: TocDepthScope): Promise<TocDepthSource | null> =>
+      window.writeflex.readTocDepth(input).catch(() => null)
+    const pieceScope: TocDepthScope = { kind: 'document', path }
+    const collectionScope: TocDepthScope | null = collection ? { kind: 'folio', dir: collection.dir } : null
+    const pieceSource = await readHome(pieceScope)
+    const collectionSource = collectionScope ? await readHome(collectionScope) : null
+    const pieceBuffer = bufferNow(path)
+    if (pieceSource && pieceBuffer !== null) pieceSource.depth = tocDepthOf(pieceBuffer)
+    if (collectionSource) {
+      const indexBuffer = bufferNow(collectionSource.path)
+      if (indexBuffer !== null) collectionSource.depth = tocDepthOf(indexBuffer)
+    }
+    const homeOf = (source: TocDepthSource | null, label: string): ExportTocDepthHome | null =>
+      source ? { label, depth: source.depth } : null
     setExportSubject({
+      openId: ++exportOpenSeq.current,
       workspaceRoot: root,
       path,
-      title: documentTitle(text, path),
+      title: await window.writeflex.exportTitle({ scope: 'piece', path, source: text }),
       words: countUnits(text, { excludeCommentLines: true }).words,
       collection,
+      inFolio,
       ...(presetAction ? { presetAction } : {}),
+      tocDepthHomes: {
+        piece: homeOf(pieceSource, 'this document (toc_depth in its frontmatter)'),
+        collection: homeOf(collectionSource, `${collection?.name ?? 'this Folio'} (toc_depth in its Index Note)`),
+      },
     })
     openOverlay('export')
-  }, [flash, openOverlay, root])
+  }, [flash, openOverlay, root, documentsUnder, bufferNow])
 
+  /** A piece under an unanswered changed-on-disk notice is not exported: the file may not be what is on
+   *  screen (2b review P2). The sentence for the export sheet, or undefined when no notice stands. */
+  const exportRefusedUnderNotice = useCallback((path: string): string | undefined => {
+    const notice = externalDiskNoticesRef.current.get(path)
+    if (!notice) return undefined
+    const name = path.split('/').at(-1) ?? path
+    return notice.kind === 'removed'
+      ? `${name} is no longer readable on disk, so nothing was exported. Choose Keep mine above the text to write it again, then export.`
+      : `${name} changed on disk, so nothing was exported. Choose Reload or Keep mine above the text, then export again.`
+  }, [])
   /** One export attempt, end to end: flush the buffer (so the file is what is on screen), ask the
    *  system save dialog where it goes, then write it. A cancelled dialog writes nothing and says
    *  nothing; a failure comes back as the sentence the main process wrote. */
   const runExport = useCallback(
-    async (choice: { scope: ExportScope; format: ExportFormat; html?: HtmlExportOptions }): Promise<ExportSheetOutcome> => {
+    async (choice: { scope: ExportScope; format: ExportFormat; html?: HtmlExportOptions; keepTocDepth?: true }): Promise<ExportSheetOutcome> => {
       const subject = exportSubject
       if (!subject) return { status: 'error', message: 'There is no document to export. Open a piece and try again.' }
       try {
         // The PRD's first state: an unsaved buffer is flushed FIRST, so the export reflects what the
         // writer sees rather than the last autosave.
-        if (dirtyPathsRef.current.has(subject.path) && !(await savePath(subject.path))) {
-          return { status: 'error', message: 'WriteFlex could not save this piece, so nothing was exported. Try again, or check the file’s permissions.' }
+        const flushed = await flushPaths([subject.path])
+        if (flushed.status !== 'saved') {
+          return { status: 'error', message: exportRefusedUnderNotice(flushed.path) ?? 'WriteFlex could not save this piece, so nothing was exported. Try again, or check the file’s permissions.' }
         }
         const bundling = choice.scope === 'collection' && subject.collection !== null
         if (bundling && subject.collection) {
           // Every piece a bundle writes is inside `dir`: a Collection's rows are, and main refuses any
-          // Folio entry that is not (folio.ts). So saving the changed paths under `dir` covers them all.
-          const dir = subject.collection.dir
-          for (const path of [...dirtyPathsRef.current]) {
-            if ((dir === '' || path.startsWith(`${dir}/`)) && !(await savePath(path))) {
-              return { status: 'error', message: 'WriteFlex could not save a changed piece, so nothing was exported. Check its permissions and try again.' }
-            }
+          // Folio entry that is not (folio.ts). Every document under `dir` the app knows of must be saved:
+          // one under an unanswered notice refuses the export with the notice's sentence, dot or none (2b
+          // round 3 ruling, finding 2).
+          const flushedUnder = await flushPaths(documentsUnder(folderPrefix(subject.collection.dir)))
+          if (flushedUnder.status !== 'saved') {
+            return { status: 'error', message: exportRefusedUnderNotice(flushedUnder.path) ?? 'WriteFlex could not save a changed piece, so nothing was exported. Check its permissions and try again.' }
           }
         }
         const request = bundling && subject.collection
@@ -3983,9 +4952,48 @@ export default function App(): JSX.Element {
           : ({ scope: 'piece', path: subject.path, format: choice.format } as const)
         const { target } = await window.writeflex.chooseExportTarget(request)
         if (target === null) return { status: 'cancelled' }
-        const outcome = request.scope === 'collection'
-          ? await window.writeflex.exportBundle({ dir: request.dir, format: choice.format, target, ...(choice.html ? { html: choice.html } : {}) })
-          : await window.writeflex.exportDocument({ path: request.path, format: choice.format, target, ...(choice.html ? { html: choice.html } : {}) })
+        // e2e only: the destination sheet stays open here until `releaseSlowSave`.
+        if (window.writeflex.e2eWriteHooks && e2eSaveBehaviourRef.current === 'hold-export') {
+          await new Promise<void>((resolve) => { e2eSlowSaveReleaseRef.current = resolve })
+        }
+        // The check above was made before the destination sheet opened; a document may have changed on disk,
+        // or been typed in, while it was open (2b round 3 review, finding 3). The members are asked for and
+        // checked again now, and held from that check until main has read them for the export: no save, no
+        // watcher reconcile and no folder route under the collection runs while main reads.
+        // Invariant: an export reads only documents that were saved with no unanswered notice at the moment
+        // it read them.
+        const members = (): string[] => request.scope === 'collection'
+          ? [...new Set([subject.path, ...documentsUnder(folderPrefix(request.dir))])]
+          : [subject.path]
+        for (const p of members()) cancelAutosaveFor(p)
+        // A depth the writer chose in the sheet rides the request: main exports with it and then saves it
+        // with the document or the Folio's Index Note (export.ts). The file it wrote is still held here, so
+        // an open buffer takes it from the receipt, as goal:set's answer is taken.
+        const keep = choice.keepTocDepth ? { keepTocDepth: true } : {}
+        const exported = await owner.withFlushed(members, async (snapshots) => {
+          const outcome = await (request.scope === 'collection'
+            ? window.writeflex.exportBundle({ dir: request.dir, format: choice.format, target, ...(choice.html ? { html: choice.html } : {}), ...keep })
+            : window.writeflex.exportDocument({ path: request.path, format: choice.format, target, ...(choice.html ? { html: choice.html } : {}), ...keep }))
+          const saved = outcome.tocDepthSave
+          if (!saved || 'refused' in saved || saved.written === undefined) return { outcome, written: null }
+          const snapshot = snapshots.get(saved.file.path)
+          if (snapshot?.baselineDisk === undefined) return { outcome, written: null }
+          return { outcome, written: { path: saved.file.path, result: owner.replaceFromMain(saved.file.path, saved, { since: snapshot.gen, mode: 'replace' }) } }
+        },
+        request.scope === 'collection' ? { scope: folderPrefix(request.dir) } : {})
+        if (exported.status !== 'acted') {
+          return { status: 'error', message: exportRefusedUnderNotice(exported.path) ?? 'WriteFlex could not save a changed piece, so nothing was exported. Check its permissions and try again.' }
+        }
+        const { outcome, written } = exported.result
+        if (written?.result.kind === 'moved') {
+          cancelAutosaveFor(written.path)
+          if (!sameDiskNotice(externalDiskNoticesRef.current.get(written.path), 'changed', written.result.diskText)) {
+            raiseExternalDiskNotice(written.path, { kind: 'changed', dirty: true, diskText: written.result.diskText })
+          }
+        } else if (written) {
+          setSavedTick((tick) => tick + 1)
+        }
+        const saved = outcome.tocDepthSave
         return {
           status: 'done',
           target: outcome.target,
@@ -3993,12 +5001,14 @@ export default function App(): JSX.Element {
           unreadableImages: outcome.unreadableImages,
           pieces: outcome.pieces,
           listed: outcome.listed,
+          // A depth that could not be saved with the file never fails the export; the sheet says why.
+          ...(saved && 'refused' in saved ? { tocDepthNote: saved.message } : {}),
         }
       } catch (error) {
         return { status: 'error', message: humanReadableError(error, 'WriteFlex could not export that. Choose somewhere else, or try again.') }
       }
     },
-    [exportSubject, savePath],
+    [exportSubject, flushPaths, documentsUnder, exportRefusedUnderNotice, owner, cancelAutosaveFor, raiseExternalDiskNotice],
   )
 
   // The command list the palette (⇧⌘P) lists: the editor's paletteCommands mapped to icons + display
@@ -4021,6 +5031,8 @@ export default function App(): JSX.Element {
           : () => runEditorCommand(pc.run!, pc.id),
     }))
     const appRows: Array<Omit<AppCommand, 'group'>> = [
+      { id: 'metadata.show', label: 'Show metadata', icon: Command, run: () => { editorRef.current?.setMetadataCollapsed(false) } },
+      { id: 'metadata.collapse', label: 'Collapse metadata', icon: Command, run: () => editorRef.current?.setMetadataCollapsed(true) },
       { id: 'metadata.edit', label: 'Edit metadata', icon: Command, run: () => editorRef.current?.editMetadata() },
       { id: NEXT_TAB_COMMAND.id, label: NEXT_TAB_COMMAND.label, icon: ChevronRight, keys: NEXT_TAB_COMMAND.keys as string, run: () => cycle(1) },
       { id: PREVIOUS_TAB_COMMAND.id, label: PREVIOUS_TAB_COMMAND.label, icon: ChevronLeft, keys: PREVIOUS_TAB_COMMAND.keys as string, run: () => cycle(-1) },
@@ -4055,7 +5067,13 @@ export default function App(): JSX.Element {
       { id: 'view.outline', label: 'Open Outline', icon: List, keys: '⇧⌘O', run: openOutlineTab },
       { id: OPEN_BOARD_COMMAND.id, label: OPEN_BOARD_COMMAND.label, icon: Columns3, keys: OPEN_BOARD_COMMAND.keys as string, run: openBoard },
       { id: 'collection.openDashboard', label: registryCommand('collection.openDashboard').label, icon: FolderOpen, run: openFolderDashboard },
-      { id: 'plan.open', label: 'Open Plan', icon: ListOrdered, run: openPlan },
+      { id: 'vault.make', label: registryCommand('vault.make').label, icon: Library, disabled: rootIsVault !== false, disabledReason: rootIsVault ? 'This folder is already a vault' : 'Open a folder first', run: openMakeVault },
+      { id: 'vault.switch', label: registryCommand('vault.switch').label, icon: ChevronsUpDown, run: openSwitcher },
+      { id: 'vault.writingOnly', label: registryCommand('vault.writingOnly').label, icon: ListFilter, checked: rootIsVault === true ? vaultPrefs.writingOnly : undefined, disabled: rootIsVault !== true, disabledReason: 'This folder is not a vault', run: () => chooseVaultPrefs({ writingOnly: !vaultPrefs.writingOnly }) },
+      { id: 'vault.showTitles', label: registryCommand('vault.showTitles').label, icon: Heading, checked: rootIsVault === true ? vaultPrefs.titles : undefined, disabled: rootIsVault !== true, disabledReason: 'This folder is not a vault', run: () => chooseVaultPrefs({ titles: !vaultPrefs.titles }) },
+      { id: 'plan.open', label: 'Open Folio outline', icon: ListOrdered, run: openPlan },
+      { id: 'folio.open', label: registryCommand('folio.open').label, icon: BookOpen, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: openFolio },
+      { id: 'research.capture', label: registryCommand('research.capture').label, icon: BookOpenCheck, disabled: researchProject == null, disabledReason: 'Open a Piece or a Folio first', run: openResearchCapture },
       { id: 'folio.movePieceUp', label: registryCommand('folio.movePieceUp').label, icon: ArrowUp, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('up') } },
       { id: 'folio.movePieceDown', label: registryCommand('folio.movePieceDown').label, icon: ArrowDown, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('down') } },
       { id: 'folio.addToRunningOrder', label: registryCommand('folio.addToRunningOrder').label, icon: Plus, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('add') } },
@@ -4066,6 +5084,12 @@ export default function App(): JSX.Element {
       { id: 'board.makeIdeaFromOffcut', label: 'Make idea from offcut', icon: Lightbulb, disabled: !boardActive, disabledReason: 'Open the Board and select an offcut first', run: () => dispatchBoardCommand('make-idea') },
       { id: 'board.toggleOffcuts', label: 'Show / Hide offcuts', icon: Columns3, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-offcuts') },
       { id: 'board.undoMaterialStep', label: 'Undo last offcut, scrap or source step', icon: Undo2, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('undo-step') },
+      { id: 'board.moveColumnLeft', label: 'Move column left', icon: ChevronLeft, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-left') },
+      { id: 'board.moveColumnRight', label: 'Move column right', icon: ChevronRight, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-right') },
+      ...COLLECTION_PAGE_COMMANDS.filter(([name]) => name !== 'bulk-folio' || (collectionDir !== null && canTurnBack)).map(([name, label]) => ({ id: `collection.page.${name}`, label, icon: FolderOpen, disabled: collectionDir === null, disabledReason: 'Open a collection first', run: () => dispatchCollectionPageCommand(name) })),
+      { id: 'collection.newDocument', label: 'New document', icon: FilePlus2, disabled: !root, disabledReason: 'Open a folder first', run: () => { void newPiece(collectionDir ?? (boardActive ? boardDir : activeCollectionDir)) } },
+      { id: 'collection.startFolio', label: 'Start a Folio outline', icon: BookOpen, disabled: collectionDir === null || canTurnBack, disabledReason: canTurnBack ? "Folios can't contain another Folio from here." : 'Open a collection first', run: () => { if (collectionDir !== null) startNestedFolio(collectionDir) } },
+      { id: 'folio.turnBack', label: 'Turn back into a collection', icon: FolderOpen, disabled: !canTurnBack, disabledReason: 'Open a Folio first', run: turnBackFolio },
       { id: 'board.toggleSources', label: 'Show / Hide sources', icon: PanelRightOpen, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-sources') },
       { id: 'piece.listSources', label: 'List this piece\'s sources', icon: Link, disabled: !boardActive && !active, disabledReason: 'Open a piece or the Board first', run: () => { if (boardActive) dispatchBoardCommand('list-sources'); else if (active) setPieceSourcesRequest({ path: active }) } },
       { id: 'board.attachSource', label: 'Attach source…', icon: Link, disabled: !boardActive, disabledReason: 'Open the Board and select a source first', run: () => dispatchBoardCommand('attach-source') },
@@ -4077,12 +5101,29 @@ export default function App(): JSX.Element {
         disabledReason: 'Focus a folder first',
         run: () => { if (folderFocus) helpWithReport(folderFocus.path) },
       },
-      { id: 'plan.addPart', label: 'Add a Plan part', icon: Plus, keys: 'N', disabled: collectionDir === null, disabledReason: 'Open a Collection first', run: () => dispatchPlanCommand('add') },
-      { id: 'plan.adoptPart', label: 'Add existing part to Plan', icon: Plus, keys: 'A', disabled: collectionDir === null, disabledReason: 'Open a Plan first', run: () => dispatchPlanCommand('adopt') },
-      { id: 'plan.moveUp', label: 'Move Plan part up', icon: ChevronLeft, keys: '⌥↑', disabled: collectionDir === null, disabledReason: 'Open a Plan first', run: () => dispatchPlanCommand('move-up') },
-      { id: 'plan.moveDown', label: 'Move Plan part down', icon: ChevronRight, keys: '⌥↓', disabled: collectionDir === null, disabledReason: 'Open a Plan first', run: () => dispatchPlanCommand('move-down') },
-      { id: 'plan.materialise', label: 'Open or write Plan part', icon: FilePlus2, keys: '↵', disabled: collectionDir === null, disabledReason: 'Open a Plan first', run: () => dispatchPlanCommand('open-part') },
-      { id: 'plan.removePart', label: 'Remove part from Plan', icon: X, keys: '⌘⌫', disabled: collectionDir === null, disabledReason: 'Open a Plan first', run: () => dispatchPlanCommand('remove') },
+      { id: 'plan.addPart', label: 'Add a Folio outline part', icon: Plus, keys: 'N', disabled: collectionDir === null, disabledReason: 'Open a Collection first', run: () => dispatchPlanCommand('add') },
+      { id: 'plan.adoptPart', label: 'Add existing part to Folio outline', icon: Plus, keys: 'A', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('adopt') },
+      { id: 'plan.adoptAsFrontMatter', label: 'Add existing part to Folio outline as front matter', icon: Plus, keys: 'F', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('adopt-front-matter') },
+      { id: 'plan.addAllFromFolder', label: registryCommand('plan.addAllFromFolder').label, icon: ListPlus, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('add-all') },
+      { id: 'plan.sortByChapter', label: registryCommand('plan.sortByChapter').label, icon: ListOrdered, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('sort') },
+      { id: 'plan.moveUp', label: 'Move Folio outline part up', icon: ChevronLeft, keys: '⌥↑', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('move-up') },
+      { id: 'plan.moveDown', label: 'Move Folio outline part down', icon: ChevronRight, keys: '⌥↓', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('move-down') },
+      { id: 'plan.materialise', label: 'Open or write Folio outline part', icon: FilePlus2, keys: '↵', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('open-part') },
+      { id: 'plan.removePart', label: 'Remove part from Folio outline', icon: X, keys: '⌘⌫', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('remove') },
+      { id: 'plan.role', label: registryCommand('plan.role').label, icon: ListOrdered, keys: 'R', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('role') },
+      { id: 'plan.writeAgentInstructions', label: registryCommand('plan.writeAgentInstructions').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('agents-both') },
+      { id: 'plan.writeAgentsFile', label: registryCommand('plan.writeAgentsFile').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('agents-agents') },
+      { id: 'plan.writeClaudeFile', label: registryCommand('plan.writeClaudeFile').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('agents-claude') },
+      { id: 'plan.chooseFrontMatter', label: registryCommand('plan.chooseFrontMatter').label, icon: BookOpen, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('front-matter-choose') },
+      { id: 'plan.toggleNotInOutline', label: registryCommand('plan.toggleNotInOutline').label, icon: ListOrdered, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('not-in-outline-toggle') },
+      { id: 'plan.details', label: registryCommand('plan.details').label, icon: Info, keys: 'D', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('details') },
+      // Title-conflict buttons: on the Plan, the selected part (or every part); elsewhere, the open document's bar.
+      { id: 'title.useHeadingAsTitle', label: registryCommand('title.useHeadingAsTitle').label, icon: Heading, keys: '⌃⌥⌘H', disabled: collectionDir === null && !shownTitleConflict, disabledReason: 'The title and the heading already match', run: () => { if (collectionDir !== null) dispatchPlanCommand('title-heading-to-title'); else fixOpenDocumentTitle('heading-to-title') } },
+      { id: 'title.useTitleAsHeading', label: registryCommand('title.useTitleAsHeading').label, icon: Heading, keys: '⌃⌥⌘T', disabled: collectionDir === null && !shownTitleConflict && !titleHeadingCanBeInserted, disabledReason: openDocumentIsPart ? 'The title and the heading already match, or this part does not start with a heading (the change that adds one is in the Changes)' : 'The title and the heading already match, or there is no title to add as the heading', run: () => { if (collectionDir !== null) dispatchPlanCommand('title-title-to-heading'); else fixOpenDocumentTitle('title-to-heading') } },
+      { id: 'title.useHeadingsAsTitlesAll', label: registryCommand('title.useHeadingsAsTitlesAll').label, icon: Heading, keys: '⌃⌥⇧⌘H', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('titles-heading-to-title') },
+      { id: 'title.useTitlesAsHeadingsAll', label: registryCommand('title.useTitlesAsHeadingsAll').label, icon: Heading, keys: '⌃⌥⇧⌘T', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('titles-title-to-heading') },
+      { id: 'title.dismissConflictBar', label: registryCommand('title.dismissConflictBar').label, icon: X, keys: '⌃⌥⌘X', disabled: !shownTitleConflict, disabledReason: 'There is no title-differs bar on this document', run: dismissOpenTitleConflict },
+      { id: 'title.undoLastChange', label: registryCommand('title.undoLastChange').label, icon: Undo2, keys: '⌃⌥⌘Z', disabled: !titleConflictActions.canUndo, disabledReason: 'There is no title change from the Folio outline or the Outline to undo (in the document, ⌘Z undoes it)', run: () => { void titleConflictActions.undo() } },
       {
         id: 'collection.toggleRail',
         label: 'Summon Rail',
@@ -4181,6 +5222,9 @@ export default function App(): JSX.Element {
         run: () => setReadingRoomVisibility(true),
       },
       { id: INSERT_WIDGET_COMMAND.id, label: INSERT_WIDGET_COMMAND.label, icon: AppWindow, keywords: INSERT_WIDGET_COMMAND.keywords, run: insertWidget },
+      { id: 'widget.newRecordBrowser', label: registryCommand('widget.newRecordBrowser').label, icon: AppWindow, keywords: registryCommand('widget.newRecordBrowser').keywords, disabled: !active, disabledReason: 'Open a document first', run: newRecordBrowser },
+      { id: 'widget.editRecordBrowser', label: registryCommand('widget.editRecordBrowser').label, icon: AppWindow, keywords: registryCommand('widget.editRecordBrowser').keywords, disabled: !active, disabledReason: 'Open a document first', run: () => editRecordBrowser() },
+      { id: 'widget.undoStep', label: registryCommand('widget.undoStep').label, icon: Undo2, keywords: registryCommand('widget.undoStep').keywords, disabled: lastWidgetStep === null, disabledReason: 'There is no widget step to undo', run: () => { void undoWidgetStep() } },
       {
         id: INSERT_REFERENCE_COMMAND.id,
         label: INSERT_REFERENCE_COMMAND.label,
@@ -4208,9 +5252,9 @@ export default function App(): JSX.Element {
         disabled: outboxWaiting === 0,
         run: syncHighlightsToZotero,
       },
-      // Round A focus family (ADR-0028): "Focus…" raises the transient picker; each mode is also
+      // Round A focus family (ADR-0028): "Focus and readability…" raises the transient picker; each mode is also
       // its own direct toggle so any mode can be chord-bound without the picker. All keyless.
-      { id: 'focus.open', label: 'Focus…', icon: Focus, run: () => openOverlay('focus') },
+      { id: 'focus.open', label: 'Focus and readability…', icon: Focus, run: () => openOverlay('focus') },
       { id: 'focus.fade', label: 'Fade other paragraphs', icon: Text, run: () => toggleFocusMode('fade') },
       { id: 'focus.sentence', label: 'Highlight sentence', icon: Highlighter, run: () => toggleFocusMode('sentence') },
       { id: 'focus.segment', label: 'Segment focus', icon: Scan, run: () => toggleFocusMode('segment') },
@@ -4284,6 +5328,9 @@ export default function App(): JSX.Element {
       { id: 'app.settings', label: 'Open Settings…', icon: Settings, keys: '⌘,', run: () => openSettings() },
       { id: 'app.about', label: 'About WriteFlex', icon: Info, run: () => openSettings('sec-about') },
       { id: 'guide.open', label: registryCommand('guide.open').label, icon: Compass, run: openTheGuide },
+      { id: 'sharing.setUp', label: registryCommand('sharing.setUp').label, icon: Link, run: openSharingSetup },
+      { id: 'sharing.share', label: registryCommand('sharing.share').label, icon: Link, keys: '⌥⌘S', run: openSharingPage },
+      { id: 'sharing.sharesList', label: registryCommand('sharing.sharesList').label, icon: Link, run: openSharesList },
       { id: 'example.restore', label: registryCommand('example.restore').label, icon: RotateCcw, run: restoreExampleOrSay },
       workspacePinned
         ? { id: 'workspace.unpin', label: 'Unpin this workspace', icon: PinOff, run: togglePinWorkspace }
@@ -4304,9 +5351,22 @@ export default function App(): JSX.Element {
       { id: 'agent.setThinking', label: 'Set the reasoning level for this chat', icon: AlignCenterVertical, run: () => openAgentConfiguration('thinking') },
       { id: 'agent.refreshModels', label: 'Refresh models', icon: RefreshCw, run: () => { void runRefreshModelsCommand(window.writeflex.refreshModels, flash) } },
       { id: 'agent.manageAccounts', label: 'Manage assistant accounts', icon: Settings, run: () => openSettings('sec-account') },
-      { id: 'app.review', label: 'Open Review', icon: GitCommitHorizontal, keys: '⇧⌘C', run: () => openRightTab('review') },
-      { id: 'review.nextChange', label: 'Next change', icon: ChevronRight, run: () => { openRightTab('review'); reviewCursorRef.current?.move(1) } },
-      { id: 'review.previousChange', label: 'Previous change', icon: ChevronLeft, run: () => { openRightTab('review'); reviewCursorRef.current?.move(-1) } },
+      { id: 'review.focusMargin', label: 'Focus the review margin', icon: Rows3, keys: '⇧⌘C', run: () => runMarginCommand('focus') },
+      { id: 'review.switchMarginView', label: 'Switch Margin / Inline', icon: Rows3, keys: '⇧⌥⌘V', run: () => switchMarginView() },
+      { id: 'review.toggleMargin', label: 'Show or hide the margin', icon: Rows3, keys: '⇧⌥⌘M', run: () => toggleMargin() },
+      { id: 'review.acceptAll', label: 'Accept all shown, or the selected', icon: Check, keys: '⇧⌘A', run: () => runMarginCommand('accept') },
+      { id: 'review.declineAll', label: 'Decline all shown, or the selected', icon: X, keys: '⇧⌘⌫', run: () => runMarginCommand('decline') },
+      { id: 'review.sendBack', label: 'Send the review back to the agent', icon: Send, keys: '⇧⌘R', run: () => runMarginCommand('send-back') },
+      { id: 'review.nextChange', label: 'Next change', icon: ChevronRight, run: () => { stepReview(1) } },
+      { id: 'review.nextPieceWaiting', label: 'Next piece with items waiting', icon: ChevronRight, keys: '⌃⌥⌘G', run: () => nextPieceWithItems() },
+      { id: 'review.previousChange', label: 'Previous change', icon: ChevronLeft, run: () => { stepReview(-1) } },
+      { id: 'review.showAll', label: 'Show all in the margin', icon: Rows3, keys: '⌃⌥⌘1', run: () => setReviewKind('all', false) },
+      { id: 'review.showComments', label: 'Show comments only', icon: MessageSquare, keys: '⌃⌥⌘2', run: () => setReviewKind('comments', false) },
+      { id: 'review.showEdits', label: 'Show edits only', icon: SquarePen, keys: '⌃⌥⌘3', run: () => setReviewKind('edits', false) },
+      // Ticket 08: the modes and the quiet-fix switch, reachable with nothing waiting (frame `none`).
+      { id: 'review.settledToday', label: 'Settled today', icon: History, run: () => switchReviewMode('settled') },
+      { id: 'review.myEdits', label: 'My edits', icon: Pencil, run: () => switchReviewMode('mine') },
+      { id: 'review.showQuietFixes', label: marginFilterState.showQuiet ? 'Hide quiet fixes' : 'Show quiet fixes', icon: Highlighter, run: toggleQuietFixes },
       { id: 'review.acceptAndNext', label: 'Accept and next', icon: Check, run: () => { const id = reviewCursorRef.current?.currentId; if (id) void acceptAndNextRef.current(id) } },
       { id: 'app.versions', label: 'Open Versions', icon: GitCommitHorizontal, keys: '⌘3', run: () => openRightTab('versions') },
     ]
@@ -4319,11 +5379,17 @@ export default function App(): JSX.Element {
       const registered = registryCommand(row.id)
       const keywords = registered.keywords
       const override = shortcutOverrides[row.id]
-      const presented = { ...row, group: registered.task, subgroup: registered.subgroup, ...(keywords ? { keywords } : {}) }
+      const presented = { ...row, group: registered.task, subgroup: registered.subgroup, ...(keywords ? { keywords } : {}), ...(registered.hint ? { hint: registered.hint } : {}), ...(registered.leadsFor ? { leadsFor: registered.leadsFor } : {}) }
       if (override === undefined) return presented
       return { ...presented, keys: override === '' ? undefined : override }
     })
   }, [
+    shownTitleConflict,
+    titleHeadingCanBeInserted,
+    openDocumentIsPart,
+    fixOpenDocumentTitle,
+    dismissOpenTitleConflict,
+    titleConflictActions,
     workspacePinned,
     togglePinWorkspace,
     shortcutOverrides,
@@ -4370,6 +5436,9 @@ export default function App(): JSX.Element {
     cycleRightTab,
     guideInRow,
     openTheGuide,
+    openSharingSetup,
+    openSharingPage,
+    openSharesList,
     restoreExampleOrSay,
     browseFolderFile,
     toggleHideStrikes,
@@ -4382,7 +5451,15 @@ export default function App(): JSX.Element {
     openOutlineTab,
     openBoard,
     openFolderDashboard,
+    newPiece,
+    boardDir,
+    activeCollectionDir,
+    startNestedFolio,
+    canTurnBack,
+    turnBackFolio,
     openPlan,
+    openFolio,
+    openFolioDir,
     folioPlace,
     runFolioCommand,
     folioRunningOrder,
@@ -4400,6 +5477,11 @@ export default function App(): JSX.Element {
     selectedFolderPiece,
     folderPieceContextDir,
     runFolderPieceCommand,
+    rootIsVault,
+    openMakeVault,
+    openSwitcher,
+    vaultPrefs,
+    chooseVaultPrefs,
     contextCounted,
     toggleCountedCollection,
     openSessionStarter,
@@ -4407,6 +5489,9 @@ export default function App(): JSX.Element {
     endExplicitSession,
     active,
     acceptWriterSession,
+    switchReviewMode,
+    toggleQuietFixes,
+    marginFilterState.showQuiet,
     revertSelectedToActive,
     sendSelectedOriginalToScratchpad,
     toggleFavourite,
@@ -4466,6 +5551,8 @@ export default function App(): JSX.Element {
     },
     [recordRecent, closePalette],
   )
+  useEffect(() => window.writeflex.onMenuAction(action => { const command = collectionPageMenuCommand(action); if (collectionDir !== null && command) dispatchCollectionPageCommand(command) }), [collectionDir])
+  const collectionChordsRef = useRef(new Set<string>())
   // Actions here (⌘K, ticket 03) runs a row through the palette's own dispatch: the AppCommand the palette
   // lists, run by runPaletteCommand. A command the list has not caught up with (its `when` changed since the
   // list was built) is run from the registry the way the list would have run it.
@@ -4523,8 +5610,12 @@ export default function App(): JSX.Element {
   // (registry `run`s) are deliberately absent: the resolver-built CM keymap owns them, so a chord
   // fires exactly once. The literal per-key listeners this table replaces are gone with it.
   const appChordIndexRef = useRef<Map<string, () => void>>(new Map())
+  // ⌫ chords the app table dispatches (eventToChord leaves ⌫ to the places that own it): ⇧⌘⌫ Decline all (ticket 04).
+  const backspaceChordIndexRef = useRef<Map<string, () => void>>(new Map())
   useEffect(() => {
     const index = new Map<string, () => void>()
+    const backspace = new Map<string, () => void>()
+    const collectionChords = new Set<string>()
     for (const row of paletteCommandList) {
       if (LEDGER_EXCLUDED.has(row.id)) continue
       if (row.disabled) continue
@@ -4534,30 +5625,35 @@ export default function App(): JSX.Element {
       if (!chord) continue
       // Chord-specific behaviour where the key historically did more than the palette row:
       // ⇧⌘F also lands the keyboard in the search field (the toggleSearch contract).
-      index.set(chord, row.id === 'app.search' ? toggleSearch : row.run)
+      index.set(canonicalChord(chord), row.id === 'app.search' ? toggleSearch : row.run)
+      if (row.id.startsWith('collection.page.') || ['collection.newDocument', 'collection.startFolio', 'folio.turnBack'].includes(row.id)) collectionChords.add(canonicalChord(chord))
+      if (BACKSPACE_APP_CHORDS.has(row.id)) backspace.set(canonicalChord(chord), row.run)
     }
+    collectionChordsRef.current = collectionChords
     appChordIndexRef.current = index
+    backspaceChordIndexRef.current = backspace
   }, [paletteCommandList, shortcutOverrides, toggleSearch])
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       if (shortcutCaptureActive.current) return
-      const chord = eventToChord(e)
+      const backspace = backspaceChord(e)
+      const chord = eventToChord(e) ?? (backspace && backspaceChordIndexRef.current.has(backspace) ? backspace : null)
       if (!chord) return
       const disclosureChord = resolveChord('statusbar.disclosure', shortcutOverrides)
       const paletteChord = chord === resolveChord('app.quickOpen', shortcutOverrides) || chord === resolveChord('app.commandPalette', shortcutOverrides)
-      if (overlayOpenRef.current && !paletteChord && !(overlayActive === 'statusDisclosure' && chord === disclosureChord)) return
+      if (overlayOpenRef.current && !paletteChord && !(overlayActive === 'statusDisclosure' && chord === disclosureChord) && !(collectionDir !== null && overlayActive === null && !document.querySelector('.cv-sheet') && collectionChordsRef.current.has(chord))) return
       // The archive dock owns its keys (⏎, ⌘⏎, ⇧↑/⇧↓ …) while focus is in it: only its own toggle and
       // the palettes still reach the app chord table, so ⌘⏎ inserts a link rather than materialising.
       if (archiveSearchOpenRef.current && (e.target as Element | null)?.closest?.('.archive-dock')
         && !paletteChord && chord !== resolveChord('archive.search', shortcutOverrides)) return
-      const run = appChordIndexRef.current.get(chord)
+      const run = chord === backspace ? backspaceChordIndexRef.current.get(chord) : appChordIndexRef.current.get(chord)
       if (!run) return
       e.preventDefault()
       run()
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [overlayActive, overlayOpenRef, shortcutOverrides])
+  }, [overlayActive, overlayOpenRef, shortcutOverrides, collectionDir])
 
   // The Reading Room's vendored reader owns the keyboard once a document has focus, so its seam
   // forwards the modified chords it does not want (ReadFlex ADR-0028). They run through the SAME
@@ -4585,17 +5681,25 @@ export default function App(): JSX.Element {
       .then(({ content }) => {
         if (cancelled) return
         setLastEditablePath(active)
-        savedContent.current.set(active, content)
         loadedPath.current = active
         setLoadedFile(active)
         const mode = modeForFile(active, content)
         setWriterMode(mode)
-        editorRef.current?.switchTo(active, content, mode)
-        // switchTo may restore a CACHED buffer, ignoring the fresh disk read — but the baseline
-        // just moved. Recompute the dot against the live buffer so a file changed on disk between
-        // activations shows honestly (a fresh buffer equals `content`, so this is then a no-op).
-        const buffer = editorRef.current?.currentDoc() ?? content
-        setDirty(active, isTextChange(content, buffer), buffer)
+        // switchTo may restore a CACHED buffer, ignoring the fresh disk read. The owner reconciles it with
+        // this read as the watcher would (reconcile.ts): byte for byte, never "clean" while a write of
+        // unknown outcome stands (Sol M2, M3), and replaced only when it is saved (document-owner.ts).
+        const action = owner.activated(active, content, () => {
+          editorRef.current?.switchTo(active, content, mode)
+          return editorRef.current?.currentDoc() ?? content
+        })
+        if (action === 'conflict') {
+          // A cached buffer with unsaved text, and the disk moved under it while the tab was away: the
+          // buffer is still based on the old version (main compares against it), and the writer is asked.
+          cancelAutosaveFor(active)
+          if (!sameDiskNotice(externalDiskNoticesRef.current.get(active), 'changed', content)) {
+            raiseExternalDiskNotice(active, { kind: 'changed', dirty: true, diskText: content })
+          }
+        }
         // First sight of this file this session fixes its word baseline (a re-activation is a no-op
         // in useSession, since the count is unchanged) — the +words tally measures from here on.
         session.observe(active, editorRef.current?.currentDoc() ?? content)
@@ -4613,7 +5717,26 @@ export default function App(): JSX.Element {
         }
       })
       .catch(() => {
-        if (!cancelled) flash(`Could not read ${active}`)
+        if (cancelled) return
+        // The file cannot be read (removed on disk), and the tab holds text of its own: the tab's cached
+        // buffer, or the text the registry keeps. It is shown without a disk read, under the removed
+        // notice (Sol S1, round 2): the tab must not name this file while the editor shows another.
+        const held = editorRef.current?.docFor(active) ?? unsaved.textOf(active) ?? null
+        if (held === null) {
+          flash(`Could not read ${active}`)
+          return
+        }
+        loadedPath.current = active
+        setLoadedFile(active)
+        const mode = modeForFile(active, held)
+        setWriterMode(mode)
+        editorRef.current?.switchTo(active, held, mode)
+        const buffer = editorRef.current?.currentDoc() ?? held
+        const dirty = owner.activatedRemoved(active, buffer)
+        cancelAutosaveFor(active)
+        if (!sameDiskNotice(externalDiskNoticesRef.current.get(active), 'removed', null)) {
+          raiseExternalDiskNotice(active, { kind: 'removed', dirty, diskText: null })
+        }
       })
     return () => {
       cancelled = true
@@ -4626,7 +5749,7 @@ export default function App(): JSX.Element {
       if (pendingLine.current?.path === active) pendingLine.current = null
       if (pendingMatch.current?.path === active) pendingMatch.current = null
     }
-  }, [active, flash, setDirty, session.observe, modeForFile])
+  }, [active, flash, owner, session.observe, modeForFile, cancelAutosaveFor, raiseExternalDiskNotice])
 
   useEffect(() => {
     const dismiss = (event: KeyboardEvent): void => {
@@ -4729,7 +5852,7 @@ export default function App(): JSX.Element {
   // never discards. Saving is automatic, so on close we simply flush every dirty buffer (background tabs
   // via docFor, inside savePath) and go. The ONLY thing that abandons the close is a failed write —
   // then the window stays open with its edits intact rather than losing them. Main intercepts the close
-  // and asks HERE, where the live dirty set is read from dirtyPathsRef at the instant of the close.
+  // and asks HERE, where the live dirty set is read from the owner at the instant of the close.
   // The close's flush: cancel the debounced auto-save and write every dirty buffer now. Returns the paths
   // it wrote and how many writes failed. Removing the Example collection (ticket 10) closes the example's
   // windows by this same route before its folder is moved, so this is also what reaches the Bin.
@@ -4738,7 +5861,7 @@ export default function App(): JSX.Element {
   // unsaved is read from the registry (every entry, and every path with a write in flight), never from
   // the dirty dots. With the editor gone (unmounted by an error) this app can write nothing and the
   // flush stops; the close is then finished by unsaved-text.ts.
-  const flushEveryDirtyBuffer = useCallback((): Promise<CloseFlushResult> => {
+  const flushEveryDirtyBuffer = useCallback((failedPaths?: string[]): Promise<CloseFlushResult> => {
     // Cancel any pending auto-save timer; every unsaved buffer is being written now.
     if (autosaveTimer.current) {
       clearTimeout(autosaveTimer.current)
@@ -4749,15 +5872,20 @@ export default function App(): JSX.Element {
     return flushUntilClean({
       unsaved: () => (editorIsPresent() ? unsaved.pending() : []),
       save: async (path) => {
-        await unsaved.settled(path)
-        return savePath(path)
+        await owner.settled(path)
+        const saved = await savePath(path)
+        if (!saved) failedPaths?.push(path)
+        return saved
       },
     })
-  }, [savePath])
+  }, [savePath, owner])
 
   // One close at a time. Main already ignores a close request while one is in flight; this is the
   // renderer's own guard for the same rule, so a repeat can never start a second flush.
   const closeInFlight = useRef(false)
+  // A close request that arrived while a called-off close was still flushing.
+  // Why the last close was kept open, for the vault switcher's line when its close is refused (ticket 06).
+  const closeKept = useRef<CloseKept | null>(null)
   // The close handler below, for the one other place this app asks for its window to close (⌘W with
   // no tab open) when that finds something unsaved.
   const closeRequestRef = useRef<(() => void) | null>(null)
@@ -4767,14 +5895,25 @@ export default function App(): JSX.Element {
     setEditorPresent(true)
     return () => setEditorPresent(false)
   }, [])
+  // The page's writes after an error (unsaved-text.ts) carry the baseline each buffer was based on. The
+  // source reads this app's baseline store, which outlives the app when an error unmounts it.
+  useEffect(() => {
+    setSaveBasisSource((path) => basisFromBaseline(owner.baselineDiskOf(path)))
+  }, [owner])
   useEffect(
     () => {
       const onCloseRequested = async (): Promise<void> => {
         // Ack immediately — before the (possibly slow) flush — so main knows the renderer is alive. A
         // blank/crashed renderer never reaches this line.
         void window.writeflex.acknowledgeClose()
-        if (closeInFlight.current) return
+        // A request while a close runs: main sends one only after it called the running close off
+        // (window:abandon-close), so it is run once the called-off flush has ended.
+        // Queued under the current close generation: a later call-off drops it (round 3, S1).
+        if (closeInFlight.current) { queueCloseRetry(); return }
         closeInFlight.current = true
+        void takeCloseRetry() // a request queued for an earlier close is not this one's
+        closeKept.current = null
+        let abandoned = false
         // A close that is still going after a second says so in the status bar, until it ends.
         const sayClosing = setTimeout(() => {
           if (flashTimer.current) clearTimeout(flashTimer.current)
@@ -4784,6 +5923,11 @@ export default function App(): JSX.Element {
         try {
           // The documents edited since their last checkpoint, read before the flush: first in main's queue.
           const changed = [...uncheckpointed.current]
+          // The paths this close could not write, each with the reason its write gave (refusalReasons).
+          const failedPaths: string[] = []
+          // The documents this close detached when it sent window:close, attached again if main calls
+          // the close off after that (round 3, S2).
+          let detached: string[] = []
           // Flush every unsaved buffer (tier 1), then the gate: the window goes only if the registry
           // holds nothing and no write is in flight at the moment of sending (unsaved-text.ts). The
           // close's checkpoints (ADR-0013 tier 2, gated in main by the "checkpoint on close" setting)
@@ -4791,20 +5935,45 @@ export default function App(): JSX.Element {
           // Every open document is named, even when unchanged: main uses the same event to create
           // ADR-0031's one Initial version, and content addressing keeps an unchanged checkpoint cheap.
           const { outcome, failed } = await closeWithEditor({
-            flush: flushEveryDirtyBuffer,
-            checkpoint: (flushed) => closeCheckpointOrder(flushed, changed, tabsRef.current.filter((path) => !isBoardTabId(path))),
+            // Every buffer, then the writer-review records still waiting for their debounce (vaults 06
+            // review round 2): the window must not go before the ledger has them.
+            flush: async () => {
+              const flushed = await flushEveryDirtyBuffer(failedPaths)
+              // A record the ledger refused does not keep the window open; it is logged (round 3, S3).
+              const { failed: unrecorded } = await flushWriterChangesNow()
+              if (unrecorded.length > 0) void reportRendererError(new Error(`Close: writer-review records could not be written for ${unrecorded.join(', ')}`))
+              return flushed
+            },
+            checkpoint: (flushed) => closeCheckpointOrder(flushed, changed, tabsRef.current.filter((path) => !isSurfaceTabId(path))),
+            // The window is going: every open document is detached in the turn the close is sent, so no
+            // keystroke lands in a buffer after the gate found everything saved.
+            closing: () => {
+              detached = tabsRef.current.filter((path) => !isSurfaceTabId(path))
+              owner.detach(detached)
+            },
+            // Main dropped the window:close (called off before it took it): the window stays, editable,
+            // and still owes the checkpoints this close would have made.
+            reopen: () => {
+              owner.attach(detached)
+              for (const path of changed) uncheckpointed.current.add(path)
+            },
           })
           // Unmounted by an error while the flush ran: the page's own close has taken over.
           if (outcome === 'handed-over') return
+          // Main called this close off while it ran (the vault switcher's bound): nothing to send.
+          if (outcome === 'abandoned') { abandoned = true; return }
           if (outcome === 'save-failed') {
-            if (!guardRefusalPath.current) {
-              flash(`Could not save ${failed} document${failed > 1 ? 's' : ''} — the window stays open`)
-            }
+            // One line naming every path refused, with its own reason; a reason recorded for another path
+            // (guardRefusalPath) never stands in for these.
+            const refused = failedPaths.map((path) => ({ path, reason: refusalReasons.current.get(path) }))
+            closeKept.current = { kind: 'refused', failed: refused }
+            flash(refused.length > 0 ? closeRefusalMessage(refused) : `Could not save ${failed} document${failed > 1 ? 's' : ''} — the window stays open`)
             void window.writeflex.cancelClose()
             return
           }
           // Typing that outran every pass of the flush keeps the window open and says so.
           if (outcome === 'still-unsaved') {
+            closeKept.current = { kind: 'still-typing' }
             flash(STILL_TYPING_STATUS)
             void window.writeflex.cancelClose()
             return
@@ -4814,14 +5983,40 @@ export default function App(): JSX.Element {
           clearTimeout(sayClosing)
           setStatus((current) => (current === CLOSING_STATUS ? '' : current))
           closeInFlight.current = false
+          // A request queued while this close ran, still wanted only if no call-off came after it.
+          if (takeCloseRetry() && abandoned) void onCloseRequested()
         }
       }
       closeRequestRef.current = () => { void onCloseRequested() }
       const off = window.writeflex.onCloseRequested(() => { void onCloseRequested() })
       return () => { closeRequestRef.current = null; off() }
     },
-    [flushEveryDirtyBuffer, flash],
+    [flushEveryDirtyBuffer, flushWriterChangesNow, flash, owner],
   )
+
+  // A status line main sends this window (an open that found the folder's window still being switched to).
+  useEffect(() => window.writeflex.onStatus((message) => flash(message)), [flash])
+
+  // The vault switcher's choice (vaults ticket 06; review 2026-10-16): main opens the chosen root in a
+  // new window at this window's place and closes this one by its ordinary close, which writes every
+  // document as any close does (the close handler above). This page does nothing first. When it is
+  // still here afterwards, the switch did not happen: another window shows the root (focused), the
+  // folder is busy, the dialog was cancelled, or the close was kept open (a write failed).
+  const switchToRoot = useCallback(async (target: RootSwitchTarget): Promise<void> => {
+    try {
+      const result = await window.writeflex.switchRoot(target)
+      if (result.status === 'focused') flash(`${result.root.split('/').at(-1) ?? result.root} is open in another window`)
+      else if (result.status === 'stayed') flash(result.reason === 'close-timed-out' ? SWITCH_CLOSE_TIMED_OUT_MESSAGE : switchStayedMessage(closeKept.current))
+      else if (result.status === 'switching') flash('Already switching folders')
+    } catch (error) {
+      flash(humanReadableError(error, 'WriteFlex could not open that folder.'))
+    }
+  }, [flash])
+  const chooseFromSwitcher = useCallback((choice: SwitcherChoice) => {
+    if (choice.kind === 'root') void switchToRoot({ root: choice.root })
+    else if (choice.kind === 'open-folder') void switchToRoot({ dialog: true })
+    else openMakeVault()
+  }, [switchToRoot, openMakeVault])
 
   // A file-open boot (or opening a file into this window) arrives as a workspace:focus-file push;
   // main queues it and flushes on the first workspace:get pull (T2 seam, ipc.ts). This subscription
@@ -4842,10 +6037,12 @@ export default function App(): JSX.Element {
       window.writeflex.onMenuAction((action) => {
         if (action === 'open-files') openFilesTab()
         else if (action === 'toggle-outline') toggleOutline()
-        else if (action === 'open-review') openRightTab('review')
+        else if (action === 'focus-review-margin') runMarginCommand('focus')
+        else if (action === 'switch-margin-view') switchMarginView()
+        else if (action === 'toggle-margin') toggleMargin()
         else if (action === 'open-versions') openRightTab('versions')
       }),
-    [openFilesTab, toggleOutline, openRightTab],
+    [openFilesTab, toggleOutline, openRightTab, runMarginCommand, switchMarginView, toggleMargin],
   )
 
   // The View menu's Toggle Typewriter item (⌘T, registerAccelerator:false) routes here on click.
@@ -4939,6 +6136,14 @@ export default function App(): JSX.Element {
         swapCompareView()
         return
       }
+      // ⌥⌘S outside Compare: the Sharing page of the open piece, and back to the text (ticket 03).
+      if (!compareActive && e.code === 'KeyS') {
+        e.preventDefault()
+        if (sharingPageOpen) closeSharingPage()
+        else if (sharesListOpen) closeSharesList()
+        else openSharingPage()
+        return
+      }
       if (!compareActive && (e.key === 'c' || e.key === 'C')) {
         e.preventDefault()
         if (versions.length === 0) {
@@ -4950,7 +6155,7 @@ export default function App(): JSX.Element {
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [closeCompareView, compareActive, flash, openCompareView, overlayOpenRef, swapCompareView, versions])
+  }, [closeCompareView, compareActive, flash, openCompareView, overlayOpenRef, swapCompareView, versions, sharingPageOpen, openSharingPage, closeSharingPage, sharesListOpen, closeSharesList])
 
   // ⌘3 (Open Versions — never closes on repeat; only ⌘] collapses the right pane) and ⌥⌘[/⌥⌘]
   // (browse the active file's folder — a replacement gesture, the tab strip never grows) are
@@ -4991,11 +6196,35 @@ export default function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [agent.undoTurn, overlayOpenRef])
 
+  // ⌘Z in a plain text field: Edit ▸ Undo no longer owns the key natively (menu.ts), so the field's own text undo
+  // is run here. The editor (CodeMirror's historyKeymap) and the Details card (which undoes by token and has
+  // already handled the key) are left alone.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'z') return
+      const target = e.target
+      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return
+      if (target.closest('.cm-editor')) return
+      e.preventDefault()
+      document.execCommand('undo')
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   // The Edit-menu Redo item routes here on click (its ⇧⌘Z key is renderer-owned above): agent-panel
   // focus undoes the turn, otherwise it redoes in the live editor view.
   useEffect(
     () =>
       window.writeflex.onMenuAction((action) => {
+        // Edit ▸ Undo is not a native role (menu.ts): the Details card undoes by its own token and handles its own
+        // click; anywhere else the click is the browser's own text undo, as the role was.
+        if (action === 'undo') {
+          if (document.activeElement?.closest('[data-folio-details]')) return
+          if (document.activeElement?.closest('.cm-editor')) runEditorCommand(undo)
+          else document.execCommand('undo')
+          return
+        }
         if (action !== 'redo') return
         if (document.querySelector('.agent')?.contains(document.activeElement)) agent.undoTurn()
         else runEditorCommand(redo)
@@ -5053,8 +6282,11 @@ export default function App(): JSX.Element {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       const commandModifierOnly = e.metaKey !== e.ctrlKey
-      if (overlayOpenRef.current || !commandModifierOnly) return
+      if (!commandModifierOnly) return
       const inFilesPane = e.target instanceof Element && e.target.closest('.sidebar') !== null
+      // Collection pages deliberately guard the editor beneath them. Their own Find stays available.
+      if (collectionDir !== null && overlayActive === null && !document.querySelector('.cv-sheet') && !e.shiftKey && !e.altKey && e.code === 'KeyF') { e.preventDefault(); e.stopImmediatePropagation(); dispatchCollectionPageCommand('search'); return }
+      if (overlayOpenRef.current) return
       if (inFilesPane && !e.shiftKey && !e.altKey && e.code === 'KeyF') return
       if (!e.shiftKey && !e.altKey && e.code === 'KeyF') {
         e.preventDefault(); setDocumentFindOpen(true); return
@@ -5070,7 +6302,7 @@ export default function App(): JSX.Element {
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [closeDocumentFind, documentFindOpen, moveDocumentFind, overlayOpenRef])
+  }, [closeDocumentFind, documentFindOpen, moveDocumentFind, overlayOpenRef, collectionDir, overlayActive])
 
   // ⌘, toggles the Settings sheet (Task 17, mockup keyboard map). Deliberately NOT behind the
   // overlay guard: like ⌘P/⇧⌘P it is an overlay-raising key, so pressing it replaces whatever
@@ -5175,34 +6407,59 @@ export default function App(): JSX.Element {
         close(path)
         return
       }
+      if (isWidgetWorkbenchTabId(path)) {
+        close(path)
+        setWorkbench((current) => (current && widgetWorkbenchTabId(current.documentPath) === path ? null : current))
+        return
+      }
       // Saving is automatic (ADR-0012): closing a document never prompts and never discards. Flush any
       // pending write first (savePath reads a background tab from EditorPane's cache); only a FAILED write
       // keeps the tab open, so the edits stay recoverable rather than lost. Read the SYNCHRONOUS dirty ref
       // (not the render-stale `dirtyPaths` state): a type-then-immediately-close-last-tab must not slip
       // past the flush before React commits, since the last-tab close force-closes the window (Codex P1).
-      if (dirtyPathsRef.current.has(path) && !(await savePath(path))) {
-        const fileName = path.split('/').at(-1) ?? path
+      // The document owner writes the buffer until it is saved (typing during that save or the checkpoint
+      // is written too, Sol M4), detaches it in the turn of the last check, and forgets it only if nothing
+      // moved since (document-owner.ts). Always send the existing close-checkpoint event. Main gates the
+      // tier-2 checkpoint by Settings and uses the same event for ADR-0031's one automatic Initial version.
+      // A checkpoint that fails (a removed file: ENOENT) is a refusal, never a throw (Sol r3 S1).
+      const fileName = path.split('/').at(-1) ?? path
+      if (guardRefusalPath.current === path) guardRefusalPath.current = null
+      // The app's own traces of the tab, once the owner has forgotten its buffer.
+      const closeForgotten = (): void => {
+        uncheckpointed.current.delete(path)
+        if (loadedPath.current === null || loadedPath.current === path) setLoadedFile((current) => (current === path ? null : current))
+        clearFileWriterState(path)
+        clearExternalDiskNotice(path) // a notice must not outlive its tab and stop the saves of a later one
+        refusalReasons.current.delete(path)
+        setSaveFailed(path, false)
+        setSaveSlow(path, false)
+        close(path)
+      }
+      cancelAutosaveFor(path)
+      const flushed = await owner.withFlushed([path], () => {
+        if (!owner.forgetIfSaved(path)) return false
+        closeForgotten()
+        return true
+      }, { detach: true, afterSave: (p) => window.writeflex.checkpoint(p, { auto: true }) })
+      if (flushed.status === 'refused') {
+        // A file removed on disk (Muse S1, round 2; Sol r3 S1, also when the tab is clean and its checkpoint
+        // failed): the save is refused until the writer chooses Keep mine, which writes the file again.
+        // Closing the tab is the other answer: the text in it is discarded, and only when the writer
+        // confirms that, here, in so many words.
+        if (externalDiskNoticesRef.current.get(path)?.kind === 'removed' && window.confirm(removedTabDiscardQuestion(fileName))) {
+          owner.discardConfirmed(path)
+          closeForgotten()
+          flash(`Closed ${fileName}; the text that was only in the tab was discarded`)
+          return
+        }
         if (guardRefusalPath.current !== path) flash(`Could not save ${fileName} — the tab stays open`)
         return
       }
-      // Always send the existing close-checkpoint event. Main gates the tier-2 checkpoint by Settings
-      // and uses the same event for ADR-0031's one automatic Initial version.
-      await window.writeflex.checkpoint(path, { auto: true })
-      uncheckpointed.current.delete(path)
-      editorRef.current?.forget(path)
-      savedContent.current.delete(path)
-      if (loadedPath.current === path) {
-        loadedPath.current = null
-        setLoadedFile(null)
+      if (flushed.status === 'still-unsaved' || !flushed.result) {
+        flash(`${fileName} was still being edited while it was saved — the tab stays open`)
       }
-      clearFileWriterState(path)
-      clearExternalDiskNotice(path) // a notice must not outlive its tab and stop the saves of a later one
-      setDirty(path, false, null)
-      setSaveFailed(path, false)
-      setSaveSlow(path, false)
-      close(path)
     },
-    [close, setDirty, setSaveFailed, setSaveSlow, savePath, flash, clearFileWriterState, clearExternalDiskNotice],
+    [close, owner, cancelAutosaveFor, setSaveFailed, setSaveSlow, flash, clearFileWriterState, clearExternalDiskNotice],
   )
 
   // ⌘W is natively owned by the File menu (menu.ts registers CmdOrCtrl+W → 'close-tab', unlike the
@@ -5215,9 +6472,10 @@ export default function App(): JSX.Element {
         if (intent.kind === 'tab') void closeTab(intent.path)
         // No tab is open: the window closes. Through the same gate as every close; if something is
         // still unsaved or being written, the close handler's flush runs first.
-        else if (!closeWindowIfClean()) closeRequestRef.current?.()
+        // Writer-review records still waiting: the close handler drains them first.
+        else if (!writerChangesIdle() || !closeWindowIfClean()) closeRequestRef.current?.()
       }),
-    [activeTab, tabs, pinnedTabs, recentTabs, closeTab],
+    [activeTab, tabs, pinnedTabs, recentTabs, closeTab, writerChangesIdle],
   )
 
   // ---- Sidebar file management (ADR-0017, the Quiet Menu) ---------------------------------------
@@ -5245,40 +6503,123 @@ export default function App(): JSX.Element {
   useEffect(
     () =>
       window.writeflex.onMenuAction((action) => {
-        if (action === 'new-file') requestCreate('file')
+        if (action === 'new-file') { if (collectionDir !== null) void newPiece(collectionDir); else requestCreate('file') }
         else if (action === 'new-folder') requestCreate('folder')
       }),
-    [requestCreate],
+    [requestCreate, collectionDir, newPiece],
   )
 
   /** True when the IPC error is a name-collision REFUSAL (rename/create must shake-and-stay). */
   const isCollision = (error: unknown): boolean => error instanceof Error && error.message.includes('already exists')
   /** Drop every renderer trace of a path so a late auto-save can never resurrect it (the write path
    *  reads the buffer at run time; after forget() there is no buffer, so the save is a no-op). */
-  const forgetPath = useCallback(
-    (path: string) => {
-      editorRef.current?.forget(path)
-      savedContent.current.delete(path)
-      uncheckpointed.current.delete(path)
-      setDirty(path, false, null)
-      if (loadedPath.current === path) loadedPath.current = null
+  const forgetAppTraces = useCallback((path: string) => {
+    uncheckpointed.current.delete(path)
+    clearExternalDiskNotice(path) // a notice leaves with its path (a rename has moved it on first)
+    refusalReasons.current.delete(path)
+    if (loadedPath.current === path) loadedPath.current = null
+  }, [clearExternalDiskNotice])
+  // Review S8: a tab pruned because its file left the tree (a trash, a removal by another program, the old
+  // name of a rename) takes the document's state in the owner with it, once nothing in it is unsaved. A tab
+  // holding unsaved text is not pruned (useTabs keeps it) and keeps its state.
+  const tabsBeforeRef = useRef<string[]>([])
+  useEffect(() => {
+    const before = tabsBeforeRef.current
+    tabsBeforeRef.current = tabs
+    const stillOpen = new Set(tabs)
+    const listed = new Set(files.map((file) => file.path))
+    for (const path of before) {
+      if (stillOpen.has(path) || listed.has(path) || isSurfaceTabId(path)) continue
+      if (owner.generationsOf(path) === undefined && owner.baselineOf(path) === undefined) continue
+      if (!owner.isSaved(path)) continue
+      owner.drop(path)
+      forgetAppTraces(path)
+    }
+  }, [tabs, files, owner, forgetAppTraces])
+  // e2e only: rename, move and duplicate wait here for `releaseSlowSave` before main is asked, while the
+  // owner holds the paths' queues (file-management.spec.ts).
+  const e2eHoldMove = useCallback(async (): Promise<void> => {
+    if (!window.writeflex.e2eWriteHooks || e2eSaveBehaviourRef.current !== 'hold-move') return
+    await new Promise<void>((resolve) => { e2eSlowSaveReleaseRef.current = resolve })
+  }, [])
+  /**
+   * Rename, move, duplicate and a folder's rename run in the document owner (document-owner-plan.md, parcel
+   * 2b). Every path is written until saved, then `act` asks main to move or copy the file while the owner
+   * holds the paths' queues: no save of the old path (an autosave armed before the move) runs between the
+   * flush and main's move, so none recreates the file there (Muse r3 S3; TalkWeaver's 2026-07-05 incident
+   * class). Null when the flush failed (flashed): the caller does nothing, the file is untouched (Codex
+   * second-look finding #1, 2026-07-11). A throw from `act` (a name collision) comes back as a throw.
+   */
+  const withPathsSaved = useCallback(
+    async <T,>(
+      paths: readonly string[] | (() => readonly string[]),
+      act: (snapshots: Map<string, Snapshot>) => Promise<T>,
+      scope?: string,
+    ): Promise<{ result: T } | null> => {
+      for (const p of typeof paths === 'function' ? paths() : paths) cancelAutosaveFor(p)
+      // A document under a changed-on-disk notice with nothing typed over its version is held, not
+      // written (it cannot be until the writer answers): the rename moves the notice with it (spec: the
+      // notice follows the rename). One with typing over its version refuses the route, as any save does.
+      // The owner asks this of each path at its final check, and waits for whatever the path's queue holds
+      // (a Keep mine in flight) before the hold, held or written (2b review P1).
+      const flushed = await owner.withFlushed(paths, act, { holdOnly: cleanUnderNotice, ...(scope !== undefined ? { scope } : {}) })
+      if (flushed.status === 'acted') return { result: flushed.result }
+      const name = flushed.path.split('/').at(-1) ?? flushed.path
+      if (guardRefusalPath.current !== flushed.path) {
+        flash(flushed.status === 'still-unsaved' ? `${name} was still being edited while it was saved — nothing was moved` : `Could not save ${name} — nothing was moved`)
+      }
+      return null
     },
-    [setDirty],
+    [owner, cancelAutosaveFor, cleanUnderNotice, flash],
   )
-  /** Flush-before-move (TalkWeaver's 2026-07-05 incident class): a pending write must land on the OLD
-   *  path before the file moves, or a late write recreates it and the two copies drift. Returns false
-   *  when the flush FAILED — the caller must abort, or the move would discard the only current copy
-   *  of the buffered edits (Codex second-look finding #1, 2026-07-11). */
-  const flushIfDirty = useCallback(
-    async (path: string): Promise<boolean> => {
-      if (!dirtyPathsRef.current.has(path)) return true
-      cancelAutosaveFor(path)
-      if (await savePath(path)) return true
-      flash(`Could not save ${path.split('/').at(-1) ?? path} — nothing was moved`)
-      return false
+  /**
+   * A single file's rename or move, with main's link repair (2b round 3 review, finding 1). Its members are
+   * the file, every document the repair may rewrite (main's plan) and every document the app has a record of
+   * (`renameMembers`), held from the owner's final check until main has renamed the file AND repaired the
+   * links: an accept in flight on a linking document finishes before main reads it for the repair, and no
+   * operation on a held document starts until the repair returns. Inside the hold the plan is asked for
+   * again; a document it names that is not held (it gained a link meanwhile) sends the whole route round
+   * again, bounded, so main's own plan never names a document the hold does not cover.
+   * Invariant: a link-repair write never lands on text older than an accept the owner had queued for that
+   * document.
+   */
+  const withRenameScopeSaved = useCallback(
+    async <T,>(path: string, plan: () => Promise<FileRenamePlan>, act: (planned: FileRenamePlan) => Promise<T>): Promise<{ result: T } | null> => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const planned = await plan()
+        const flushed = await withPathsSaved(
+          () => renameMembers([path], planned.repairPaths, documentsUnder('')),
+          async (snapshots): Promise<{ stale: true } | { stale: false; value: T }> => {
+            const again = await plan()
+            if (again.repairPaths.some((p) => !snapshots.has(p))) return { stale: true }
+            return { stale: false, value: await act(again) }
+          },
+        )
+        if (!flushed) return null
+        if (!flushed.result.stale) return { result: flushed.result.value }
+      }
+      flash('The links to this file kept changing while it was renamed — nothing was moved. Try again.')
+      return null
     },
-    [cancelAutosaveFor, savePath, flash],
+    [withPathsSaved, documentsUnder, flash],
   )
+  /** Inside `withPathsSaved`'s action, once main moved `from` to `to`: the notice moves on, and the owner
+   *  takes the buffer to `to` in this turn (document-owner.ts, `moved`): saved there when nothing changed
+   *  it since the flush; changed meanwhile (by generation, Sol r3 M2), it stays unsaved there and is
+   *  written by the next autosave (based on the version it was saved as). */
+  const afterMainMoved = useCallback((from: string, to: string) => {
+    moveExternalDiskNotice(from, to)
+    const uncheckpointedBefore = uncheckpointed.current.has(from)
+    const kept = owner.moved(from, to)
+    forgetAppTraces(from)
+    if (kept === 'carried') {
+      uncheckpointed.current.add(to)
+      queueAutosave(to)
+    } else if (kept === 'renamed' && uncheckpointedBefore) {
+      uncheckpointed.current.add(to) // saved, not yet checkpointed: the next ⌘S/close checkpoints it there
+    }
+  }, [owner, forgetAppTraces, moveExternalDiskNotice, queueAutosave])
+  moveHoldRef.current = { withPathsSaved: (paths, act) => withPathsSaved(paths, () => act()), afterMainMoved }
 
   const sidebarFileOps: SidebarFileOps = useMemo(
     () => ({
@@ -5308,14 +6649,21 @@ export default function App(): JSX.Element {
         }
       },
       renameFile: async (path, newName) => {
+        // The existing name confirmed: nothing to do (2b round 2, finding 1). The owner's `moved` is a no-op
+        // for a destination that is its source too, for a name main normalises back to it.
+        if (newName === path.split('/').at(-1)) return true
         const wasOpen = tabs.includes(path)
         try {
-          for (const dirtyPath of [...dirtyPathsRef.current]) {
-            if (!(await flushIfDirty(dirtyPath))) return true // flashed; close the rename input, file untouched
-          }
-          const plan = await window.writeflex.planFileRename(path, newName)
-          const moved = await window.writeflex.renameFile(path, plan.newPath)
-          forgetPath(path)
+          const flushed = await withRenameScopeSaved(path, () => window.writeflex.planFileRename(path, newName), async (plan) => {
+            if (plan.newPath === path) return null
+            await e2eHoldMove()
+            const renamed = await window.writeflex.renameFile(path, plan.newPath)
+            afterMainMoved(path, renamed.file.path)
+            return renamed
+          })
+          if (!flushed) return true // flashed; close the rename input, file untouched
+          const moved = flushed.result
+          if (moved === null) return true // the planned destination is the source: nothing moved
           await refresh()
           if (wasOpen) open(moved.file.path)
           flash(formatRenameRepairMessage(`Renamed to ${moved.file.name}`, moved.repair))
@@ -5327,12 +6675,27 @@ export default function App(): JSX.Element {
         }
       },
       renameFolder: async (path, newName) => {
-        const openUnder = tabs.filter((t) => t.startsWith(`${path}/`))
-        for (const t of openUnder) if (!(await flushIfDirty(t))) return true
+        // The existing name confirmed: nothing to do (2b round 2, finding 1).
+        if (newName === path.split('/').at(-1)) return true
+        // The folder's documents are every path under it the app knows of, asked for again at the owner's
+        // final check, and the owner locks the folder's scope in that turn: no operation on a path under it
+        // (an accept of a document not open, a save) starts until main has renamed the folder, and one in
+        // flight is waited for first. A document opened under the folder meanwhile joins the hold: the
+        // action moves every document it then holds, so none is left under the old name (2b round 3 ruling).
+        const prefix = `${path}/`
         try {
-          const renamed = await window.writeflex.renameFolder(path, newName)
+          const flushed = await withPathsSaved(() => documentsUnder(prefix), async (snapshots) => {
+            await e2eHoldMove()
+            const renamed = await window.writeflex.renameFolder(path, newName)
+            const moved = [...snapshots.keys()]
+            // Of the documents moved, the ones open in a tab are opened again under the new name.
+            const wereOpen = moved.filter((t) => tabsRef.current.includes(t))
+            for (const t of moved) afterMainMoved(t, `${renamed.path}${t.slice(path.length)}`)
+            return { renamed, moved: wereOpen }
+          }, prefix)
+          if (!flushed) return true
+          const { renamed, moved: openUnder } = flushed.result
           const wasActive = active && active.startsWith(`${path}/`) ? active : null
-          for (const t of openUnder) forgetPath(t)
           await refresh()
           for (const t of openUnder) open(`${renamed.path}${t.slice(path.length)}`)
           if (wasActive) open(`${renamed.path}${wasActive.slice(path.length)}`)
@@ -5348,12 +6711,14 @@ export default function App(): JSX.Element {
         const wasOpen = tabs.includes(path)
         try {
           const name = path.split('/').at(-1) ?? path
-          for (const dirtyPath of [...dirtyPathsRef.current]) {
-            if (!(await flushIfDirty(dirtyPath))) return false
-          }
-          const plan = await window.writeflex.planFileRename(path, name, directory)
-          const moved = await window.writeflex.moveFile(path, plan.newPath)
-          forgetPath(path)
+          const flushed = await withRenameScopeSaved(path, () => window.writeflex.planFileRename(path, name, directory), async (plan) => {
+            await e2eHoldMove()
+            const movedTo = await window.writeflex.moveFile(path, plan.newPath)
+            afterMainMoved(path, movedTo.file.path)
+            return movedTo
+          })
+          if (!flushed) return false
+          const moved = flushed.result
           await refresh()
           if (wasOpen) open(moved.file.path)
           flash(formatRenameRepairMessage(`Moved to ${directory ?? 'workspace root'}`, moved.repair))
@@ -5364,9 +6729,16 @@ export default function App(): JSX.Element {
         }
       },
       duplicateFile: async (path) => {
-        if (!(await flushIfDirty(path))) return null // the copy must include the newest keystrokes
         try {
-          const copy = await window.writeflex.duplicateFile(path)
+          // The copy is the saved text: the buffer is written first, and main copies the file while the
+          // owner holds its queue, so a save of typing that arrives meanwhile lands after the copy, in the
+          // original only.
+          const flushed = await withPathsSaved([path], async () => {
+            await e2eHoldMove()
+            return window.writeflex.duplicateFile(path)
+          })
+          if (!flushed) return null
+          const copy = flushed.result
           await refresh()
           flash(`Duplicated as ${copy.file.name}`)
           return copy.file.path
@@ -5380,29 +6752,59 @@ export default function App(): JSX.Element {
       // nothing — the buffer is re-readable from the intact disk file. forget-before-trash still kills
       // the debounced auto-save, so the file can't be resurrected the instant after it's binned.
       trashFile: async (path) => {
-        if (!(await flushIfDirty(path))) return
-        try {
-          forgetPath(path)
-          await window.writeflex.trashFile(path)
-          await refresh() // tab reconcile prunes the stale tab
-          flash(`Moved ${path.split('/').at(-1) ?? path} to the Bin — recoverable from Finder`)
-        } catch (error) {
-          await refresh() // trash refused: the file is still on disk, fully flushed — re-list it
-          flash(humanReadableError(error, 'Could not move the file to the Bin.'))
+        // The owner writes the buffer until it is saved and detaches it in the turn of the last check: the
+        // editor takes no typing while main moves the file (Sol r3 M3). The buffer is forgotten once the
+        // file is in the Bin, if nothing moved; a trash that fails makes it editable again, unchanged.
+        cancelAutosaveFor(path)
+        const name = path.split('/').at(-1) ?? path
+        const outcome = await owner.withFlushed([path], async (): Promise<{ trashed: true } | { trashed: false; error: unknown }> => {
+          try {
+            await window.writeflex.trashFile(path)
+          } catch (error) {
+            return { trashed: false, error }
+          }
+          if (owner.forgetIfSaved(path)) forgetAppTraces(path)
+          return { trashed: true }
+        }, { detach: true })
+        if (outcome.status !== 'acted') {
+          if (guardRefusalPath.current !== outcome.path) {
+            flash(outcome.status === 'still-unsaved' ? `${name} was still being edited while it was saved — nothing was moved` : `Could not save ${name} — nothing was moved`)
+          }
+          return
         }
+        await refresh() // tab reconcile prunes the stale tab; a refused trash re-lists the file
+        if (outcome.result.trashed) flash(`Moved ${name} to the Bin — recoverable from Finder`)
+        else flash(humanReadableError(outcome.result.error, 'Could not move the file to the Bin.'))
       },
       trashFolder: async (path) => {
-        const under = tabs.filter((tab) => tab.startsWith(`${path}/`))
-        for (const t of under) if (!(await flushIfDirty(t))) return
-        try {
-          for (const t of under) forgetPath(t)
-          await window.writeflex.trashFolder(path)
-          await refresh()
-          flash(`Moved folder ${path.split('/').at(-1) ?? path} to the Bin — recoverable from Finder`)
-        } catch (error) {
-          await refresh()
-          flash(humanReadableError(error, 'Could not move the folder to the Bin.'))
+        // As trashFile, for every document under the folder the app knows of: written, detached while main
+        // moves the folder, forgotten once it is in the Bin; editable again, unchanged, when the trash fails.
+        // The members are asked for again at the owner's final check, the folder's scope is locked in that
+        // turn (no operation under it starts until main returns), and a document opened under the folder
+        // while main trashes it joins the hold, detached: its newest text is written before the hold or
+        // none is typed during it (2b round 3 ruling).
+        const prefix = `${path}/`
+        const under = (): string[] => documentsUnder(prefix)
+        for (const t of under()) cancelAutosaveFor(t)
+        const outcome = await owner.withFlushed(under, async (snapshots): Promise<{ trashed: true } | { trashed: false; error: unknown }> => {
+          try {
+            await window.writeflex.trashFolder(path)
+          } catch (error) {
+            return { trashed: false, error }
+          }
+          for (const t of snapshots.keys()) if (owner.forgetIfSaved(t)) forgetAppTraces(t)
+          return { trashed: true }
+        }, { detach: true, scope: prefix })
+        if (outcome.status !== 'acted') {
+          const name = outcome.path.split('/').at(-1) ?? outcome.path
+          if (guardRefusalPath.current !== outcome.path) {
+            flash(outcome.status === 'still-unsaved' ? `${name} was still being edited while it was saved — nothing was moved` : `Could not save ${name} — nothing was moved`)
+          }
+          return
         }
+        await refresh()
+        if (outcome.result.trashed) flash(`Moved folder ${path.split('/').at(-1) ?? path} to the Bin — recoverable from Finder`)
+        else flash(humanReadableError(outcome.result.error, 'Could not move the folder to the Bin.'))
       },
       revealFile: (path) => void window.writeflex.revealFile(path),
       exportFile: (path) => void openExportSheet(path),
@@ -5411,8 +6813,26 @@ export default function App(): JSX.Element {
         flash('Path copied')
       },
     }),
-    [tabs, active, root, refresh, open, flash, forgetPath, flushIfDirty, openExportSheet],
+    [tabs, active, root, refresh, open, flash, owner, cancelAutosaveFor, forgetAppTraces, withPathsSaved, withRenameScopeSaved, afterMainMoved, e2eHoldMove, openExportSheet, documentsUnder],
   )
+  // The memoised Files tree (R6) gets every callback under a fixed identity, so typing (an editor
+  // snapshot, a session tick) does not re-render it; each still calls App's current closure.
+  const stableSidebarFileOps = useStableCallbacks(sidebarFileOps)
+  const sidebarHandlers = useStableCallbacks({
+    onOpen: (path: string) => { open(path); noteOpenSource(path, 'files') },
+    onToggleFavourite: toggleFavourite,
+    onOpenCollection: openCollection,
+    onOpenSharesList: () => (sharesListOpen ? closeSharesList() : openSharesList()),
+    onCollapse: toggleLeftPane,
+    onStatus: flash,
+    onOpenSettings: (initialSection?: string) => openSettings(initialSection),
+    onFocusedRowChange: noteSidebarFocusedRow,
+    onRequestCreate: requestCreate,
+    onFocusFolder: setFolderFocus,
+    onHelpWithReport: helpWithReport,
+    onSwitcherOpenChange: setSwitcherOpen,
+    onSwitcherChoose: chooseFromSwitcher,
+  })
 
   // Tab cycling: the macOS-standard ⇧⌘] / ⇧⌘[ chords are dispatched by the T6 chord table; the
   // Ctrl-Tab / Ctrl-Shift-Tab alternate stays here (a structural key, not an assignable chord).
@@ -5499,53 +6919,61 @@ export default function App(): JSX.Element {
 
   /**
    * Reconcile one file the apply pipeline just rewrote on disk with whatever buffer state this
-   * window holds for it — the M1 dirty-buffer rules, ported: a clean buffer takes the disk version
-   * outright; a dirty buffer over changed disk asks before replacing (same-file replace confirm
-   * ONLY when dirty AND the disk moved), and a declined replace keeps the buffer but rebases the
-   * saved baseline so the dirty dot stays honest. Other files' unsaved buffers are never touched.
+   * window holds for it: a clean buffer takes the disk version outright; a dirty buffer over changed
+   * disk gets the changed-on-disk banner, like any other outside change (Reload or Keep mine), and keeps
+   * its saved baseline, so no save of the buffer replaces the agent's version until the writer chooses
+   * Keep mine against it. Other files' unsaved buffers are never touched.
    */
   const reconcileAppliedFile = useCallback(
-    (file: FileReadResult) => {
+    async (file: FileReadResult, options: { now?: boolean } = {}): Promise<void> => {
+      // The owner's read of the disk, with the file main returned as what is there (document-owner.ts,
+      // applyOutside): queued behind any route holding the path, or `now` from inside one.
       const path = file.file.path
-      const baseline = savedContent.current.get(path)
-      if (active === path && loadedPath.current === path) {
-        const buffer = editorRef.current?.currentDoc() ?? ''
-        const editorDirty = isTextChange(baseline ?? '', buffer)
-        const diskChanged = isTextChange(baseline ?? '', file.content)
-        if (!editorDirty) {
-          savedContent.current.set(path, file.content)
-          editorRef.current?.setContent(path, file.content, { silent: true })
-          setDirty(path, false, file.content)
-        } else if (!diskChanged) {
-          // Dirty buffer, disk unmoved: nothing to reconcile (kept for rule parity with M1).
-        } else if (window.confirm(`The agent updated ${path} on disk. Replace your unsaved changes with the new version?`)) {
-          savedContent.current.set(path, file.content)
-          editorRef.current?.setContent(path, file.content, { silent: true })
-          setDirty(path, false, file.content)
-        } else {
-          savedContent.current.set(path, file.content)
-          setDirty(path, isTextChange(file.content, buffer), buffer)
-          flash(`Kept your unsaved changes; the agent's version of ${path} is on disk`)
-        }
-        return
-      }
-      // Not the live buffer: rebase the baseline; a CLEAN cached buffer is dropped so the next
-      // activation re-reads the disk; a DIRTY cached buffer is kept untouched (its dot recomputes
-      // against the new baseline on activation) — no other unsaved content is ever lost.
-      const cached = editorRef.current?.docFor(path)
-      savedContent.current.set(path, file.content)
-      if (cached == null || (baseline != null && !isTextChange(baseline, cached))) {
-        editorRef.current?.setContent(path, file.content, { silent: true }) // drops any stale cache for an inactive path
-        setDirty(path, false, file.content)
-      } else {
-        const differs = isTextChange(file.content, cached)
-        setDirty(path, differs, cached)
-        // Unsaved text in a tab that is not on screen, and the disk now holds another version: the same
-        // question as an outside edit, asked in that tab. Until it is answered no save writes the buffer.
-        if (differs) raiseExternalDiskNotice(path, { kind: 'changed', dirty: true })
-      }
+      raiseForOutside(path, await owner.applyOutside(path, async () => file.content, options))
     },
-    [active, setDirty, flash, raiseExternalDiskNotice],
+    [owner, raiseForOutside],
+  )
+
+  // Accepting a change in an open document is a route of the document owner (resolution-routes.ts).
+  const acceptThroughOwner = useCallback(
+    <A extends AcceptAnswer,>(path: string, id: string, resolve: () => Promise<A>): Promise<AcceptRouteResult<A>> => {
+      cancelAutosaveFor(path)
+      // e2e only: `hold-accept` holds main's apply inside the owner's route until `releaseSlowSave`.
+      const resolveMaybeHeld = window.writeflex.e2eWriteHooks
+        ? async (): Promise<A> => {
+            if (e2eSaveBehaviourRef.current === 'hold-accept') {
+              await new Promise<void>((release) => { e2eSlowSaveReleaseRef.current = release })
+            }
+            return resolve()
+          }
+        : resolve
+      return acceptRoute({
+        owner,
+        bufferOf: bufferNow,
+        recordInEditor: (p, changeId, resolvedContent) => editorRef.current?.recordSuggestionResolution(p, changeId, 'accept', resolvedContent) === true,
+        // Typing that arrived while main applied the change is kept; main's version is asked about.
+        askAbout: (p, diskText) => {
+          cancelAutosaveFor(p)
+          if (!sameDiskNotice(externalDiskNoticesRef.current.get(p), 'changed', diskText)) {
+            raiseExternalDiskNotice(p, { kind: 'changed', dirty: true, diskText })
+          }
+        },
+        refusalReason: (p) => (guardRefusalPath.current === p ? refusalReasons.current.get(p) : undefined),
+        changedOnDisk: askAboutRefusedWrite,
+      }, path, id, resolveMaybeHeld)
+    },
+    [owner, bufferNow, cancelAutosaveFor, raiseExternalDiskNotice, askAboutRefusedWrite],
+  )
+  // A reject runs in the document's queue too, so that main receives it in order with the other resolutions.
+  const inDocumentQueue = useCallback(<T,>(path: string, run: () => Promise<T>): Promise<T> => owner.inQueue(path, run), [owner])
+  // A proposal resolved from the Agent notes pane takes the same routes (parcel 2b, residual c of 2a).
+  const resolveAgentProposal = useCallback(
+    (change: Change, action: 'accept' | 'reject') => resolveProposalThroughOwner({
+      accept: acceptThroughOwner,
+      inQueue: inDocumentQueue,
+      resolveChange: (id, act) => window.writeflex.resolveChange(id, act),
+    }, change, action),
+    [acceptThroughOwner, inDocumentQueue],
   )
 
   // Accept ⏎: apply through the real pipeline (suggestions:apply — snapshot, execute, audit), then
@@ -5565,15 +6993,19 @@ export default function App(): JSX.Element {
         const anchorFrom =
           view && proseInput ? suggestionAnchors(view.state).find((a) => a.id === suggestion.id)?.from : undefined
 
-        const result = await window.writeflex.resolveChange(resolvedChange.id, 'accept')
+        // The buffer takes what main wrote (`written`), not the file read back after: a readback that
+        // differs is another program's version, asked about by the banner (Muse M2, round 2).
+        const accepted = await acceptThroughOwner(resolvedChange.path, resolvedChange.id, () => window.writeflex.resolveChange(resolvedChange.id, 'accept'))
+        if (accepted.status !== 'acted') {
+          flash(accepted.message)
+          return false
+        }
+        const { result, recorded } = accepted
         handleAgentWorkspaceChange()
         if (!result.applied) {
           flash(result.message ?? 'Could not apply that suggestion.')
           return false
         }
-        const recorded = editorRef.current?.recordSuggestionResolution(resolvedChange.path, resolvedChange.id, 'accept', result.file?.content) === true
-        if (!recorded && result.file) reconcileAppliedFile(result.file)
-        if (recorded && result.file) documentWrittenByMain(result.file)
         if (recorded) await refreshInlineChangesAfterReconcile()
         else await reloadChanges()
         // Jump the writer's eye to the applied text and flash it — only when its file is the live
@@ -5602,18 +7034,18 @@ export default function App(): JSX.Element {
         return false
       }
     },
-    [changes, handleAgentWorkspaceChange, reconcileAppliedFile, refreshInlineChangesAfterReconcile, reloadChanges, agent.noteSuggestionApplied, flash, documentWrittenByMain],
+    [changes, handleAgentWorkspaceChange, acceptThroughOwner, refreshInlineChangesAfterReconcile, reloadChanges, agent.noteSuggestionApplied, flash],
   )
 
-  // Reject ⌫: discard from the staged store — the disk was never touched; the suggestions push
-  // clears the callout and demotes the panel row to Reviewed.
+  // Reject ⌫: discard from the staged store — the disk is never touched; the suggestions push clears the
+  // callout and demotes the panel row to Reviewed. Main's refusal (the change was already applied) is shown.
   const rejectSuggestion = useCallback(
     async (suggestion: Suggestion, change?: Change): Promise<boolean> => {
       try {
         const resolvedChange = change ?? changes.find((candidate) => findLiveSuggestionForChange([candidate], [suggestion], candidate.id))
-        if (!resolvedChange) return false
-        const result = await window.writeflex.resolveChange(resolvedChange.id, 'reject')
-        if (!result.applied) return false
+        if (!resolvedChange) { flash(CLOSE_REFUSED_MESSAGE); return false }
+        const result = await inDocumentQueue(resolvedChange.path, () => window.writeflex.resolveChange(resolvedChange.id, 'reject'))
+        if (!result.applied) { flash(result.message ?? CLOSE_REFUSED_MESSAGE); return false }
         const recorded = editorRef.current?.recordSuggestionResolution(resolvedChange.path, resolvedChange.id, 'reject') === true
         if (recorded) await refreshInlineChangesAfterReconcile()
         else await reloadChanges()
@@ -5624,7 +7056,7 @@ export default function App(): JSX.Element {
         return false
       }
     },
-    [changes, refreshInlineChangesAfterReconcile, reloadChanges, flash],
+    [changes, inDocumentQueue, refreshInlineChangesAfterReconcile, reloadChanges, flash],
   )
 
   // Revise R → ⏎: the note supersedes the staged edit — discard it, then send the note back
@@ -5685,13 +7117,202 @@ export default function App(): JSX.Element {
     flash,
     handleAgentWorkspaceChange,
     reconcileAppliedFile,
-    documentWrittenByMain,
+    acceptThroughOwner,
+    inDocumentQueue,
     focusComposer,
     setChangesOpen,
     selectChange,
     settleChange: settleReviewChange,
+    onAcceptRefused: noteAcceptRefused,
   })
-  acceptAndNextRef.current = acceptAndNext
+  // Margin card ▸ More ▸ "No heading in the text": the proposal is declined first, then the part's heading choice is
+  // written by the same guarded path the Plan uses. A failed decline writes nothing; a refused write (the file
+  // changed) reopens the proposal and says why (keep-title-in-metadata.ts).
+  // The part is the open document, so the write is a route of the document owner (save fix, parcel 2a, as the
+  // goal): the buffer is written until saved, the heading choice is written holding the document's queue and
+  // only over the version the buffer is based on, and the buffer takes main's text only from the receipt.
+  const writeHeadingNoneThroughOwner = useCallback(async (path: string): Promise<void> => {
+    const flushed = await owner.withFlushed([path], async (snapshots) => {
+      const snapshot = snapshots.get(path)!
+      // Not open in this window: nothing to hold, and main writes only over the part it reads (R5).
+      if (snapshot.text === null || snapshot.baselineDisk === undefined) {
+        await window.writeflex.plan.setHeadingModeOfPart(path, 'none')
+        return { outcome: null }
+      }
+      const answer = await window.writeflex.plan.setHeadingModeOfOpenPart(path, 'none', basisFromBaseline(snapshot.baselineDisk))
+      if ('refused' in answer) return { outcome: null, refused: answer }
+      if (answer.written === undefined) return { outcome: null }
+      return { outcome: owner.replaceFromMain(path, { written: answer.written, content: answer.content }, { since: snapshot.gen, mode: 'replace' }) }
+    })
+    if (flushed.status !== 'acted') {
+      throw new Error(flushed.status === 'still-unsaved'
+        ? 'The document was still being edited while it was saved, so its heading choice was not written'
+        : 'Could not save the document, so its heading choice was not written')
+    }
+    const { outcome } = flushed.result
+    const refused = 'refused' in flushed.result ? flushed.result.refused : undefined
+    if (refused) {
+      // Another version is on disk than the one the buffer was based on: nothing is written over it, and the
+      // file's changed-on-disk notice is raised (as the goal route); the caller reopens the proposal.
+      const buffer = bufferNow(path)
+      if (buffer !== null) noteDiskChangedUnderBuffer(path, refused.diskText, buffer)
+      throw new Error('The document changed on disk, so its heading choice was not written. Choose Reload or Keep mine above the text')
+    }
+    if (outcome?.kind === 'moved') {
+      // Typing arrived while main wrote: it is kept, and the file with the choice is asked about like any outside change.
+      cancelAutosaveFor(path)
+      if (!sameDiskNotice(externalDiskNoticesRef.current.get(path), 'changed', outcome.diskText)) {
+        raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText: outcome.diskText })
+      }
+    }
+  }, [owner, bufferNow, cancelAutosaveFor, noteDiskChangedUnderBuffer, raiseExternalDiskNotice])
+  const keepTitleInMetadataOnly = useCallback(async (change: Change): Promise<void> => {
+    await keepTitleInMetadataOnlySteps(change, {
+      decline: rejectChange,
+      writeHeadingNone: writeHeadingNoneThroughOwner,
+      reopen: reopenChange,
+      refusal: (error) => humanReadableError(error, 'Could not change that part’s heading choice, so the proposal is back.'),
+    })
+  }, [rejectChange, reopenChange, writeHeadingNoneThroughOwner])
+  // Accept and next from a card: the card goes, so focus follows the review to the next one (or the text when none is left).
+  const acceptAndNextFocused = useCallback(async (id: string): Promise<boolean> => {
+    const fromMargin = window.document.activeElement instanceof HTMLElement && window.document.activeElement.closest('.wf-margin') !== null
+    const done = await acceptAndNext(id)
+    if (fromMargin) {
+      const next = reviewCursorRef.current?.currentId ?? null
+      if (next !== null && next !== id) focusCardSoon(next)
+      else restoreEditorFocus()
+    }
+    return done
+  }, [acceptAndNext, focusCardSoon, restoreEditorFocus])
+  acceptAndNextRef.current = acceptAndNextFocused
+  // The count menu (ADR-0046): rows from the margin model, read when it opens; the actions are today's.
+  const reviewCountMenu = useCallback(() => {
+    if (!reviewModels) return []
+    return countMenu({
+      model: reviewModels.shown,
+      state: marginFilterState,
+      preferredView: readPreferredView(),
+      textRoom: readTextRoom(),
+      marginHidden,
+      picked: pickedCards,
+      viewCounts: viewCountsOf(reviewModels.review),
+      chords: {
+        next: formatShortcutKey(resolveChord('review.nextChange', shortcutOverrides) ?? ''),
+        previous: formatShortcutKey(resolveChord('review.previousChange', shortcutOverrides) ?? ''),
+        nextPiece: formatShortcutKey(resolveChord('review.nextPieceWaiting', shortcutOverrides) ?? ''),
+        acceptAll: formatShortcutKey(resolveChord('review.acceptAll', shortcutOverrides) ?? ''),
+        declineAll: formatShortcutKey(resolveChord('review.declineAll', shortcutOverrides) ?? ''),
+        sendBack: formatShortcutKey(resolveChord('review.sendBack', shortcutOverrides) ?? ''),
+        switchView: formatShortcutKey(resolveChord('review.switchMarginView', shortcutOverrides) ?? ''),
+        toggleMargin: formatShortcutKey(resolveChord('review.toggleMargin', shortcutOverrides) ?? ''),
+        saveVersion: formatShortcutKey(resolveChord('file.nameVersion', shortcutOverrides) ?? ''),
+      },
+    })
+  }, [reviewModels, marginFilterState, marginHidden, shortcutOverrides, pickedCards])
+  // Ticket 04: the bulk actions, over the same model the review line and the count menu are drawn from, so a label and the
+  // action under it agree and nothing a filter hides is touched. They need no margin on screen. Every write goes through
+  // the review actions (acceptMany / rejectMany, one change at a time in document order), exactly as before.
+  const bulkRef = useRef({ reviewModels, pickedCards, marginFilter, reviewMode })
+  bulkRef.current = { reviewModels, pickedCards, marginFilter, reviewMode }
+  const bulkAccept = useCallback((kind?: 'edit' | 'note') => {
+    const { reviewModels: models, pickedCards: picked, marginFilter: filter, reviewMode: mode } = bulkRef.current
+    if (!models) { acceptAllPending(); return }
+    // My edits (ticket 08): Accept all is the Accept session, exactly as before (status only, no text touched).
+    if (mode === 'mine' && picked.size === 0 && kind !== 'note') { void acceptWriterSession(); return }
+    const targets = kind ? bulkTargets(models.shown, picked, filter, kind) : runTargets(models.shown, picked, filter, 'accept')
+    if (targets.ids.length === 0) { flash(kind === 'note' ? 'No comments to mark done' : 'No edits to accept'); return }
+    void acceptMany(targets.ids)
+    setPickedCards(new Set())
+  }, [acceptAllPending, acceptMany, flash, acceptWriterSession])
+  const askDecline = useCallback(() => {
+    const { reviewModels: models, pickedCards: picked, marginFilter: filter } = bulkRef.current
+    if (!models) {
+      // No piece's margin (a collection page): the whole pending run, as before, but it still asks.
+      const pending = dockChanges.filter((change) => change.status === 'pending')
+      if (pending.length === 0) { flash('No pending changes to decline'); return }
+      const model = buildMarginModel({ changes: dockChanges, document: '', view: 'margin' })
+      const ids = pending.map((change) => change.id)
+      setReviewAskState({ kind: 'decline', ids, question: declineQuestion(model, ids), whole: true })
+      return
+    }
+    const targets = runTargets(models.shown, picked, filter, 'decline')
+    if (targets.declinable.length === 0) { flash('No edits to decline'); return }
+    setReviewAskState({ kind: 'decline', ids: targets.declinable, question: declineQuestion(models.shown, targets.declinable) })
+  }, [dockChanges, flash])
+  const openSendBack = useCallback((open = true) => {
+    const models = bulkRef.current.reviewModels
+    if (!open) { setReviewAskState(null); return }
+    setReviewAskState({ kind: 'send-back', scope: models ? sendBackScope(models.shown) : sendBackScope(buildMarginModel({ changes: dockChanges, document: '', view: 'margin' })) })
+  }, [dockChanges])
+  const reviewAsk = useMemo<ReviewAsk | null>(() => {
+    const ask = reviewAskState
+    if (!ask) return null
+    const cancel = (): void => { setReviewAskState(null); restoreEditorFocus() }
+    if (ask.kind === 'decline') {
+      return {
+        kind: 'decline', question: ask.question, onCancel: cancel,
+        onConfirm: () => {
+          setReviewAskState(null)
+          if (ask.whole) discardRun()
+          else {
+            // Only what still waits: one settled while the question was open is left alone.
+            const waiting = new Set(dockChanges.filter((change) => change.status === 'pending' || change.status === 'held').map((change) => change.id))
+            const ids = ask.ids.filter((id) => waiting.has(id))
+            if (ids.length > 0) void rejectMany(ids)
+          }
+          setPickedCards(new Set())
+          restoreEditorFocus()
+        },
+      }
+    }
+    return {
+      kind: 'send-back', scope: ask.scope, onCancel: cancel,
+      onSend: (note: string) => {
+        setReviewAskState(null)
+        // Today's meaning: one note to the agent composer. The agent's items stay, marked Sent back.
+        sendRunBack(note)
+        if (ask.scope.ids.length > 0) setSentBackIds((current) => new Set([...current, ...ask.scope.ids]))
+      },
+    }
+  }, [reviewAskState, dockChanges, discardRun, rejectMany, sendRunBack, restoreEditorFocus])
+  const runCountMenuAction = useCallback((action: CountMenuAction) => {
+    switch (action.type) {
+      case 'step': stepReview(action.direction); break
+      case 'next-piece': nextPieceWithItems(); break
+      case 'accept': bulkAccept(action.kind); break
+      case 'decline': marginCommandRef.current('decline'); break
+      case 'send-back': marginCommandRef.current('send-back'); break
+      case 'state':
+        setMarginFilterState(action.state)
+        if (reviewModeOf(action.state) !== 'review' && marginHiddenRef.current) toggleMargin()
+        break
+      case 'view': {
+        const margin = marginControlRef.current
+        if (margin) margin.setView(action.view)
+        else {
+          setPreferredView(action.view)
+          toggleMargin()
+        }
+        break
+      }
+      case 'toggle-margin': toggleMargin(); break
+      case 'save-version': requestNameVersion(); break
+    }
+  }, [stepReview, nextPieceWithItems, bulkAccept, toggleMargin, requestNameVersion])
+  // The one handler for the run-level review keys. The margin acts on its selection, else on what its filter shows; with no margin mounted
+  // (no document open, a collection page) the keys fall back to the whole pending run.
+  marginCommandRef.current = (what): void => {
+    const margin = marginControlRef.current
+    if (what === 'focus') {
+      if (margin) { margin.focusFirst(); return }
+      if (marginHiddenRef.current) { toggleMargin(); requestAnimationFrame(() => requestAnimationFrame(() => marginControlRef.current?.focusFirst())); return }
+      flash('Open a document to review its changes.')
+      return
+    }
+    if (what === 'send-back') { openSendBack(); return }
+    if (what === 'accept') bulkAccept(); else askDecline()
+  }
   const saveRunVersion = useCallback((name: string) => {
     void (async () => {
       const trimmed = name.trim()
@@ -5705,7 +7326,9 @@ export default function App(): JSX.Element {
       }
       cancelPendingFlush() // save-version flushes explicitly; a racing debounced flush must not double-record
       await flushWriterChanges(active)
-      if (!(await savePath(active))) {
+      // Written until the owner counts it saved (parcel 2a pulls this one route forward from 2b): the
+      // applied file is reconciled below by the owner's rule, which replaces only a saved buffer.
+      if ((await owner.withFlushed([active], () => undefined)).status !== 'acted') {
         flash('Could not save the latest text, so no version snapshot was made.')
         return
       }
@@ -5724,7 +7347,7 @@ export default function App(): JSX.Element {
       // Saving a version APPLIES still-pending accepted edits on disk (main-side), so the open buffer
       // is now stale — reconcile it with the applied file or the editor keeps showing pre-apply text.
       try {
-        reconcileAppliedFile(await window.writeflex.readFile(active))
+        await reconcileAppliedFile(await window.writeflex.readFile(active))
       } catch {
         /* the file just saved; a read failure here only delays the refresh to the next reload */
       }
@@ -5734,7 +7357,7 @@ export default function App(): JSX.Element {
       setChangesOpen(true)
       flash(`Version “${result.record.name}” saved — ${result.accepted} kept, ${result.pending} pending`)
     })()
-  }, [active, cancelPendingFlush, flushWriterChanges, clearFileWriterState, reconcileAppliedFile, savePath, reloadChanges, reloadVersions, closePalette, flash])
+  }, [active, owner, cancelPendingFlush, flushWriterChanges, clearFileWriterState, reconcileAppliedFile, reloadChanges, reloadVersions, closePalette, flash])
   useEffect(
     () =>
       window.writeflex.onMenuAction((action) => {
@@ -5860,6 +7483,7 @@ export default function App(): JSX.Element {
 
   return (
     <ActionsHereContext.Provider value={actionsHereApi}>
+    <TitleConflictContext.Provider value={titleConflictActions}>
     <div className={`app-shell window${distractionFree ? ' df' : ''}`} ref={shellRef} tabIndex={-1}>
       <Toolbar
         sidebarOpen={!leftPaneCollapsed}
@@ -5889,6 +7513,9 @@ export default function App(): JSX.Element {
         tabsShortcut={formatShortcutKey(resolveChord(OPEN_TABS_COMMAND.id, shortcutOverrides) ?? '')}
         tabsPopover={tabsPopover}
         onCloseTabsList={closeTabsList}
+        shareMark={shareMark}
+        shareOpen={sharingPageOpen}
+        onOpenSharing={() => (sharingPageOpen ? closeSharingPage() : openSharingPage())}
       >
         <TabBar
           orientation="horizontal"
@@ -5952,29 +7579,35 @@ export default function App(): JSX.Element {
                   <Sidebar
                     files={files}
                     checklistProgress={checklistProgress}
+                    waitingCounts={waitingCounts}
                     folders={folders}
                     pieceCount={sidebarCollectionSummary?.pieceCount}
                     folderPiecePaths={sidebarCollectionSummary?.folderPiecePaths}
                     favourites={favourites}
                     activePath={active}
-                    onOpen={(path) => { open(path); noteOpenSource(path, 'files') }}
-                    onToggleFavourite={toggleFavourite}
-                    onOpenCollection={openCollection}
+                    onOpen={sidebarHandlers.onOpen}
+                    onToggleFavourite={sidebarHandlers.onToggleFavourite}
+                    onOpenCollection={sidebarHandlers.onOpenCollection}
                     dashboardDir={collectionDir}
+                    onOpenSharesList={sidebarHandlers.onOpenSharesList}
+                    sharesListOn={sharesListOpen}
                     root={root}
-                    onCollapse={toggleLeftPane}
-                    onStatus={flash}
-                    onOpenSettings={(initialSection) => openSettings(initialSection)}
-                    onFocusedRowChange={noteSidebarFocusedRow}
-                    onRequestCreate={requestCreate}
+                    onCollapse={sidebarHandlers.onCollapse}
+                    onStatus={sidebarHandlers.onStatus}
+                    onOpenSettings={sidebarHandlers.onOpenSettings}
+                    onFocusedRowChange={sidebarHandlers.onFocusedRowChange}
+                    onRequestCreate={sidebarHandlers.onRequestCreate}
                     version={appVersion}
                     focusFilterTick={sidebarFilterFocusTick}
-                    fileOps={sidebarFileOps}
+                    fileOps={stableSidebarFileOps}
                     createRequest={createRequest}
                     focusTreeRequest={treeFocusRequest}
                     focusPath={folderFocus?.path ?? null}
-                    onFocusFolder={setFolderFocus}
-                    onHelpWithReport={helpWithReport}
+                    onFocusFolder={sidebarHandlers.onFocusFolder}
+                    onHelpWithReport={sidebarHandlers.onHelpWithReport}
+                    switcherOpen={switcherOpen}
+                    onSwitcherOpenChange={sidebarHandlers.onSwitcherOpenChange}
+                    onSwitcherChoose={sidebarHandlers.onSwitcherChoose}
                   />
                 </nav>
               </div>
@@ -6050,6 +7683,8 @@ export default function App(): JSX.Element {
               <WorkspaceEmpty files={files} onNewFile={handleNewTab} onSearchFiles={openSearchTab} onOpenFile={open} />
             </div>
           )}
+          {/* A widget step that moved documents, left unfinished by a crash or a quit: named, never acted on by itself. */}
+          <WidgetStepLeftoverNotice root={root} onStatus={flash} onChanged={() => { void refresh() }} />
           {historicalView && (
             <div className="historical-banner" role="status">
               <span>
@@ -6073,7 +7708,7 @@ export default function App(): JSX.Element {
             <div className={`external-change-banner${activeExternalDiskNotice.kind === 'removed' ? ' removed' : ''}`} role="status" aria-live="polite">
               <TriangleAlert className="icon" aria-hidden="true" />
               <span className="external-change-copy">
-                <strong>{activeExternalDiskNotice.kind === 'removed' ? 'Removed on disk' : 'Changed on disk'}</strong>
+                <strong>{activeExternalDiskNotice.kind === 'removed' ? 'Removed on disk' : activeExternalDiskNotice.again ? 'Changed on disk again' : 'Changed on disk'}</strong>
                 <span>
                   {activeExternalDiskNotice.kind === 'removed'
                     ? 'This tab is still safe in WriteFlex.'
@@ -6085,8 +7720,14 @@ export default function App(): JSX.Element {
                   <RefreshCw className="icon sm" aria-hidden="true" />
                   Reload
                 </button>
+                {offersMerge(activeExternalDiskNotice) && (
+                  <button className="cbtn" type="button" onClick={openDiskMerge}>
+                    <GitMerge className="icon sm" aria-hidden="true" />
+                    Merge
+                  </button>
+                )}
                 <button className="cbtn primary" type="button" onClick={() => void keepExternalBuffer()}>
-                  {activeExternalDiskNotice.dirty ? 'Keep mine' : 'Keep open'}
+                  {activeExternalDiskNotice.dirty || activeExternalDiskNotice.kind === 'removed' ? 'Keep mine' : 'Keep open'}
                 </button>
               </span>
             </div>
@@ -6095,6 +7736,18 @@ export default function App(): JSX.Element {
               intercept clicks on — the historical banner (read-only, can't apply anyway) OR the
               external-change banner (whose Reload / Keep mine must be clickable), so hide them while
               either is up. */}
+          {shownTitleConflict && !activeExternalDiskNotice && (
+            <TitleConflictBar
+              conflict={shownTitleConflict.conflict}
+              onFix={fixOpenDocumentTitle}
+              onDismiss={dismissOpenTitleConflict}
+              chords={{
+                headingToTitle: resolveChord('title.useHeadingAsTitle', shortcutOverrides) ?? '',
+                titleToHeading: resolveChord('title.useTitleAsHeading', shortcutOverrides) ?? '',
+                dismiss: resolveChord('title.dismissConflictBar', shortcutOverrides) ?? '',
+              }}
+            />
+          )}
           <SkillProvenanceBelt skill={activeSkillForPath(paletteSkills, root, active)} />
           <ReadAloudBar
             state={playerState}
@@ -6146,6 +7799,44 @@ export default function App(): JSX.Element {
             onChangeMarkClick={selectChange}
             onInlineAction={onInlineAction}
             onInlineSelect={selectChange}
+            margin={active !== null && collectionDir === null && !distractionFree && !historicalActive && !marginHidden ? {
+              changes: dockChanges,
+              bulk: { accept: bulkAccept, decline: askDecline, sendBack: openSendBack, sendBackOpen: reviewAskState?.kind === 'send-back', reopenChange },
+              picked: pickedCards,
+              onPicked: setPickedCards,
+              sentBackIds,
+              refusedAccepts: refusedReasons,
+              waitingAgain,
+              controlRef: marginControlRef,
+              chords: {
+                acceptAll: formatShortcutKey(resolveChord('review.acceptAll', shortcutOverrides) ?? ''),
+                declineAll: formatShortcutKey(resolveChord('review.declineAll', shortcutOverrides) ?? ''),
+                sendBack: formatShortcutKey(resolveChord('review.sendBack', shortcutOverrides) ?? ''),
+              },
+              selectedId: selectedChangeId,
+              actions: { acceptChange, acceptAndNext: acceptAndNextFocused, rejectChange, holdChange, reviseChange },
+              context: {
+                sendOriginalToScratchpad: sendChangeOriginalToScratchpad, showInText: showChangeInText, keepTitleInMetadataOnly,
+                // A reader's closed edit (0.24 ticket 07): copy their wording as text; Dismiss takes the card away.
+                copyText: (text: string) => { void navigator.clipboard?.writeText(text) },
+                dismiss: (id: string) => dismissedNotApplied.dismiss([id]),
+                // A reader's card (0.24 ticket 08): the reply is kept on the note and sent back through its link by main.
+                sendReaderReply: (id: string, text: string) => window.writeflex.replyToReader(id, text),
+              },
+              onSelect: selectChange,
+              onMove: (direction) => { reviewCursorRef.current?.move(direction) },
+              documentKey: active,
+              others: waitingElsewhere,
+              dismissedIds: dismissedNotApplied.ids,
+              unanchoredIds: unanchoredSet,
+              onAcceptSession: () => void acceptWriterSession(),
+              headFilter: marginFilterState,
+              onHeadFilter: setMarginFilterState,
+              outside: {
+                summary: outsideDock.summary,
+                arrived: outsideDock.arrived,
+              },
+            } : null}
             onWikilinkActivate={activateWikilink}
             wikilinkPieces={wikilinkCompletionPieces}
             compareToActive={compareToEditable}
@@ -6225,6 +7916,40 @@ export default function App(): JSX.Element {
             version={appVersion}
             place={place}
             onPlaceChip={onPlaceChip}
+            review={statusReview}
+            reviewMenu={reviewCountMenu}
+            onReviewMenuPick={runCountMenuAction}
+            onReviewClearWho={() => setMarginFilterState((state) => withoutWho(state))}
+            onReviewKind={(segment) => setReviewKind(segment, true)}
+            onReviewStep={stepReview}
+            onReviewNew={showArrivedInMargin}
+            reviewElsewhere={reviewModels ? {
+              pieces: reviewModels.unfiltered.otherPieces,
+              folderName: workspaceName ?? '',
+              onOpen: openPieceAt,
+              onNextPiece: nextPieceWithItems,
+              nextPieceChord: formatShortcutKey(resolveChord('review.nextPieceWaiting', shortcutOverrides) ?? ''),
+            } : null}
+            reviewCompact={reviewLineCompact(viewportWidth)}
+            reviewView={{
+              view: marginHidden ? null : effectiveMarginView(preferredMarginView, marginTextRoom),
+              narrow: !marginFits(marginTextRoom),
+              chord: formatShortcutKey(resolveChord('review.switchMarginView', shortcutOverrides) ?? ''),
+            }}
+            onReviewView={(view) => runCountMenuAction({ type: 'view', view })}
+            onReviewAcceptAll={() => bulkAccept()}
+            onReviewPicked={(what) => { if (what === 'accept') bulkAccept(); else if (what === 'decline') askDecline(); else setPickedCards(new Set()) }}
+            reviewAcceptKey={formatShortcutKey(resolveChord('review.acceptAll', shortcutOverrides) ?? '')}
+            reviewAsk={reviewAsk}
+            onReviewModeBack={leaveReviewMode}
+            onReviewModeAcceptAll={() => void acceptWriterSession()}
+            reviewNotPlaced={reviewModels ? {
+              entries: reviewModels.unfiltered.notPlaced,
+              onTryAgain: (id) => { void reopenChange(id) },
+              onCopy: (text) => { void navigator.clipboard?.writeText(text) },
+              onDismiss: dismissedNotApplied.dismiss,
+            } : null}
+            reviewKeys={selectedChangeId !== null && !reviewLineCompact(viewportWidth) ? { previous: formatShortcutKey(resolveChord('review.previousChange', shortcutOverrides) ?? ''), next: formatShortcutKey(resolveChord('review.nextChange', shortcutOverrides) ?? '') } : null}
           />
           {pieceSourcesRequest && (
             <PieceSourcesPopover
@@ -6242,6 +7967,62 @@ export default function App(): JSX.Element {
               onOpenNotes={openSkillNotes}
             />
           )}
+          {workbench && tabs.includes(widgetWorkbenchTabId(workbench.documentPath)) && (
+            <div className="swb-page-overlay" hidden={!workbenchActive || workbenchDocumentOf(activeTab ?? '') !== workbench.documentPath} data-testid="widget-workbench-page">
+              <StandardWidgetWorkbench
+                key={`${workbench.documentPath}|${workbench.recipePath ?? ''}`}
+                documentPath={workbench.documentPath}
+                recipePath={workbench.recipePath}
+                caretLine={workbench.caretLine ?? null}
+                flushDocument={() => flushWidgetDocument(workbench.documentPath)}
+                onStep={setLastWidgetStep}
+                runCreate={async (paths, call) => {
+                  const hold = moveHoldRef.current
+                  if (!hold) return call()
+                  // Held like a rename: the documents that may move (and every open one, whose links may be carried
+                  // along) are saved first, and their buffers follow the moves before the hold is let go.
+                  const wereOpen = paths.filter((path) => tabsRef.current.includes(path))
+                  const flushed = await hold.withPathsSaved(() => [...new Set([...paths, ...documentsUnder('')])], async () => {
+                    const result = await call()
+                    if (result.ok) for (const move of result.moved) hold.afterMainMoved(move.from, move.to)
+                    return result
+                  })
+                  if (!flushed) return null
+                  if (flushed.result.ok && flushed.result.moved.length > 0) {
+                    await refresh()
+                    for (const move of flushed.result.moved) if (wereOpen.includes(move.from) && move.from !== workbench.documentPath) open(move.to)
+                  }
+                  return flushed.result
+                }}
+                onCreated={(step) => {
+                  setLastWidgetStep(step)
+                  if (step.documentPath !== workbench.documentPath) {
+                    // The document moved into its own folder: the tab opened for it under its old name goes, and the
+                    // document opens where it is now.
+                    close(widgetWorkbenchTabId(workbench.documentPath))
+                    setWorkbench(null)
+                    open(step.documentPath)
+                  } else leaveWorkbench(step.documentPath)
+                  // The keyboard goes back to the document, where ⌘Z takes the widget back out while the editor's own
+                  // history is where it is now: closed here (no later typing joins an earlier edit), its depth kept.
+                  window.setTimeout(() => {
+                    if (editorRef.current?.path() !== step.documentPath) return
+                    const view = editorRef.current?.view()
+                    if (!view) return
+                    view.dispatch({ annotations: isolateHistory.of('full') })
+                    const historyDepth = undoDepth(view.state)
+                    setLastWidgetStep((current) => (current?.undoId === step.undoId ? { ...current, historyDepth } : current))
+                    view.focus()
+                  }, 0)
+                  flash('Record browser added. ⌘Z takes it back out.')
+                }}
+                onBack={() => leaveWorkbench(workbench.documentPath)}
+                onStatus={flash}
+                onUndo={() => { void undoWidgetStep() }}
+                canUndo={lastWidgetStep !== null}
+              />
+            </div>
+          )}
           {boardActive && (
             <div className="board-page-overlay">
               <Board
@@ -6258,6 +8039,7 @@ export default function App(): JSX.Element {
                 onQueryContext={updateQueryInsertionContext}
                 onInsertQuery={requestQueryInsertion}
                 onOpenPlan={openPlan}
+                onOpenCollection={() => openCollection(boardDir)}
               />
             </div>
           )}
@@ -6267,18 +8049,133 @@ export default function App(): JSX.Element {
             // the editor's buffers untouched underneath.
             <div className="cv-overlay">
               <CollectionView
+                key={`${root}:${collectionDir}`}
                 dir={collectionDir}
+                canAddToFolio={canTurnBack}
+                onRunCommand={id => { if (id === 'export.document') void openExportSheet(undefined, undefined, collectionDir); else actionsHereApi.runCommand(id) }}
+                onRename={async name => {
+                  if (!collectionDir) throw new Error('Rename the workspace folder in Finder.')
+                  if (name === collectionDir.split('/').at(-1)) return
+                  const prefix = `${collectionDir}/`
+                  const openBefore = tabsRef.current.filter(path => path.startsWith(prefix))
+                  const activeBefore = activeRef.current
+                  const moved = await withPathsSaved(() => documentsUnder(prefix), async snapshots => {
+                    const renamed = await window.writeflex.renameFolder(collectionDir, name)
+                    for (const path of snapshots.keys()) afterMainMoved(path, `${renamed.path}${path.slice(collectionDir.length)}`)
+                    return renamed.path
+                  }, prefix)
+                  if (!moved) throw new Error('Could not save the documents. The collection was not renamed.')
+                  await refresh()
+                  for (const path of openBefore) openTab(`${moved.result}${path.slice(collectionDir.length)}`)
+                  if (activeBefore) activateTab(activeBefore.startsWith(prefix) ? `${moved.result}${activeBefore.slice(collectionDir.length)}` : activeBefore)
+                  openCollection(moved.result)
+                }}
+                onBulkAction={async (action, paths, value) => {
+                  if (action === 'move') {
+                    const current = await window.writeflex.listCollection(collectionDir)
+                    if (current.rows.some(row => row.folderPath && paths.includes(row.path))) {
+                      throw new Error('Move folder pieces from Files so all their documents move together.')
+                    }
+                  }
+                  if (action === 'folio') {
+                    const target = await window.writeflex.readFolioPieces(collectionDir)
+                    if (!target) throw new Error('Add documents from the Folio’s own collection folder.')
+                    const current = await window.writeflex.listCollection(collectionDir)
+                    return addCollectionBatchToFolio(folioRunningOrder, collectionDir, target.pieces, paths, current.rows)
+                  }
+                  await window.writeflex.collection.beginBatch()
+                  const openBefore = new Set(tabsRef.current)
+                  const activeBefore = activeRef.current
+                  const movedTabs = new Map<string, string>()
+                  try {
+                    const result = await runCollectionBatch(paths, async path => {
+                      if (action === 'move') {
+                        const name = path.split('/').at(-1)!
+                        // An empty picker value names the workspace root, which rename planning calls null.
+                        const result = await withRenameScopeSaved(path, () => window.writeflex.planFileRename(path, name, value || null), async planned => {
+                          const moved = await window.writeflex.moveFile(path, planned.newPath, collectionDir)
+                          if (moved.file.path !== path) afterMainMoved(path, moved.file.path)
+                          return moved
+                        })
+                        if (!result) throw new Error('Could not save this document. Try again.')
+                        if (openBefore.has(path)) movedTabs.set(path, result.result.file.path)
+                      } else {
+                        const result = await owner.withFlushed([path], async snapshots => {
+                          const snapshot = snapshots.get(path)!
+                          const saved = action === 'status'
+                            ? await window.writeflex.collection.setStatus(collectionDir, path, value)
+                            : await window.writeflex.collection.addTags(collectionDir, path, value.split(',').map(tag => tag.trim()).filter(Boolean))
+                          owner.replaceFromMain(path, saved, { since: snapshot.gen, mode: 'replace' })
+                        })
+                        if (result.status !== 'acted') throw new Error('Could not save this document. Try again.')
+                      }
+                    })
+                    flash(result.message)
+                    return result
+                  } finally {
+                    await window.writeflex.collection.endBatch()
+                    if (action === 'move') {
+                      await refresh()
+                      for (const path of movedTabs.values()) openTab(path)
+                      if (activeBefore) activateTab(movedTabs.get(activeBefore) ?? activeBefore)
+                    }
+                  }
+                }}
                 onOpenPiece={open}
                 onNewPiece={newPiece}
                 onStatus={flash}
                 onOpenBoard={openBoard}
-                onOpenPlan={openPlan}
+                onOpenFolder={openCollection}
+                onStartFolio={startNestedFolio}
                 onFolderPieceSelected={setSelectedFolderPiece}
                 shortcutOverrides={shortcutOverrides}
                 openPlanRequested={openPlanRequested}
                 onHelpWithReport={helpWithReport}
+                onMakeVault={openMakeVault}
+                rootIsVault={rootIsVault !== false}
+                runningOrder={folioRunningOrder}
+                onOpenFolio={openFolioAt}
               />
             </div>
+          )}
+          {sharingPageOpen && sharablePiece && (
+            <SharingPage
+              // One page per Workspace and piece: a change of piece mounts a fresh page, so nothing
+              // still on its way for the old piece can be drawn under the new one's heading.
+              // A Folio's page is also the open part's (its own piece links, review round 1, finding 3).
+              key={`${typeof root === 'string' ? root : ''}\u0000${sharingFolioDir !== null ? `folio:${sharingFolioDir}\u0000` : ''}${sharablePiece}`}
+              piecePath={sharablePiece}
+              folio={sharingFolioDir !== null ? { dir: sharingFolioDir, name: sharingFolioName ?? '' } : null}
+              onShowInFiles={revealSharingPath}
+              onOpenPlan={openSharingPlan}
+              pieceName={(sharablePiece.split('/').at(-1) ?? sharablePiece).replace(/\.(md|markdown)$/i, '')}
+              collectionName={collectionName ?? null}
+              onBack={closeSharingPage}
+              onFlash={flash}
+              onOpenSettings={() => { setSharingPageOpen(false); openSettings('sec-sharing') }}
+              onOpenSharesList={openSharesList}
+            />
+          )}
+          {sharesListOpen && typeof root === 'string' && root !== '' && (
+            <SharesList
+              // One list per Workspace: another Workspace mounts a fresh list (and main binds its links).
+              key={root}
+              collectionName={workspaceName ?? collectionName ?? 'Collection'}
+              onPiecePage={sharablePiece ? () => { setSharesListOpen(false); setSharingPageOpen(true) } : undefined}
+              onOpenPiece={openSharedPiece}
+              onBack={closeSharesList}
+              onFlash={flash}
+              onOpenSettings={() => { setSharesListOpen(false); openSettings('sec-sharing') }}
+              onSetUp={() => { setSharesListOpen(false); openSharingSetup() }}
+            />
+          )}
+          {sharingSetupOpen && (
+            <SharingSetup
+              pieceName={active ? (active.split('/').at(-1) ?? active).replace(/\.(md|markdown)$/i, '') : null}
+              onBack={closeSharingSetup}
+              onFlash={flash}
+              onOpenSettings={() => { setSharingSetupOpen(false); openSettings('sec-sharing') }}
+            />
           )}
           {railOpen && (
             <Rail
@@ -6326,7 +8223,7 @@ export default function App(): JSX.Element {
         )}
         {!rightPaneCollapsed && (
           <aside className={`chrome-pane right-pane${distractionFree ? ' df-pane' : ''}`} aria-label="Right pane" style={distractionFree ? undefined : { width: rightPaneWidth }}>
-            {distractionFree && <div className="df-ph">{rightTab === 'agent' ? <Sparkles className="icon sm" /> : rightTab === 'scratchpad' ? <StickyNote className="icon sm" /> : rightTab === 'agent-notes' ? <Bot className="icon sm" /> : <GitCommitHorizontal className="icon sm" />}<span>{rightTab === 'review' ? 'Review' : rightTab === 'agent-notes' ? 'Agent notes' : rightTab === 'versions' ? 'Versions' : `${rightTab[0].toUpperCase()}${rightTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title="Close panel (⌘])" onClick={toggleRightPane}><X className="icon sm" /></button></div>}
+            {distractionFree && <div className="df-ph">{rightTab === 'agent' ? <Sparkles className="icon sm" /> : rightTab === 'scratchpad' ? <StickyNote className="icon sm" /> : rightTab === 'agent-notes' ? <Bot className="icon sm" /> : <GitCommitHorizontal className="icon sm" />}<span>{rightTab === 'agent-notes' ? 'Agent notes' : rightTab === 'versions' ? 'Versions' : `${rightTab[0].toUpperCase()}${rightTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title="Close panel (⌘])" onClick={toggleRightPane}><X className="icon sm" /></button></div>}
             {!distractionFree && (
               <RightPaneTabs
                 active={rightTab}
@@ -6415,84 +8312,28 @@ export default function App(): JSX.Element {
                   onRevealSource={revealSource}
                 />
               </div>
-              <div className={rightTab === 'review' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Review">
-                <ChangeDock
-                  surface="review"
-                  changes={dockChanges}
-                  selectedId={selectedChangeId}
-                  onSelect={selectChange}
-                  onAccept={acceptChange}
-                  onAcceptNext={acceptAndNext}
-                  onReject={rejectChange}
-                  onHold={holdChange}
-                  onRevertToActive={revertToActive}
-                  onSendOriginalToScratchpad={sendChangeOriginalToScratchpad}
-                  onAcceptAll={acceptAllPending}
-                  onAcceptInsertions={acceptInsertions}
-                  onAcceptDeletions={acceptDeletions}
-                  onAcceptMany={acceptMany}
-                  onRejectMany={rejectMany}
-                  onAcceptSession={(writerChanges) => void acceptWriterSession(writerChanges)}
-                  sessionDocumentPath={active}
-                  sessionOpenedAt={active ? openedAtForFile(active) : undefined}
-                  onDiscard={discardRun}
-                  onSendBack={sendRunBack}
-                  unanchoredIds={unanchoredIds}
-                  onRevise={reviseChange}
-                  onReopen={reopenChange}
-                  onSaveVersion={requestNameVersion}
-                  onViewSession={viewSession}
-                  onViewVersion={viewVersion}
-                  onRestoreVersion={restoreVersionFromRow}
-                  onOpenCompare={openCompareView}
-                  onRenameVersion={renameVersion}
-                  onReturnToCurrent={exitHistoricalView}
-                  onClose={toggleChanges}
-                  versions={versions}
-                  allChanges={changesPath === active ? changes : []}
-                  historicalVersionId={historicalView?.kind === 'version' ? historicalView.version.id : null}
-                />
-              </div>
               <div className={rightTab === 'agent-notes' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Agent notes">
-                <AgentNotes dir={shownCollectionDir ?? ''} activePath={active} onRestage={restageAgentNote} onOpenFile={open} onReveal={revealFileInFiles} />
+                <AgentNotes dir={shownCollectionDir ?? ''} activePath={active} workspaceOpen={typeof root === 'string' && root !== ''} resolveProposal={resolveAgentProposal} onRestage={restageAgentNote} onOpenFile={open} onReveal={revealFileInFiles} />
               </div>
               <div className={rightTab === 'versions' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Versions">
-                <ChangeDock
-                  surface="versions"
-                  changes={dockChanges}
-                  selectedId={selectedChangeId}
-                  onSelect={selectChange}
-                  onAccept={acceptChange}
-                  onAcceptNext={acceptAndNext}
-                  onReject={rejectChange}
-                  onHold={holdChange}
-                  onRevertToActive={revertToActive}
-                  onSendOriginalToScratchpad={sendChangeOriginalToScratchpad}
-                  onAcceptAll={acceptAllPending}
-                  onAcceptInsertions={acceptInsertions}
-                  onAcceptDeletions={acceptDeletions}
-                  onAcceptMany={acceptMany}
-                  onRejectMany={rejectMany}
-                  onAcceptSession={(writerChanges) => void acceptWriterSession(writerChanges)}
-                  sessionDocumentPath={active}
-                  sessionOpenedAt={active ? openedAtForFile(active) : undefined}
-                  onDiscard={discardRun}
-                  onSendBack={sendRunBack}
-                  unanchoredIds={unanchoredIds}
-                  onRevise={reviseChange}
-                  onReopen={reopenChange}
-                  onSaveVersion={requestNameVersion}
-                  onViewSession={viewSession}
-                  onViewVersion={viewVersion}
-                  onRestoreVersion={restoreVersionFromRow}
-                  onOpenCompare={openCompareView}
-                  onRenameVersion={renameVersion}
-                  onReturnToCurrent={exitHistoricalView}
-                  onClose={toggleChanges}
-                  versions={versions}
-                  allChanges={changesPath === active ? changes : []}
-                  historicalVersionId={historicalView?.kind === 'version' ? historicalView.version.id : null}
-                />
+                <div className="change-dock embedded versions-only" aria-label="Versions">
+                  <div className="rlist cardlist">
+                    <VersionsPane
+                      versions={versions}
+                      allChanges={changesPath === active ? changes : []}
+                      pendingCount={summariseRun(dockChanges).total}
+                      historicalVersionId={historicalView?.kind === 'version' ? historicalView.version.id : null}
+                      onViewSession={viewSession}
+                      onViewVersion={viewVersion}
+                      onRestoreVersion={restoreVersionFromRow}
+                      onOpenCompare={openCompareView}
+                      onRenameVersion={renameVersion}
+                      onReturnToCurrent={exitHistoricalView}
+                      onSaveVersion={requestNameVersion}
+                    />
+                    <div className="comments-lane" aria-hidden="true" />
+                  </div>
+                </div>
               </div>
             </div>
           </aside>
@@ -6536,6 +8377,24 @@ export default function App(): JSX.Element {
           onBack={() => { closeOverlay(); openPalette('commands') }}
         />
       )}
+      {overlayActive === 'makeVault' && typeof root === 'string' && (
+        <MakeVaultSheet
+          rootPath={root}
+          onClose={closePalette}
+          onMade={(name) => { closePalette(); flash(`${name} is now a vault`) }}
+        />
+      )}
+      {overlayActive === 'researchCapture' && researchCapture && (
+        <CaptureResearchSheet
+          project={researchCapture.project}
+          selection={researchCapture.selection}
+          onClose={() => { closeOverlay(); requestAnimationFrame(() => editorRef.current?.view()?.focus()) }}
+          onFiled={(file) => {
+            closeOverlay()
+            flashWithAction(`Captured to ${file}`, { label: 'Reveal', run: () => { void window.writeflex.revealFile(file).catch((error: unknown) => flash(humanReadableError(error, 'Could not reveal the file.'))) } })
+          }}
+        />
+      )}
       {overlayActive === 'folderPiece' && (
         <FolderPieceChooser
           choices={folderPieceChoices}
@@ -6576,9 +8435,20 @@ export default function App(): JSX.Element {
           getStarted={{ removed: guideContext.removed, canRestore: guideContext.canRestore }}
           onRestoreExample={restoreExample}
           onOpenGuide={() => { closePalette(); openTheGuide() }}
+          onOpenSharingSetup={openSharingSetup}
         />
       )}
       {removeExampleOpen && <RemoveExampleConfirm onClose={() => setRemoveExampleOpen(false)} />}
+      {diskMerge && overlayActive === 'diskMerge' && (
+        <DiskMergeSheet
+          key={`${diskMerge.path}:${diskMerge.mine.length}`}
+          fileName={diskMerge.path.split('/').at(-1) ?? diskMerge.path}
+          merge={diskMerge.merge}
+          busy={diskMergeBusy}
+          onMerge={(picks) => void runDiskMerge(diskMerge, picks)}
+          onCancel={cancelDiskMerge}
+        />
+      )}
       {/* The configure sheet (ADR-0040 A2). It is rendered AFTER the Settings window because it can
           be opened from inside it — Settings → Action bar — and must sit above it; it is equally
           reachable from the bar's own control and from the palette, and it is the same surface in
@@ -6624,12 +8494,15 @@ export default function App(): JSX.Element {
       )}
       {overlayActive === 'export' && exportSubject && (
         <ExportSheet
+          key={exportSubject.openId}
           workspaceRoot={exportSubject.workspaceRoot}
           title={exportSubject.title}
           words={exportSubject.words}
           collection={exportSubject.collection}
+          inFolio={exportSubject.inFolio}
           onExport={runExport}
           initialPresetAction={exportSubject.presetAction}
+          tocDepthHomes={exportSubject.tocDepthHomes}
           onReveal={() => void window.writeflex.revealExport().catch((error: unknown) => flash(humanReadableError(error, 'Could not show the file.')))}
           onClose={closePalette}
         />
@@ -6700,6 +8573,7 @@ export default function App(): JSX.Element {
         </div>
       )}
     </div>
+    </TitleConflictContext.Provider>
     </ActionsHereContext.Provider>
   )
 }

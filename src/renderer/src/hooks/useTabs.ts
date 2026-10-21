@@ -4,6 +4,8 @@ import {
   activateTab,
   BOARD_TAB_ID,
   closeTab,
+  isWidgetWorkbenchTabId,
+  workbenchDocumentOf,
   cycleTab,
   emptyTabState,
   openTab,
@@ -49,7 +51,11 @@ export type UseTabs = {
  * instance) would leave this hook rootless forever: no hydration, and the pre-hydration guard
  * below would swallow every open() (fix wave 1). One workspace source, one truth.
  */
-export function useTabs(root: string | null | undefined, files: MarkdownFile[], boardDir = ''): UseTabs {
+export function useTabs(root: string | null | undefined, files: MarkdownFile[], boardDir = '', keepTab: (path: string) => boolean = () => false): UseTabs {
+  // A tab whose file left the tree is kept while `keepTab` says so (its buffer holds unsaved text that the
+  // writer has to resolve: review round 1, Sol S6). Read when the file list changes.
+  const keepTabRef = useRef(keepTab)
+  keepTabRef.current = keepTab
   const [state, setState] = useState<TabState>(emptyTabState)
   // The root whose persisted tab state has been hydrated into `state`. Hydration keys on root
   // transitions: null/undefined → string on bind, and string → different string re-hydrates from
@@ -87,11 +93,11 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
       // Same containment contract as reconcileTabs (which also admits BOARD_TAB_ID): never open a path
       // the file list doesn't hold — but the Board sentinel is a valid non-file tab, so a pre-hydration
       // ⇧⌘B (queued before this root loaded) must replay, not be silently dropped.
-      const openable = queued !== null && (known.includes(queued) || queued === BOARD_TAB_ID)
+      const openable = queued !== null && (known.includes(queued) || queued === BOARD_TAB_ID || (isWidgetWorkbenchTabId(queued) && known.includes(workbenchDocumentOf(queued))))
       setState(openable ? openTab(hydrated, queued as string) : hydrated)
     } else {
       // Same workspace, file list changed (create/delete/rename) — prune any now-stale tabs.
-      setState((prev) => reconcileTabs(prev, known))
+      setState((prev) => reconcileTabs(prev, [...known, ...prev.tabs.filter((tab) => keepTabRef.current(tab))]))
     }
   }, [root, files])
 

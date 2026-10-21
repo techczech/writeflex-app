@@ -66,9 +66,31 @@ export function textForSave(buffer: string, disk: string | null): string {
 }
 
 /** Saved-content baselines held in the editor's form, so every buffer-versus-baseline comparison is
- *  honest for CRLF, lone-CR and mixed-ending files. Setting a raw disk read stores its editor text. */
+ *  honest for CRLF, lone-CR and mixed-ending files. Setting a raw disk read stores its editor text.
+ *
+ *  Each baseline also keeps the text exactly as it was set (`diskText`): the bytes main read or wrote.
+ *  That is the basis a save carries (shared/save-basis.ts), compared byte for byte, so `set` must only
+ *  ever be given text in its on-disk form (a read, or what main says it wrote). */
 export class EditorBaselines extends Map<string, string> {
+  private readonly raw = new Map<string, string>()
+
   override set(path: string, text: string): this {
+    this.raw?.set(path, text) // undefined only during Map's own constructor, which sets nothing here
     return super.set(path, editorTextOf(text))
+  }
+
+  override delete(path: string): boolean {
+    this.raw.delete(path)
+    return super.delete(path)
+  }
+
+  override clear(): void {
+    this.raw.clear()
+    super.clear()
+  }
+
+  /** The baseline as it is on disk (line endings and BOM as read or written), or undefined. */
+  diskText(path: string): string | undefined {
+    return this.raw.get(path)
   }
 }

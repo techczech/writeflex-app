@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { posix } from 'node:path'
+import { AGENT_NOTE_DIR } from './agent-note-dir'
 import { setFrontmatterKeys } from './verbs/verb-support'
 import { normaliseMarkdownPath, type FileReadResult, type Workspace } from './workspace'
 
@@ -15,7 +16,7 @@ import { normaliseMarkdownPath, type FileReadResult, type Workspace } from './wo
  * look like agent notes so the skill prose is not the only fence.
  */
 
-export const AGENT_NOTE_DIR = 'agent-notes'
+export { AGENT_NOTE_DIR }
 /** The note names the review skill used to write beside the document. */
 export const AGENT_NOTE_BASENAME = /\.(review|notes|comments|feedback)\.md$/i
 export const NOTES_CREATE = 'notes.create'
@@ -51,7 +52,9 @@ function stamp(at: Date): string {
  * and a `-2`, `-3`… counter behind the stamp so two notes in one minute still never overwrite.
  */
 export function deriveAgentNotePath(sourceDocument: string, kind: string | undefined, exists: (path: string) => boolean, now = new Date()): string {
-  const source = normaliseMarkdownPath(sourceDocument)
+  // The extension is added when missing and nothing else changes: a resolved source is used as it is.
+  if (!sourceDocument.trim()) throw new Error('Path is required.')
+  const source = /\.(md|markdown|mdx)$/i.test(sourceDocument) ? sourceDocument : `${sourceDocument}.md`
   const directory = posix.dirname(source)
   const stem = posix.basename(source).replace(/\.(md|markdown)$/i, '')
   const base = posix.join(directory === '.' ? '' : directory, AGENT_NOTE_DIR, `${stem}.${normaliseNoteKind(kind)}`)
@@ -93,13 +96,14 @@ export function agentNoteContent(input: AgentNoteInput, path: string, sourceDocu
  * inside `agent-notes/` are refused; a document that does not exist is refused too — a note about
  * nothing is a misaddressed note.
  */
-export function resolveNoteSource(workspace: Workspace, sourceDocument: string): string {
+export function resolveNoteSource(workspace: Workspace, sourceDocument: string, exact = false): string {
   if (typeof sourceDocument !== 'string' || !sourceDocument.trim()) {
     throw new Error('sourceDocument must name the Workspace document the note is about.')
   }
   let relative: string
   try {
-    relative = workspace.relative(workspace.absolute(normaliseMarkdownPath(sourceDocument)))
+    // `exact`: the caller has already judged the path and it is taken as it stands, untrimmed (the command line).
+    relative = workspace.relative(workspace.absolute(exact ? sourceDocument : normaliseMarkdownPath(sourceDocument)))
   } catch {
     throw new Error(`sourceDocument ${JSON.stringify(sourceDocument)} is outside the open Workspace; notes are only written about Workspace documents.`)
   }
@@ -125,11 +129,11 @@ export function planAgentNotePath(workspace: Workspace, input: AgentNoteInput, n
 export async function createAgentNote(
   workspace: Workspace,
   input: AgentNoteInput,
-  opts: { skill?: string; now?: Date; path?: string } = {},
+  opts: { skill?: string; now?: Date; path?: string; /** The source path is used exactly as given, never trimmed. */ exact?: boolean } = {},
 ): Promise<FileReadResult> {
   if (typeof input.body !== 'string' || !input.body.trim()) throw new Error('body must not be empty; provide the note text as Markdown.')
   const now = opts.now ?? new Date()
-  const source = resolveNoteSource(workspace, input.sourceDocument)
+  const source = resolveNoteSource(workspace, input.sourceDocument, opts.exact === true)
   const path = opts.path ?? deriveAgentNotePath(source, input.kind, (candidate) => existsSync(workspace.absolute(candidate)), now)
   if (!insideAgentNotes(path)) throw new Error(`Refusing to write an agent note outside ${AGENT_NOTE_DIR}/: ${path}`)
   return workspace.createFile(path, agentNoteContent(input, path, source, { skill: opts.skill, now }))

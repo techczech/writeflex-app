@@ -14,7 +14,7 @@ const line = (p: FolioPlace): string => renderToStaticMarkup(<FolioLine place={p
 test('the line holds the Folio name, the position and both neighbours with full accessible names', () => {
   const html = line(place())
   expect(html).toContain('<nav class="folio-line" aria-label="Folio"')
-  expect(html).toContain('aria-label="Open the Plan for UnityBC Paper"')
+  expect(html).toContain('aria-label="Open the Folio outline for UnityBC Paper"')
   expect(html).toContain('3 of 31')
   expect(html).toContain('aria-label="Previous piece: 2. Related work"')
   expect(html).toContain('aria-label="Next piece: 4. Participants"')
@@ -45,12 +45,12 @@ const toolbar = (folioName?: string | null): string =>
     />,
   )
 
-test('the title bar adds nothing without a Folio and the Plan button with one, before the mode control', () => {
+test('the title bar adds nothing without a Folio and the Folio outline button with one, before the mode control', () => {
   expect(toolbar(null)).not.toContain('planbtn')
   expect(toolbar(undefined)).toBe(toolbar(null))
   const html = toolbar('UnityBC Paper')
-  expect(html).toContain('aria-label="Open the Plan for UnityBC Paper"')
-  expect(html).toContain('<span class="pb-plan">Plan</span><span class="pb-name">UnityBC Paper</span>')
+  expect(html).toContain('aria-label="Open the Folio outline for UnityBC Paper"')
+  expect(html).toContain('<span class="pb-plan">Folio outline</span><span class="pb-name">UnityBC Paper</span>')
   expect(html.indexOf('planbtn')).toBeLessThan(html.indexOf('modebtn'))
   expect(html.indexOf('planbtn')).toBeGreaterThan(html.indexOf('class="tabstrip"'))
 })

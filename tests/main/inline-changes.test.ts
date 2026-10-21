@@ -6,8 +6,10 @@ import {
   categoryClassForInlineChange,
   diffInlineChangeText,
   inlineChangeOverlapsFrontmatter,
+  inlineChangeRanges,
   inlineChangesField,
   inlineChanges,
+  inlineObjectProposals,
   setInlineChanges,
 } from '../../src/renderer/src/editor/inline-changes'
 import { setWriterMode, writerReviewing } from '../../src/renderer/src/editor/writer-review'
@@ -68,20 +70,49 @@ function decorationCount(state: EditorState): number {
   }, 0)
 }
 
-test('agent proposals decorate in both Drafting and Reviewing', () => {
+const TABLE = '| A | B |\n| --- | --- |\n| 1 | 2 |\n'
+
+test('a prose proposal draws nothing in the text in Drafting or Reviewing (ticket 13); its place is still known', () => {
   let state = EditorState.create({
     doc: 'The old draft.',
     extensions: [writerReviewing({ initialMode: 'drafting' }), inlineChangesField],
   })
   state = state.update({
-    effects: setInlineChanges.of([{
-      kind: 'text', id: 'c1', from: 4, to: 7, oldText: 'old', newText: 'new', category: 'wording', selected: false,
-    }]),
+    effects: setInlineChanges.of([
+      { kind: 'text', id: 'c1', from: 4, to: 7, oldText: 'old', newText: 'new', category: 'wording', selected: false },
+      { kind: 'text', id: 'c2', from: 14, to: 14, oldText: '', newText: ' More.', category: 'wording', selected: true },
+      { kind: 'move', id: 'c3', from: 0, to: 3, oldText: 'The', newText: 'The', category: 'structure', selected: false, destination: 14 },
+    ]),
   }).state
-  expect(decorationCount(state)).toBeGreaterThan(0)
+  expect(decorationCount(state)).toBe(0)
+  // The keymap, live preview and the "could not be placed" flag still read where each proposal sits.
+  expect(inlineChangeRanges(state)).toEqual([{ from: 4, to: 7 }, { from: 14, to: 14 }, { from: 0, to: 3 }])
 
   state = state.update({ effects: setWriterMode.of('reviewing') }).state
-  expect(decorationCount(state)).toBeGreaterThan(0)
+  expect(decorationCount(state)).toBe(0)
+})
+
+test('an agent\'s proposed object is still staged over its render, in both modes (ADR-0024)', () => {
+  let state = EditorState.create({
+    doc: 'Intro.\n',
+    extensions: [writerReviewing({ initialMode: 'drafting' }), inlineChangesField],
+  })
+  state = state.update({
+    effects: setInlineChanges.of([{ kind: 'text', id: 't1', from: 7, to: 7, oldText: '', newText: TABLE, category: 'structure', selected: false }]),
+  }).state
+  expect(decorationCount(state)).toBe(1)
+  state = state.update({ effects: setWriterMode.of('reviewing') }).state
+  expect(decorationCount(state)).toBe(1)
+})
+
+test('inlineObjectProposals keeps only point insertions that are one complete object', () => {
+  const doc = 'Intro.\n'
+  const found = inlineObjectProposals(doc, [
+    { kind: 'text', id: 'obj', from: 7, to: 7, oldText: '', newText: TABLE, category: null, selected: false },
+    { kind: 'text', id: 'prose', from: 7, to: 7, oldText: '', newText: 'More words.', category: null, selected: false },
+    { kind: 'text', id: 'replace', from: 0, to: 5, oldText: 'Intro', newText: TABLE, category: null, selected: false },
+  ])
+  expect(found.map(({ change, block }) => [change.id, block.kind])).toEqual([['obj', 'table']])
 })
 
 test('categoryClassForInlineChange maps writer-facing categories to mockup classes', () => {

@@ -74,6 +74,28 @@ export function eventToChord(e: ShortcutLike, platform?: 'mac' | 'other'): strin
   return `${mods}${key}`
 }
 
+/**
+ * A modified Backspace as a chord (`⇧⌘⌫`), which `eventToChord` deliberately does not produce: ⌫ chords belong to the
+ * places that own them (the editor's ⌃⌘⌫, the file tree's ⌘⌫). The app dispatcher asks for it only for the commands it
+ * lists as dispatched on ⌫ (review margin ticket 04: ⇧⌘⌫ Decline all). Null without ⌘ (⌃ elsewhere) or for another key.
+ */
+export function backspaceChord(e: ShortcutLike, platform?: 'mac' | 'other'): string | null {
+  if (e.code !== 'Backspace') return null
+  const mac = platform ? platform === 'mac' : typeof navigator === 'undefined' || /Mac|iP/.test(navigator.platform)
+  const command = mac ? e.metaKey : e.ctrlKey
+  if (!command) return null
+  const control = mac ? e.ctrlKey : false
+  return `${control ? '⌃' : ''}${e.altKey ? '⌥' : ''}${e.shiftKey ? '⇧' : ''}⌘⌫`
+}
+
+/** A chord with its modifier glyphs in the order eventToChord writes them (⌃⌥⇧⌘), so `⇧⌥⌘V` and `⌥⇧⌘V` are one chord. */
+export function canonicalChord(chord: string): string {
+  const glyphs = '⌃⌥⇧⌘'
+  const mods = [...chord].filter((ch) => glyphs.includes(ch))
+  const key = [...chord].filter((ch) => !glyphs.includes(ch)).join('')
+  return `${glyphs.split('').filter((g) => mods.includes(g)).join('')}${key}`
+}
+
 /** Normalise CodeMirror registry keys for palette and cheat-sheet display. */
 export function formatShortcutKey(keySpec: string): string {
   if (!keySpec.includes('-')) return keySpec

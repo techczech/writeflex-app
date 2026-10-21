@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
-import { BookMarked, ChevronDown, FileText, ListOrdered, ListPlus, Plus } from 'lucide-react'
+import { BookMarked, BookOpen, ChevronDown, FileText, ListOrdered, ListPlus, Plus } from 'lucide-react'
 import { usePieceDrag } from './folio-piece-drag'
-import { ORDER_IN_PLAN_LINE, addAllTooltip, addName, addTooltip, gripName, type FocusedFolioRow } from '../../../shared/folio-running-order'
+import { ORDER_IN_PLAN_LINE, addAllTooltip, addName, addTooltip, gripName, putBackWhy, type FocusedFolioRow } from '../../../shared/folio-running-order'
 import type { FolioOutline, FolioOutlineFile } from '../../../preload'
 import type { OutlineHeading } from '../editor/outline'
 import { alsoLine, filterFolioFile, folderFootLine, folioKeyAction, folioTabStop, limitLevels, openRows, shownHeadings, type FolioKeyRow } from '../../../shared/folio-outline'
+import { partTitle, type PartHeadingMode } from '../../../shared/folio-part-title'
+import { folioHeadingFlow, type FlowPart } from '../../../shared/folio-heading-flow'
+import { TITLE_FIX_LABEL, titleConflictSentence } from '../../../shared/title-conflict'
+import { useTitleConflictContext } from '../app/title-conflict-actions'
 
 /** A heading row of the Folio part. The open file's headings carry their editor offset (`from`); the
  *  others, read from disk, their 1-based line. */
-type HeadingRow = { level: number; text: string; from?: number; line?: number }
+type HeadingRow = { level: number; text: string; from?: number; line?: number; /** Nesting depth under the part's row (the heading flow); absent on "Not in the outline" rows. */ depth?: number }
 
 type FolioOutlinePartProps = {
   outline: FolioOutline
@@ -18,6 +22,8 @@ type FolioOutlinePartProps = {
   bufferHeadings: readonly OutlineHeading[]
   /** The file those headings were read from. They are used only when it is the open path; otherwise the disk data stands. */
   bufferPath: string | null
+  /** The text of that buffer, for the part-title rule (shared/folio-part-title.ts); absent: judged from the headings' levels. */
+  bufferText?: string | null
   /** Offset of the heading the cursor is in. */
   activeFrom: number | null
   /** Lower-cased Filter text ('' = none). */
@@ -56,26 +62,29 @@ const NO_BUFFER: readonly OutlineHeading[] = []
 /** The row keys the Folio part uses, so OutlinePane's Collapse all / Expand all can address every file. */
 export const pieceKey = (index: number, path: string): string => `piece:${index}:${path}`
 export const alsoKey = (path: string): string => `also:${path}`
-export const folioFileKeys = (outline: FolioOutline): string[] => [
-  ...outline.pieces.map((piece, index) => pieceKey(index, piece.path)),
-  ...outline.also.map((file) => alsoKey(file.path)),
-]
+// "Not in the outline" is listed on the Folio page only (2026-10-19 redesign, element 5, option A): the sidebar's Outline lists the running order.
+export const folioFileKeys = (outline: FolioOutline): string[] => outline.pieces.map((piece, index) => pieceKey(index, piece.path))
 
 /** Headings are indented by their level relative to the file's shallowest shown heading. */
 function indentOf(level: number, base: number): number {
   return 30 + Math.min(Math.max(level - base, 0), 4) * 12
 }
+/** The heading flow's nesting depth (1 = directly under the part's row) as an indent. */
+const depthIndent = (depth: number): number => 30 + Math.min(Math.max(depth - 1, 0), 4) * 12
+/** The name of a file as the file mark shows it. */
+const fileNameOf = (path: string): string => path.slice(path.lastIndexOf('/') + 1)
 
 /**
  * The Folio part of the Outline: every piece of the Folio in running order, each collapsible to its
- * headings, then "Also in this folder" with the files the running order does not list. Read-only: a click
+ * headings, then "Not in the outline" with the files the running order does not list. Read-only: a click
  * opens a file or goes to a heading; nothing here changes a file. The open piece's headings are the
  * editor's own (so unsaved ones show), every other file's come from disk. The rows are one roving-focus
  * list: ↑ ↓ move, ← → collapse and expand a file, Enter opens.
  */
-export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferHeadings, bufferPath, activeFrom, needle, levelLimit, expanded, onToggle, onOpenFile, onJumpToFile, onJumpOpen, listRef, onMovePiece, onAdd, busy, justAdded, announcement, touched, onFocusedRow, onOpenPlan }: FolioOutlinePartProps): JSX.Element {
+export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferHeadings, bufferPath, bufferText, activeFrom, needle, levelLimit, expanded, onToggle, onOpenFile, onJumpToFile, onJumpOpen, listRef, onMovePiece, onAdd, busy, justAdded, announcement, touched, onFocusedRow, onOpenPlan }: FolioOutlinePartProps): JSX.Element {
   // A buffer from another file (the snapshot trails a tab switch) is ignored: the open piece then shows its disk headings.
   const fromBuffer = openPath !== null && bufferPath === openPath
+  const titleActions = useTitleConflictContext()
   const bufferHeadings: readonly OutlineHeading[] = fromBuffer ? rawBufferHeadings : NO_BUFFER
   const [focusKey, setFocusKey] = useState<string | null>(null)
   const open = useMemo(() => openRows(outline, openPath), [outline, openPath])
@@ -85,25 +94,58 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
   const suppressClick = useRef(false)
   const added = useMemo(() => new Set(justAdded), [justAdded])
 
-  const headingsOf = useCallback((file: FolioOutlineFile): HeadingRow[] => {
-    const own: HeadingRow[] = file.path === openPath && fromBuffer
-      ? shownHeadings(bufferHeadings.map((heading) => ({ level: heading.level, text: heading.text, from: heading.from })))
-      : shownHeadings(file.headings.map((heading) => ({ level: heading.level, text: heading.text, line: heading.line })))
-    const limited = limitLevels(own, levelLimit)
-    return filtering ? limited.filter((heading) => heading.text.toLowerCase().includes(needle)) : limited
-  }, [openPath, fromBuffer, bufferHeadings, levelLimit, filtering, needle])
+  // The open file's title rule from its editor buffer, the same rule main reads from the disk (a `## T` that is the title is `own`).
+  const bufferNamed = useMemo(() => (fromBuffer && openPath !== null && typeof bufferText === 'string' ? partTitle(bufferText, openPath) : null), [fromBuffer, openPath, bufferText])
+  // Whether a part has its own heading. The open file follows its editor buffer; `heading: none` is the disk's word.
+  const modeOf = useCallback((file: FolioOutlineFile): PartHeadingMode => {
+    if (file.path === openPath && fromBuffer && file.heading !== 'none') return bufferNamed ? (bufferNamed.mode === 'own' ? 'own' : 'missing') : bufferHeadings[0]?.level === 1 ? 'own' : 'missing'
+    return file.heading ?? 'own'
+  }, [openPath, fromBuffer, bufferHeadings, bufferNamed])
 
-  // The open file's title follows the buffer's first level-1 heading, as its disk title would after a save.
+  // The open file's title follows its buffer by the same rule main reads from the disk (`partTitle`: a first
+  // heading that is the title, at any level), as its disk title would after a save.
   const titleOf = useCallback((file: FolioOutlineFile): string => {
-    if (file.path !== openPath || !fromBuffer) return file.title
+    if (file.path !== openPath || !fromBuffer || file.heading === 'none' || file.frontMatter) return file.title
+    if (bufferNamed) return bufferNamed.mode === 'own' ? bufferNamed.title : file.title
     return bufferHeadings[0]?.level === 1 && bufferHeadings[0].text ? bufferHeadings[0].text : file.title
-  }, [openPath, fromBuffer, bufferHeadings])
+  }, [openPath, fromBuffer, bufferHeadings, bufferNamed])
 
+  // The Folio's heading flow (ADR-0046, shared/folio-heading-flow.ts), from every heading before any filter or
+  // level limit: the chapter level must not move when the Filter is typed. The open file reads its editor buffer.
+  const flow = useMemo(() => folioHeadingFlow<HeadingRow>(outline.pieces.map((file) => ({
+    path: file.path,
+    title: titleOf(file),
+    mode: modeOf(file),
+    frontMatter: file.frontMatter === true,
+    headings: file.path === openPath && fromBuffer
+      ? bufferHeadings.map((heading) => ({ level: heading.level, text: heading.text, from: heading.from }))
+      : file.headings.map((heading) => ({ level: heading.level, text: heading.text, line: heading.line })),
+  }))), [outline, titleOf, modeOf, openPath, fromBuffer, bufferHeadings])
+
+  const childrenOf = useCallback((file: FolioOutlineFile, flowPart: FlowPart<HeadingRow> | undefined): HeadingRow[] => {
+    const mode = modeOf(file)
+    const own: HeadingRow[] = flowPart
+      ? flowPart.children
+      : file.path === openPath && fromBuffer
+        ? shownHeadings(bufferHeadings.map((heading) => ({ level: heading.level, text: heading.text, from: heading.from })), mode, titleOf(file))
+        : shownHeadings(file.headings.map((heading) => ({ level: heading.level, text: heading.text, line: heading.line })), mode, titleOf(file))
+    return limitLevels(own, levelLimit)
+  }, [modeOf, titleOf, openPath, fromBuffer, bufferHeadings, levelLimit])
+
+  // Front matter (ADR-0046) is listed first, in its own group, and is not dragged here: a drag moves a contents
+  // piece among the contents. The drop names the whole running order as the order the move was made against.
+  const contentsPieces = useMemo(() => outline.pieces.filter((file) => file.frontMatter !== true), [outline])
+  const contentsNumber = useMemo(() => {
+    const numbers = new Map<number, number>()
+    let next = 1
+    outline.pieces.forEach((file, index) => { if (file.frontMatter !== true) numbers.set(index, next++) })
+    return numbers
+  }, [outline])
   const { drag, start: startDrag } = usePieceDrag({
     listRef,
-    pieces: outline.pieces.map((file) => ({ path: file.path, title: titleOf(file) })),
+    pieces: contentsPieces.map((file) => ({ path: file.path, title: titleOf(file) })),
     enabled: canChange && !filtering && !busy,
-    onDrop: onMovePiece,
+    onDrop: (path, beforePath) => onMovePiece(path, beforePath, outline.pieces.map((file) => file.path)),
     suppressClick,
   })
 
@@ -111,22 +153,27 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
   const keep = useCallback((file: FolioOutlineFile): boolean => {
     if (!filtering) return true
     const headings = file.path === openPath && fromBuffer ? bufferHeadings.map((heading) => ({ level: heading.level, text: heading.text, line: 0 })) : file.headings
-    return filterFolioFile({ ...file, title: titleOf(file), headings }, needle).keep
-  }, [filtering, needle, titleOf, openPath, fromBuffer, bufferHeadings])
+    return filterFolioFile({ ...file, title: titleOf(file), headings, heading: modeOf(file) }, needle).keep
+  }, [filtering, needle, titleOf, modeOf, openPath, fromBuffer, bufferHeadings])
 
   const isOpen = (key: string, isOpenFile: boolean): boolean => filtering || (expanded.get(key) ?? isOpenFile)
 
-  type Entry = { file: FolioOutlineFile; key: string; kind: 'piece' | 'also'; index: number; headings: HeadingRow[]; count: number; isExpanded: boolean; canExpand: boolean; tooLarge: boolean }
+  type Entry = { file: FolioOutlineFile; key: string; kind: 'piece' | 'also'; index: number; headings: HeadingRow[]; count: number; isExpanded: boolean; canExpand: boolean; tooLarge: boolean; continues: boolean; depth: number }
   const entryOf = (file: FolioOutlineFile, key: string, kind: 'piece' | 'also', index: number): Entry => {
-    const headings = headingsOf(file)
+    const flowPart = kind === 'piece' ? flow.parts[index] : undefined
+    const all = childrenOf(file, flowPart)
+    const headings = filtering ? all.filter((heading) => heading.text.toLowerCase().includes(needle)) : all
     const isOpenPath = file.path === openPath
-    const count = limitLevels(shownHeadings<{ level: number }>(isOpenPath && fromBuffer ? bufferHeadings : file.headings), levelLimit).length
+    const count = all.length
     const tooLarge = file.tooLarge === true && !isOpenPath
-    return { file, key, kind, index, headings, count, tooLarge, canExpand: headings.length > 0 || count > 0 || tooLarge, isExpanded: isOpen(key, isOpenPath) }
+    const continues = flowPart?.role === 'continues'
+    return { file, key, kind, index, headings, count, tooLarge, continues, depth: flowPart?.depth ?? 0, canExpand: headings.length > 0 || count > 0 || tooLarge, isExpanded: isOpen(key, isOpenPath) }
   }
-  const pieceEntries = outline.pieces.map((file, index) => ({ file, index })).filter(({ file }) => keep(file)).map(({ file, index }) => entryOf(file, pieceKey(index, file.path), 'piece', index))
-  const alsoEntries = outline.also.map((file, index) => ({ file, index })).filter(({ file }) => keep(file)).map(({ file, index }) => entryOf(file, alsoKey(file.path), 'also', index))
-  const entries = [...pieceEntries, ...alsoEntries]
+  const allPieceEntries = outline.pieces.map((file, index) => ({ file, index })).filter(({ file }) => keep(file)).map(({ file, index }) => entryOf(file, pieceKey(index, file.path), 'piece', index))
+  const frontEntries = allPieceEntries.filter((entry) => entry.file.frontMatter === true)
+  const pieceEntries = allPieceEntries.filter((entry) => entry.file.frontMatter !== true)
+  const alsoEntries: Entry[] = []
+  const entries = [...frontEntries, ...pieceEntries, ...alsoEntries]
 
   // The rows a key press can reach, in order (headings only under an expanded file).
   const rows: FolioKeyRow[] = entries.flatMap((entry) => [
@@ -182,33 +229,42 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
     else if (action.focus) focusRow(action.focus)
   }
 
-  const renderFile = ({ file, key, kind, index, headings, count, isExpanded, canExpand, tooLarge }: Entry): JSX.Element => {
+  const renderFile = ({ file, key, kind, index, headings, count, isExpanded, canExpand, tooLarge, continues, depth }: Entry): JSX.Element => {
     const isOpenFile = file.path === openPath && (kind === 'also' || open.pieces.includes(index))
     const base = headings.reduce((least, heading) => Math.min(least, heading.level), 6)
     const title = titleOf(file)
+    const front = kind === 'piece' && file.frontMatter === true
+    const draggable = kind === 'piece' && !front && canChange
     return (
-      <div key={key} role="presentation" data-fo-box={kind === 'piece' ? index : undefined}>
+      <div key={key} role="presentation" data-fo-box={kind === 'piece' && !front ? index : undefined} data-fo-front-box={front ? index : undefined}>
+        {kind === 'piece' && !front && (
+          // Where this file starts in the flow: a dashed line with the file name at its right end (ADR-0046, option A).
+          <div className="fo-mark" aria-hidden="true" data-fo-mark={file.path}><span>{fileNameOf(file.path)}</span></div>
+        )}
         <div
-          className={`fo-row fo-piece${kind === 'also' ? ' fo-out' : ''}${isExpanded && canExpand ? '' : ' fo-shut'}${kind === 'piece' && added.has(file.path) ? ' fo-new' : ''}${drag?.path === file.path && kind === 'piece' ? ' fo-drag-src' : ''}`}
+          className={`fo-row fo-piece${kind === 'also' ? ' fo-out' : ''}${continues ? ' fo-cont' : ''}${isExpanded && canExpand ? '' : ' fo-shut'}${kind === 'piece' && added.has(file.path) ? ' fo-new' : ''}${drag?.path === file.path && kind === 'piece' ? ' fo-drag-src' : ''}`}
           role="treeitem"
           data-fokey={key}
           data-fofile="true"
           data-kind={kind}
+          data-fo-front={front ? 'true' : undefined}
           data-fo-path={file.path}
           data-fo-open={isOpenFile ? 'true' : undefined}
           tabIndex={key === tabStop ? 0 : -1}
           aria-level={1}
           aria-expanded={canExpand ? isExpanded : undefined}
           aria-current={isOpenFile ? 'true' : undefined}
-          aria-posinset={kind === 'piece' ? index + 1 : undefined}
-          aria-setsize={kind === 'piece' ? outline.pieces.length : undefined}
+          aria-posinset={kind === 'piece' && !front ? contentsNumber.get(index) : undefined}
+          aria-setsize={kind === 'piece' && !front ? contentsPieces.length : undefined}
           title={title}
+          data-fo-continues={continues ? 'true' : undefined}
+          style={continues ? { marginLeft: depth * 12 } : undefined}
           onFocus={(event) => { if (event.target === event.currentTarget) setFocusKey(key) }}
-          onPointerDown={kind === 'piece' && canChange ? (event) => startDrag(event, file.path) : undefined}
+          onPointerDown={draggable ? (event) => startDrag(event, file.path) : undefined}
           onClick={() => { if (suppressClick.current) return; setFocusKey(key); onOpenFile(file.path) }}
         >
           {kind === 'piece'
-            ? (!filtering && (canChange ? <span className="fo-grip" aria-hidden="true" title={gripName(title)} /> : <span className="fo-grip fo-grip-none" aria-hidden="true" />))
+            ? (!filtering && (draggable ? <span className="fo-grip" aria-hidden="true" title={gripName(title)} /> : <span className="fo-grip fo-grip-none" aria-hidden="true" />))
             : <span className="fo-grip fo-grip-none" aria-hidden="true" />}
           <span
             className="fo-chev-btn"
@@ -217,8 +273,10 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
           >
             {canExpand ? <ChevronDown className="fo-chev" aria-hidden="true" /> : <span className="fo-chev" />}
           </span>
-          {kind === 'piece' ? <span className="fo-n">{index + 1}</span> : <FileText className="icon sm fo-fi" aria-hidden="true" />}
+          {front ? <BookOpen className="icon sm fo-fi" aria-hidden="true" /> : kind === 'piece' ? null : <FileText className="icon sm fo-fi" aria-hidden="true" />}
           <span className="fo-t">{kind === 'also' && file.under ? <span className="fo-under" data-fo-under={file.under}>{file.under}/</span> : null}{title}</span>
+          {front && <span className="fo-flag fo-front-flag" data-fo-flag="not-in-contents" title="Front matter: exported before the contents page and never listed in it. Change it in the Folio outline.">not in contents</span>}
+          {file.titleMismatch === true && <span className="fo-flag" data-fo-flag="title-differs" title={file.titleConflict ? titleConflictSentence(file.titleConflict) : 'This part’s frontmatter title differs from its heading.'}>title differs</span>}
           {kind === 'piece' && !(isExpanded && canExpand) && count > 0 && <span className="fo-c">{count}</span>}
           {kind === 'also' && canChange && file.addable === true && (
             <button
@@ -230,10 +288,40 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
               disabled={busy}
               onClick={(event) => { event.stopPropagation(); onAdd([{ path: file.path, title }]) }}
             >
-              <Plus className="icon sm" aria-hidden="true" />Add
+              <Plus className="icon sm" aria-hidden="true" />Put back
+            </button>
+          )}
+          {kind === 'also' && !(canChange && file.addable === true) && (
+            <button
+              type="button"
+              className="fo-addoff"
+              data-fo-putback-off={file.path}
+              title={putBackWhy(!canChange)}
+              aria-label={`Put ${title} back is not available: ${putBackWhy(!canChange)}`}
+              disabled
+            >
+              <Plus className="icon sm" aria-hidden="true" />Put back<span className="fo-why"> · {putBackWhy(!canChange)}</span>
             </button>
           )}
         </div>
+        {kind === 'piece' && file.titleConflict && titleActions && (
+          // Title-conflict buttons (2026-10-19): one click makes the title and the heading one. Main writes over the version read.
+          // Only on a part of the running order: main writes only a part of the Folio (an "Also in this folder" file keeps its tag).
+          <div className="fo-title-fix" role="group" aria-label={titleConflictSentence(file.titleConflict)} data-fo-title-fix={file.path}>
+            {(['heading-to-title', 'title-to-heading'] as const).map((direction) => (
+              <button
+                key={direction}
+                type="button"
+                className="fo-add"
+                data-fo-title-fix-direction={direction}
+                disabled={busy}
+                onClick={(event) => { event.stopPropagation(); void titleActions.fixPart(outline.dir, { path: file.path, fingerprint: file.titleConflict!.fingerprint }, direction) }}
+              >
+                {TITLE_FIX_LABEL[direction]}
+              </button>
+            ))}
+          </div>
+        )}
         {isExpanded && tooLarge && (
           <div
             className="fo-row fo-hd fo-toolarge"
@@ -256,12 +344,13 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
               role="treeitem"
               data-fokey={hKey}
               data-heading-level={heading.level}
+              data-heading-depth={heading.depth}
               data-fopiece={key}
               tabIndex={hKey === tabStop ? 0 : -1}
               aria-level={2}
               aria-current={current ? 'true' : undefined}
               title={heading.text}
-              style={{ paddingLeft: indentOf(heading.level, base) }}
+              style={{ paddingLeft: heading.depth !== undefined ? depthIndent(heading.depth) : indentOf(heading.level, base) }}
               onClick={() => {
                 setFocusKey(hKey)
                 if (heading.from !== undefined) onJumpOpen(heading.from)
@@ -279,6 +368,7 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
   const addable = canChange ? outline.also.filter((file) => file.addable === true) : []
   const dropLine = (slot: number): JSX.Element | null => (drag && !drag.inPlace && drag.slot === slot ? <div key={`drop-${slot}`} className="fo-dropline" data-fo-dropline={slot} aria-hidden="true" /> : null)
   const movingTitle = drag ? outline.pieces.find((file) => file.path === drag.path) : undefined
+  const hasFront = outline.pieces.some((file) => file.frontMatter === true)
 
   return (
     <>
@@ -289,17 +379,29 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
         aria-label="Folio outline"
         onKeyDown={onKeyDown}
       >
+        {hasFront && (
+          <>
+            <div className="fo-sec" id="fo-grp-front" role="presentation" data-fo-front-heading="true">
+              <span>Front matter</span>
+              <span className="fo-hint">before the contents</span>
+            </div>
+            <div role="group" aria-labelledby="fo-grp-front" data-fo-front-group="true">
+              {frontEntries.length === 0 && <p className="ol-empty">No matches</p>}
+              {frontEntries.map(renderFile)}
+            </div>
+          </>
+        )}
         <div className="fo-sec fo-pin" id="fo-grp-run" role="presentation">
-          <span>Running order · {outline.pieces.length}</span>
-          {canChange && !filtering && outline.pieces.length > 1 && <span className="fo-hint" data-fo-hint="true">{movingTitle ? `moving ${titleOf(movingTitle)}` : 'drag to reorder'}</span>}
+          <span>Contents · {flow.chapters} {flow.chapters === 1 ? 'chapter' : 'chapters'}</span>
+          {canChange && !filtering && contentsPieces.length > 1 && <span className="fo-hint" data-fo-hint="true">{movingTitle ? `moving ${titleOf(movingTitle)}` : 'drag to reorder'}</span>}
         </div>
         {/* Each group's rows sit in a labelled group; the sticky headings stay direct children of the scroller. */}
         {/* Hidden while a filter is on, like the drag hint and Add all: Tab from the Filter box then lands on a row. */}
         {!canChange && !filtering && (
           <p className="fo-planonly" data-fo-plan-only="true">
             <span>{ORDER_IN_PLAN_LINE}</span>
-            <button type="button" className="fo-openplan" data-fo-open-plan="true" title="Open the Plan for this Folio" onClick={onOpenPlan}>
-              <ListOrdered className="icon sm" aria-hidden="true" />Plan
+            <button type="button" className="fo-openplan" data-fo-open-plan="true" title="Open the Folio outline for this Folio" onClick={onOpenPlan}>
+              <ListOrdered className="icon sm" aria-hidden="true" />Folio outline
             </button>
           </p>
         )}
@@ -307,31 +409,6 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
           {pieceEntries.length === 0 && <p className="ol-empty">{filtering ? 'No matches' : 'No pieces in the running order'}</p>}
           {pieceEntries.flatMap((entry, at) => [dropLine(at), renderFile(entry)])}
           {dropLine(pieceEntries.length)}
-        </div>
-        <div
-          className="fo-sec fo-pinfoot"
-          id="fo-grp-also"
-          role="presentation"
-          data-fo-also-heading="true"
-          onClick={(event) => { (event.currentTarget.nextElementSibling as HTMLElement | null)?.scrollIntoView({ block: 'start' }) }}
-        >
-          <span>Also in this folder · {outline.also.length}</span>
-          {addable.length > 0 && !filtering && (
-            <button
-              type="button"
-              className="fo-addall"
-              data-fo-addall="true"
-              title={addAllTooltip(addable.length)}
-              disabled={busy}
-              onClick={(event) => { event.stopPropagation(); onAdd(addable.map((file) => ({ path: file.path, title: titleOf(file) }))) }}
-            >
-              <ListPlus className="icon sm" aria-hidden="true" />Add all {addable.length}
-            </button>
-          )}
-        </div>
-        <div role="group" aria-labelledby="fo-grp-also" data-fo-also-group="true">
-          <p className="fo-line" data-fo-also-line="true">{alsoLine(outline.name, outline.also.length)}</p>
-          {alsoEntries.map(renderFile)}
         </div>
         {drag && drag.label && <div className="ol-drag-label" style={{ left: drag.x + 14, top: drag.y + 14 }} aria-hidden="true">{drag.label}</div>}
       </div>

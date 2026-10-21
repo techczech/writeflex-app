@@ -1,6 +1,10 @@
 import { test, expect } from 'bun:test'
+import { markdown } from '@codemirror/lang-markdown'
+import { EditorState } from '@codemirror/state'
+import { markdownDialect } from '../../src/shared/markdown/dialect'
 import {
   extractOutline,
+  extractOutlineOfState,
   buildOutlineTree,
   activeHeadingIndex,
 } from '../../src/renderer/src/editor/outline'
@@ -76,3 +80,18 @@ test('active heading index is -1 above the first heading', () => {
   const headings = extractOutline('intro\n\n# One\n')
   expect(activeHeadingIndex(headings, 2)).toBe(-1)
 })
+
+// ── extractOutlineOfState (0.24.1): the editor's syntax tree answers what the text parse did ──
+for (const [name, doc] of Object.entries({
+  fenced: 'Prose\n```bash\n# not a heading\n```\n## Real\n',
+  setext: 'Title\n=====\n\nSub\n---\n\ntext\n',
+  frontmatter: '---\ntitle: x\n---\n# First\n\n## Second *em*\n',
+  nested: '- item\n  # in list\n\n> ## in quote\n\n1. one\n\n#### deep ####\n',
+  none: 'just prose\n',
+})) {
+  test(`state outline equals text outline: ${name}`, () => {
+    const state = EditorState.create({ doc, extensions: [markdown({ extensions: markdownDialect() })] })
+    expect(extractOutlineOfState(state, doc)).toEqual(extractOutline(doc))
+    expect(extractOutlineOfState(EditorState.create({ doc }), doc)).toEqual(extractOutline(doc))
+  })
+}

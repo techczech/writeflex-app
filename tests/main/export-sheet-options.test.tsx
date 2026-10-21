@@ -17,6 +17,7 @@ import {
 } from '../../src/renderer/src/components/ExportSheet'
 import { ExportPresetControls } from '../../src/renderer/src/components/ExportPresetControls'
 import { createExportPresetState, reduceExportPresetState, shippedExportPresetSettings } from '../../src/shared/export-presets'
+import { sheetTocDepth } from '../../src/renderer/src/components/export-sheet-options'
 
 type ElementLike = {
   type?: unknown
@@ -55,7 +56,7 @@ test('the HTML controls render the locked defaults with reader editing enabled',
   expect(html).toContain('Purpose')
   expect(html).toContain('Tags')
   expect(html).toContain('Series')
-  expect(html).toContain('Reader can add notes')
+  expect(html).toContain('Reader can add comments')
   expect(html).toContain('Reader can edit and return changes')
   expect(html).not.toContain('Coming')
   expect(html).not.toContain('Export presets')
@@ -70,7 +71,7 @@ test('the controls emit switch, design and masthead-field changes through one ev
   })
 
   ;(findButton(tree, 'Contents sidebar on').props?.onClick as () => void)()
-  ;(findButton(tree, 'Reader can add notes off').props?.onClick as () => void)()
+  ;(findButton(tree, 'Reader can add comments off').props?.onClick as () => void)()
   ;(findButton(tree, 'Reader can edit and return changes off').props?.onClick as () => void)()
   ;(findButton(tree, 'Editorial design').props?.onClick as () => void)()
   ;(findButton(tree, 'Purpose masthead field off').props?.onClick as () => void)()
@@ -93,9 +94,9 @@ test('the reader-notes switch is enabled and honestly reflects an applied preset
       onChange={() => {}}
     />,
   )
-  expect(html).toContain('aria-label="Reader can add notes on"')
+  expect(html).toContain('aria-label="Reader can add comments on"')
   expect(html).toContain('aria-checked="true"')
-  expect(html).not.toMatch(/aria-label="Reader can add notes on"[^>]*disabled/)
+  expect(html).not.toMatch(/aria-label="Reader can add comments on"[^>]*disabled/)
 })
 
 test('arrow keys operate the Design picker without a mouse', () => {
@@ -225,7 +226,7 @@ test('the For edits preset reaches the HTML export payload with reader edits ena
 
 test('the omission disclosure names the exact HTML combination and always excludes margin notes', () => {
   expect(exportDisclosure('html', DEFAULT_EXPORT_SHEET_OPTIONS)).toBe(
-    'This export includes a contents sidebar, a title block with date, status and author, and print styling. It leaves out the front page, reader notes, reader editing, word-count and modified-date tiles, unselected frontmatter, and your // margin notes never travel.',
+    'This export includes a contents sidebar, a title block with date, status and author, and print styling. It leaves out the front page, reader comments, reader editing, word-count and modified-date tiles, unselected frontmatter, and your // margin notes never travel.',
   )
   expect(exportDisclosure('html', {
     sidebar: false,
@@ -237,10 +238,10 @@ test('the omission disclosure names the exact HTML combination and always exclud
     design: 'b',
     frontmatterFields: [],
   })).toBe(
-    'This export includes word-count and modified-date tiles, Editorial design, and print styling. It leaves out the contents sidebar, the title block and masthead fields, the front page, reader notes, reader editing, unselected frontmatter, and your // margin notes never travel.',
+    'This export includes word-count and modified-date tiles, Editorial design, and print styling. It leaves out the contents sidebar, the title block and masthead fields, the front page, reader comments, reader editing, unselected frontmatter, and your // margin notes never travel.',
   )
   expect(exportDisclosure('html', { ...DEFAULT_EXPORT_SHEET_OPTIONS, readerNotes: true })).toContain(
-    'reader notes with Markdown and JSON return files',
+    'reader comments with Markdown and JSON return files',
   )
   expect(exportDisclosure('html', { ...DEFAULT_EXPORT_SHEET_OPTIONS, readerEdits: true })).toContain(
     'reader editing with a JSON diff return file',
@@ -307,4 +308,48 @@ test('left-out Folio entries are named with their authored path and the reason',
     heading: '2 listed pieces will be left out:',
     rows: ['gone.md — file not found', '../journal/private.md — outside this Folio’s folder'],
   })
+})
+
+test('with a file home the sheet shows the file’s toc_depth, Default when the key is absent; last-used only without one', () => {
+  const folio = { label: 'Paper (toc_depth in its Index Note)', depth: 3 }
+  expect(sheetTocDepth(5, folio)).toBe(3)
+  expect(sheetTocDepth(undefined, folio)).toBe(3)
+  // Sol D1, Spec P2a: last-used 5, a Folio whose Index Note has no toc_depth -> Default, and no explicit depth is sent.
+  expect(sheetTocDepth(5, { ...folio, depth: null })).toBeUndefined()
+  const choice = exportSheetChoice('collection', 'html', { ...DEFAULT_EXPORT_SHEET_OPTIONS, tocDepth: sheetTocDepth(5, { ...folio, depth: null }) })
+  expect(choice.html).not.toHaveProperty('tocDepth')
+  // No file home (a folder without an Index Note): the last-used depth, as before.
+  expect(sheetTocDepth(5, null)).toBe(5)
+
+  const html = renderToStaticMarkup(
+    <ExportOptionControls
+      format="html"
+      options={{ ...DEFAULT_EXPORT_SHEET_OPTIONS, tocDepth: sheetTocDepth(5, folio) }}
+      onChange={() => {}}
+      tocDepthHome={folio}
+    />,
+  )
+  expect(html).toMatch(/<option value="3" selected="">Levels 1 to 3<\/option>/)
+  expect(html).toContain('Saved with Paper (toc_depth in its Index Note) when you export as HTML.')
+})
+
+test('the dropdown never writes: a depth chosen for a file home rides the HTML export request, untouched it does not', () => {
+  const folio = { label: 'Paper', depth: 3 }
+  // Untouched: the file's value is shown and sent, and main is not asked to save anything.
+  const untouched = exportSheetChoice('collection', 'html', { ...DEFAULT_EXPORT_SHEET_OPTIONS, tocDepth: sheetTocDepth(5, folio) }, folio)
+  expect(untouched.html?.tocDepth).toBe(3)
+  expect(untouched).not.toHaveProperty('keepTocDepth')
+  // Chosen 2: sent with the request, which asks main to keep it.
+  const two = { ...folio, depth: 2, chosen: true }
+  const chosen = exportSheetChoice('collection', 'html', { ...DEFAULT_EXPORT_SHEET_OPTIONS, tocDepth: sheetTocDepth(5, two) }, two)
+  expect(chosen).toMatchObject({ scope: 'collection', keepTocDepth: true, html: { tocDepth: 2 } })
+  // Chosen Default: no depth sent, and keeping it removes the key.
+  const none = { ...folio, depth: null, chosen: true }
+  const reset = exportSheetChoice('piece', 'html', { ...DEFAULT_EXPORT_SHEET_OPTIONS, tocDepth: sheetTocDepth(5, none) }, none)
+  expect(reset.keepTocDepth).toBe(true)
+  expect(reset.html).not.toHaveProperty('tocDepth')
+  // Word has no contents depth: nothing is kept.
+  expect(exportSheetChoice('piece', 'docx', DEFAULT_EXPORT_SHEET_OPTIONS, two)).not.toHaveProperty('keepTocDepth')
+  // No file home: nothing is kept.
+  expect(exportSheetChoice('piece', 'html', { ...DEFAULT_EXPORT_SHEET_OPTIONS, tocDepth: 4 }, null)).not.toHaveProperty('keepTocDepth')
 })

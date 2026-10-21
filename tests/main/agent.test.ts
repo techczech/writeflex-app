@@ -5,9 +5,9 @@ import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../../src/main/workspace'
-import { bridleLaneForEnvironment, buildE2EScriptedTurn, proposalToSuggestion, registryModels, WorkspaceAgent, type ScriptedStep, type ScriptedTurn } from '../../src/main/agent'
+import { bridleLaneForEnvironment, buildE2EScriptedTurn, placeRecordedReplacement, proposalToSuggestion, registryModels, WorkspaceAgent, type ScriptedStep, type ScriptedTurn } from '../../src/main/agent'
 import { collectionDirsForPaths } from '../../src/main/digest'
-import { ChangeStore } from '../../src/main/changes'
+import { ChangeStore, closedReasonOf } from '../../src/main/changes'
 import { BridleAuth, createModelService, scriptedSessionFactory, type BridleSessionFactory, type Proposal } from '@bridle/core'
 
 let root: string
@@ -430,6 +430,24 @@ async function makeLedgerAgent(script?: { text: string; steps: ScriptedStep[] })
   return { agent, workspace, changes }
 }
 
+/** A staged agent replacement as the ingest records it: anchored in `source`. */
+async function stageReplacement(changes: ChangeStore, source: string, oldText: string, newText: string, path = 'a.md') {
+  const from = source.indexOf(oldText)
+  const change = await changes.addProposedReplacement({
+    path,
+    provenance: 'agent',
+    editClass: 'content',
+    category: 'wording',
+    summary: 'Tighten',
+    oldText,
+    newText,
+    anchor: { from, to: from + oldText.length },
+    isCorrection: false,
+  })
+  if (!change) throw new Error('not staged')
+  return change
+}
+
 test('accepting a persisted pending agent edit applies its stored unique replacement', async () => {
   const draft = '# A\n\nThe draft is too wordy.\n'
   await writeFile(join(root, 'a.md'), draft)
@@ -447,7 +465,7 @@ test('accepting a persisted pending agent edit applies its stored unique replace
 
   const result = await agent.resolveChange(change.id, 'accept')
 
-  expect(result).toEqual({ applied: true })
+  expect(result).toMatchObject({ applied: true, receipt: { written: '# A\n\nThe draft is concise.\n' } })
   expect((await workspace.readFile('a.md')).content).toBe('# A\n\nThe draft is concise.\n')
   const journal = (await readFile(join(root, '.bridle', 'journal.jsonl'), 'utf8'))
     .split('\n')
@@ -600,7 +618,7 @@ test('invalid scripted objects.insert is a corrective tool result, not a failed 
   await agent.dispose()
 })
 
-test('accepting a persisted agent edit with non-unique oldText refuses and stays pending', async () => {
+test('accepting a persisted agent edit with non-unique oldText refuses, writes nothing and leaves it pending (ticket 14)', async () => {
   const draft = '# A\n\nRepeat me.\n\nRepeat me.\n'
   await writeFile(join(root, 'a.md'), draft)
   const { agent, workspace, changes } = await makeLedgerAgent()
@@ -617,10 +635,405 @@ test('accepting a persisted agent edit with non-unique oldText refuses and stays
 
   const result = await agent.resolveChange(change.id, 'accept')
 
+  expect(result).toEqual({ applied: false, message: expect.stringMatching(/not unique/i) })
+  expect((await workspace.readFile('a.md')).content).toBe(draft)
+  // An Accept that could not be carried out is not a decision: neither accepted nor declined, no reason recorded.
+  const after = (await changes.get(change.id))!
+  expect(after.status).toBe('pending')
+  expect(closedReasonOf(after)).toBeNull()
+  agent.dispose()
+})
+
+// Ticket 14's example: "Most reading lists" → "Most lists" is recorded shortened to the removed word
+// `reading `, which also stands in the title. Accepted after the live proposal has gone (a relaunch:
+// a second agent over the same ledger), it is placed where it was made and the title is untouched.
+const READING_DRAFT = '# Why reading matters\n\nMost reading lists are too long.\n'
+const READING_EDIT: ScriptedStep = { cap: 'prose.edit', input: { path: 'a.md', oldText: 'Most reading lists', newText: 'Most lists', category: 'wording', summary: 'Trim' } }
+
+async function stageReadingEditThenRelaunch(): Promise<{ agent: WorkspaceAgent; changes: ChangeStore; id: string }> {
+  await writeFile(join(root, 'a.md'), READING_DRAFT)
+  const staged = await makeLedgerAgent({ text: 'Trim', steps: [READING_EDIT] })
+  await staged.agent.runScriptedTurn('Trim', [READING_EDIT])
+  const [change] = await staged.changes.list()
+  staged.agent.dispose()
+  expect(change).toMatchObject({ oldText: 'reading ', newText: '', anchorContext: { before: 'Most ', after: 'lists' } })
+  const relaunched = await makeLedgerAgent()
+  return { agent: relaunched.agent, changes: relaunched.changes, id: change.id }
+}
+
+test('ticket 14: a shortened edit whose removed word also stands in the title is accepted at its place; the title is untouched', async () => {
+  const { agent, changes, id } = await stageReadingEditThenRelaunch()
+
+  const result = await agent.resolveChange(id, 'accept')
+
+  expect(result.applied).toBe(true)
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe('# Why reading matters\n\nMost lists are too long.\n')
+  expect((await changes.get(id))?.status).toBe('accepted')
+  agent.dispose()
+})
+
+test('ticket 14: the words trimmed off the shortened edit find its place after the text above it has moved', async () => {
+  const { agent, changes, id } = await stageReadingEditThenRelaunch()
+  // The recorded span no longer holds the text; the trimmed words still stand once around it.
+  await writeFile(join(root, 'a.md'), `Preface.\n\n${READING_DRAFT}`)
+
+  const result = await agent.resolveChange(id, 'accept')
+
+  expect(result.applied).toBe(true)
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe('Preface.\n\n# Why reading matters\n\nMost lists are too long.\n')
+  expect((await changes.get(id))?.status).toBe('accepted')
+  agent.dispose()
+})
+
+test('ticket 14: placeRecordedReplacement finds the one place, in order, and never guesses', () => {
+  const doc = '# Why reading matters\n\nMost reading lists are too long.\n'
+  const at = doc.indexOf('reading lists')
+  const record = { path: 'a.md', oldText: 'reading ', anchor: { from: at, to: at + 8 }, anchorContext: { before: 'Most ', after: 'lists' } }
+  // By the trimmed words, wherever the span has drifted to.
+  expect(placeRecordedReplacement(`x${doc}`, record)).toEqual({ from: at + 1, to: at + 9 })
+  // By the span, when the trimmed words stand twice and frame it.
+  const repeated = `${doc}Most reading lists again.\n`
+  expect(placeRecordedReplacement(repeated, record)).toEqual({ from: at, to: at + 8 })
+  // The span holds the text but not the trimmed words around it: no one place.
+  const reframed = doc.replace('Most reading lists', 'Few reading lists') + 'Most reading lists. Most reading lists.\n'
+  expect(placeRecordedReplacement(reframed, record)).toMatchObject({ code: 'target-repeated' })
+  // With trimmed words on record, the text standing once elsewhere is not its place (P1).
+  const byHand = '# Why reading matters\n\nMost lists are too long.\n'
+  expect(placeRecordedReplacement(byHand, { ...record, anchor: { from: 6, to: 14 } })).toMatchObject({ code: 'target-gone' })
+  // An addition: placed by its trimmed words, then by its framed zero-width point (P0).
+  const adding = { path: 'a.md', oldText: '', anchor: { from: 28, to: 28 }, anchorContext: { before: 'Most ', after: 'lists' } }
+  const plain = '# Why reading matters\n\nMost lists are too long.\n'
+  expect(placeRecordedReplacement(plain, adding)).toEqual({ from: 28, to: 28 })
+  expect(placeRecordedReplacement(`${plain}Most lists again.\n`, adding)).toEqual({ from: 28, to: 28 })
+  expect(placeRecordedReplacement('Most lists. Most lists.\n', adding)).toMatchObject({ code: 'target-repeated' })
+  expect(placeRecordedReplacement('No such words.\n', adding)).toMatchObject({ code: 'target-gone' })
+  // Without trimmed words on record (an older record): the span when it holds the text, then the text once.
+  const { anchorContext: _ignored, ...legacy } = record
+  expect(placeRecordedReplacement(doc, legacy)).toEqual({ from: at, to: at + 8 })
+  expect(placeRecordedReplacement(doc, { ...legacy, anchor: { from: 0, to: 8 } })).toMatchObject({ code: 'target-repeated' })
+  expect(placeRecordedReplacement(byHand, { ...legacy, anchor: { from: 0, to: 8 } })).toEqual({ from: 6, to: 14 })
+  expect(placeRecordedReplacement(doc, { ...legacy, oldText: 'absent ' })).toMatchObject({ code: 'target-gone' })
+  // An older addition with only a zero-width point: no way to check the place, so it waits (gone), never closes.
+  expect(placeRecordedReplacement(plain, { path: 'a.md', oldText: '', anchor: { from: 28, to: 28 } })).toMatchObject({ code: 'target-gone' })
+  // No text, no words around it, no point: never placeable.
+  expect(placeRecordedReplacement(doc, { ...legacy, oldText: '', anchor: undefined })).toMatchObject({ code: 'other' })
+})
+
+test('ticket 14 (P1): the trimmed words decide the place; after the writer made the edit by hand, Accept never writes into the title', async () => {
+  const { agent, changes, id } = await stageReadingEditThenRelaunch()
+  // "reading " now stands once, in the title; the place it was made ("Most reading lists") is gone.
+  const byHand = '# Why reading matters\n\nMost lists are too long.\n'
+  await writeFile(join(root, 'a.md'), byHand)
+
+  const result = await agent.resolveChange(id, 'accept')
+
+  expect(result).toEqual({ applied: false, message: expect.stringMatching(/no longer in a\.md/) })
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe(byHand)
+  const after = (await changes.get(id))!
+  expect(after.status).toBe('pending')
+  expect(closedReasonOf(after)).toBeNull()
+  agent.dispose()
+})
+
+// A word the agent ADDS: "Most lists" → "Most reading lists" is recorded as `` → `reading ` at a zero-width point.
+const ADDING_DRAFT = '# Why reading matters\n\nMost lists are too long.\n'
+const ADDING_EDIT: ScriptedStep = { cap: 'prose.edit', input: { path: 'a.md', oldText: 'Most lists', newText: 'Most reading lists', category: 'wording', summary: 'Say which lists' } }
+
+async function stageAddingEditThenRelaunch(): Promise<{ agent: WorkspaceAgent; changes: ChangeStore; id: string }> {
+  await writeFile(join(root, 'a.md'), ADDING_DRAFT)
+  const staged = await makeLedgerAgent({ text: 'Add', steps: [ADDING_EDIT] })
+  await staged.agent.runScriptedTurn('Add', [ADDING_EDIT])
+  const [change] = await staged.changes.list()
+  staged.agent.dispose()
+  const at = ADDING_DRAFT.indexOf('lists')
+  expect(change).toMatchObject({ oldText: '', newText: 'reading ', anchor: { from: at, to: at }, anchorContext: { before: 'Most ', after: 'lists' } })
+  const relaunched = await makeLedgerAgent()
+  return { agent: relaunched.agent, changes: relaunched.changes, id: change.id }
+}
+
+test('ticket 14 (P0): a word the agent adds is accepted after a relaunch, at its place', async () => {
+  const { agent, changes, id } = await stageAddingEditThenRelaunch()
+
+  const result = await agent.resolveChange(id, 'accept')
+
+  expect(result.applied).toBe(true)
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe('# Why reading matters\n\nMost reading lists are too long.\n')
+  expect((await changes.get(id))?.status).toBe('accepted')
+  agent.dispose()
+})
+
+test('ticket 14 (P0): a word the agent adds with no one place left is refused and waits, never closed', async () => {
+  const { agent, changes, id } = await stageAddingEditThenRelaunch()
+  const twice = 'Preface.\n\nMost lists are too long. Most lists are short.\n'
+  await writeFile(join(root, 'a.md'), twice)
+
+  const result = await agent.resolveChange(id, 'accept')
+
+  expect(result).toEqual({ applied: false, message: expect.stringMatching(/more than once/) })
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe(twice)
+  const after = (await changes.get(id))!
+  expect(after.status).toBe('pending')
+  expect(closedReasonOf(after)).toBeNull()
+  agent.dispose()
+})
+
+for (const status of ['pending', 'held'] as const) test(`ticket 14: a shortened edit with no one place left is refused, writes nothing, and stays ${status}, never declined`, async () => {
+  {
+    const { agent, changes, id } = await stageReadingEditThenRelaunch()
+    if (status === 'held') await changes.setStatus(id, 'held')
+    // The passage now stands twice and the recorded span is gone: no one place to put it.
+    const twice = 'Preface.\n\nMost reading lists are too long.\n\nMost reading lists are too long.\n'
+    await writeFile(join(root, 'a.md'), twice)
+
+    const result = await agent.resolveChange(id, 'accept')
+
+    expect(result).toEqual({ applied: false, message: expect.stringMatching(/more than once/i) })
+    expect(await readFile(join(root, 'a.md'), 'utf8')).toBe(twice)
+    const after = (await changes.get(id))!
+    expect(after.status).toBe(status)
+    expect(closedReasonOf(after)).toBeNull()
+    agent.dispose()
+  }
+})
+
+/** Counts every document write main makes through the workspace (saveFile and saveFileWithoutReadBack). */
+function countWrites(workspace: Workspace): { count: number } {
+  const writes = { count: 0 }
+  const mutable = workspace as unknown as { saveFile: Workspace['saveFile']; saveFileWithoutReadBack: Workspace['saveFileWithoutReadBack'] }
+  const saveFile = mutable.saveFile.bind(workspace)
+  const withoutReadBack = mutable.saveFileWithoutReadBack.bind(workspace)
+  mutable.saveFile = ((...args: Parameters<Workspace['saveFile']>) => { writes.count += 1; return saveFile(...args) }) as Workspace['saveFile']
+  mutable.saveFileWithoutReadBack = ((...args: Parameters<Workspace['saveFileWithoutReadBack']>) => { writes.count += 1; return withoutReadBack(...args) }) as Workspace['saveFileWithoutReadBack']
+  return writes
+}
+
+test('Apply on a discarded agent change is refused: nothing is written, it stays discarded, and the message points to Reopen (redo of a Discard, then Apply)', async () => {
+  // Guard: the refusal of a rejected record in resolveChangeWriting. Without it the accept takes the stored
+  // replacement and writes the text of a change the writer discarded.
+  const draft = '# A\n\nThe draft is too wordy.\n'
+  await writeFile(join(root, 'a.md'), draft)
+  const { agent, workspace, changes } = await makeLedgerAgent()
+  const change = await stageReplacement(changes, draft, 'too wordy', 'concise')
+  expect(await agent.resolveChange(change.id, 'reject')).toMatchObject({ applied: true })
+  const writes = countWrites(workspace)
+
+  const result = await agent.resolveChange(change.id, 'accept')
+
+  // 0.23's rule (main): a rejected Change is accepted only by reopening it first; nothing is written.
+  expect(result).toEqual({ applied: false, message: 'This change was rejected. Reopen it before accepting it.' })
+  expect(result.message).toMatch(/Reopen/)
+  expect(writes.count).toBe(0)
+  expect((await workspace.readFile('a.md')).content).toBe(draft)
+  expect((await changes.get(change.id))?.status).toBe('rejected')
+  agent.dispose()
+})
+
+test('Discard of an applied agent change is refused: nothing is written, no receipt, it stays accepted (redo of an Accept, then Discard)', async () => {
+  // Guard: the refusal of an accepted record on a reject in resolveChangeWriting. Without it the Discard
+  // falls through to a status-only flip: the record says discarded and the applied text stays on disk.
+  const draft = '# A\n\nThe draft is too wordy.\n'
+  const accepted = '# A\n\nThe draft is concise.\n'
+  await writeFile(join(root, 'a.md'), draft)
+  const { agent, workspace, changes } = await makeLedgerAgent()
+  const change = await stageReplacement(changes, draft, 'too wordy', 'concise')
+  expect(await agent.resolveChange(change.id, 'accept')).toMatchObject({ applied: true, receipt: { written: accepted } })
+  const writes = countWrites(workspace)
+
+  const result = await agent.resolveChange(change.id, 'reject')
+
+  expect(result).toEqual({ applied: false, message: 'That change is already applied, so it was not discarded. Undo in the editor takes it back.' })
+  expect(result).not.toHaveProperty('receipt')
+  expect(writes.count).toBe(0)
+  expect((await workspace.readFile('a.md')).content).toBe(accepted)
+  expect((await changes.get(change.id))?.status).toBe('accepted')
+  agent.dispose()
+})
+
+test('P1 regression: Apply writes where the old text uniquely stands now (B, not the staged A), and a later Discard is refused, the file byte-equal to what Apply wrote', async () => {
+  // Guard: the refusal of an accepted record on a reject. Without it the Discard flips the record to
+  // discarded over a file that still holds the applied text (and no second rule may locate a write).
+  const intro = '# A\n\nThis opening paragraph is long enough to keep the change away from the start.\n\n'
+  const draft = `${intro}At A the draft is too wordy.\n\nAt B the draft is plain.\n`
+  await writeFile(join(root, 'a.md'), draft)
+  const { agent, workspace, changes } = await makeLedgerAgent()
+  const change = await stageReplacement(changes, draft, 'too wordy', 'concise')
+  // The writer edits A to the new text by hand and types the old text at B.
+  const edited = `${intro}At A the draft is concise.\n\nAt B the draft is too wordy.\n`
+  await writeFile(join(root, 'a.md'), edited)
+
+  const apply = await agent.resolveChange(change.id, 'accept')
+
+  const applied = `${intro}At A the draft is concise.\n\nAt B the draft is concise.\n`
+  expect(apply).toMatchObject({ applied: true, receipt: { written: applied } })
+  expect((await workspace.readFile('a.md')).content).toBe(applied)
+  expect((await changes.get(change.id))?.status).toBe('accepted')
+  const writes = countWrites(workspace)
+
+  const discard = await agent.resolveChange(change.id, 'reject')
+
+  expect(discard).toEqual({ applied: false, message: 'That change is already applied, so it was not discarded. Undo in the editor takes it back.' })
+  expect(writes.count).toBe(0)
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe(applied)
+  expect((await changes.get(change.id))?.status).toBe('accepted')
+  agent.dispose()
+})
+
+test('T1: Apply on a pending record targeting .git/config, loaded from the journal, is refused before any write', async () => {
+  // Guard: the hidden-target check in resolveChangeWriting. Without it the stored replacement is written
+  // into .git/config.
+  await mkdir(join(root, '.git'), { recursive: true })
+  const config = '[core]\n\tvalue = too wordy\n'
+  await writeFile(join(root, '.git', 'config'), config)
+  const from = config.indexOf('too wordy')
+  const record = {
+    id: 'c_hidden1', path: '.git/config', ts: 1, provenance: 'agent', editClass: 'content', category: 'wording', summary: 'x',
+    oldText: 'too wordy', newText: 'concise', anchor: { from, to: from + 9 }, status: 'pending', isCorrection: false,
+  }
+  await mkdir(join(root, '.writeflex'), { recursive: true })
+  await writeFile(join(root, '.writeflex', 'changes.jsonl'), `${JSON.stringify(record)}\n`)
+  const { agent, changes } = await makeLedgerAgent()
+  expect((await changes.get('c_hidden1'))?.status).toBe('pending')
+
+  const result = await agent.resolveChange('c_hidden1', 'accept')
+
+  expect(result).toEqual({ applied: false, message: 'That change targets a file outside the visible folders of the Workspace, so nothing was written.' })
+  expect(await readFile(join(root, '.git', 'config'), 'utf8')).toBe(config)
+  expect((await changes.get('c_hidden1'))?.status).toBe('pending')
+  agent.dispose()
+})
+
+test('T2: a stored replacement whose text overlaps itself is not unique: `aa` in `aaa` is refused', async () => {
+  // Guard: uniqueStoredRange searching again from first+1. Searching after the whole match misses the
+  // overlapping occurrence and writes at the first.
+  await writeFile(join(root, 'a.md'), 'aaa\n')
+  const { agent, workspace, changes } = await makeLedgerAgent()
+  const change = await changes.add({
+    path: 'a.md', provenance: 'agent', editClass: 'copy', category: 'wording', summary: 'x',
+    oldText: 'aa', newText: 'b', isCorrection: false,
+  })
+
+  const result = await agent.resolveChange(change.id, 'accept')
+
   expect(result.applied).toBe(false)
   expect(result.message).toMatch(/not unique/i)
-  expect((await workspace.readFile('a.md')).content).toBe(draft)
+  expect((await workspace.readFile('a.md')).content).toBe('aaa\n')
+  // Ticket 14: an Accept that cannot be placed decides nothing; the Change waits, neither accepted nor declined.
   expect((await changes.get(change.id))?.status).toBe('pending')
+  expect(result.closed).toBeUndefined()
+  agent.dispose()
+})
+
+
+test('Sol P1: a second Apply of an accepted replacement is refused and writes nothing ("The cat." stays "The catfish.", never "The catfishfish.")', async () => {
+  // Guard: the refusal of an accepted record on an accept in resolveChangeWriting. Without it the second
+  // Apply finds `cat` once in "The catfish." and writes the replacement again: "The catfishfish.".
+  const draft = 'The cat.\n'
+  await writeFile(join(root, 'a.md'), draft)
+  const { agent, workspace, changes } = await makeLedgerAgent()
+  const change = await stageReplacement(changes, draft, 'cat', 'catfish')
+
+  const first = await agent.resolveChange(change.id, 'accept')
+  expect(first).toMatchObject({ applied: true })
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe('The catfish.\n')
+  expect((await changes.get(change.id))?.status).toBe('accepted')
+  const writes = countWrites(workspace)
+
+  const second = await agent.resolveChange(change.id, 'accept')
+
+  // 0.23's rule (main): a second Accept of an accepted Change writes nothing and answers applied.
+  expect(second).toEqual({ applied: true })
+  expect(writes.count).toBe(0)
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe('The catfish.\n')
+  expect((await changes.get(change.id))?.status).toBe('accepted')
+  agent.dispose()
+})
+
+test('Sol P1: a second Apply of an accepted insert is refused and writes nothing', async () => {
+  // Guard: the refusal of an accepted record on an accept (it replaces the insert catch's "already there"
+  // heuristic). Without it the insert is placed again after its anchor: "One.\n\nTwo.\n\nTwo.".
+  const draft = 'One.\n'
+  await writeFile(join(root, 'a.md'), draft)
+  const { agent, workspace, changes } = await makeLedgerAgent()
+  const change = await changes.add({
+    path: 'a.md', provenance: 'agent', editClass: 'insert', category: 'wording', summary: 'Add a line',
+    oldText: '', newText: 'Two.', insertAfter: 'One.', isCorrection: false,
+  })
+  expect(await agent.resolveChange(change.id, 'accept')).toMatchObject({ applied: true })
+  const inserted = await readFile(join(root, 'a.md'), 'utf8')
+  expect(inserted.match(/Two\./g)?.length).toBe(1)
+  const writes = countWrites(workspace)
+
+  const second = await agent.resolveChange(change.id, 'accept')
+
+  // 0.23's rule (main): a second Accept of an accepted Change writes nothing and answers applied.
+  expect(second).toEqual({ applied: true })
+  expect(writes.count).toBe(0)
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe(inserted)
+  expect((await changes.get(change.id))?.status).toBe('accepted')
+  agent.dispose()
+})
+
+test('Sol P1: Apply of an accepted widget record (it creates a file) is refused and writes nothing', async () => {
+  // Guard: the refusal of an accepted record on an accept (it replaces the createsAFile branch's
+  // `applied: true` for an accepted record). Without it the Apply answers that it applied.
+  const draft = 'The draft is too wordy.\n'
+  await writeFile(join(root, 'a.md'), draft)
+  const { agent, workspace, changes } = await makeLedgerAgent()
+  const page = '<p>pace</p>\n'
+  const change = await changes.addWithNewFile(
+    { path: 'a.md', provenance: 'agent', editClass: 'content', category: 'other', summary: 'Add a widget', oldText: 'too wordy', newText: 'concise', isCorrection: false },
+    { path: 'assets/pace.html', content: page, sha256: createHash('sha256').update(page, 'utf8').digest('hex') },
+  )
+  await changes.setStatus(change.id, 'accepted')
+  const writes = countWrites(workspace)
+
+  const result = await agent.resolveChange(change.id, 'accept')
+
+  // 0.23's rule (main): an accepted Change is not placed again; nothing is written.
+  expect(result).toEqual({ applied: true })
+  expect(writes.count).toBe(0)
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe(draft)
+  expect(existsSync(join(root, 'assets', 'pace.html'))).toBe(false)
+  expect((await changes.get(change.id))?.status).toBe('accepted')
+  agent.dispose()
+})
+
+test('R1 (restated, ticket 14): the ledger door places a minimised record at its recorded span when its text stands twice', async () => {
+  // Was a documented residual (refused): the minimised text `too wordy` stands twice, but the record's
+  // span still holds it, which is where its review mark is drawn. It is written there and nowhere else.
+  const draft = 'The draft is too wordy.\nAnother draft is too wordy.\n'
+  await writeFile(join(root, 'a.md'), draft)
+  const { agent, changes } = await makeLedgerAgent()
+  const change = await stageReplacement(changes, draft, 'The draft is too wordy.', 'The draft is concise.')
+  expect(change.oldText).toBe('too wordy')
+
+  const result = await agent.resolveChange(change.id, 'accept')
+
+  expect(result.applied).toBe(true)
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe('The draft is concise.\nAnother draft is too wordy.\n')
+  expect((await changes.get(change.id))?.status).toBe('accepted')
+  agent.dispose()
+})
+
+test('R1 (ticket 14): a minimised record whose span no longer holds its text and whose text stands twice is refused, writes nothing and stays pending', async () => {
+  // Guard: uniqueStoredRange's second-occurrence check, after the span check. Without it the ledger Apply
+  // writes `concise` at the first `too wordy`, a guess.
+  const draft = 'The draft is too wordy.\nAnother draft is too wordy.\n'
+  await writeFile(join(root, 'a.md'), draft)
+  const { agent, workspace, changes } = await makeLedgerAgent()
+  const change = await stageReplacement(changes, draft, 'The draft is too wordy.', 'The draft is concise.')
+  const moved = `Preface.\n${draft}`
+  await writeFile(join(root, 'a.md'), moved)
+  const writes = countWrites(workspace)
+
+  const result = await agent.resolveChange(change.id, 'accept')
+
+  expect(result).toEqual({ applied: false, message: expect.stringMatching(/not unique/i) })
+  expect(writes.count).toBe(0)
+  expect(await readFile(join(root, 'a.md'), 'utf8')).toBe(moved)
+  const after = (await changes.get(change.id))!
+  expect(after.status).toBe('pending')
+  expect(closedReasonOf(after)).toBeNull()
   agent.dispose()
 })
 
@@ -740,7 +1153,7 @@ test('version finalisation stamps accepted changes and leaves undecided proposal
     isCorrection: false,
   })
 
-  expect(await agent.resolveChange(accepted.id, 'accept')).toEqual({ applied: true })
+  expect(await agent.resolveChange(accepted.id, 'accept')).toMatchObject({ applied: true })
   const version = await agent.snapshotReviewVersion('a.md')
   const stamped = await changes.saveVersion([accepted.id, undecided.id], version.versionId, {
     [accepted.id]: 'accepted',

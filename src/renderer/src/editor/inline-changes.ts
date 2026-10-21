@@ -6,14 +6,18 @@ import { frontmatterBlock } from '../../../shared/markdown/frontmatter'
 import { detectLivePreviewBlocks, type LivePreviewBlock, widgetFor } from './live-preview'
 
 /**
- * Inline track-changes — the DEFAULT agent-review surface (ADR-0014 / locked collaborative-session v4
- * mockup). Every pending agent change renders as a minimal strike diff: shared context plain,
- * `.del` old + `.ins` new. The writer-facing `category` drives colour; `editClass` stays out of visible
- * rendering.
+ * Pending agent changes in the editor (ADR-0014 data, redrawn by review margin ticket 13 / ADR-0046).
  *
- * App resolves each change's original-text range (reusing change-marks.resolveChangeRange) and pushes the
- * set via setInlineChanges; between pushes the decorations MAP through the writer's edits. Actions route
- * through a ref-driven handler (extensions build once per EditorState) exactly like the other editor layers.
+ * App resolves each pending agent change's original-text range (reusing change-marks.resolveChangeRange)
+ * and pushes the set via setInlineChanges; between pushes the offsets MAP through the writer's edits. The
+ * field is the editor's record of where undecided proposals sit: the keymap acts on the one at the caret,
+ * live preview keeps a block with a pending change as source, and App learns which ones could not be placed.
+ *
+ * What it draws: nothing for prose. Since ADR-0046 a proposed change is read on its card in the margin and
+ * the text carries only the quiet mark (editor/change-marks.ts): no struck old words, no inserted new words,
+ * no Accept / Decline / Reply buttons in the prose, in Drafting or Reviewing. The one exception is an agent's
+ * proposed OBJECT (a table, query, diagram or mind map): ADR-0024 keeps its approval over the rendered object,
+ * which the card cannot draw, so it still renders staged at its point with its own Accept and Decline.
  */
 
 export type InlineTextChange = {
@@ -162,18 +166,6 @@ export function diffInlineChangeText(oldText: string, newText: string): InlineCh
   }
 }
 
-function appendText(parent: HTMLElement, text: string): void {
-  if (text) parent.appendChild(document.createTextNode(text))
-}
-
-function appendSpan(parent: HTMLElement, className: string, text: string): void {
-  if (!text) return
-  const span = document.createElement('span')
-  span.className = className
-  span.textContent = text
-  parent.appendChild(span)
-}
-
 // lucide paths, drawn as real SVG (never letter/unicode stand-ins — the M1 lesson).
 const ICONS: Record<InlineAction, string[]> = {
   accept: ['M20 6 9 17l-5-5'],
@@ -195,88 +187,6 @@ function icon(paths: string[]): SVGElement {
     svg.appendChild(p)
   }
   return svg
-}
-
-function miniButton(cid: string, act: InlineAction, label: string, extraClass: string): HTMLButtonElement {
-  const b = document.createElement('button')
-  b.type = 'button'
-  b.className = `mini${extraClass ? ' ' + extraClass : ''}`
-  b.title = label
-  b.setAttribute('aria-label', label)
-  b.dataset.cid = cid
-  b.dataset.act = act
-  b.appendChild(icon(ICONS[act]))
-  return b
-}
-
-/** The inline rendered change plus its action bar. The widget replaces the original live range, so
- * the buffer remains unchanged while the surface can show the review diff. */
-class ChangeWidget extends WidgetType {
-  constructor(readonly change: InlineTextChange) {
-    super()
-  }
-
-  eq(other: ChangeWidget): boolean {
-    const a = this.change
-    const b = other.change
-    return (
-      a.id === b.id &&
-      a.oldText === b.oldText &&
-      a.newText === b.newText &&
-      a.category === b.category &&
-      a.selected === b.selected
-    )
-  }
-
-  toDOM(): HTMLElement {
-    const diff = diffInlineChangeText(this.change.oldText, this.change.newText)
-    const wrap = document.createElement('span')
-    wrap.className = [
-      'inline-change',
-      categoryClassForInlineChange(this.change.category),
-      this.change.selected ? 'sel cid-active' : '',
-    ]
-      .filter(Boolean)
-      .join(' ')
-    wrap.dataset.cid = this.change.id
-    if (this.change.category) wrap.dataset.cat = this.change.category
-
-    appendText(wrap, diff.prefix)
-    appendSpan(wrap, 'del', diff.oldMiddle)
-    if (diff.oldMiddle && diff.newMiddle) wrap.appendChild(document.createTextNode(' '))
-    appendSpan(wrap, 'ins', diff.newMiddle)
-
-    if (!this.change.newText && !diff.oldMiddle) {
-      const del = document.createElement('i')
-      del.className = 'deleted'
-      del.textContent = 'deleted'
-      wrap.appendChild(del)
-    }
-    // A whitespace-only difference has no visible middle at all — mark it so the writer can SEE what
-    // the edit does instead of a bare action bar floating beside unchanged-looking text.
-    if (this.change.newText && !diff.oldMiddle && !diff.newMiddle) {
-      const ws = document.createElement('i')
-      ws.className = 'deleted'
-      ws.textContent = 'spacing'
-      wrap.appendChild(ws)
-    }
-
-    const bar = document.createElement('span')
-    bar.className = 'actbar cbar'
-    bar.appendChild(miniButton(this.change.id, 'accept', 'Accept', 'acc'))
-    bar.appendChild(miniButton(this.change.id, 'reject', 'Reject', 'rej'))
-    bar.appendChild(miniButton(this.change.id, 'revise', 'Revise', ''))
-    // The bar sits right AFTER the visible diff (before the shared suffix), so ✓/✗ are beside the words
-    // they act on — at the end of a long sentence-spanning widget it read as an orphaned control.
-    wrap.appendChild(bar)
-    appendText(wrap, diff.suffix)
-    return wrap
-  }
-
-  // The action bar's buttons must receive clicks, so don't let CodeMirror swallow events over the widget.
-  ignoreEvent(): boolean {
-    return false
-  }
 }
 
 const AGENT_ICON = ['M12 8V4H8', 'M4 8h16v12H4z', 'M2 14h2', 'M20 14h2', 'M15 13v2', 'M9 13v2']
@@ -340,7 +250,7 @@ class StagedObjectWidget extends WidgetType {
     const actions = document.createElement('span'); actions.className = 'qa-act'
     actions.append(
       stagedObjectButton(this.change.id, 'accept', 'Accept', true),
-      stagedObjectButton(this.change.id, 'reject', 'Discard'),
+      stagedObjectButton(this.change.id, 'reject', 'Decline'),
     )
     attribution.append(iconShell, text, actions)
 
@@ -362,126 +272,19 @@ class StagedObjectWidget extends WidgetType {
   }
 }
 
-class MoveLabelWidget extends WidgetType {
-  constructor(
-    readonly change: InlineMoveChange,
-    readonly text: string,
-  ) {
-    super()
-  }
-
-  eq(other: MoveLabelWidget): boolean {
-    return this.change.id === other.change.id && this.change.category === other.change.category && this.change.selected === other.change.selected && this.text === other.text
-  }
-
-  toDOM(): HTMLElement {
-    const chip = document.createElement('span')
-    chip.className = [
-      'catchip',
-      'move-label',
-      categoryClassForInlineChange(this.change.category),
-      this.change.selected ? 'cid-active' : '',
-    ]
-      .filter(Boolean)
-      .join(' ')
-    chip.dataset.cid = this.change.id
-    chip.textContent = this.text
-    return chip
-  }
-
-  ignoreEvent(): boolean {
-    return false
-  }
-}
-
-class MoveDestinationWidget extends WidgetType {
-  constructor(readonly change: InlineMoveChange) {
-    super()
-  }
-
-  eq(other: MoveDestinationWidget): boolean {
-    const a = this.change
-    const b = other.change
-    return (
-      a.id === b.id &&
-      a.oldText === b.oldText &&
-      a.newText === b.newText &&
-      a.category === b.category &&
-      a.selected === b.selected &&
-      a.destination === b.destination
-    )
-  }
-
-  toDOM(): HTMLElement {
-    const wrap = document.createElement('span')
-    wrap.className = [
-      'inline-change',
-      'move-destination',
-      categoryClassForInlineChange(this.change.category),
-      this.change.selected ? 'sel cid-active' : '',
-    ]
-      .filter(Boolean)
-      .join(' ')
-    wrap.dataset.cid = this.change.id
-    if (this.change.category) wrap.dataset.cat = this.change.category
-
-    const moved = document.createElement('span')
-    moved.className = 'move-in'
-    moved.textContent = this.change.newText
-    wrap.appendChild(moved)
-
-    const chip = document.createElement('span')
-    chip.className = 'catchip'
-    chip.textContent = this.change.destination < this.change.from ? 'moved from below ↓' : 'moved from above ↑'
-    wrap.appendChild(chip)
-
-    const bar = document.createElement('span')
-    bar.className = 'actbar cbar'
-    bar.appendChild(miniButton(this.change.id, 'accept', 'Accept', 'acc'))
-    bar.appendChild(miniButton(this.change.id, 'reject', 'Reject', 'rej'))
-    bar.appendChild(miniButton(this.change.id, 'revise', 'Revise', ''))
-    wrap.appendChild(bar)
-    return wrap
-  }
-
-  ignoreEvent(): boolean {
-    return false
-  }
+/** What the field draws: only an agent's proposed object, staged over its render (ADR-0024). Prose edits,
+ * insertions of prose and moves draw nothing here; their words wear the margin's quiet mark. */
+export function inlineObjectProposals(doc: string, changes: InlineChange[]): Array<{ change: InlineTextChange; block: LivePreviewBlock }> {
+  return changes.flatMap((c) => {
+    if (c.kind !== 'text' || c.from !== c.to || inlineChangeOverlapsFrontmatter(doc, c)) return []
+    const block = approvableObjectProposal(c.newText)
+    return block ? [{ change: c, block }] : []
+  })
 }
 
 function build(doc: string, changes: InlineChange[]): DecorationSet {
-  const ranges = [...changes].flatMap((c) => {
-    // A frontmatter.set proposal can cover the whole file. A non-block replacement across these line
-    // breaks corrupts CM6's tile geometry; metadata keeps its form and shows review state there instead.
-    if (inlineChangeOverlapsFrontmatter(doc, c)) return []
-    if (c.kind === 'move') {
-      const sourceClasses = [
-        'inline-change',
-        'move-source',
-        'move-out',
-        categoryClassForInlineChange(c.category),
-        c.selected ? 'sel cid-active' : '',
-      ]
-        .filter(Boolean)
-        .join(' ')
-      return [
-        Decoration.mark({
-          class: sourceClasses,
-          attributes: { 'data-cid': c.id, ...(c.category ? { 'data-cat': c.category } : {}) },
-        }).range(c.from, c.to),
-        Decoration.widget({ widget: new MoveLabelWidget(c, c.destination < c.from ? 'structure · moved ↑' : 'structure · moved ↓'), side: 1 }).range(c.to),
-        Decoration.widget({ widget: new MoveDestinationWidget(c), side: 1 }).range(c.destination),
-      ]
-    }
-    if (c.from === c.to) {
-      // A pure insertion (agent prose.insert) replaces nothing, so it renders as a point widget at the
-      // anchor. A zero-length replace decoration is invalid; the widget is the correct primitive and the
-      // ChangeWidget renders an empty oldText as an all-new (green) inserted run with its action bar.
-      const object = approvableObjectProposal(c.newText)
-      return [Decoration.widget({ widget: object ? new StagedObjectWidget(c, object) : new ChangeWidget(c), side: 1 }).range(c.from)]
-    }
-    return [Decoration.replace({ widget: new ChangeWidget(c), inclusive: false }).range(c.from, c.to)]
-  })
+  const ranges = inlineObjectProposals(doc, changes).map(({ change, block }) =>
+    Decoration.widget({ widget: new StagedObjectWidget(change, block), side: 1 }).range(change.from))
   return Decoration.set(ranges, true)
 }
 

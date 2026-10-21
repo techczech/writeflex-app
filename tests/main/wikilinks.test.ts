@@ -170,7 +170,7 @@ test('the legacy Stub input still produces byte-identical path and content', asy
   })
 })
 
-test('a Plan-style Stub can suppress a supplied backlink without changing the default', async () => {
+test('a Folio outline-style Stub can suppress a supplied backlink without changing the default', async () => {
   await write('source.md', '# Source\n')
   await write('pattern.md', '---\ntitle: Pattern\nstatus: editing\ndescription: first\n---\n\n# Pattern\n')
   await write('pattern-two.md', '---\ntitle: Pattern two\nstatus: ready\ndescription: second\n---\n\n# Pattern two\n')

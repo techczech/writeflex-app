@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { buildTree, createTargetDirectory, filterTreeByName, focusSegments, focusTree, folderBrowsePath, isInFocus, type TreeNode } from '../../src/renderer/src/sidebar-tree'
+import { buildTree, createTargetDirectory, filterTreeByName, focusSegments, focusTree, folderBrowsePath, isInFocus, vaultSidebarTree, workRowIcon, type TreeFolder, type TreeNode, type VaultSidebarView } from '../../src/renderer/src/sidebar-tree'
 import type { MarkdownFile } from '../../src/preload'
 
 function file(path: string): MarkdownFile {
@@ -134,4 +134,56 @@ test('New file / New folder target: the focused row, else the open file\'s folde
   // A tree row inside the focus still wins; a stale row outside it is clamped too.
   expect(createTargetDirectory({ focusedRow: { key: 'talks/ai-2026/research', kind: 'folder' }, activePath: 'top.md', focus })).toBe('talks/ai-2026/research')
   expect(createTargetDirectory({ focusedRow: { key: 'essays', kind: 'folder' }, activePath: null, focus })).toBe(focus)
+})
+
+// --- vault sidebar passes (vaults ticket 04) ---
+const files = [
+  file('zeta.md'), file('essay.md'), file('Folio One/README.md'), file('Folio One/01-a.md'), file('notes/b.md'),
+  file('cache/x.md'), file('AGENTS.md'),
+]
+const folders = ['Folio One', 'notes', 'cache', 'Empty']
+const index = {
+  works: [
+    { path: 'zeta.md', kind: 'file' }, { path: 'essay.md', kind: 'file' }, { path: 'Folio One', kind: 'folio' }, { path: 'notes/b.md', kind: 'file' },
+  ],
+  hidden: { paths: ['cache', 'AGENTS.md'], countText: '1 folder and 1 file hidden' },
+  labels: { 'zeta.md': 'Alpha title', 'essay.md': 'beta Essay', 'Folio One': 'Report', 'notes/b.md': 'B note' },
+  workFolders: ['Folio One'],
+} as unknown as NonNullable<VaultSidebarView['index']>
+const tree = buildTree(files, folders)
+const names = (nodes: TreeNode[]): string[] => nodes.map((n) => n.path)
+
+test('All files with File names is today\'s tree, same object', () => {
+  expect(vaultSidebarTree(tree, { writingOnly: false, titles: false, index })).toBe(tree)
+  expect(vaultSidebarTree(tree, { writingOnly: true, titles: true, index: null })).toBe(tree)
+})
+
+test('Writing only drops the hidden set (folders take their children) and nothing else', () => {
+  const out = vaultSidebarTree(tree, { writingOnly: true, titles: false, index })
+  expect(names(out)).toEqual(['Empty', 'Folio One', 'notes', 'essay.md', 'zeta.md'])
+  expect(out.find((n) => n.path === 'Folio One' && n.kind === 'folder' && n.children.length === 2)).toBeTruthy()
+})
+
+test('Titles: work folders are non-expanding labelled rows; sorted by label, case-insensitive, folders first', () => {
+  const out = vaultSidebarTree(tree, { writingOnly: true, titles: true, index })
+  expect(names(out)).toEqual(['Empty', 'notes', 'zeta.md', 'essay.md', 'Folio One'])
+  const folio = out.find((n) => n.path === 'Folio One') as TreeFolder
+  expect(folio.children).toEqual([])
+  expect(folio.label).toBe('Report')
+  expect(folio.work).toBe('folio')
+  expect((out.find((n) => n.path === 'notes') as TreeFolder).children[0]).toMatchObject({ label: 'B note', work: 'file' })
+})
+
+test('untitled files keep their names; the name filter matches the title and the name', () => {
+  const out = vaultSidebarTree(tree, { writingOnly: false, titles: true, index })
+  expect(out.find((n) => n.path === 'AGENTS.md')?.label).toBeUndefined()
+  expect(names(filterTreeByName(out, 'Report'))).toEqual(['Folio One'])
+  expect(names(filterTreeByName(out, 'folio one'))).toEqual(['Folio One'])
+})
+
+test('workRowIcon: a Folio keeps its mark, a folder work wears a folder, a single-file work a file', () => {
+  expect(workRowIcon(true, 'folio')).toBe('folio')
+  expect(workRowIcon(true, 'folder-piece')).toBe('folder')
+  expect(workRowIcon(true, undefined)).toBe('folder')
+  expect(workRowIcon(false, 'file')).toBe('file')
 })

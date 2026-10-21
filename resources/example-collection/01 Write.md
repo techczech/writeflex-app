@@ -21,7 +21,7 @@ There are three stiles on the way up. The first stile is new and still smells of
 The third is hardly a stile at all,
 just two stones set on end with a gap a sheep cannot manage.
 
-> **Insert objects.** Put the caret at the end of the paragraph under **The route**, press <kbd>⌘K</kbd> and choose Insert object. The list holds **Metadata**, **Image…**, **Code block**, **Flow diagram**, **Mind map**, **SVG**, **Divider** and **Footnote**; **Insert widget…** adds a widget, which is shown just below. Insert a **Flow diagram** and draw the route in it: village, second stile, wold top, wood, village. **Metadata** puts a block at the top of the file for facts about the piece, such as its date and status.
+> **Insert objects.** Put the caret at the end of the paragraph under **The route**, press <kbd>⌘K</kbd> and choose Insert object. The list holds **Metadata**, **Image…**, **Code block**, **Flow diagram**, **Mind map**, **SVG**, **Divider** and **Footnote**; **Insert widget…** adds a widget, which is shown just below. **New record browser…** makes a widget from a CSV or JSON file, **Edit record browser…** reopens it, and **Undo last widget step** takes the last widget step back. Insert a **Flow diagram** and draw the route in it: village, second stile, wold top, wood, village. **Metadata** puts a block at the top of the file for facts about the piece, such as its date and status. **Show metadata** opens its labelled fields and workspace suggestions; **Collapse metadata** reduces it to a summary, remembered for this workspace.
 
 ## The route
 

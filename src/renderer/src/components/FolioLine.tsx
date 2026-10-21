@@ -10,6 +10,7 @@ export type FolioLineProps = {
 /** The words that stand where a position would be. */
 export function folioPositionText(place: Pick<FolioPlace, 'kind' | 'position' | 'total'>): string {
   if (place.kind === 'index') return 'Index Note'
+  if (place.kind === 'instructions') return 'Agent instructions'
   if (place.kind === 'unlisted') return 'Not in the running order'
   return `${place.position} of ${place.total}`
 }
@@ -21,7 +22,7 @@ export function folioPositionText(place: Pick<FolioPlace, 'kind' | 'position' | 
  * leaves the other where it was.
  */
 export function FolioLine({ place, onOpenPlan, onOpenPiece }: FolioLineProps): JSX.Element {
-  const openLabel = `Open the Plan for ${place.name}`
+  const openLabel = `Open the Folio outline for ${place.name}`
   const previous = place.previous ? `Previous piece: ${place.previous.title}` : null
   const next = place.next ? `Next piece: ${place.next.title}` : null
   return (

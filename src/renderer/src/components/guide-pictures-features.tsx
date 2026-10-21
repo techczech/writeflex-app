@@ -2,7 +2,7 @@
 import { Arrow, Card, Label, Page, Pic } from './guide-picture-parts'
 
 export const PictureSend = (): JSX.Element => (
-  <Pic label="A document exported as HTML or Word, read in a browser, with notes sent back" height={160}>
+  <Pic label="A document exported as HTML or Word, read in a browser, with comments sent back" height={160}>
     <Page x={20} y={26} /><Page x={15} y={21} /><Page x={10} y={16} lines={4} />
     <Label x={8} y={88}>your pieces</Label>
     <Arrow x={62} y={40} len={22} />
@@ -14,7 +14,7 @@ export const PictureSend = (): JSX.Element => (
     <rect x="219" y="37" width="24" height="6" rx="1" className="hl" /><rect x="258" y="31" width="17" height="14" rx="3" className="note" />
     <Label x={282} y={84} end>reader’s browser</Label>
     <path d="M246 96c0 28-40 34-96 34-66 0-116-6-116-32m-5 6 5-6 5 6" className="pl back" />
-    <Label x={145} y={150} mid>notes and edits come back, no account</Label>
+    <Label x={145} y={150} mid>comments and edits come back, no account</Label>
   </Pic>
 )
 

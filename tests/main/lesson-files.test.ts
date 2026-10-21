@@ -80,7 +80,7 @@ test('a Guide topic whose Try it opens a lesson file finds what its caption prom
     'how.5': { file: '05 Review and versions.md', has: ['Drafting', 'Reviewing', '<kbd>⌥⌘M</kbd>'] },
     'how.6': { file: '08 Work with the agent.md', has: ['<kbd>⌘J</kbd>', 'suggestion'] },
     'how.7': { file: '08 Work with the agent.md', has: ['**Skills.**', 'Copy-edit', '**Manage skills…**'] },
-    'how.8': { file: '07 Collect and plan.md', has: ['Board', 'Plan', '<kbd>⇧⌘B</kbd>'] },
+    'how.8': { file: '07 Collect and plan.md', has: ['Board', 'Folio outline', '<kbd>⇧⌘B</kbd>'] },
   }
   const lessonTopics = ALL_TOPICS.filter((topic) => topic.tryIt?.target.kind === 'chapter')
   expect(lessonTopics.map((topic) => topic.id).sort()).toEqual(Object.keys(promised).sort())

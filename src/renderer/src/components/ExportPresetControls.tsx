@@ -15,7 +15,7 @@ const choiceSummary = (choice: ExportPresetChoice): string => {
   const features = [
     choice.sidebar ? 'contents' : '',
     choice.titleBlock ? 'title details' : '',
-    choice.readerNotes ? 'reader notes' : '',
+    choice.readerNotes ? 'reader comments' : '',
     choice.readerEdits ? 'reader editing' : '',
     choice.summaryTiles ? 'word count and dates' : '',
   ].filter(Boolean)

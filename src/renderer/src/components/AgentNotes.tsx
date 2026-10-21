@@ -232,7 +232,11 @@ function editableTarget(target: EventTarget | null): boolean {
 
 const message = (reason: unknown): string => reason instanceof Error ? reason.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') : String(reason)
 
-export function AgentNotes({ dir, activePath, onRestage, onOpenFile, onReveal }: { dir: string; activePath: string | null } & Pick<AgentNoteActions, 'onRestage' | 'onOpenFile' | 'onReveal'>): JSX.Element {
+/** How the pane resolves a proposal: the app's document-owner route (resolution-routes.ts,
+ *  resolveProposalThroughOwner), so an accept never writes an open document beside a save of it. */
+export type ResolveProposal = (change: Change, action: 'accept' | 'reject') => Promise<{ applied: boolean; message?: string }>
+
+export function AgentNotes({ dir, activePath, workspaceOpen = true, onRestage, onOpenFile, onReveal, resolveProposal }: { dir: string; activePath: string | null; workspaceOpen?: boolean; resolveProposal: ResolveProposal } & Pick<AgentNoteActions, 'onRestage' | 'onOpenFile' | 'onReveal'>): JSX.Element {
   const [notes, setNotes] = useState<AgentNote[]>([])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -251,12 +255,13 @@ export function AgentNotes({ dir, activePath, onRestage, onOpenFile, onReveal }:
   }, [dir])
 
   const reloadProposals = useCallback(async (): Promise<void> => {
+    if (!workspaceOpen) { setChanges([]); return } // no Change Ledger to ask yet
     try {
       setChanges(await window.writeflex.listChanges({ provenance: 'agent', status: 'pending' }))
     } catch {
       setChanges([]) // no workspace or ledger yet: nothing to propose
     }
-  }, [])
+  }, [workspaceOpen])
 
   useEffect(() => {
     void reload()
@@ -303,16 +308,17 @@ export function AgentNotes({ dir, activePath, onRestage, onOpenFile, onReveal }:
   }, [undoTick])
 
   const onResolveProposal = useCallback((changeId: string, action: 'accept' | 'reject'): void => {
+    const change = changes.find((candidate) => candidate.id === changeId)
     void (async () => {
       try {
-        const result = await window.writeflex.resolveChange(changeId, action)
+        const result = change ? await resolveProposal(change, action) : { applied: false }
         setNotice(result.applied ? '' : (result.message ?? 'That proposal is no longer live; ask the agent again.'))
       } catch (reason) {
         setNotice(message(reason))
       }
       await Promise.all([reload(), reloadProposals()])
     })()
-  }, [reload, reloadProposals])
+  }, [changes, resolveProposal, reload, reloadProposals])
 
   const notePaths = new Set(notes.filter((note) => note.noteType === 'prose').map((note) => note.path))
   return (

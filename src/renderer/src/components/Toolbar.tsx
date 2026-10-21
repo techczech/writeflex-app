@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { BookOpen, Check, ChevronDown, Code2, Command, Compass, Eye, Files, Glasses, Highlighter, ListOrdered, PanelLeft, PanelRight, PanelTop, Search, SquarePen, X } from 'lucide-react'
+import { BookOpen, Check, ChevronDown, CloudOff, Code2, Command, Compass, Eye, Files, Glasses, Highlighter, Link, ListOrdered, PanelLeft, PanelRight, PanelTop, Search, SquarePen, TriangleAlert, X } from 'lucide-react'
+import { missingPartsLabel, type ShareMark } from '../../../shared/sharing-links'
 import type { EditorViewMode } from '../editor/view-mode'
 import type { WriterReviewMode } from '../editor/writer-review'
 
@@ -41,8 +42,24 @@ export type ToolbarProps = {
   /** The Folio the open file belongs to. Present = the "Plan | <Folio name>" button; absent = nothing is rendered. */
   folioName?: string | null
   onOpenFolioPlan?: () => void
+  /**
+   * The Shared mark (sharing ticket 03, frame `title-bar-marks`): Share, Shared, or Not published, for
+   * the open piece. Absent = no piece open, no mark. Opens the Sharing page (⌥⌘S).
+   */
+  shareMark?: ShareMark | null
+  shareOpen?: boolean
+  onOpenSharing?: () => void
   /** Tab-strip slot — the horizontal document tabs and new-file button. */
   children?: ReactNode
+}
+
+const SHARE_MARK_WORDS: Record<ShareMark['kind'], string> = { share: 'Share', shared: 'Shared', 'not-published': 'Not published' }
+/** Frame `folio`: "Shared · 1 part missing". */
+const shareMarkWords = (mark: ShareMark): string => (mark.kind === 'shared' && mark.missing ? `Shared · ${missingPartsLabel(mark.missing)}` : SHARE_MARK_WORDS[mark.kind])
+const SHARE_MARK_TITLES: Record<ShareMark['kind'], string> = {
+  share: 'Not shared. Opens the Sharing page (⌥⌘S)',
+  shared: 'Shared and published. Opens the Sharing page (⌥⌘S)',
+  'not-published': 'Publishing failed; readers see the last published time. Opens the Sharing page (⌥⌘S)',
 }
 
 export function documentIdentityLabel(documentName?: string | null, collectionName?: string | null): string {
@@ -82,6 +99,9 @@ export function Toolbar({
   boardFilter,
   folioName,
   onOpenFolioPlan,
+  shareMark,
+  shareOpen = false,
+  onOpenSharing,
   children,
 }: ToolbarProps): JSX.Element {
   const modeLabel = writerMode === 'drafting' ? 'Drafting' : 'Reviewing'
@@ -174,8 +194,8 @@ export function Toolbar({
       )}
       <div className="tabstrip" role="tablist" aria-label="Open tabs">{children}</div>
       {folioName && onOpenFolioPlan && (
-        <button type="button" className="planbtn" aria-label={`Open the Plan for ${folioName}`} title={`Open the Plan for ${folioName}`} onClick={onOpenFolioPlan}>
-          <ListOrdered className="icon sm" /><span className="pb-plan">Plan</span><span className="pb-name">{folioName}</span>
+        <button type="button" className="planbtn" aria-label={`Open the Folio outline for ${folioName}`} title={`Open the Folio outline for ${folioName}`} onClick={onOpenFolioPlan}>
+          <ListOrdered className="icon sm" /><span className="pb-plan">Folio outline</span><span className="pb-name">{folioName}</span>
         </button>
       )}
 
@@ -234,6 +254,22 @@ export function Toolbar({
             )}
           </div>
         ) : null}
+        {shareMark && onOpenSharing && (
+          <button
+            type="button"
+            className={`sharemark ${shareMark.kind}${shareMark.kind === 'shared' && shareMark.missing ? ' missing' : ''}`}
+            data-testid="share-mark"
+            data-mark={shareMark.kind}
+            aria-pressed={shareOpen}
+            title={shareMark.kind === 'shared' && shareMark.missing ? `Shared; ${missingPartsLabel(shareMark.missing)}: readers see its title with “not available”. Opens the Sharing page (⌥⌘S)` : SHARE_MARK_TITLES[shareMark.kind]}
+            aria-label={`${shareMarkWords(shareMark)}: open the Sharing page`}
+            onClick={onOpenSharing}
+          >
+            {shareMark.kind === 'not-published' ? <CloudOff className="icon sm" aria-hidden="true" /> : shareMark.kind === 'shared' && shareMark.missing ? <TriangleAlert className="icon sm" aria-hidden="true" /> : <Link className="icon sm" aria-hidden="true" />}
+            <span className="sm-word">{shareMarkWords(shareMark)}</span>
+            <span className="chord" aria-hidden="true">⌥⌘S</span>
+          </button>
+        )}
         <button className="tbtn" title="Command palette (⇧⌘P)" aria-label="Command palette" onClick={onOpenPalette}>
           <Command className="icon" />
           <span className="chord" aria-hidden="true">⇧⌘P</span>
@@ -256,7 +292,7 @@ export function Toolbar({
         <button
           className="tbtn"
           aria-pressed={panelsOpen}
-          title="Panels — Agent ⌘J · Review and Changes ⇧⌘C · Scratchpad ⇧⌘J"
+          title="Panels — Agent ⌘J · Scratchpad ⇧⌘J · Versions ⌘3"
           aria-label="Toggle panels"
           onClick={onTogglePanels}
         >

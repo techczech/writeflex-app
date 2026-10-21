@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
+import JSZip from 'jszip'
 import { Workspace } from '../../src/main/workspace'
 import { exportBundle, exportDocument } from '../../src/main/export'
 import { listCollection } from '../../src/main/collection'
@@ -87,7 +88,9 @@ test('placeholder text in a widget, a title or a body is exported as written', a
     // The widget's source reaches srcdoc byte for byte (escaped once as an attribute), placeholders included.
     expect(html).toContain('&lt;p id=&quot;t&quot;&gt;{{reader-notes}} {{front-page}} {{body}} {{styles}}&lt;/p&gt;')
     expect(html).toContain('Prose says {{reader-notes}} and {{front-page}}.')
-    expect(html).toContain('>{{body}}</h2>')
+    // The part's own `# {{body}}` is its title: the section prints it once, as the section heading, and not again in the body.
+    expect(html).toContain('>{{body}}</h1>')
+    expect(html).not.toContain('>{{body}}</h2>')
     expect(html.match(/SECOND_BODY_MARK/g)?.length).toBe(1)
     expect(html.match(/id="writeflex-interaction-manifest"/g)?.length ?? 0).toBe('readerNotes' in options ? 1 : 0)
   }
@@ -95,17 +98,36 @@ test('placeholder text in a widget, a title or a body is exported as written', a
   expect(single).toContain('&lt;p id=&quot;t&quot;&gt;{{reader-notes}} {{front-page}} {{body}} {{styles}}&lt;/p&gt;')
   expect(single.match(/id="writeflex-interaction-manifest"/g)?.length).toBe(1)
 })
-test('Word writes the pieces directly in the folder: the count the sheet shows for Word is the Collection rows', async () => {
+test('Word exports a Folio\'s listed parts, the same as HTML, including parts nested in subfolders', async () => {
   await put('folio/_report-structure.json', JSON.stringify({ schema_version: 1, files: [{ path: 'z.md' }, { path: 'evidence/passage.md' }] }))
   await put('folio/z.md', '# Report first\n')
   await put('folio/evidence/passage.md', '# Passage context\n')
   const word = await exportBundle(ws, { dir: 'folio', format: 'docx', target: join(out, 'report.docx') })
-  expect(word.pieces).toBe((await listCollection(ws, 'folio')).rows.length)
-  expect([word.pieces, word.listed]).toEqual([1, 1])
-  // Every listed part nested: Word has nothing to write and says so; HTML writes the listed part.
+  const html = await exportBundle(ws, { dir: 'folio', format: 'html', target: join(out, 'report.html') })
+  expect([word.pieces, word.listed]).toEqual([2, 2])
+  expect([word.pieces, word.listed]).toEqual([html.pieces, html.listed])
+  // Every listed part nested: both formats write the listed part.
   await put('nested/_report-structure.json', JSON.stringify({ schema_version: 1, files: [{ path: 'evidence/passage.md' }] }))
   await put('nested/evidence/passage.md', '# Passage context\n')
   expect((await listCollection(ws, 'nested')).rows.length).toBe(0)
-  await expect(exportBundle(ws, { dir: 'nested', format: 'docx', target: join(out, 'nested.docx') })).rejects.toThrow('There are no pieces in nested to export')
+  expect((await exportBundle(ws, { dir: 'nested', format: 'docx', target: join(out, 'nested.docx') })).pieces).toBe(1)
   expect((await exportBundle(ws, { dir: 'nested', format: 'html', target: join(out, 'nested.html') })).pieces).toBe(1)
+})
+test('Word exports a content_root Folio\'s parts in order and none of the root-level files', async () => {
+  await put('report/_report-structure.json', JSON.stringify({ schema_version: 1, content_root: 'contents', title_matter: 'contents/00-frontmatter.md', files: [{ path: '01-executive-summary.md' }, { path: '02-report.md' }] }))
+  await put('report/contents/00-frontmatter.md', '# Front matter heading\n')
+  await put('report/contents/01-executive-summary.md', '# Executive summary heading\n\nSummary text.\n')
+  await put('report/contents/02-report.md', '# Full report heading\n\nReport text.\n')
+  await put('report/README.md', '# README_ROOT_CANARY\n')
+  await put('report/AGENTS.md', '# AGENTS_ROOT_CANARY\n')
+  await put('report/research/README.md', '# RESEARCH_README_CANARY\n')
+  const word = await exportBundle(ws, { dir: 'report', format: 'docx', target: join(out, 'report.docx') })
+  const html = await exportBundle(ws, { dir: 'report', format: 'html', target: join(out, 'report.html') })
+  expect(word.pieces).toBe(html.pieces)
+  expect(word.pieces).toBe(2)
+  const xml = await (await JSZip.loadAsync(await readFile(word.target))).file('word/document.xml')!.async('string')
+  const first = xml.indexOf('Executive summary heading'), second = xml.indexOf('Full report heading')
+  expect(first).toBeGreaterThan(-1)
+  expect(second).toBeGreaterThan(first)
+  for (const canary of ['README_ROOT_CANARY', 'AGENTS_ROOT_CANARY', 'RESEARCH_README_CANARY']) expect(xml).not.toContain(canary)
 })

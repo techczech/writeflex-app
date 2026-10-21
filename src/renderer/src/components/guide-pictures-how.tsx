@@ -94,14 +94,14 @@ export const PictureSkills = (): JSX.Element => (
 )
 
 export const PictureCollections = (): JSX.Element => (
-  <Pic label="A collection of pieces shown as a Board, a Plan and one exported document">
+  <Pic label="A collection of pieces shown as a Board, a Folio outline and one exported document">
     <Folder x={8} y={14} w={70} h={56} /><Label x={16} y={48} strong>collection</Label>
     <Page x={14} y={80} w={18} h={26} /><Page x={36} y={80} w={18} h={26} /><Page x={58} y={80} w={18} h={26} />
     <Arrow x={86} y={44} len={16} />
     <Card x={108} y={14} w={96} h={56} title="Board">
       {[0, 1, 2].map((i) => <rect key={i} x={114 + i * 30} y={34} width="26" height={i === 1 ? 24 : 16} rx="3" className="pg tone-accent" />)}
     </Card>
-    <Card x={108} y={80} w={96} h={46} title="Plan">
+    <Card x={108} y={80} w={96} h={46} title="Folio outline">
       {[0, 1, 2].map((i) => <g key={i}><circle cx="120" cy={96 + i * 9} r="2" className="fp" /><path d={`M128 ${96 + i * 9}h${50 - i * 8}`} className="ln" /></g>)}
     </Card>
     <Arrow x={210} y={70} len={22} />

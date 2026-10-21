@@ -6,7 +6,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef, useState } from 
  * palette (Task 13), 'settings'/'cheatsheet' arrive in Task 17. A plain string keeps the guard
  * agnostic of which surfaces exist so later tasks add their own without touching this hook.
  */
-export type OverlayId = 'files' | 'commands' | 'settings' | 'cheatsheet' | 'version' | 'capture' | 'materialise' | 'skills' | 'focus' | 'goal' | 'export' | 'folderPiece' | 'widgetPicker' | 'sessionStarter' | 'statusDisclosure' | 'statusEvents'
+export type OverlayId = 'files' | 'commands' | 'settings' | 'cheatsheet' | 'version' | 'capture' | 'materialise' | 'skills' | 'focus' | 'goal' | 'export' | 'folderPiece' | 'widgetPicker' | 'sessionStarter' | 'statusDisclosure' | 'statusEvents' | 'makeVault' | 'diskMerge' | 'researchCapture'
 
 export type OverlayGuard = {
   /** The overlay currently raised, or null. Reactive — drives conditional rendering of the sheet. */
@@ -23,6 +23,12 @@ export type OverlayGuard = {
   open: (id: OverlayId) => void
   /** Dismiss whatever is open; global shortcuts resume ownership on the next keydown. */
   close: () => void
+  /**
+   * Hold the open overlay up (true) or let it be replaced again (false). While held, `open` of any other
+   * overlay is ignored: a sheet that is writing (Merge on the changed-on-disk banner) is never replaced
+   * mid-write by ⌘, or the palette. Released by `close` too.
+   */
+  hold: (held: boolean) => void
 }
 
 /**
@@ -35,14 +41,23 @@ export type OverlayGuard = {
 export function useOverlayGuard(): OverlayGuard {
   const [active, setActive] = useState<OverlayId | null>(null)
   const isOpenRef = useRef(false)
+  const heldRef = useRef<OverlayId | null>(null)
+  const activeRef = useRef<OverlayId | null>(null)
 
   const open = useCallback((id: OverlayId) => {
+    if (heldRef.current !== null && heldRef.current !== id) return
     isOpenRef.current = true
+    activeRef.current = id
     setActive(id)
   }, [])
   const close = useCallback(() => {
+    heldRef.current = null
     isOpenRef.current = false
+    activeRef.current = null
     setActive(null)
+  }, [])
+  const hold = useCallback((held: boolean) => {
+    heldRef.current = held ? activeRef.current : null
   }, [])
 
   // Reset on unmount: the ref that the window's capture-phase shortcuts read is plain (not state),
@@ -50,10 +65,11 @@ export function useOverlayGuard(): OverlayGuard {
   useEffect(
     () => () => {
       isOpenRef.current = false
+      heldRef.current = null
       setActive(null)
     },
     [],
   )
 
-  return { active, isOpenRef, open, close }
+  return { active, isOpenRef, open, close, hold }
 }

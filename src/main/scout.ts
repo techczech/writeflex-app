@@ -28,7 +28,13 @@ export type ScoutEnvironment = {
   isExecutable?: (candidate: string) => boolean
 }
 
-export type ScoutRunOptions = { timeoutMs?: number }
+export type ScoutRunOptions = {
+  timeoutMs?: number
+  /** Text written to the child's standard input, then closed (`scout capture … -`). */
+  input?: string
+  /** What to say when the child outlives `timeoutMs`; the default speaks of the archive search. */
+  timeoutMessage?: string
+}
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024
@@ -69,23 +75,33 @@ export function processScoutEnvironment(): ScoutEnvironment {
   return { pathEnv: process.env.PATH, home: process.env.HOME, override: process.env.WRITEFLEX_SCOUT_BIN }
 }
 
-type RunResult = { code: number; stdout: string; stderr: string }
+export type RunResult = { code: number; stdout: string; stderr: string }
+
+/** Spawns the binary with an argv (never through a shell); resolves with its exit code and output, rejects when it could not run or timed out. */
+export function runScout(binary: string, args: string[], options: ScoutRunOptions = {}): Promise<RunResult> {
+  return run(binary, args, options)
+}
 
 function run(binary: string, args: string[], options: ScoutRunOptions): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    execFile(binary, args, { timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true }, (error, stdout, stderr) => {
+    const child = execFile(binary, args, { timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true }, (error, stdout, stderr) => {
       if (error && typeof (error as NodeJS.ErrnoException).code !== 'number') {
         const killed = (error as { killed?: boolean }).killed
-        reject(new Error(killed ? 'The archive search took too long and was stopped.' : error.message))
+        reject(new Error(killed ? (options.timeoutMessage ?? 'The archive search took too long and was stopped.') : error.message))
         return
       }
       resolve({ code: error ? Number((error as NodeJS.ErrnoException).code) : 0, stdout: String(stdout), stderr: String(stderr) })
     })
+    if (options.input !== undefined) {
+      // A child that exits before reading its input closes the pipe; that surfaces through its exit code, not here.
+      child.stdin?.on('error', () => {})
+      child.stdin?.end(options.input)
+    }
   })
 }
 
 /** The CLI's own complaint (its last stderr line, minus the `scout:` prefix), or a fallback. */
-function complaint(stderr: string, fallback: string): string {
+export function complaint(stderr: string, fallback: string): string {
   const line = stderr.split('\n').map((entry) => entry.trim()).filter((entry) => entry && !entry.startsWith('scout: note:')).at(-1)
   return line ? line.replace(/^scout:\s*/, '') : fallback
 }

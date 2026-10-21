@@ -2,8 +2,12 @@ import { realpathSync } from 'node:fs'
 import { posix, sep } from 'node:path'
 import { Type } from 'typebox'
 import type { Capability, CapabilityContext } from '@bridle/core'
-import { normaliseMarkdownPath, SavedButNotReadBack, Workspace, type FileReadResult } from '../workspace'
-import { MANIFEST_NAME, assertManifestAbsent, draftManifest } from '../folio'
+import { ChangedSinceRead, DocumentChangedError, normaliseMarkdownPath, SavedButNotReadBack, Workspace, type FileReadResult, type SaveFileOptions } from '../workspace'
+import { fingerprintOfRead } from '../guarded-document-read'
+import { FOLIO_BACKUP_NAME, FOLIO_OWNERSHIP_NAME, MANIFEST_NAME, assertManifestAbsent, draftManifest } from '../folio'
+import { TURN_BACK_DESCRIPTION, recordFolioInstructionOwnership, turnBackIntoCollection } from '../folio-conversion'
+import { writeFolioAgentInstructions } from '../folio-agent-instructions'
+import { AGENTS_FILE, CLAUDE_FILE } from '../../shared/folio-agent-files'
 import { scrapsPathFor } from '../scraps'
 import { prepareOffcutPromotion, writeMaterial } from '../board-material'
 import { prepareSourceAttach } from '../source-attach'
@@ -19,6 +23,8 @@ import { listWidgetsInFile } from '../widgets'
 import { resolveWidgetFileForInsert } from '../widget-insert'
 import { planWidgetCreate, undoWidgetFile, writeWidgetFile, WIDGET_WRITE_SWITCHED_OFF, type CreatedWidgetFile } from '../widget-create'
 import { insertWidgetInText, relativeEmbedPath, removeWidgetInText } from '../../shared/widget-insert'
+import { captureInWorkspace, type WorkspaceCaptureInput } from '../research-capture'
+import { CAPTURE_KINDS } from '../../shared/research-capture'
 import { listTasksInFile, taskOnLine, toggleTaskInFile } from '../tasks'
 import {
   renameStructuralPaths, prepareRename, assertSamePathSet, assertPathSubset, frontmatterSplit,
@@ -39,6 +45,10 @@ export type Verb = Omit<Capability, 'name' | 'description' | 'execute'> & {
   run: (ctx: CapabilityContext, input: Parameters<Capability['execute']>[0]) => ReturnType<Capability['execute']>
 }
 
+/** What a save is told so that it refuses, writing nothing, when the document no longer holds the bytes `source` read. */
+const unchangedSince = (source: FileReadResult): SaveFileOptions => ({ expect: { fingerprint: fingerprintOfRead(source) } })
+
+
 // Read/beyond-parity verbs have no exact UI command. Existing proposal floors also preserve
 // frontmatter staging; correcting metadata posture is outside this behaviour-preserving ticket.
 export function buildVerbTable(
@@ -48,11 +58,11 @@ export function buildVerbTable(
   permitted?: (name: string) => boolean,
 ): Verb[] {
   /** The document text with the proposed embed line in it; throws the refusal's sentence (outside the Workspace, not HTML, no such widget). */
-  const widgetInsertText = async (input: WidgetsInsertInput): Promise<string> => {
+  const widgetInsertText = async (input: WidgetsInsertInput): Promise<{ read: string; next: string }> => {
     const resolved = await resolveWidgetFileForInsert(workspace.root, input.file)
     if (!resolved.ok) throw new Error(resolved.message)
     const source = await workspace.readFile(input.path)
-    return insertWidgetInText(source.content, relativeEmbedPath(source.file.path, resolved.relativePath), input.position ?? 'end')
+    return { read: source.content, next: insertWidgetInText(source.content, relativeEmbedPath(source.file.path, resolved.relativePath), input.position ?? 'end') }
   }
   /** A refusal's sentence without the machine's folder names in it: fs errors quote absolute paths, and this text goes to the agent. */
   const plainMessage = (error: unknown): string => {
@@ -113,7 +123,7 @@ export function buildVerbTable(
     },
     {
       id: 'plan.propose', class: 'content', posture: 'proposal', agentOnly: true, label: 'propose running order', risk: 'write',
-      describe: 'Propose changes to a report folder\'s running order as ONE proposal the writer accepts, edits or discards. Nothing is written when you call this: the writer sees the proposed order with each change marked, and Accept applies every change as one undoable step. There is no other way to change a running order. Name parts by their running-order title (as plan.read gives it). Changes apply in the order listed; `at` and `to` are 0-based places in the order as it stands at that point. insert: add a part (an unwritten one, or a file in the folder by its title). move: put a part at place `to`. remove: take a part out of the order (its file stays; nothing is deleted). adopt: add a stray file (by path, from plan.read\'s strays). materialise: write an unwritten part out into a new file. setRole: set a part\'s role (section, vignette, appendix or summary). If the folder has no Index Note, accepting creates it first. Call plan.read first.',
+      describe: 'Propose changes to a report folder\'s running order as ONE proposal the writer accepts, edits or discards. Nothing is written when you call this: the writer sees the proposed order with each change marked, and Accept applies every change as one undoable step. There is no other way to change a running order. Name parts by their running-order title (as plan.read gives it). Changes apply in the order listed; `at` and `to` are 0-based places in the order as it stands at that point. insert: add a part (an unwritten one, or a file in the folder by its title). move: put a part at place `to`. remove: take a part out of the order (its file stays; nothing is deleted). adopt: add a stray file (by path, from plan.read\'s strays). materialise: write an unwritten part out into a new file. setRole: set a part\'s role (section, vignette, appendix, summary or front-matter). Front matter (a title page, a preface) exports before the contents page, is never listed in it and always comes first: a part joins or leaves it by its role, never by a move. If the folder has no Index Note, accepting creates it first. Call plan.read first.',
       parameters: Type.Object({
         dir: Type.String({ description: 'Workspace-relative report folder ("" for the Workspace root)' }),
         changes: Type.Array(Type.Union([
@@ -189,8 +199,16 @@ export function buildVerbTable(
           return fail(`oldText is not unique in ${input.path}; include more surrounding context.`)
         }
         const next = source.content.slice(0, first) + input.newText + source.content.slice(first + input.oldText.length)
-        const saved = await workspace.saveFile(input.path, next)
-        return ok(`Applied ${input.category} edit to ${input.path}: ${input.summary}`, saved)
+        // Only over the text read above (final review round 1, finding 1): another version there is not
+        // replaced, by the basis check and the guarded write's content check alike.
+        try {
+          const saved = await workspace.saveFileOverRead(input.path, next, source.content, unchangedSince(source))
+          return ok(`Applied ${input.category} edit to ${input.path}: ${input.summary}`, saved)
+        } catch (error) {
+          // The document changed between the read above and the save: nothing was written.
+          if (error instanceof ChangedSinceRead || error instanceof DocumentChangedError) return fail(error.message)
+          throw error
+        }
       }
     },
     {
@@ -209,7 +227,7 @@ export function buildVerbTable(
         const source = await workspace.readFile(input.path)
         try {
           const resolved = resolveProseMove(source.content, input)
-          const saved = await workspace.saveFile(input.path, resolved.nextContent)
+          const saved = await workspace.saveFileOverRead(input.path, resolved.nextContent, source.content, unchangedSince(source))
           return ok(`Applied structure move to ${input.path}: ${input.summary}`, saved)
         } catch (error) {
           return fail(error instanceof Error ? error.message : String(error))
@@ -244,7 +262,7 @@ export function buildVerbTable(
         const source = await workspace.readFile(input.path)
         try {
           const resolved = resolveProseInsert(source.content, input)
-          const saved = await workspace.saveFile(input.path, resolved.nextContent)
+          const saved = await workspace.saveFileOverRead(input.path, resolved.nextContent, source.content, unchangedSince(source))
           return ok(`Inserted ${input.category} content in ${input.path}: ${input.summary}`, saved)
         } catch (error) {
           return fail(error instanceof Error ? error.message : String(error))
@@ -276,7 +294,7 @@ export function buildVerbTable(
           const resolved = resolveProseInsert(source.content, {
             path: input.path, insertAfter: input.insertAfter ?? '', text: objectBlock(input.kind, input.content), category: 'other', summary: input.summary ?? 'Insert object',
           })
-          const saved = await workspace.saveFile(input.path, resolved.nextContent)
+          const saved = await workspace.saveFileOverRead(input.path, resolved.nextContent, source.content, unchangedSince(source))
           return ok(`Inserted ${input.kind} object in ${input.path}: ${input.summary ?? 'Object added.'}`, saved)
         } catch (error) {
           return fail(error instanceof Error ? error.message : String(error))
@@ -378,8 +396,8 @@ export function buildVerbTable(
       touchedPaths: (input: WidgetsInsertInput) => [workspace.absolute(input.path)],
       run: async (_ctx, input: WidgetsInsertInput) => {
         try {
-          const next = await widgetInsertText(input)
-          const saved = await workspace.saveFile(input.path, next)
+          const { read, next } = await widgetInsertText(input)
+          const saved = await workspace.saveFileOverRead(input.path, next, read)
           return ok(`Inserted a widget (${input.file}) in ${input.path}.`, saved)
         } catch (error) {
           return fail(error instanceof Error ? error.message : String(error))
@@ -440,7 +458,8 @@ export function buildVerbTable(
             // Off there, the temp file is dropped, the document is untouched, and the widget file is taken back
             // out below. A switch turned off before a file's commit syscall stops that commit; nothing after the
             // commit is undone.
-            saved = await workspace.saveFile(planned.documentPath, planned.nextDocument, { beforeCommit: refuseIfOff })
+            // Only over the document as the plan read it (final review round 1, finding 1).
+            saved = await workspace.saveFileOverRead(planned.documentPath, planned.nextDocument, planned.currentDocument, { beforeCommit: refuseIfOff })
           } catch (error) {
             if (!(error instanceof SavedButNotReadBack)) throw error
             // The document was written and now refers to the widget: both stay. Only the read-back failed.
@@ -480,8 +499,9 @@ export function buildVerbTable(
       touchedPaths: (input: WidgetsRemoveInput) => [workspace.absolute(input.path)],
       run: async (_ctx, input: WidgetsRemoveInput) => {
         try {
-          const next = removeWidgetInText((await workspace.readFile(input.path)).content, input.ordinal)
-          const saved = await workspace.saveFile(input.path, next)
+          const read = (await workspace.readFile(input.path)).content
+          const next = removeWidgetInText(read, input.ordinal)
+          const saved = await workspace.saveFileOverRead(input.path, next, read)
           return ok(`Removed widget ${input.ordinal} from ${input.path}.`, saved)
         } catch (error) {
           return fail(error instanceof Error ? error.message : String(error))
@@ -549,7 +569,7 @@ export function buildVerbTable(
           if (prepared.plan.bystanderReferences.length) {
             return fail(
               `The rename was not made because it would change the meaning of other references: `
-              + `${prepared.plan.bystanderReferences.join('; ')} The agent must propose this change for Dominik to decide.`,
+              + `${prepared.plan.bystanderReferences.join('; ')} The agent must propose this change for you to decide.`,
             )
           }
           assertSamePathSet(ctx.resolvedTouchedPaths, prepared.touchedPaths, 'The prepared rename')
@@ -557,6 +577,8 @@ export function buildVerbTable(
           if (renamed.file.path !== prepared.plan.toPath) {
             throw new Error(`The rename landed at ${renamed.file.path}, but the prepared destination was ${prepared.plan.toPath}.`)
           }
+          // Never fails the rename: a Change left on the old path closes with its reason at accept.
+          await services?.onFileRenamed?.(prepared.plan.fromPath, renamed.file.path).catch(() => {})
           let repair: RenameRepairResult
           try {
             const checkpoint = async (path: string) => services?.checkpointFile?.(path)
@@ -588,24 +610,49 @@ export function buildVerbTable(
     },
     {
       id: 'folio.create_manifest', class: 'content', posture: 'direct', agentOnly: true, label: 'create Folio manifest', risk: 'write',
-      describe: `Declare a folder a Folio: create its ${MANIFEST_NAME} from the folder's numbered parts — ONLY when none exists. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.`,
+      describe: `Declare a folder a Folio: create its ${MANIFEST_NAME} from the folder's numbered parts — ONLY when none exists. When .folio-backup.json exists, restore it: drop entries whose files no longer exist, append new files at the end as sections, and keep everything else byte-for-byte. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.`,
       parameters: Type.Object({ dir: Type.String({ description: 'Workspace-relative folder to make a Folio ("" for the root)' }) }),
       preview: async (input: FolioManifestInput) => {
-        const draft = await draftManifest(workspace, input.dir)
-        return `Create a Folio manifest in ${input.dir || 'the workspace root'}\n\n${draft}`
+        let warning: string | undefined
+        const draft = await draftManifest(workspace, input.dir, message => { warning = message })
+        return `${warning ? warning + '\n\n' : ''}Create a Folio manifest in ${input.dir || 'the workspace root'}\n\n${draft}`
       },
-      touchedPaths: (input: FolioManifestInput) => [workspace.absolute(input.dir ? posix.join(input.dir, MANIFEST_NAME) : MANIFEST_NAME)],
+      // The manifest and the Folio's agent instructions (ticket 0.23-08), so the turn's restore point covers the instructions and their ownership record.
+      touchedPaths: (input: FolioManifestInput) => [MANIFEST_NAME, AGENTS_FILE, CLAUDE_FILE, FOLIO_OWNERSHIP_NAME].map((name) => workspace.absolute(input.dir ? posix.join(input.dir, name) : name)),
       run: async (_ctx, input: FolioManifestInput) => {
         try {
+          await services?.prepareFolioInstructions?.(input.dir)
           await assertManifestAbsent(workspace, input.dir)
           const path = input.dir ? posix.join(input.dir, MANIFEST_NAME) : MANIFEST_NAME
           // saveFile writes the path VERBATIM (createFile would markdown-normalise the .json to .md).
           const saved = await workspace.saveFile(path, await draftManifest(workspace, input.dir))
-          return ok(`Drafted a Folio manifest at ${saved.file.path}.`, saved)
+          let instructions = ''
+          try {
+            const written = await writeFolioAgentInstructions(workspace, input.dir, services?.checkpointFile)
+            await recordFolioInstructionOwnership(workspace, input.dir, written)
+            if (written.length) instructions = ` Wrote the Folio's agent instructions: ${written.join(', ')}.`
+          } catch (error) {
+            instructions = ` The Folio's agent instructions were not written: ${error instanceof Error ? error.message : String(error)}`
+          }
+          return ok(`Drafted a Folio manifest at ${saved.file.path}.${instructions}`, saved)
         } catch (error) {
           return fail(error instanceof Error ? error.message : String(error))
         }
       }
+    },
+    {
+      id: 'folio.turn_back', class: 'content', posture: 'approval', label: 'Turn back into a collection', risk: 'write',
+      describe: TURN_BACK_DESCRIPTION,
+      parameters: Type.Object({ dir: Type.String() }),
+      preview: async (input: FolioManifestInput) => `Turn ${input.dir || 'this Folio'} back into a collection. ${TURN_BACK_DESCRIPTION}`,
+      touchedPaths: (input: FolioManifestInput) => [MANIFEST_NAME, AGENTS_FILE, CLAUDE_FILE, FOLIO_BACKUP_NAME, FOLIO_OWNERSHIP_NAME].map(name => workspace.absolute(input.dir ? posix.join(input.dir, name) : name)),
+      run: async (_ctx, input: FolioManifestInput) => {
+        try {
+          await services?.prepareFolioInstructions?.(input.dir)
+          return { text: 'Turned back into a collection.', details: { paths: await turnBackIntoCollection(workspace, input.dir, services?.trashFile) } }
+        }
+        catch (error) { return fail(error instanceof Error ? error.message : String(error)) }
+      },
     },
     {
       id: 'frontmatter.normalise', class: 'content', posture: 'proposal', agentOnly: true, label: 'normalise frontmatter', risk: 'write',
@@ -622,8 +669,13 @@ export function buildVerbTable(
         const text = bom ? source.content.slice(1) : source.content
         const split = frontmatterSplit(text)
         if (!split) return fail(`${input.path} has no existing frontmatter block; use frontmatter.set to add metadata.`)
-        const saved = await workspace.saveFile(input.path, normaliseExistingFrontmatter(source.content))
-        return ok(`Normalised frontmatter on ${input.path}.`, saved)
+        try {
+          const saved = await workspace.saveFileOverRead(input.path, normaliseExistingFrontmatter(source.content), source.content)
+          return ok(`Normalised frontmatter on ${input.path}.`, saved)
+        } catch (error) {
+          if (error instanceof ChangedSinceRead) return fail(error.message)
+          throw error
+        }
       }
     },
     {
@@ -641,7 +693,7 @@ export function buildVerbTable(
         if (!input.set || Object.keys(input.set).length === 0) return fail('set must name at least one frontmatter key.')
         const source = await workspace.readFile(input.path)
         try {
-          const saved = await workspace.saveFile(input.path, setFrontmatterKeys(source.content, input.set, input.path))
+          const saved = await workspace.saveFileOverRead(input.path, setFrontmatterKeys(source.content, input.set, input.path), source.content)
           return ok(`Set frontmatter on ${input.path}.`, saved)
         } catch (error) {
           return fail((error as Error).message)
@@ -662,6 +714,29 @@ export function buildVerbTable(
         } catch (error) {
           return fail(error instanceof Error ? error.message : String(error))
         }
+      },
+    },
+    // Capture to research: the same main-process verb as the palette sheet and `writeflex capture`. Scout writes the
+    // file (never the app); it is a NEW file in a research folder, so it is direct, and deleting it undoes it.
+    {
+      id: 'research.capture', class: 'content', posture: 'direct', label: 'capture to research', risk: 'write',
+      describe: 'File ONE reusable unit — a table, a visualisation, a piece of evidence, a snippet, a search result or a widget description — as its own Markdown file in the research/ folder beside a Piece (or in its Folio\'s research/ folder), with its sources, and index it for search. Nothing existing is changed: it only ever makes a new file, and the writer can delete it. Give the Piece\'s path (or a folder) as `project`. Put the unit itself in `body`; list where it came from in `sources` (a scout passage id as `scout:<id>`, a URL, or `file:<path>`); never retype a search hit without its passage id.',
+      parameters: Type.Object({
+        project: Type.String({ description: 'Workspace-relative path of the Piece being worked on (or a folder: the Folio folder or a Folder Piece). A file is filed in its Folio\'s research/ folder, else beside it.' }),
+        title: Type.String({ description: 'A short title for the unit' }),
+        kind: Type.Union(CAPTURE_KINDS.map((kind) => Type.Literal(kind)), { description: 'What the unit is' }),
+        prompt: Type.Optional(Type.String({ description: 'The question that produced it' })),
+        sources: Type.Optional(Type.Array(Type.String(), { description: 'Provenance: `scout:<passage id>`, a URL, or `file:<path>`' })),
+        artefact: Type.Optional(Type.String({ description: 'Workspace-relative path of a non-Markdown file (an HTML widget, a PNG, a CSV) to copy into research/ beside the description' })),
+        body: Type.String({ description: 'The unit itself, as Markdown' }),
+      }),
+      // Scout names the new file, so none is known beforehand; no EXISTING file is touched, hence nothing to snapshot.
+      touchedPaths: () => [],
+      preview: (input: WorkspaceCaptureInput) => `Capture “${input.title}” (${input.kind}) to the research folder of ${input.project || 'the Workspace'}`,
+      run: async (_ctx, input: WorkspaceCaptureInput) => {
+        const result = await captureInWorkspace(workspace, input)
+        if (!result.ok) return fail(result.message)
+        return { text: `Captured to ${result.file}${result.indexed ? ' and indexed it for search' : ''}.`, details: { capture: result } }
       },
     },
     // Attach a source (scraps ticket 03, content-verb law): the writer's Board drag, proposed. The floor

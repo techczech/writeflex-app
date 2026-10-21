@@ -134,3 +134,63 @@ test('the keyboard in the Files pane or the Outline gives a row; in the editor i
   expect(paneRowFromElement(element({}))).toBeUndefined()
   expect(paneRowFromElement(null)).toBeUndefined()
 })
+
+import { reviewLine, type ReviewLineInput } from '../../src/renderer/src/components/status-bar-model'
+
+const waiting = (over: Partial<ReviewLineInput> = {}): ReviewLineInput => ({
+  waiting: 5, shown: 5, filtered: false, kind: 'all', counts: { all: 5, comments: 2, edits: 3 }, position: null, newCount: 0, otherPieces: 0, ...over,
+})
+
+test('the review line: absent with nothing waiting, "Waiting in N other pieces" alone, else count, segments and position', () => {
+  expect(reviewLine(waiting({ waiting: 0, shown: 0, counts: { all: 0, comments: 0, edits: 0 } }))).toBeNull()
+  expect(reviewLine(waiting({ waiting: 0, shown: 0, counts: { all: 0, comments: 0, edits: 0 }, otherPieces: 2 }))).toEqual({ hereless: true, countText: '', segments: [], newText: null, elsewhereText: 'Waiting in 2 other pieces', who: null, selectedText: null, acceptAllText: null, progress: null, notPlacedText: null, mode: null })
+  expect(reviewLine(waiting({ waiting: 0, shown: 0, otherPieces: 1 }))?.elsewhereText).toBe('Waiting in 1 other piece')
+  const rest = reviewLine(waiting())!
+  expect(rest.countText).toBe('5 waiting')
+  expect(rest.segments.map((s) => `${s.label} ${s.count}${s.pressed ? ' pressed' : ''}`)).toEqual(['All 5 pressed', 'Comments 2', 'Edits 3'])
+  expect(reviewLine(waiting({ position: { index: 4, of: 5 } }))!.countText).toBe('4 of 5 waiting')
+  const comments = reviewLine(waiting({ kind: 'comments', filtered: true, shown: 2, position: { index: 1, of: 2 } }))!
+  expect(comments.countText).toBe('1 of 2 shown')
+  expect(comments.segments.find((s) => s.pressed)?.id).toBe('comments')
+  expect(reviewLine(waiting({ kind: 'comments', filtered: true, shown: 3 }))!.countText).toBe('3 shown')
+})
+
+test('a segment with nothing in it is off, "N new" shows once, and other pieces ride beside the count', () => {
+  const line = reviewLine(waiting({ counts: { all: 3, comments: 0, edits: 3 }, newCount: 3, otherPieces: 2 }))!
+  expect(line.segments.map((s) => [s.id, s.off])).toEqual([['all', false], ['comments', true], ['edits', false]])
+  expect(line.newText).toBe('3 new')
+  expect(line.elsewhereText).toBe('Waiting in 2 other pieces')
+})
+
+test('the status bar draws the line: no markup when absent, count, Comments / Edits segments, arrows, and keys only while a card is focused', () => {
+  expect(visible(renderStatus())).not.toContain('status-review-line')
+  const line = reviewLine(waiting({ position: { index: 4, of: 5 } }))
+  const html = visible(renderStatus({ review: line }))
+  expect(html).toContain('4 of 5 waiting')
+  expect(html).toContain('Comments <span class="n">2</span>')
+  expect(html).toContain('data-testid="status-review-next"')
+  expect(html).not.toContain('status-review-next-key')
+  expect(visible(renderStatus({ review: line, reviewKeys: { previous: '⇧⌥⌘G', next: '⌥⌘G' } }))).toContain('status-review-next-key')
+})
+
+// Ticket 04 (component sheet, "Six or more edits" and "Cards picked"; frame `many`).
+test('six or more shown edits bring "Accept all N"; progress once one of the batch is settled; picked cards replace Accept all', () => {
+  expect(reviewLine(waiting({ acceptable: 5 }))!.acceptAllText).toBeNull()
+  const many = reviewLine(waiting({ waiting: 19, shown: 19, counts: { all: 19, comments: 0, edits: 19 }, acceptable: 19, batch: { settled: 1, total: 20 } }))!
+  expect(many.acceptAllText).toBe('Accept all 19')
+  expect(many.progress).toEqual({ text: '1 of 20 settled', fraction: 0.05 })
+  expect(reviewLine(waiting({ acceptable: 19, batch: { settled: 0, total: 20 } }))!.progress).toBeNull()
+  expect(reviewLine(waiting({ acceptable: 19, batch: { settled: 2, total: 5 } }))!.progress).toBeNull()
+  const picked = reviewLine(waiting({ picked: 2, acceptable: 19 }))!
+  expect(picked.selectedText).toBe('2 selected')
+  expect(picked.acceptAllText).toBeNull()
+  const html = visible(renderStatus({ review: many, reviewAcceptKey: '⇧⌘A' }))
+  expect(html).toContain('data-testid="status-review-accept-all"')
+  expect(html).toContain('Accept all 19<kbd class="sb-review-kbd">⇧⌘A</kbd>')
+  expect(html).toContain('1 of 20 settled')
+  expect(html).toContain('width:5%')
+  const sel = visible(renderStatus({ review: picked }))
+  expect(sel).toContain('2 selected')
+  for (const id of ['picked-accept', 'picked-decline', 'picked-clear']) expect(sel).toContain(`status-review-${id}`)
+  expect(sel).not.toContain('status-review-accept-all')
+})

@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { MANIFEST_NAME, orderFor } from '../../src/main/folio'
-import { insertPart, materialisePart, movePart, readPlan, removePart } from '../../src/main/plan'
+import { adoptPart, insertPart, materialisePart, movePart, readPlan, removePart } from '../../src/main/plan'
 import { Workspace } from '../../src/main/workspace'
 
 let root: string
@@ -136,7 +136,7 @@ test('readPlan returns null without an Index Note and an insertion point without
   expect(plan!.parts).toEqual([])
 })
 
-test('all writers round-trip intended order and roles while the manifest always equals written Plan parts', async () => {
+test('all writers round-trip intended order and roles while the manifest always equals written Folio outline parts', async () => {
   await seedPlan()
 
   const inserted = await insertPart(ws, 'report', 1, { title: 'Evidence', gloss: 'What the sources show', role: 'appendix' })
@@ -179,7 +179,7 @@ test('all writers round-trip intended order and roles while the manifest always 
   )
 })
 
-test('root Plan materialisation excludes the root Index Note and legacy cover from its new manifest', async () => {
+test('root Folio outline materialisation excludes the root Index Note and legacy cover from its new manifest', async () => {
   const rootName = basename(root)
   await write(`_${rootName}_INDEX.md`, '# Root\n\n## Running order\n\n- [[Opening]]\n')
   await write(`_${rootName}.md`, '# Legacy root cover\n')
@@ -191,7 +191,7 @@ test('root Plan materialisation excludes the root Index Note and legacy cover fr
   ])
 })
 
-test('every Plan mutation edits only manifest file membership and order in a realistic manifest', async () => {
+test('every Folio outline mutation edits only manifest file membership and order in a realistic manifest', async () => {
   const before = await seedRealisticPlan()
   const beforeJson = JSON.parse(before) as Record<string, unknown>
   const entries = (beforeJson.files as Array<Record<string, unknown>>).map((entry) => rawEntryForPath(before, entry.path as string))
@@ -229,7 +229,7 @@ test('unwritten parts never reach the manifest', async () => {
   ])
 })
 
-test('moving a part changes only the Plan lines in the whole Index Note', async () => {
+test('moving a part changes only the Folio outline lines in the whole Index Note', async () => {
   await seedPlan()
   await movePart(ws, 'report', 2, 0)
   expect(await read(indexPath)).toBe(
@@ -243,7 +243,7 @@ test('moving a part changes only the Plan lines in the whole Index Note', async 
   )
 })
 
-test('inserting a part changes only the Plan lines in the whole Index Note', async () => {
+test('inserting a part changes only the Folio outline lines in the whole Index Note', async () => {
   await seedPlan()
   await insertPart(ws, 'report', 1, { title: 'Evidence', gloss: 'What the sources show', role: 'appendix' })
   expect(await read(indexPath)).toBe(
@@ -258,7 +258,7 @@ test('inserting a part changes only the Plan lines in the whole Index Note', asy
   )
 })
 
-test('removing a part changes only the Plan lines in the whole Index Note', async () => {
+test('removing a part changes only the Folio outline lines in the whole Index Note', async () => {
   await seedPlan()
   await removePart(ws, 'report', 1)
   expect(await read(indexPath)).toBe(
@@ -351,7 +351,7 @@ test('the first successful materialise preserves every part in the prior fallbac
   })
 })
 
-test('fenced and indented code examples are not Plan parts and remain byte-stable through a move', async () => {
+test('fenced and indented code examples are not Folio outline parts and remain byte-stable through a move', async () => {
   const source = '# Report\n\n## Running order\n\n```markdown\n- [[Example only]]\n```\n    - [[Indented example]]\n- [[Live one]]\n- [[Live two]]\n'
   await write(indexPath, source)
 
@@ -363,7 +363,7 @@ test('fenced and indented code examples are not Plan parts and remain byte-stabl
   })
 })
 
-test('a deeper heading closes the Plan section and remove leaves its lines byte-identical', async () => {
+test('a deeper heading closes the Folio outline section and remove leaves its lines byte-identical', async () => {
   const source = '# Report\n\n## Running order\n\n- [[Live part]]\n\n### Parked ideas\n\n- [[Parked part]]\n'
   await write(indexPath, source)
 
@@ -398,7 +398,25 @@ test('readPlan degrades on malformed manifest JSON without changing the Index No
   expect({ titles: plan!.parts.map((part) => part.title), source: await read(indexPath) }).toEqual({ titles: ['Opening'], source: index })
 })
 
-test('readPlan skips an unrepresentable unlisted title instead of throwing', async () => {
+test('readPlan lists an unrepresentable unlisted title with Put back refused, instead of throwing or hiding it', async () => {
+  const index = '# Report\n\n## Running order\n'
+  await write(indexPath, index)
+  // Its title cannot be a line, and neither can its path (`./contents/bad#1`): no line can name it (a title alone
+  // that a line cannot hold goes in by its path instead, Sol round 2).
+  await write('report/contents/bad#1.md', '# Bad | title # fragment ]]\n')
+  await write(`report/${MANIFEST_NAME}`, realisticManifest([]))
+
+  const plan = await readPlan(ws, 'report')
+
+  expect(plan!.parts).toEqual([])
+  expect(plan!.unlisted.map((part) => [part.path, Boolean(part.putBackRefusal)])).toEqual([['report/contents/bad#1.md', true]])
+  expect(await read(indexPath)).toBe(index)
+  // Put back is refused with the row's own reason, before any line is built.
+  await expect(adoptPart(ws, 'report', 0)).rejects.toThrow(/No running-order line can name this file/)
+  expect(await read(indexPath)).toBe(index)
+})
+
+test('a manifest entry whose title a running-order line cannot hold is in the order by its path (Sol round 2)', async () => {
   const index = '# Report\n\n## Running order\n'
   await write(indexPath, index)
   await write('report/contents/bad.md', '# Bad | title # fragment ]]\n')
@@ -408,7 +426,9 @@ test('readPlan skips an unrepresentable unlisted title instead of throwing', asy
 
   const plan = await readPlan(ws, 'report')
 
-  expect({ parts: plan!.parts, unlisted: plan!.unlisted, source: await read(indexPath) }).toEqual({ parts: [], unlisted: [], source: index })
+  expect(plan!.parts.map((part) => [part.title, part.path])).toEqual([['./contents/bad', 'report/contents/bad.md']])
+  expect(plan!.unlisted).toEqual([])
+  expect(await read(indexPath)).toBe(index)
 })
 
 test('a same-title draft outside content_root stays unwritten and never escapes into the manifest', async () => {
@@ -427,7 +447,7 @@ test('a same-title draft outside content_root stays unwritten and never escapes 
   })
 })
 
-test('readPlan returns one manifest file absent from the Plan as unlisted without changing either file', async () => {
+test('readPlan returns one manifest file absent from the Folio outline as unlisted without changing either file', async () => {
   await write('report/contents/01-opening.md', '# Opening\n')
   await write('report/contents/02-appendix.md', '# Appendix\n')
   await write(indexPath, '# Report\n\n## Running order\n\n* [[Opening]]\n')
@@ -453,7 +473,7 @@ test('readPlan returns one manifest file absent from the Plan as unlisted withou
   expect(secondRead!.unlisted.map((part) => part.title)).toEqual(['Appendix'])
 })
 
-test('an absent Running order heading remains absent while manifest parts are returned as unlisted', async () => {
+test('an absent Running order heading stays absent on disk while the Plan reads the manifest parts as its running order', async () => {
   await write('report/contents/01-opening.md', '# Opening\n')
   await write(indexPath, '# Report\n\nCover prose.\n')
   await write(`report/${MANIFEST_NAME}`, JSON.stringify({
@@ -463,13 +483,13 @@ test('an absent Running order heading remains absent while manifest parts are re
   }))
 
   const plan = await readPlan(ws, 'report')
-  expect(plan!.parts).toEqual([])
-  expect(plan!.unlisted.map((part) => part.title)).toEqual(['Opening'])
-  expect(plan!.headingLine).toBe(3)
+  expect(plan!.parts.map((part) => part.title)).toEqual(['Opening'])
+  expect(plan!.orderFrom).toBe('manifest')
+  expect(plan!.unlisted).toEqual([])
   expect(await read(indexPath)).toBe('# Report\n\nCover prose.\n')
 })
 
-test('a mutation keeps pre-existing unlisted parts separate from the written Plan', async () => {
+test('the first change to an Index Note with no running-order part writes the manifest order and the change in one write', async () => {
   await write('report/contents/01-opening.md', '# Opening\n')
   await write(indexPath, '# Report\n\n## Running order\n')
   await write(`report/${MANIFEST_NAME}`, JSON.stringify({
@@ -479,12 +499,13 @@ test('a mutation keeps pre-existing unlisted parts separate from the written Pla
   }))
 
   const plan = await insertPart(ws, 'report', 0, { title: 'Preface' })
-  expect(plan.parts.map((part) => part.title)).toEqual(['Preface'])
-  expect(plan.unlisted.map((part) => part.title)).toEqual(['Opening'])
-  expect(await read(indexPath)).toBe('# Report\n\n## Running order\n- [[Preface]]\n')
+  expect(plan.parts.map((part) => part.title)).toEqual(['Preface', 'Opening'])
+  expect(plan.orderFrom).toBeUndefined()
+  expect(plan.unlisted).toEqual([])
+  expect(await read(indexPath)).toBe('# Report\n\n## Running order\n- [[Preface]]\n- [[Opening]]\n')
 })
 
-test('even a same-position move rewrites the manifest from the Plan order', async () => {
+test('even a same-position move rewrites the manifest from the Folio outline order', async () => {
   await write('report/contents/01-opening.md', '# Opening\n')
   await write('report/contents/02-close.md', '# Close\n')
   await write(indexPath, '# Report\n\n## Running order\n\n- [[Opening]]\n- [[Close]]\n')
@@ -501,7 +522,7 @@ test('even a same-position move rewrites the manifest from the Plan order', asyn
   ])
 })
 
-test('a failed materialise leaves the Plan readable and the phantom manifest entry inert', async () => {
+test('a failed materialise leaves the Folio outline readable and the phantom manifest entry inert', async () => {
   class FileFailingWorkspace extends Workspace {
     override async createFile(path: string, content: string) {
       if (path.endsWith('/01-intended-part.md')) throw new Error('injected file write failure')
@@ -523,8 +544,8 @@ test('a failed materialise leaves the Plan readable and the phantom manifest ent
   expect(await exists(`report/${MANIFEST_NAME}`)).toBe(false)
 })
 
-test('a writer refuses to save a Plan line that its parser cannot round-trip', async () => {
+test('a writer refuses to save a Folio outline line that its parser cannot round-trip', async () => {
   await write(indexPath, '# Report\n\n## Running order\n')
-  await expect(insertPart(ws, 'report', 0, { title: 'Bad ]] title' })).rejects.toThrow('Plan title')
+  await expect(insertPart(ws, 'report', 0, { title: 'Bad ]] title' })).rejects.toThrow('Folio outline title')
   expect(await read(indexPath)).toBe('# Report\n\n## Running order\n')
 })

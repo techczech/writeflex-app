@@ -42,3 +42,22 @@ export function preferOriginal(ordered: readonly string[]): string | null {
   if (!ordered.length) return null
   return ordered.find((path) => !isConflictCopyAmong(path, ordered)) ?? ordered[0]
 }
+
+/** How many recovery-copy names a writer tries before giving up (each taken name is refused by main). */
+export const RECOVERY_COPY_ATTEMPTS = 20
+
+/**
+ * Where WriteFlex puts a buffer it could not write over its file because the file changed on disk (error
+ * recovery: spec-save-only-over-the-version-you-saw.md). Beside the original, named by the conflict-copy
+ * convention above, so every resolver that prefers the original keeps preferring it:
+ * `notes.md` → `notes (WriteFlex recovery).md`, then `notes (WriteFlex recovery 2).md`, ….
+ */
+export function recoveryCopyPath(original: string, attempt = 1): string {
+  const slash = original.lastIndexOf('/')
+  const folder = slash < 0 ? '' : original.slice(0, slash + 1)
+  const name = slash < 0 ? original : original.slice(slash + 1)
+  const ext = name.match(/\.(?:md|markdown|mdx)$/i)?.[0] ?? name.match(/\.[^.\s]+$/)?.[0] ?? ''
+  const stem = ext ? name.slice(0, -ext.length) : name
+  const label = attempt <= 1 ? 'WriteFlex recovery' : `WriteFlex recovery ${attempt}`
+  return `${folder}${stem || 'document'} (${label})${ext}`
+}

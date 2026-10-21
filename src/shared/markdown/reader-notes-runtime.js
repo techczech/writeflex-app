@@ -238,10 +238,10 @@
     quote.title = "Jump to highlight";
     quote.addEventListener("click", () => jumpToNote(note.id));
     const label = document.createElement("label");
-    label.textContent = `Note ${index + 1}`;
+    label.textContent = `Comment ${index + 1}`;
     const textarea = document.createElement("textarea");
     textarea.value = note.note;
-    textarea.setAttribute("aria-label", `Note ${index + 1}`);
+    textarea.setAttribute("aria-label", `Comment ${index + 1}`);
     textarea.addEventListener("input", () => editNote(note.id, textarea.value));
     const actions = document.createElement("div");
     actions.className = "drawer-note-actions";
@@ -266,7 +266,7 @@
       list.replaceChildren(cards);
     }
     if (empty) empty.hidden = notes.length > 0;
-    if (openButton) openButton.textContent = `Notes · ${notes.length}`;
+    if (openButton) openButton.textContent = `Comments · ${notes.length}`;
     renderHighlights();
   }
 
@@ -300,9 +300,9 @@
   }
 
   function exportMarkdown() {
-    const lines = ["# Reader notes", "", `Document: \`${manifest.documentId}\``, ""];
+    const lines = ["# Reader comments", "", `Document: \`${manifest.documentId}\``, ""];
     notes.forEach((note, index) => {
-      lines.push(`## ${index + 1}. “${note.quote}”`, "", note.note || "_(No note text.)_", "", `Target: \`${note.targetId}\``, "");
+      lines.push(`## ${index + 1}. “${note.quote}”`, "", note.note || "_(No comment text.)_", "", `Target: \`${note.targetId}\``, "");
     });
     return lines.join("\n");
   }

@@ -402,7 +402,7 @@ describe('a write of unknown outcome: the disk is unknown until a save is read b
 })
 
 // Redoing an undone suggestion writes the document's file by calls made outside the save queue
-// (main-wrote-document.ts). While they are in flight a close must wait, though no text may be unsaved
+// (resolution-routes.ts). While they are in flight a close must wait, though no text may be unsaved
 // and no write was announced: that is a hold.
 describe('a hold: calls that write the document are in flight', () => {
   it('a held document is pending and not clean, with no entry', () => {

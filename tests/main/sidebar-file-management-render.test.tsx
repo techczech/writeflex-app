@@ -104,10 +104,12 @@ test('the agent-notes folder carries the agent badge; the writer’s folders do 
   expect(html.match(/aria-label="Agent-authored folder"/g)).toHaveLength(1)
 })
 
-test('the workspace name opens the root Collection instead of being inert text', () => {
+test('the workspace name is the vault switcher on a plain folder too; the Folder dashboard button beside it opens the root Collection', () => {
   const html = renderSidebar()
 
-  expect(html).toContain('<button class="wsname" title="Open ws collection">ws</button>')
+  // Vaults ticket 06 (spec § Sidebar): the name opens the switcher menu; the dashboard is its own button.
+  expect(html).toContain('<button class="wsname" title="Switch vault or open a folder" aria-haspopup="menu" aria-expanded="false"><span>ws</span>')
+  expect(html).toContain('aria-label="Folder dashboard for ws"')
 })
 
 test('Folder dashboard button: always on the collection name row, filled when its page shows; on folder rows only as a hidden-by-CSS button that is filled for the showing folder', () => {

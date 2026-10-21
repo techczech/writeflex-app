@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import type { AmbientSnapshot, ExplicitSessionState } from '../../../preload'
-import { documentTitle, parseFrontmatter, parseGoal } from '../../../main/frontmatter'
+import { parseFrontmatter, parseGoal } from '../../../main/frontmatter'
+import { listingTitle } from '../../../shared/markdown/listing-title'
 import type { EditorHandle } from '../components/EditorPane'
 import { onEditorUpdate } from '../editor/setup'
 import { documentTextForPersistence } from '../editor/writer-review'
@@ -37,6 +38,8 @@ type Options = {
 export function useAmbientSnapshot(options: Options): void {
   const latest = useRef(options)
   latest.current = options
+  // The title of the last text read: a send for the same text (a mode flip, a selection) reuses it.
+  const titled = useRef<{ source: string; path: string; title: string }>()
   const folio = useRef<{ key: string; value: NonNullable<AmbientSnapshot['activeFile']>['folio'] }>()
   const publisher = useRef<ReturnType<typeof ambientDebouncer>>()
   if (!publisher.current) publisher.current = ambientDebouncer(() => {
@@ -51,9 +54,13 @@ export function useAmbientSnapshot(options: Options): void {
     const running = o.explicitSession?.status === 'running'
     const key = `${o.root}\n${o.active}`
     const position = folio.current?.key === key ? folio.current.value : undefined
+    if (o.active && (titled.current?.source !== source || titled.current.path !== o.active)) {
+      // listingTitle is documentTitle's answer without building the whole document model (ADR-0034).
+      titled.current = { source, path: o.active, title: listingTitle(source, o.active) }
+    }
     const snapshot: AmbientSnapshot = {
       workspaceRoot: o.root,
-      activeFile: o.active ? { path: o.active, title: documentTitle(source, o.active), collection: o.collection, ...(position ? { folio: position } : {}) } : null,
+      activeFile: o.active ? { path: o.active, title: titled.current!.title, collection: o.collection, ...(position ? { folio: position } : {}) } : null,
       mode: o.active ? { writer: o.writer, view: o.view } : null,
       selection,
       process: { session: running ? 'running' : 'none', wordsThisSession: running ? o.explicitSession!.netWords : o.sessionWords,

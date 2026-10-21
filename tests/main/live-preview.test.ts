@@ -2,12 +2,17 @@ import { describe, expect, test } from 'bun:test'
 import { EditorState } from '@codemirror/state'
 import { markdown } from '@codemirror/lang-markdown'
 import { GFM } from '@lezer/markdown'
+import { EditorView } from '@codemirror/view'
+import { markdownDialect } from '../../src/shared/markdown/dialect'
 import { changeMarking, changeMarkRanges, setChangeMarks } from '../../src/renderer/src/editor/change-marks'
 import {
   blockJumpTarget,
   detectLivePreviewBlocks,
   headingJumpTarget,
   intersectsPendingChange,
+  livePreview,
+  malformedFrontmatterRange,
+  malformedFrontmatterRangeOf,
   rendersBlockWithPendingChange,
   shouldProtectBackspaceAfterBlock,
   widgetKindForFenceLanguage,
@@ -138,4 +143,46 @@ describe('live-preview block model', () => {
     expect(shouldProtectBackspaceAfterBlock(blocks, blocks[0].to)).toBe(true)
     expect(shouldProtectBackspaceAfterBlock(blocks, blocks[0].to + 1)).toBe(false)
   })
+})
+
+// 0.24.1 typing path: a caret move reuses the document's blocks; the decorations are still exactly
+// what a fresh build with that caret would give.
+function decorationDump(editorState: EditorState): string {
+  const out: string[] = []
+  for (const source of editorState.facet(EditorView.decorations)) {
+    if (typeof source === 'function') continue
+    source.between(0, editorState.doc.length, (from, to, value) => {
+      const widget = (value.spec as { widget?: object }).widget
+      out.push(`${from}-${to}:${widget ? widget.constructor.name + JSON.stringify(widget) : JSON.stringify(value.spec)}`)
+    })
+  }
+  return out.join('\n')
+}
+
+describe('live preview on selection-only transactions', () => {
+  const doc = `---\ntitle: x\n---\n\nProse.\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n\`\`\`ts\nconst a = 1\n\`\`\`\n\nEnd.\n`
+  const extensions = [markdown({ extensions: markdownDialect() }), livePreview({ assetBaseUrl: () => '' })]
+  test('moving the caret gives the decorations a fresh build would', () => {
+    let moving = EditorState.create({ doc, selection: { anchor: 0 }, extensions })
+    expect(decorationDump(moving)).toContain('Table')
+    const atStart = decorationDump(moving)
+    for (const needle of ['Prose', '---\ntitle', '| 1', 'const', 'End']) {
+      moving = moving.update({ selection: { anchor: doc.indexOf(needle) + 1 } }).state
+      const fresh = EditorState.create({ doc, selection: { anchor: doc.indexOf(needle) + 1 }, extensions })
+      expect(decorationDump(moving)).toEqual(decorationDump(fresh))
+    }
+    expect(decorationDump(moving)).not.toEqual(atStart) // the dump does see the caret
+  })
+})
+
+describe('malformedFrontmatterRangeOf reads a live document like the text function', () => {
+  const docs = [
+    '', 'plain', '---', '---\ntitle: x\n---', '---\ntitle: x\n---\nbody', 'text\n---\nkey: v\nother: w', 'text\n---\nkey: v\n---\nmore\n',
+    '---\njust prose\n---\n', '# H\n\n---\n\n---\nafter', '---\nkey: v', 'a\n---\nb: c\n---',
+  ]
+  for (const text of docs) {
+    test(JSON.stringify(text), () => {
+      expect(malformedFrontmatterRangeOf(EditorState.create({ doc: text }))).toEqual(malformedFrontmatterRange(text))
+    })
+  }
 })

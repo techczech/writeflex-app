@@ -37,6 +37,8 @@
      reports/design/change-ledger/directions-v3.html. One colour per Edit Class and per Provenance;
      these are the ledger's own semantic palette, distinct from the app's brand accent. */
   --content:#7a4bd6; --content-soft:#ece4fb;
+  /* Review marks in the text (review margin lock, ADR-0046): edit highlight and underline, comment highlight. */
+  --rv-edit-hl:#ebe6ff; --rv-edit-under:#8178cf; --rv-note-hl:#f4d777;
   --copy:#3f7f6f;    --copy-soft:#dfeee9;
   --move:#b5852a;    --move-soft:#f4e9d0;
   --house:#8b8578;   --house-soft:#eceae3;
@@ -72,6 +74,7 @@
   /* Change Ledger vocabulary on dark — DERIVED from the light tokens: same hues, lifted for contrast
      on dark panes, soft backgrounds re-based as low-alpha tints. A usability review look item like the rest of dark. */
   --content:#b79bf0; --content-soft:rgba(122,75,214,.24);
+  --rv-edit-hl:#352e63; --rv-edit-under:#9d94ea; --rv-note-hl:#6b5716;
   --copy:#6fb3a0;    --copy-soft:rgba(63,127,111,.24);
   --move:#d5ab5e;    --move-soft:rgba(181,133,42,.24);
   --house:#a8a297;   --house-soft:rgba(139,133,120,.22);

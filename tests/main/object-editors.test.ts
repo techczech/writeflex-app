@@ -142,3 +142,36 @@ test('table repair pads ragged rows, keeps alignment markers and refuses non-tab
   expect(normaliseTableMarkup('| A | B |')).toBeNull()
   expect(serialiseTable({ cells: [['A'], ['1', '2']], alignments: ['right'] })).toBe('| A |  |\n| ---: | :--- |\n| 1 | 2 |')
 })
+
+test('metadata editor replacement preserves header blank lines, CRLF and every body byte', () => {
+  for (const eol of ['\n', '\r\n']) {
+    const source = `---${eol}title: Before${eol}# Keep${eol}${eol}---${eol}`
+    const block = { kind: 'frontmatter' as const, from: 0, to: source.length, source }
+    const inner = innerSource(block)
+    expect(objectEditorReplacement(block, inner)).toBe(source)
+    expect(objectEditorReplacement(block, inner.replace('Before', 'After'))).toBe(source.replace('Before', 'After'))
+  }
+})
+
+test('metadata editor preserves recognised fence whitespace and a BOM', () => {
+  const source = '\uFEFF---  \r\ntitle: Before\r\n# Keep\r\n---\t\r\n'
+  const block = { kind: 'frontmatter' as const, from: 0, to: source.length, source }
+  expect(innerSource(block)).toBe('title: Before\r\n# Keep')
+  expect(objectEditorReplacement(block, innerSource(block).replace('Before', 'After'))).toBe(source.replace('Before', 'After'))
+})
+
+
+test('metadata full inner/edit/serialise path preserves LF, CRLF, BOM and untouched bytes', async () => {
+  const { editMetadataInner } = await import('../../src/shared/document-metadata')
+  const { eolOf } = await import('../../src/shared/markdown/frontmatter-edit')
+  for (const eol of ['\n', '\r\n']) for (const bom of ['', '\uFEFF']) for (const oneLine of [true, false]) for (const blank of ['', eol]) {
+    const source = `${bom}---${eol}title: Original${eol}${oneLine ? '' : `# keep this${eol}custom: untouched${eol}`}${blank}---${eol}`
+    const block = { kind: 'frontmatter' as const, from: 0, to: source.length, source }
+    const inner = innerSource(block)
+    expect(objectEditorReplacement(block, editMetadataInner(inner, 'title', 'Changed', eolOf(source)))).toBe(source.replace('title: Original', 'title: Changed'))
+    const expected = source.slice(0, source.lastIndexOf('---')) + `author: Jane${eol}---${eol}`
+    const edited = editMetadataInner(inner, 'author', 'Jane', eolOf(source))
+    expect(serialiseBlock(block, edited)).toBe(expected.slice(0, -eol.length))
+    expect(objectEditorReplacement(block, edited)).toBe(expected)
+  }
+})

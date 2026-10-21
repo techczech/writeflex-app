@@ -1,11 +1,13 @@
 /* Tables in an exported HTML file: formatting for every table, and the look of the search, sort and
    column-filter controls the page script adds to large tables. Locked 2026-10-13.
    A builder lifts this file as it is. It assumes the exporter wraps each table in
-   <div class="wf-table-region"> and leaves the table's own markup (inline cell styles, border
+   <div class="wf-table-region table-scroll"> and leaves the table's own markup (inline cell styles, border
    attribute) as the exporter writes it today; the !important rules are the ones that must win over
    those inline styles. The author's own column alignment (an inline text-align) is never overridden. */
 .wf-table-region,.wf-table-bar{--wt-ink:#18202a;--wt-muted:#4a5b6f;--wt-line:#dbe2ea;--wt-rule:#eaeff5;--wt-head:#f4f7fb;--wt-accent:#0f766e;--wt-ring:rgba(15,118,110,.45);--wt-field:#cdd6e0}
 .wf-table-region{margin:0 0 1.6em;max-width:100%;overflow-x:auto}
+/* a table wider than the page scrolls inside its own box, not the page (the reader page carries the same rule) */
+.table-scroll{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}
 .wf-table-region>table{border-collapse:separate!important;border-spacing:0;border:1px solid var(--wt-line)!important;border-radius:8px;margin:0!important;max-width:none;font-size:14px;line-height:1.4;color:var(--wt-ink);font-variant-numeric:tabular-nums}
 .wf-table-region>table>caption{caption-side:top;text-align:left;padding:0 0 10px;font-size:13px;font-weight:650;color:#34465a}
 .wf-table-region th,.wf-table-region td{border:0!important;border-bottom:1px solid var(--wt-rule)!important;padding:10px 12px!important;vertical-align:middle!important;background:#fff!important;text-align:left}

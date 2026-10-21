@@ -24,10 +24,16 @@ export type AppCommand = {
   icon: LucideIcon
   /** Extra searchable terms that are not rendered as chrome. */
   keywords?: string[]
+  /** One line under the name in place of the group, for a command whose name alone does not say what it does. */
+  hint?: string
+  /** Queries (whole, lower case) for which this command is listed before every other match. */
+  leadsFor?: string[]
   /** Display shortcut hint shown on the row, already in mac glyph form (e.g. '⌘E'); omitted when none. */
   keys?: string
   disabled?: boolean
   disabledReason?: string
+  /** A toggle's state, shown on the row as On / Off (Writing only, Show titles in sidebar). Absent: not a toggle. */
+  checked?: boolean
   run: () => void
 }
 
@@ -93,6 +99,8 @@ export type RankableEntry<T> = {
   searchable: string
   /** Matched only when nothing else does. */
   fallback: string | undefined
+  /** Queries for which this entry leads the list. */
+  leadsFor?: string[]
   /** Registration order, the last tie-break. */
   order: number
 }
@@ -103,8 +111,11 @@ export type RankableEntry<T> = {
  * the sub-group matches. Ties fall to registration order.
  */
 export function rankPaletteEntries<T>(query: string, entries: RankableEntry<T>[]): T[] {
+  const typed = query.trim().toLowerCase()
   return entries
     .map((entry) => {
+      // Tier -1: a command that names this very query as its lead ("review" lists Settled today and My edits first).
+      if (entry.leadsFor?.includes(typed)) return { entry, score: 0, tier: -1 }
       const byLabel = fuzzyScore(query, entry.label)
       if (byLabel !== null) return { entry, score: byLabel, tier: 0 }
       const direct = fuzzyScore(query, entry.searchable)
@@ -168,6 +179,7 @@ export function buildCommandPaletteSections({
         searchable: [command.label, command.group, ...(command.keywords ?? [])].join(' '),
         // Matches through the sub-group alone ("read aloud" for the Listen commands) rank below every other match.
         fallback: command.subgroup as string | undefined,
+        leadsFor: command.leadsFor,
         order,
       })),
       ...orderedSkills.map((skill, order) => ({
@@ -360,6 +372,7 @@ export function CommandPalette({
                     key={item.key}
                     className={`pal-row${item.kind === 'ask' ? ' pal-ask' : ''}${item.kind === 'skill' ? ' pal-skill-row' : ''}${item.kind === 'manage-skills' ? ' pal-manage-skills' : ''}`}
                     aria-selected={isSelected}
+                    aria-pressed={item.kind === 'command' && item.command.checked !== undefined ? item.command.checked : undefined}
                     disabled={(item.kind === 'skill' && item.disabled) || (item.kind === 'command' && item.command.disabled)}
                     title={
                       item.kind === 'skill' && item.disabled
@@ -415,8 +428,11 @@ export function CommandPalette({
                         {launchesAgent(item.command.id) ? <AgentLaunchIcon /> : <item.command.icon className="icon sm" />}
                         <span className="grow pal-command-copy">
                           <span className="pal-name">{item.command.label}</span>
-                          <span className="pal-command-group">{item.command.group}</span>
+                          <span className="pal-command-group">{item.command.hint ?? item.command.group}</span>
                         </span>
+                        {item.command.checked !== undefined && (
+                          <span className={`pal-state${item.command.checked ? ' on' : ''}`} aria-label={item.command.checked ? 'on' : 'off'}>{item.command.checked ? 'On' : 'Off'}</span>
+                        )}
                         {item.command.keys && <kbd>{item.command.keys}</kbd>}
                       </>
                     ) : item.kind === 'manage-skills' ? (

@@ -1,6 +1,7 @@
 /**
  * Changing a Folio's running order from the Outline, by path. These functions write nothing themselves:
- * every write is `movePart`, `adoptParts` or `removePart` in plan.ts, with all of their guards.
+ * every write is `movePart`, `adoptParts` or `reorderParts` in plan.ts, with all of their guards, except the Undo
+ * of an Add, which writes back the exact documents that Add found (folio-add-undo.ts).
  *
  * What they add:
  * - One hold of the Folio's lock (plan-lock.ts) around the whole request: its read, its checks and its
@@ -30,25 +31,29 @@ import {
   indexNoteExists,
   manifestOnlyAddable,
   moveManifestEntry,
+  reorderManifestEntries,
   readManifestOnly,
-  removeManifestTail,
   type ManifestOnlyRead,
 } from './folio-manifest-order'
-import { adoptParts, movePart, PlanWrittenButNotReRead, removePart, type Plan, type PlanLoadedManifest, type PlanWriteOptions } from './plan'
+import { adoptParts, movePart, namedAfterManifestAdd, PlanWrittenButNotReRead, UNNAMEABLE_REFUSAL, readPlan, reorderParts, type Plan, type PlanLoadedManifest, type PlanWriteOptions } from './plan'
 import { withPlanLock } from './plan-lock'
 import { assertRelativeWorkspacePath, type Workspace } from './workspace'
 import { withoutAbsolutePaths } from '../shared/plain-error-text'
+import { isFrontMatterRole, orderAfterAdd } from '../shared/folio-front-matter'
+import { recordingAdd, undoRecordedAdd } from './folio-add-undo'
+import { folioPieces } from './folio'
 import {
   OUTLINE_UNSAFE_MESSAGE,
   STALE_ADD_MESSAGE,
+  notNamedSentence as sharedNotNamedSentence,
   STALE_ORDER_MESSAGE,
-  STALE_UNDO_MESSAGE,
   distinctPaths,
   resolveMove,
   sameOrder,
   type AddPiecesInput,
   type MovePieceInput,
   type RemoveAddedInput,
+  type ReorderPiecesInput,
   type RunningOrderResult,
 } from '../shared/folio-running-order'
 
@@ -62,7 +67,7 @@ export type RunningOrderOutcome = { result: RunningOrderResult; plan: Plan | nul
 
 const NOT_ADDABLE = (count: number, asked: number): string =>
   `${count === 1 && asked === 1 ? 'That file cannot' : 'Those files cannot all'} be added: only Markdown files directly in the folder the Folio takes its pieces from, that are not covers, Index Notes or underscore-prefixed files, can join the running order. Nothing was added.`
-const NO_MANIFEST = 'This folder’s running order follows its file names until the Folio has a manifest. Open the Plan to change it.'
+const NO_MANIFEST = 'This folder’s running order follows its file names until the Folio has a manifest. Open the Folio outline to change it.'
 const NO_INDEX = 'This Folio’s Index Note could not be read, so its running order cannot be changed here.'
 
 /** Thrown by a check that finds the running order is not what the caller was shown. */
@@ -73,6 +78,16 @@ const stale = (message: string): RunningOrderOutcome => ({ result: { ok: false, 
 
 const refusalFor = (reason: OutlineOrderReason): string =>
   reason === 'no-index' ? NO_INDEX : reason === 'no-manifest' ? NO_MANIFEST : OUTLINE_UNSAFE_MESSAGE
+
+/** The skipped files of an Add, by file name (`notNamedSentence` in shared/folio-running-order.ts). */
+const notNamedSentence = (paths: readonly string[], refusal: boolean): string =>
+  sharedNotNamedSentence(paths.map((path) => path.slice(path.lastIndexOf('/') + 1)), refusal)
+
+/** A successful Add that left some asked files out: it says which, and why. Anything else is as it was. */
+function withSkipped(outcome: RunningOrderOutcome, skipped: readonly string[]): RunningOrderOutcome {
+  if (!skipped.length || !outcome.result.ok) return outcome
+  return { ...outcome, result: { ...outcome.result, skipped: [...skipped], note: notNamedSentence(skipped, false) } }
+}
 
 const plain = (ws: Workspace, error: unknown): string =>
   withoutAbsolutePaths(error instanceof Error ? error.message : String(error), ws.root)
@@ -194,7 +209,8 @@ export async function addFolioPieces(ws: Workspace, dir: string, input: Omit<Add
   const { expected } = input
   assertPaths([...paths, ...expected])
   if (paths.length === 0) return refused('There is no file to add.')
-  return withPlanLock(ws, dir, async () => {
+  // Its Undo is tied to this Add: the documents before and after it are kept under this same hold (folio-add-undo.ts).
+  return withPlanLock(ws, dir, () => recordingAdd(ws, dir, async () => {
     if (!indexNoteExists(ws, dir)) {
       const read = await manifestSeenOrRefusal(ws, dir, expected, STALE_ADD_MESSAGE)
       if (!isManifestSeen(read)) return read
@@ -203,97 +219,95 @@ export async function addFolioPieces(ws: Workspace, dir: string, input: Omit<Add
       const addable = new Set(await manifestOnlyAddable(ws, dir, read))
       const notAddable = paths.filter((path) => !addable.has(path)).length
       if (notAddable) return refused(NOT_ADDABLE(notAddable, paths.length))
-      return manifestWrite(ws, () => appendManifestEntries(ws, dir, read, paths, options))
+      // A file the page's order could not name once listed is not added (Sol round 3): named, and the rest go in.
+      const named = await namedAfterManifestAdd(ws, dir, paths)
+      const taking = paths.filter((path) => named.has(path))
+      const skipped = paths.filter((path) => !named.has(path))
+      if (!taking.length) return refused(notNamedSentence(skipped, true))
+      return withSkipped(await manifestWrite(ws, () => appendManifestEntries(ws, dir, read, taking, options)), skipped)
     }
     const seen = await seenOrRefusal(ws, dir, expected, STALE_ADD_MESSAGE)
     if (isOutcome(seen)) return seen
     if (paths.some((path) => seen.order.includes(path))) return stale(STALE_ADD_MESSAGE)
-    const indices = paths.map((path) => seen.plan.unlisted.findIndex((part) => part.path === path && part.manifestBacked === false))
-    const notAddable = indices.filter((index) => index < 0).length
+    const rows = paths.map((path) => seen.plan.unlisted.findIndex((part) => part.path === path && part.manifestBacked === false && (!part.putBackRefusal || part.putBackRefusal === UNNAMEABLE_REFUSAL)))
+    const notAddable = rows.filter((index) => index < 0).length
     if (notAddable) return refused(NOT_ADDABLE(notAddable, paths.length))
-    const verifyPlan = verifier(ws, dir, expected, (fresh) => indices.every((index, at) => fresh.unlisted[index]?.path === paths[at] && fresh.unlisted[index]?.manifestBacked === false))
+    // A file no running-order line can name alone (`UNNAMEABLE_REFUSAL`) is not added: named, and the rest go in.
+    const skipped = paths.filter((_, at) => seen.plan.unlisted[rows[at]].putBackRefusal === UNNAMEABLE_REFUSAL)
+    if (skipped.length === paths.length) return refused(notNamedSentence(skipped, true))
+    const taking = paths.filter((path) => !skipped.includes(path))
+    const indices = rows.filter((_, at) => !skipped.includes(paths[at]))
+    const verifyPlan = verifier(ws, dir, expected, (fresh) => indices.every((index, at) => fresh.unlisted[index]?.path === taking[at] && fresh.unlisted[index]?.manifestBacked === false && !fresh.unlisted[index]?.putBackRefusal))
     try {
-      return done(await adoptParts(ws, dir, indices, { ...options, verifyPlan, requireManifestWrite: true }))
+      return withSkipped(done(await adoptParts(ws, dir, indices, { ...options, verifyPlan, requireManifestWrite: true })), skipped)
     } catch (error) {
-      if (error instanceof PlanWrittenButNotReRead) return madeUnread(error, [...seen.order, ...paths])
+      if (error instanceof PlanWrittenButNotReRead) {
+        // Where adoptParts put them (ADR-0046): front matter at the end of its block, the rest at the end.
+        const front = new Set([...seen.plan.parts, ...seen.plan.unlisted].flatMap((part) => (part.path && isFrontMatterRole(part.role) ? [part.path] : [])))
+        return withSkipped(madeUnread(error, orderAfterAdd(seen.order, taking, (path) => front.has(path))), skipped)
+      }
       if (error instanceof StaleOrder) return stale(STALE_ADD_MESSAGE)
       return refused(plain(ws, error))
     }
+  }))
+}
+
+/**
+ * Undo of an Add, by the token that Add returned (folio-add-undo.ts): in one hold of the lock, the Folio's Index
+ * Note and manifest must hold exactly what that Add left, and both are then written back to exactly what they
+ * held before it. Anything else (an unknown or used token, another Folio's, a document changed since) is refused
+ * as stale and nothing is written. All or nothing: a document changed or a write failing part-way takes back what
+ * the Undo wrote; only when that take-back fails too is the refusal a split one, and then it carries the document
+ * written (`writtenIndex` / `manifestOnly`) so the buffers are told as for a success.
+ */
+export async function removeAddedFolioPieces(ws: Workspace, dir: string, input: Omit<RemoveAddedInput, 'dir'>, options: PlanWriteOptions = {}): Promise<RunningOrderOutcome> {
+  return withPlanLock(ws, dir, async () => {
+    const undone = await undoRecordedAdd(ws, dir, input.token, options)
+    if (!undone.ok) {
+      const refusal = undone.stale ? stale(undone.message) : refused(undone.message)
+      // A split Undo (one document changed, its take-back failed) still tells the buffers and the collection, as a success does.
+      if (undone.wroteIndex && undone.indexPath) return { ...refusal, writtenIndex: undone.indexPath }
+      if (undone.wroteManifest) return { ...refusal, manifestOnly: true }
+      return refusal
+    }
+    if (!undone.indexExists) {
+      return { result: { ok: true, changed: true, order: (await folioPieces(ws, dir).catch(() => null))?.pieces ?? [] }, plan: null, manifestOnly: true }
+    }
+    const plan = await readPlan(ws, dir).catch(() => null)
+    const order = plan ? plan.parts.flatMap((part) => (part.path ? [part.path] : [])) : (await folioPieces(ws, dir).catch(() => null))?.pieces ?? []
+    return { result: { ok: true, changed: true, order }, plan, writtenIndex: undone.indexPath }
   })
 }
 
 /**
- * Undo of an Add, in one hold of the lock: the pieces named must be exactly the last pieces of the
- * running order, in the order they were added, and the order must be as the Add left it; that is checked
- * before anything is removed. Each piece then goes through `removePart`, last first (the Plan's backstop
- * lets one write remove one part only). If a removal fails after others succeeded, the answer says
- * exactly which pieces were taken out and which remain (`partial`). A removal that was made and could not
- * be read again afterwards is a removal that was made: it is counted among the pieces taken out.
- *
- * Each `removePart` loads the Plan twice (its own read, and the Plan it returns), and a load lists the
- * workspace; the Plan each returns is reused for the next index, so there is no third load per piece.
- * Undo of a very large Add all is therefore still one workspace listing per piece, twice.
+ * Put the whole running order in `input.order` (a permutation of the order the caller saw), in one write
+ * through `reorderParts` (or the manifest alone for a Folio with no Index Note). The Plan's Sort by chapter
+ * number and its Undo come here for a Folio with no Index Note (plan-running-order.ts); with an Index Note
+ * they go through the Plan's own route. Only the order changes; the formats of the two documents do not.
  */
-export async function removeAddedFolioPieces(ws: Workspace, dir: string, input: Omit<RemoveAddedInput, 'dir'>, options: PlanWriteOptions = {}): Promise<RunningOrderOutcome> {
-  const paths = distinctPaths(input.paths)
-  const { expected } = input
-  assertPaths([...paths, ...expected])
-  if (paths.length === 0) return refused('There is nothing to undo.')
+export async function reorderFolioPieces(ws: Workspace, dir: string, input: Omit<ReorderPiecesInput, 'dir'>, options: PlanWriteOptions = {}): Promise<RunningOrderOutcome> {
+  const { order: target, expected } = input
+  assertPaths([...target, ...expected])
+  const isPermutation = target.length === expected.length && new Set(target).size === target.length && target.every((path) => expected.includes(path))
+  if (!isPermutation) return refused('That is not a new order for this running order. Nothing was changed.')
   return withPlanLock(ws, dir, async () => {
     if (!indexNoteExists(ws, dir)) {
-      // One document, so the whole Undo is one write: all the named pieces go, or none does.
-      const read = await manifestSeenOrRefusal(ws, dir, expected, STALE_UNDO_MESSAGE)
+      const read = await manifestSeenOrRefusal(ws, dir, expected, STALE_ORDER_MESSAGE)
       if (!isManifestSeen(read)) return read
-      const order = read.assessment.order
-      if (paths.length > order.length || !sameOrder(order.slice(order.length - paths.length), paths)) return stale(STALE_UNDO_MESSAGE)
-      return manifestWrite(ws, () => removeManifestTail(ws, dir, read, paths.length, options), 'Could not undo. ')
+      if (sameOrder(read.assessment.order, target)) return { result: { ok: true, changed: false, order: target }, plan: null }
+      return manifestWrite(ws, () => reorderManifestEntries(ws, dir, read, target, options))
     }
-    const seen = await seenOrRefusal(ws, dir, expected, STALE_UNDO_MESSAGE)
+    const seen = await seenOrRefusal(ws, dir, expected, STALE_ORDER_MESSAGE)
     if (isOutcome(seen)) return seen
-    if (paths.length > seen.order.length || !sameOrder(seen.order.slice(seen.order.length - paths.length), paths)) return stale(STALE_UNDO_MESSAGE)
-    const titles = new Map(seen.plan.parts.flatMap((part) => (part.path ? [[part.path, part.title] as const] : [])))
-    let current = [...seen.order]
-    let last: Plan | null = null
-    let writtenIndex: string | undefined
-    const removed: string[] = []
-    for (const path of [...paths].reverse()) {
-      // The assessment holds, so the Index Note lists exactly `current`: the piece is its last part.
-      const index = current.length - 1
-      const expectedNow = [...current]
-      try {
-        last = await removePart(ws, dir, index, {
-          ...options,
-          verifyPlan: verifier(ws, dir, expectedNow, (fresh) => fresh.parts[index]?.path === path),
-          requireManifestWrite: true,
-        })
-        writtenIndex = last.indexPath
-        current = current.slice(0, -1)
-        removed.unshift(path)
-      } catch (error) {
-        if (error instanceof PlanWrittenButNotReRead) {
-          // The removal was made; only the read after it failed. It counts, and the next removal makes its own read.
-          last = null
-          writtenIndex = error.indexPath
-          current = current.slice(0, -1)
-          removed.unshift(path)
-          continue
-        }
-        const why = error instanceof StaleOrder ? 'The running order changed meanwhile.' : plain(ws, error)
-        if (removed.length === 0) return error instanceof StaleOrder ? stale(STALE_UNDO_MESSAGE) : refused(`Could not undo. ${why}`)
-        const remaining = paths.slice(0, paths.length - removed.length)
-        const name = (p: string): string => titles.get(p) ?? p
-        return {
-          result: {
-            ok: false,
-            stale: false,
-            message: `Undo stopped part-way. Taken out again: ${removed.map(name).join(', ')}. Still in the running order: ${remaining.map(name).join(', ')}. ${why}`,
-            partial: { removed, remaining, order: current },
-          },
-          plan: last,
-          ...(writtenIndex ? { writtenIndex } : {}),
-        }
-      }
+    if (sameOrder(seen.order, target)) return { result: { ok: true, changed: false, order: seen.order }, plan: null }
+    const indices = target.map((path) => seen.order.indexOf(path))
+    const verifyPlan = verifier(ws, dir, expected, () => true)
+    try {
+      return done(await reorderParts(ws, dir, indices, { ...options, verifyPlan, requireManifestWrite: true }))
+    } catch (error) {
+      if (error instanceof PlanWrittenButNotReRead) return madeUnread(error, target)
+      if (error instanceof StaleOrder) return stale(STALE_ORDER_MESSAGE)
+      return refused(plain(ws, error))
     }
-    return last ? done(last) : { result: { ok: true, changed: true, order: current }, plan: null, ...(writtenIndex ? { writtenIndex } : {}) }
   })
 }

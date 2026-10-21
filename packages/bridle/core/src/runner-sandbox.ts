@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
+import { access, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
@@ -53,6 +53,8 @@ export type RunnerSandboxResult = {
   stderrTruncated?: boolean;
   denied?: RunnerSandboxDenied;
   timedOut?: boolean;
+  /** The run was stopped because the caller's signal aborted (stdin-cancel children only). */
+  aborted?: boolean;
   alpha?: boolean;
   confined: boolean;
 };
@@ -252,7 +254,14 @@ function sandboxDeniedRemedy(resource: RunnerSandboxDenied["resource"]): string 
   return "Grant the Script Runner a narrower required path, or move the input into the Host App workspace.";
 }
 
-export function classifySandboxDenial(output: string): RunnerSandboxDenied | undefined {
+/** Helper status lines that report on a run; they never describe a denial. */
+const HELPER_STATUS_LINE = /^BRIDLE_SANDBOX_WARN\b/;
+
+export function classifySandboxDenial(rawOutput: string): RunnerSandboxDenied | undefined {
+  const output = rawOutput
+    .split("\n")
+    .filter((line) => !HELPER_STATUS_LINE.test(line.trim()))
+    .join("\n");
   const detail = sandboxDeniedDetail(output);
   const structured = output.match(/BRIDLE_SANDBOX_DENIED\s+(filesystem|network|setup):/i);
   if (structured) {
@@ -336,19 +345,82 @@ export function generateMacSeatbeltProfile(policy: RunnerSandboxPolicy, realHome
   ].join("\n");
 }
 
-export async function spawnCaptured(command: string[], options: SpawnConfinedOptions, timeoutMs: number): Promise<RunnerSandboxResult> {
-  const proc = spawn(command[0]!, command.slice(1), {
+/** How long a "stdin"-cancel child gets to stop its own work before it is killed. */
+export const RUNNER_SANDBOX_CANCEL_GRACE_MS = 10_000;
+
+export type HelperCancellation = "timeout" | "cancel";
+
+/**
+ * The reason a stdin-cancel helper recorded in its result file for stopping a
+ * run: the whole file is exactly `timeout` or `cancel`.
+ */
+export function parseHelperCancellation(record: string): HelperCancellation | undefined {
+  return record === "timeout" || record === "cancel" ? record : undefined;
+}
+
+async function readHelperCancellation(resultPath: string | undefined): Promise<HelperCancellation | undefined> {
+  if (!resultPath) return undefined;
+  return parseHelperCancellation(await readFile(resultPath, "utf8").catch(() => ""));
+}
+
+/**
+ * `cancel: "signal"` kills the child on timeout or abort. `cancel: "stdin"` is
+ * for a child that enforces its own cleanup (the Windows helper): a timeout
+ * writes `timeout`, an abort writes `cancel`, and stdin is closed; only a
+ * child still running after the grace period is killed. Such a child stops
+ * with exit 124 and records why in `resultPath`, a file the caller reserves
+ * empty and exclusively before launch and only the child replaces (never the
+ * proxied output, which a confined script controls and the cap can cut). A
+ * 124 without that record is an ordinary exit status.
+ */
+export async function spawnCaptured(
+  command: string[],
+  options: SpawnConfinedOptions,
+  timeoutMs: number,
+  cancel: "signal" | "stdin" = "signal",
+  resultPath?: string,
+): Promise<RunnerSandboxResult> {
+  // Declare exactly the three standard descriptors. stdin is closed (or, for
+  // stdin cancellation, a pipe that carries only the cancel line) and Node
+  // receives no caller-supplied extra descriptors to inherit.
+  const stdio: StdioOptions = cancel === "stdin" ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"];
+  const proc: ChildProcess = spawn(command[0]!, command.slice(1), {
     cwd: options.cwd,
     env: options.env,
-    // Declare exactly the three standard descriptors. stdin is closed and Node
-    // receives no caller-supplied extra descriptors to inherit.
-    stdio: ["ignore", "pipe", "pipe"],
-    signal: options.signal,
+    stdio,
+    // A "stdin" child is never killed by the abort signal directly; see requestCancel.
+    ...(cancel === "signal" ? { signal: options.signal } : {}),
   });
   const exited = childExitCode(proc);
 
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  let requested: HelperCancellation | undefined;
+  let killedAfterGrace = false;
+  const requestCancel = (reason: HelperCancellation) => {
+    if (requested) return;
+    requested = reason;
+    // The child may already have exited and closed the pipe.
+    proc.stdin?.on("error", () => {});
+    proc.stdin?.write(`${reason}\n`);
+    proc.stdin?.end();
+    graceTimer = setTimeout(() => {
+      killedAfterGrace = true;
+      proc.kill();
+    }, RUNNER_SANDBOX_CANCEL_GRACE_MS);
+    graceTimer.unref?.();
+  };
+  const onAbort = () => requestCancel("cancel");
+  if (cancel === "stdin") {
+    if (options.signal?.aborted) onAbort();
+    else options.signal?.addEventListener("abort", onAbort, { once: true });
+  }
+
   let timedOut = false;
   const timer = setTimeout(() => {
+    if (cancel === "stdin") {
+      requestCancel("timeout");
+      return;
+    }
     timedOut = true;
     proc.kill("SIGTERM");
     setTimeout(() => proc.kill("SIGKILL"), 500).unref?.();
@@ -360,7 +432,15 @@ export async function spawnCaptured(command: string[], options: SpawnConfinedOpt
       readCapturedStream(proc.stderr),
       exited.catch(() => null),
     ]);
-    const denied = exitCode && exitCode !== 0 ? classifySandboxDenial(`${stderr.text}\n${stdout.text}`) : undefined;
+    // stdin mode: the helper's own record decides. If it had to be killed
+    // after the grace period, fall back to what this wrapper asked for.
+    const stopped: HelperCancellation | undefined = cancel === "stdin"
+      ? (exitCode === 124 ? await readHelperCancellation(resultPath) : undefined)
+        ?? (killedAfterGrace ? requested : undefined)
+      : undefined;
+    const denied = !stopped && exitCode && exitCode !== 0
+      ? classifySandboxDenial(`${stderr.text}\n${stdout.text}`)
+      : undefined;
     return {
       stdout: stdout.text,
       stderr: stderr.text,
@@ -368,11 +448,14 @@ export async function spawnCaptured(command: string[], options: SpawnConfinedOpt
       ...(stdout.truncated ? { stdoutTruncated: true } : {}),
       ...(stderr.truncated ? { stderrTruncated: true } : {}),
       denied,
-      timedOut,
+      timedOut: cancel === "stdin" ? stopped === "timeout" : timedOut,
+      ...(stopped === "cancel" ? { aborted: true } : {}),
       confined: true,
     };
   } finally {
     clearTimeout(timer);
+    if (graceTimer) clearTimeout(graceTimer);
+    options.signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -444,6 +527,9 @@ export function buildWindowsSandboxRequest(
         readable: policy.filesystem.readable,
         writable: policy.filesystem.writable,
       },
+      // The host-created per-run scratch: the only tree the helper labels Low
+      // and grants writes on. Writable grants outside it are refused.
+      scratchRoot: policy._writeValidation?.scratchDir ?? policy._readValidation?.scratchDir ?? null,
       job: {
         memoryMB: policy.resources.memoryMB,
         wallclockSec: policy.resources.wallclockSec,
@@ -456,7 +542,7 @@ export function buildWindowsSandboxRequest(
 async function spawnWindowsAppContainer(command: string[], options: SpawnConfinedOptions, policy: RunnerSandboxPolicy): Promise<RunnerSandboxResult> {
   if (policy.network !== "none") throw new Error("Runner Sandbox v1 only supports network:none.");
   // Windows confinement is implemented by the bundled native helper because
-  // Bun/Node cannot create AppContainer tokens, write-restricted low-MIC
+  // Bun/Node cannot create AppContainer tokens, privilege-stripped low-MIC
   // process tokens, or Job Objects directly. Keep this wrapper fail-closed:
   // if the helper is not bundled for the Host App sidecar, the pack does not run.
   const helper = process.env.BRIDLE_WINDOWS_SANDBOX_HELPER
@@ -467,10 +553,25 @@ async function spawnWindowsAppContainer(command: string[], options: SpawnConfine
   }
   const requestDir = await mkdtemp(join(tmpdir(), "bridle-appcontainer-"));
   const requestPath = join(requestDir, "request.json");
-  await writeFile(requestPath, JSON.stringify(buildWindowsSandboxRequest(command, options, policy)), "utf8");
+  // Reserved empty and exclusively by the host; replaced by the helper only
+  // when it stops a run.
+  const resultPath = join(requestDir, "result");
 
   try {
-    const result = await spawnCaptured([helper, "--request", requestPath], options, policy.resources.wallclockSec * 1000);
+    // Inside the try so a failed reservation (a pre-existing file fails the
+    // launch) still has the finally remove requestDir.
+    await writeFile(resultPath, "", { flag: "wx" });
+    await writeFile(requestPath, JSON.stringify(buildWindowsSandboxRequest(command, options, policy)), "utf8");
+    // The helper enforces the wall clock itself and must revoke its ACL grants
+    // before exiting, so timeout and abort ask it to stop over stdin instead of
+    // killing it.
+    const result = await spawnCaptured(
+      [helper, "--request", requestPath, "--result", resultPath],
+      options,
+      policy.resources.wallclockSec * 1000,
+      "stdin",
+      resultPath,
+    );
     return { ...result, alpha: true };
   } finally {
     await rm(requestDir, { recursive: true, force: true });

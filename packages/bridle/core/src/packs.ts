@@ -634,7 +634,13 @@ export function createPackScriptCapability(options: {
         ]);
         const runtime = await runtimeCommand(options.pack, script);
         const runtimeAdditions = runtimeSandboxAdditions(script.runtime, scratchDir);
-        await Promise.all(runtimeAdditions.writable.map((path) => mkdir(path, { recursive: true })));
+        // On Windows the scratch must reach the helper exactly as mkdtemp left
+        // it: the helper labels only the scratch directory itself and pushes
+        // nothing down to existing children, so the runtime creates its own
+        // cache directories inside scratch and they inherit the grant.
+        if (process.platform !== "win32") {
+          await Promise.all(runtimeAdditions.writable.map((path) => mkdir(path, { recursive: true })));
+        }
         const policy = mergeRunnerSandboxPolicy(composeRunnerSandboxPolicy({
           pack: options.pack,
           script,

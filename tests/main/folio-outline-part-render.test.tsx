@@ -53,13 +53,9 @@ test('the two groups are labelled groups and the sticky headings stay outside th
   const html = render('')
   expect(html).toContain('id="fo-grp-run"')
   expect(html).toContain('role="group" aria-labelledby="fo-grp-run"')
-  expect(html).toContain('role="group" aria-labelledby="fo-grp-also"')
+  // Not in the outline is on the Folio page only (2026-10-19 redesign, element 5): the sidebar has no group for it.
+  expect(html).not.toContain('fo-grp-also')
   expect(html).toMatch(/<div class="fo-sec fo-pin" id="fo-grp-run" role="presentation">/)
-})
-
-test('a file over the size bound says so in its expanded state', () => {
-  const html = render('', { expanded: new Map([['also:p/h.md', true]]) })
-  expect(html).toContain('Too large to outline')
 })
 
 test('exactly one row is a tab stop when the stored row is filtered out: the open piece, else the first shown row', () => {
@@ -112,7 +108,7 @@ test('a buffer read from another file is ignored: the open piece shows its disk 
   expect(html).toContain('data-heading-level="2"')
 })
 
-test('each piece has a grip and a drag hint; none while a filter is on, and files under Also in this folder have no grip', () => {
+test('each piece has a grip and a drag hint; none while a filter is on, and files under Not in the outline have no grip', () => {
   const html = render('')
   expect(html.match(/class="fo-grip"/g)?.length).toBe(2)
   expect(html).toContain('title="Drag to move Alpha in the running order"')
@@ -121,22 +117,17 @@ test('each piece has a grip and a drag hint; none while a filter is on, and file
   expect(render('alpha')).not.toContain('drag to reorder')
 })
 
-test('an addable file has an Add button with the spec tooltip and name; a file the Folio never admits has none; Add all counts only the addable', () => {
+test('the sidebar lists no files under Not in the outline: no Put back, no Add all, no group (they are on the Folio page)', () => {
   const mixed = { ...outline, also: [
     { path: 'p/g.md', title: 'Glossary', headings: [], addable: true },
-    { path: 'p/_p_INDEX.md', title: 'Index', headings: [], addable: false },
     { path: 'p/s.md', title: 'Snippets', headings: [], addable: true },
   ] }
   const html = render('', { outline: mixed })
-  expect(html.match(/class="fo-add"/g)?.length).toBe(2)
-  expect(html).toContain('title="Add Snippets to the end of the running order"')
-  expect(html).toContain('aria-label="Add Snippets to the running order"')
-  expect(html).not.toContain('Add Index')
-  expect(html).toContain('Add all 2')
-  expect(html).toContain('title="Add all 2 to the end of the running order, in file-name order"')
-  const none = render('', { outline: { ...outline, also: [{ path: 'p/_p_INDEX.md', title: 'Index', headings: [], addable: false }] } })
-  expect(none).not.toContain('fo-addall')
-  expect(none).not.toContain('class="fo-add"')
+  expect(html).not.toContain('Glossary')
+  expect(html).not.toContain('class="fo-add"')
+  expect(html).not.toContain('fo-addall')
+  expect(html).not.toContain('Not in the outline')
+  expect(html).not.toContain('data-kind="also"')
 })
 
 test('the pieces carry a box for the drop maths, the last Add is tinted, and the live region speaks the announcement', () => {
@@ -147,15 +138,13 @@ test('the pieces carry a box for the drop maths, the last Add is tinted, and the
   expect(html).not.toContain('data-fo-dropline')
 })
 
-test('a Folio the Outline cannot change shows no grip, no Add, no Add all and no drag hint; one line sends the owner to the Plan', () => {
+test('a Folio the Outline cannot change shows no grip, no Add, no Add all and no drag hint; one line sends the owner to the Folio outline', () => {
   const able = render('')
-  expect(able).toContain('data-fo-add="p/g.md"')
-  expect(able).toContain('data-fo-addall')
   expect(able).toContain('drag to reorder')
   expect(able).not.toContain('data-fo-plan-only')
   const html = render('', { outline: { ...outline, orderInPlanOnly: true } })
   expect(html).toContain('data-fo-plan-only="true"')
-  expect(html).toContain('Change this Folio’s order in the Plan.')
+  expect(html).toContain('Change this Folio’s order in the Folio outline.')
   expect(html).toContain('data-fo-open-plan="true"')
   expect(html).not.toContain('data-fo-add=')
   expect(html).not.toContain('data-fo-addall')
@@ -163,4 +152,16 @@ test('a Folio the Outline cannot change shows no grip, no Add, no Add all and no
   expect(html).not.toMatch(/class="fo-grip" /)
   // The rows themselves are still there to open.
   expect(html).toContain('data-fokey="piece:0:p/a.md"')
+})
+
+test('the open piece follows the shared title rule on its buffer: a ## heading that is the title names the part', () => {
+  const html = render('', {
+    bufferHeadings: [{ level: 2, from: 22, text: 'Renamed chapter' }, { level: 3, from: 45, text: 'Section' }],
+    bufferText: '---\ntitle: Renamed chapter\n---\n\n## Renamed chapter\n\n### Section\n',
+  })
+  expect(html).toContain('Renamed chapter')
+  expect(html).not.toContain('>Alpha<')
+  // Judged from the levels alone (no buffer text), a ## first heading is not the title: the disk title stands.
+  const levelsOnly = render('', { bufferHeadings: [{ level: 2, from: 0, text: 'Renamed chapter' }] })
+  expect(levelsOnly).toContain('>Alpha<')
 })

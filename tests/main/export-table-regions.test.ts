@@ -15,7 +15,7 @@ import { toRtf } from '../../src/shared/markdown/to-rtf'
 const TABLE = '| Left | Right |\n| --- | ---: |\n| One | 2 |\n'
 const TWO_TABLES = `# Tables\n\n${TABLE}\nBetween.\n\n${TABLE}`
 const NO_TABLE = '# Prose\n\nA paragraph with `code` and a [link](https://example.com).\n'
-const REGION = '<div class="wf-table-region">'
+const REGION = '<div class="wf-table-region table-scroll">'
 // As the emitter writes it: the stylesheet's own comment mentions the bare tag, so counts use this.
 const WRAPPED = `${REGION}<table`
 const SCRIPT_OPEN = '<script data-writeflex-table-runtime>'

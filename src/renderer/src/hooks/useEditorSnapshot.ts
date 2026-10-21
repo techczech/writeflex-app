@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { onEditorUpdate } from '../editor/setup'
-import { extractOutline, type OutlineHeading } from '../editor/outline'
+import type { Text } from '@codemirror/state'
+import { extractOutlineOfState, type OutlineHeading } from '../editor/outline'
 import type { EditorHandle } from '../components/EditorPane'
 import { documentTextForPersistence } from '../editor/writer-review'
 
@@ -67,7 +68,10 @@ export function useEditorSnapshot(
   editorRef: RefObject<EditorHandle | null>,
   activePath: string | null,
 ): EditorSnapshot | null {
-  const [raw, setRaw] = useState<RawSnapshot | null>(null)
+  const [raw, setRaw] = useState<(RawSnapshot & { outline: OutlineHeading[] }) | null>(null)
+  // The outline is a pure function of the document, so a tick on the same document (a caret move)
+  // reuses it; a changed document reads headings off the editor's syntax tree, not a second parse.
+  const outlineCache = useRef<{ doc: Text; text: string; outline: OutlineHeading[] } | null>(null)
 
   const recompute = useCallback(() => {
     const view = editorRef.current?.view()
@@ -76,9 +80,15 @@ export function useEditorSnapshot(
       return
     }
     const sel = view.state.selection.main
+    const docText = view.state.doc.toString()
+    const cached = outlineCache.current
+    if (cached?.doc !== view.state.doc && cached?.text !== docText) {
+      outlineCache.current = { doc: view.state.doc, text: docText, outline: extractOutlineOfState(view.state, docText) }
+    }
     setRaw({
       path: editorRef.current?.path() ?? null,
-      docText: view.state.doc.toString(),
+      docText,
+      outline: outlineCache.current!.outline,
       countText: documentTextForPersistence(view.state),
       selHead: sel.head,
       selFrom: sel.from,
@@ -100,11 +110,5 @@ export function useEditorSnapshot(
   // A path change recomputes at once (no debounce) so the outline's wait for the new file's snapshot lasts a frame.
   useEffect(() => { schedule() }, [activePath, schedule])
 
-  // extractOutline is a full Lezer parse. Keying it on the doc-text VALUE (a primitive string) means a
-  // cursor-only move — which produces an equal `docText` — reuses the previous parse via the memo's
-  // Object.is check, so a bare caret move triggers no parse at all.
-  const docText = raw?.docText
-  const outline = useMemo<OutlineHeading[]>(() => (docText != null ? extractOutline(docText) : []), [docText])
-
-  return useMemo<EditorSnapshot | null>(() => (raw ? { ...raw, outline } : null), [raw, outline])
+  return raw
 }

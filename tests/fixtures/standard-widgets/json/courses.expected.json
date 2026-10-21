@@ -1,0 +1,23 @@
+{
+  "contract": "adapter-output/1",
+  "source": { "path": "json/courses.json", "format": "json" },
+  "selection": { "pointer": "/catalogue/courses" },
+  "declared_types": { "/hours": "number", "/places": "number" },
+  "id_field": "/id",
+  "fields": [
+    { "key": "/id", "label": "id" },
+    { "key": "/title", "label": "title" },
+    { "key": "/audience", "label": "audience" },
+    { "key": "/hours", "label": "hours" },
+    { "key": "/places", "label": "places" },
+    { "key": "/provider/name", "label": "provider name" },
+    { "key": "/enrolment_ref", "label": "enrolment_ref" },
+    { "key": "/notes", "label": "notes" }
+  ],
+  "records": [
+    { "id": "001", "id_origin": "mapped", "locator": { "pointer": "/catalogue/courses/0", "line": 5 }, "values": { "/id": "001", "/title": "Prompting basics", "/audience": "Staff", "/hours": "2", "/places": "20", "/provider/name": "Training Unit" }, "typed": { "/hours": 2, "/places": 20 } },
+    { "id": "002", "id_origin": "mapped", "locator": { "pointer": "/catalogue/courses/1", "line": 6 }, "values": { "/id": "002", "/title": "Data, privacy and you", "/audience": "All", "/hours": "1.5", "/places": "40", "/provider/name": "Information Office" }, "typed": { "/hours": 1.5, "/places": 40 } },
+    { "id": "011", "id_origin": "mapped", "locator": { "pointer": "/catalogue/courses/2", "line": 7 }, "values": { "/id": "011", "/title": "Café conversations — Zürich", "/audience": "Researchers", "/hours": null, "/places": "12", "/provider/name": "Library" }, "typed": { "/hours": null, "/places": 12 } },
+    { "id": "120", "id_origin": "mapped", "locator": { "pointer": "/catalogue/courses/3", "line": 8 }, "values": { "/id": "120", "/title": "Spreadsheet confidence", "/audience": "Staff", "/hours": "0", "/places": "0", "/provider/name": "Training Unit", "/enrolment_ref": "9007199254740993", "/notes": "<script>alert(1)</script> is data, not code." }, "typed": { "/hours": 0, "/places": 0 } }
+  ]
+}

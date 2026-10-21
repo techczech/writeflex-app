@@ -28,6 +28,8 @@ import {
 } from './read-aloud'
 import { suggestionAnchoring } from './suggestion-anchor'
 import { changeMarking, changeMarkClicks } from './change-marks'
+import { marginOutline } from './margin-outline'
+import { underSpacerField } from './margin-under-spacers'
 import { inlineChanges, inlineChangesField, type InlineAction } from './inline-changes'
 import { appliedFlash } from './applied-flash'
 import { scrapEditing, type ScrapEditingOpts } from './scraps'
@@ -173,6 +175,8 @@ export function baseExtensions(opts: BaseExtensionOpts): Extension[] {
     suggestionAnchoring,
     // Change Ledger marks (Task 5): the dock↔document link. The field is always present so App can
     // dispatch marks into any buffer; click routing is added only when a handler is wired (not headless).
+    marginOutline,
+    underSpacerField,
     opts.changeMarks ? changeMarkClicks(() => opts.changeMarks!.onSelect) : changeMarking,
     // Inline track-changes (the default agent-review surface, replacing the popup): renders each pending
     // agent change in place with a per-change action bar. Field always present; routing when wired.

@@ -4,6 +4,7 @@ import {
   EXPORT_MASTHEAD_FIELDS,
   type ExportMastheadField,
   type ExportSheetOptions,
+  type ExportTocDepthHome,
 } from './export-sheet-options'
 import type { ExportPresetField } from '../../../shared/export-presets'
 
@@ -12,6 +13,8 @@ export type ExportOptionControlsProps = {
   options: ExportSheetOptions
   onChange: (options: ExportSheetOptions) => void
   changedFields?: readonly ExportPresetField[]
+  /** Where the Contents depth is saved for this export (the document, or the Folio's Index Note), if anywhere. */
+  tocDepthHome?: ExportTocDepthHome | null
 }
 
 const FIELD_LABELS: Record<ExportMastheadField, string> = {
@@ -61,7 +64,7 @@ function SwitchRow({
 }
 
 /** Locked frame (a)'s HTML-only controls. One complete value crosses its props/events seam. */
-export function ExportOptionControls({ format, options, onChange, changedFields = [] }: ExportOptionControlsProps): JSX.Element {
+export function ExportOptionControls({ format, options, onChange, changedFields = [], tocDepthHome = null }: ExportOptionControlsProps): JSX.Element {
   const disabled = format === 'docx'
   const change = (patch: Partial<ExportSheetOptions>): void => onChange({ ...options, ...patch })
   const toggleField = (field: ExportMastheadField): void => {
@@ -82,7 +85,7 @@ export function ExportOptionControls({ format, options, onChange, changedFields 
           <SwitchRow label="Contents sidebar" checked={options.sidebar} changed={changedFields.includes('sidebar')} onToggle={() => change({ sidebar: !options.sidebar })} />
           <SwitchRow label="Title block and details" checked={options.titleBlock} changed={changedFields.includes('titleBlock')} onToggle={() => change({ titleBlock: !options.titleBlock })} />
           <SwitchRow label="Front page" checked={options.frontPage} changed={changedFields.includes('frontPage')} onToggle={() => change({ frontPage: !options.frontPage })} />
-          <SwitchRow label="Reader can add notes" checked={options.readerNotes} changed={changedFields.includes('readerNotes')} onToggle={() => change({ readerNotes: !options.readerNotes })} />
+          <SwitchRow label="Reader can add comments" checked={options.readerNotes} changed={changedFields.includes('readerNotes')} onToggle={() => change({ readerNotes: !options.readerNotes })} />
           <SwitchRow label="Reader can edit and return changes" checked={options.readerEdits} changed={changedFields.includes('readerEdits')} onToggle={() => change({ readerEdits: !options.readerEdits })} />
           <SwitchRow label="Include word count and dates" checked={options.summaryTiles} changed={changedFields.includes('summaryTiles')} onToggle={() => change({ summaryTiles: !options.summaryTiles })} />
         </div>
@@ -114,6 +117,27 @@ export function ExportOptionControls({ format, options, onChange, changedFields 
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="export-field">
+        <label className="export-flabel" htmlFor="export-toc-depth">Contents depth <span>Tab, then ↑ ↓</span></label>
+        <select
+          id="export-toc-depth"
+          className={`export-select${changedFields.includes('tocDepth') ? ' changed' : ''}`}
+          value={options.tocDepth === undefined ? '' : String(options.tocDepth)}
+          onChange={(event) => {
+            const { tocDepth: _previous, ...rest } = options
+            onChange(event.target.value === '' ? rest : { ...rest, tocDepth: Number(event.target.value) })
+          }}
+        >
+          <option value="">Default (four levels)</option>
+          {[1, 2, 3, 4, 5].map((depth) => <option key={depth} value={depth}>{depth === 1 ? 'Level 1 only' : `Levels 1 to ${depth}`}</option>)}
+          <option value="6">All levels</option>
+        </select>
+        <small>
+          Deeper headings stay in the document; only the contents list leaves them out.
+          {tocDepthHome ? ` Saved with ${tocDepthHome.label} when you export as HTML.` : ''}
+        </small>
       </div>
 
       <div className="export-field">

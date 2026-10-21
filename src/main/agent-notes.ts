@@ -7,7 +7,7 @@ import { parseFrontmatter } from './frontmatter'
 import { frontmatterBlock } from '../shared/markdown/frontmatter'
 import { normaliseWorkspaceDocumentPath } from '../shared/agent-note-paths'
 import { AGENT_NOTE_DIR, defaultAgentNoteTitle, normaliseNoteKind } from './agent-note-create'
-import type { Workspace } from './workspace'
+import { SavedButNotReadBack, type Workspace } from './workspace'
 import { objectBlock, parseTable, validateObjectMarkup } from '../shared/object-markup'
 import { parseQuery } from './query-engine'
 
@@ -96,8 +96,12 @@ export async function appendAgentObjectSettlement(ws: Workspace, path: string, s
   const content = setFrontmatterKeys(`${raw.trimEnd()}\n${settlementLine(status, recordedAt)}\n`, {
     agent_note_status: status,
   }, path)
-  try { await ws.saveFileWithoutReadBack(path, content) } catch (error) {
-    throw new Error(`Could not update Agent note at ${path}: ${error instanceof Error ? error.message : String(error)}`)
+  // Only over the note as it was read here (R5; final review round 2, finding 1): a newer version is kept.
+  try {
+    await ws.saveFileOverRead(path, content, raw)
+  } catch (error) {
+    // Committed and not read back: written.
+    if (!(error instanceof SavedButNotReadBack)) throw new Error(`Could not update Agent note at ${path}: ${error instanceof Error ? error.message : String(error)}`)
   }
   return { ...existing, status, settlements: [...existing.settlements, { status, recordedAt }] }
 }

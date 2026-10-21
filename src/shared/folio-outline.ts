@@ -5,6 +5,9 @@
  */
 
 import type { FolioPlace } from './folio-place'
+import { isNotInOutlineName } from './folio-part-name'
+import { compareChapterOrder } from './folio-chapter-order'
+import { partChildHeadings, type PartHeadingMode } from './folio-part-title'
 
 export type FolioOutlineHeading = { level: number; text: string; line: number }
 
@@ -13,6 +16,14 @@ export type FolioOutlineFile = {
   path: string
   title: string
   headings: FolioOutlineHeading[]
+  /** Whether the part has its own `#` heading (`own`, then its headings start at the next level), carries
+   *  `heading: none` (`none`), or has no `#` heading (`missing`); see folio-part-title.ts. Absent = read as `own`. */
+  heading?: PartHeadingMode
+  /** The part's frontmatter `title` and its `#` heading differ: the row says so, and a change is proposed. */
+  titleMismatch?: true
+  /** With `titleMismatch`: the two texts, and the fingerprint of the bytes they were read from, so the row's
+   *  "Use heading as title" / "Use title as heading" write only over the version shown (shared/title-conflict.ts). */
+  titleConflict?: { title: string; heading: string; fingerprint: string }
   /** The file is over the outline's size bound: it was not read and lists no headings. */
   tooLarge?: boolean
   /** Only on "Also in this folder" files: whether Add will accept it. True only for a file the Plan lists as
@@ -20,6 +31,10 @@ export type FolioOutlineFile = {
    *  an underscore-prefixed file and a backup are listed but never admitted; nor is a file outside the
    *  folder a `content_root` Folio takes its pieces from. */
   addable?: boolean
+  /** Only on running-order pieces: the piece is front matter (ADR-0046, shared/folio-front-matter.ts), listed first
+   *  and never in the contents. Any front-matter file, listed or not, is titled by its frontmatter `title:` only and
+   *  gets no heading checks. */
+  frontMatter?: true
   /** Only on "Also in this folder" files that are not directly in the Folio's folder: the folder they are in,
    *  relative to it ("contents"). The row shows it before the title ("contents/Notes"). */
   under?: string
@@ -31,8 +46,8 @@ export type FolioOutline = {
   name: string
   /** The running order as the manifest lists it (a piece listed twice appears twice). */
   pieces: FolioOutlineFile[]
-  /** Markdown files of the Folio's folder that the running order does not list: its direct children in file-name
-   *  order, then the unlisted files of the folder a `content_root` Folio takes its pieces from. */
+  /** "Not in the outline": Markdown files under the piece root (`content_root`, else the Folio folder), at any depth,
+   *  that the running order does not list: the root's direct children in chapter order, then the rest by path. */
   also: FolioOutlineFile[]
   /**
    * The Outline cannot change this Folio's running order exactly (no manifest, an entry
@@ -64,32 +79,42 @@ export function subFolderOf(dir: string, path: string): string | null {
   return cut < 0 ? null : inside.slice(0, cut)
 }
 
+/** The name rule of the "Not in the outline" group: the one rule main's Plan applies too (shared/folio-part-name.ts). */
+export { isNotInOutlineName } from './folio-part-name'
+
 /**
- * "Also in this folder": the files directly in the Folio's folder that the running order does not list,
- * and the files in `unlisted` (those the Plan reports as not in the running order; for a `content_root`
- * Folio they sit in that folder). Only files of `files`, the Folio folder's own listing, are ever given.
- * Direct children come first, in file-name order; the others follow by path. Each carries whether Add
- * accepts it: `admissible` is the set the Plan would accept.
+ * "Not in the outline": every file of `files` (the Folio folder's own listing) under the piece root
+ * (`root`, the manifest's `content_root` when it has one, else the Folio folder), at any depth, that the
+ * running order does not list. Direct children of the root come first in chapter order, the others follow
+ * by path. The Index Note, covers, agent instructions, backups and `_`-prefixed files are never listed;
+ * the manifest's `title_matter` file is not special (ADR-0046). Each row carries whether Put back accepts
+ * it: `admissible` is the set the Plan would accept (and the path is still shown when it is not).
  */
 export function groupAlsoInFolder(
   files: ReadonlyArray<{ path: string; name: string; directory: string }>,
   pieces: readonly string[],
   dir: string,
   admissible: ReadonlySet<string>,
-  unlisted: ReadonlySet<string> = new Set(),
+  root: string = dir,
+  deep = true,
 ): Array<{ path: string; addable: boolean }> {
   const listed = new Set(pieces)
-  const direct = files.filter((file) => file.directory === dir && !listed.has(file.path)).sort((a, b) => a.name.localeCompare(b.name))
-  const deeper = files
-    .filter((file) => file.directory !== dir && unlisted.has(file.path) && !listed.has(file.path) && subFolderOf(dir, file.path) !== null)
-    .sort((a, b) => a.path.localeCompare(b.path))
+  // Under the piece root at any depth, the boundary the Plan applies (ADR-0046): with a `content_root`, files
+  // directly in the Folio folder outside it are not listed. A refused root lists the Folio folder's direct files only.
+  const underRoot = (file: { path: string; directory: string }): boolean => (
+    deep ? root === '' || file.path.startsWith(`${root}/`) : file.directory === dir
+  )
+  const candidates = files.filter((file) => isNotInOutlineName(file.name) && !listed.has(file.path) && underRoot(file))
+  const byName = (a: { name: string }, b: { name: string }): number => compareChapterOrder(a.name, b.name)
+  const direct = candidates.filter((file) => file.directory === root).sort(byName)
+  const deeper = candidates.filter((file) => file.directory !== root).sort((a, b) => a.path.localeCompare(b.path))
   return [...direct, ...deeper].map((file) => ({ path: file.path, addable: admissible.has(file.path) }))
 }
 
-/** The headings a file's rows show: its leading level-1 heading is the piece's own name (the row itself),
- *  so it is not repeated as a heading. */
-export function shownHeadings<T extends { level: number }>(headings: readonly T[]): T[] {
-  return headings.length > 0 && headings[0].level === 1 ? headings.slice(1) : [...headings]
+/** The headings a file's rows show: a part's own leading level-1 heading is its name (the row itself), so
+ *  it is not repeated as a heading. A part with `heading: none` or no `#` heading lists them all. */
+export function shownHeadings<T extends { level: number; text?: string }>(headings: readonly T[], mode: PartHeadingMode = 'own', title?: string): T[] {
+  return partChildHeadings(headings, mode, title)
 }
 
 /** The Levels limit applied to a file's headings (null = all). */
@@ -111,7 +136,7 @@ export function openRows(outline: Pick<FolioOutline, 'pieces' | 'also'>, openPat
  * text; `headings` are then only the matching ones (all of them when the title itself matches).
  */
 export function filterFolioFile(file: FolioOutlineFile, needle: string): { keep: boolean; headings: FolioOutlineHeading[] } {
-  const own = shownHeadings(file.headings)
+  const own = shownHeadings(file.headings, file.heading ?? 'own', file.title)
   if (!needle) return { keep: true, headings: own }
   const matching = own.filter((heading) => heading.text.toLowerCase().includes(needle))
   if (file.title.toLowerCase().includes(needle)) return { keep: true, headings: own }

@@ -1,0 +1,5 @@
+{ "courses": [
+  { "id": "001", "title": "Prompting basics" },
+  { "id": "002", "title": "Data and privacy" },
+  { "id": "001", "title": "Prompting basics (repeat)" }
+] }

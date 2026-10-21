@@ -44,8 +44,8 @@ async function endpointContent(input: {
 }
 
 export async function compareVersionRange(
-  versions: VersionStore,
-  changes: ChangeStore,
+  versions: Pick<VersionStore, 'list'>,
+  changes: Pick<ChangeStore, 'list'>,
   snapshots: SnapshotContentReader,
   workspace: Workspace,
   input: VersionCompareRequest,

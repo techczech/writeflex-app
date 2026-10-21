@@ -8,10 +8,17 @@
  * folio.create_manifest capability / Make Folio), never something this reader does.
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import { posix } from 'node:path'
 import type { Workspace } from './workspace'
 import { MANIFEST_NAME } from '../shared/folio-constants'
+import { jsonArrayLayout, rewriteJsonArrayByKey } from './json-array-layout'
+import { isAgentInstructionsName } from '../shared/folio-agent-files'
+import { chapterNumber, compareChapterOrder } from '../shared/folio-chapter-order'
+import { isFolioPartCandidateName, isNotInOutlineName } from '../shared/folio-part-name'
+
+export const FOLIO_BACKUP_NAME = '.folio-backup.json'
+export const FOLIO_OWNERSHIP_NAME = '.folio-instructions.json'
 
 export { MANIFEST_NAME } from '../shared/folio-constants'
 
@@ -22,6 +29,7 @@ export type Folio = {
   contentRoot: string
   output?: string
   titleMatter?: string
+  title?: string
   files: FolioFile[]
   /** Set when the manifest's `content_root` is absolute or leaves the Folio's folder. No entry of such a
    *  manifest resolves (they are not re-read relative to the folder: the author did not list those
@@ -33,13 +41,11 @@ export type Folio = {
    *  delete them: the Outline refuses to change such a Folio, and the Plan keeps them as authored. */
   unreadableEntries?: true
 }
-/** A listed entry that will not be read or exported, with its path exactly as the manifest wrote it. */
-export type FolioLeftOut = { path: string; reason: 'not-found' | 'outside-folio' }
+/** A listed entry that will not be read or exported, with its path exactly as the manifest wrote it.
+ *  `agent-instructions`: the entry names AGENTS.md, CLAUDE.md or a conflict copy of either, which is never a part. */
+export type FolioLeftOut = { path: string; reason: 'not-found' | 'outside-folio' | 'agent-instructions' }
 /** A Folio's listed entries, resolved: the pieces in manifest order, and the entries left out. */
 export type FolioPieces = { pieces: string[]; leftOut: FolioLeftOut[] }
-
-/** A leading numeric part order: `01-intro.md`, `02_method.md`, `10-appendix.md`. */
-const NUMERIC_PREFIX = /^(\d+)[-_]/
 
 /** A workspace-relative path inside `dir` (or at the root when `dir` is ''). */
 function inDir(dir: string, ...parts: string[]): string {
@@ -129,6 +135,11 @@ export function resolveManifestFilePath(
   return manifestFilePathCandidates(dir, manifest, file).find((path) => present.has(path)) ?? null
 }
 
+/** The manifest's `title_matter` file as a workspace path, or null when it names none or no present file (ADR-0046). */
+export function titleMatterPath(dir: string, manifest: Folio, present: ReadonlySet<string>): string | null {
+  return manifest.titleMatter ? resolveManifestFilePath(dir, manifest, { path: manifest.titleMatter }, present) : null
+}
+
 /** Whether an entry has no place inside the Folio's folder under either path convention, or belongs to
  *  a manifest whose `content_root` was refused. An unresolved entry that has a place inside is simply a
  *  file that is not there. The Plan keeps such entries exactly as authored when it writes the manifest. */
@@ -136,25 +147,51 @@ export function manifestEntryPointsOutsideFolio(dir: string, manifest: Folio, fi
   return manifestFilePathCandidates(dir, manifest, file).length === 0
 }
 
-/** A stable sort key for the manifest-less fallback: numbered files first in numeric order, then the
- *  rest alphabetically. Two files sharing a prefix fall back to alpha — which is exactly the ambiguity
- *  an explicit manifest exists to resolve. */
-function prefixOrderKey(name: string): [number, number, string] {
-  const m = NUMERIC_PREFIX.exec(name)
-  return m ? [0, Number(m[1]), name] : [1, 0, name]
-}
+// The name rule every Folio part list applies lives in shared/folio-part-name.ts (one rule for main and the
+// renderer's Outline); covers are excluded by path, per folder, by `fallbackFolioParts`'s callers.
+export { isFolioPartCandidateName } from '../shared/folio-part-name'
 
-function compareKeys(a: [number, number, string], b: [number, number, string]): number {
-  return a[0] - b[0] || a[1] - b[1] || a[2].localeCompare(b[2])
+/**
+ * The never-a-part rule as the Collection lists apply it (the Folder dashboard rows, the Board, the Word
+ * export, word counts, digests): a file named as agent instructions anywhere inside a Folio, that is, its own
+ * folder or any folder above it up to the Collection root holds a manifest (so an AGENTS.md in a Folio's
+ * `content_root` subfolder is left out too). An AGENTS.md in a folder that is in no Folio is left to show as before.
+ */
+export function isFolioAgentInstructionsFile(ws: Pick<Workspace, 'absolute'>, path: string): boolean {
+  if (!isAgentInstructionsName(path)) return false
+  let dir = posix.dirname(path) === '.' ? '' : posix.dirname(path)
+  for (;;) {
+    try {
+      if (existsSync(ws.absolute(inDir(dir, MANIFEST_NAME)))) return true
+    } catch {
+      return false
+    }
+    if (dir === '') return false
+    const parent = posix.dirname(dir)
+    dir = parent === '.' ? '' : parent
+  }
 }
 
 /** Direct-child Markdown files that may become Folio parts, in the manifest-less fallback order. */
 export async function fallbackFolioParts(ws: Workspace, dir: string): Promise<string[]> {
   const covers = new Set(collectionCoverPaths(ws, dir))
   return (await ws.listFilesIn(dir, { recursive: false }))
-    .filter((file) => file.directory === dir && !file.name.startsWith('_') && !covers.has(file.path) && !file.path.endsWith('.writeflex-backup'))
-    .sort((a, b) => compareKeys(prefixOrderKey(a.name), prefixOrderKey(b.name)))
+    .filter((file) => file.directory === dir && isFolioPartCandidateName(file.name) && !covers.has(file.path))
+    .sort((a, b) => compareChapterOrder(a.name, b.name))
     .map((file) => file.path)
+}
+
+/**
+ * Every Markdown file at any depth under `root` that may become a Folio part: the shared name rule
+ * (`isNotInOutlineName`: no `_`-prefixed file, backup, agent instructions or cover, case-insensitively, the
+ * rule the sidebar Outline applies too), direct children first in chapter order, then subfolder files by path.
+ * The "Not in the outline" group is this list minus the running order.
+ */
+export async function folioPartsUnderRoot(ws: Workspace, root: string): Promise<string[]> {
+  const files = (await ws.listFilesIn(root)).filter((file) => isNotInOutlineName(file.name))
+  const direct = files.filter((file) => file.directory === root).sort((a, b) => compareChapterOrder(a.name, b.name))
+  const deeper = files.filter((file) => file.directory !== root).sort((a, b) => a.path.localeCompare(b.path))
+  return [...direct, ...deeper].map((file) => file.path)
 }
 
 /**
@@ -204,6 +241,7 @@ export function parseManifest(dir: string, raw: string): Folio | null {
   const contentRoot = safeContentRoot(dir, authoredRoot)
   return {
     contentRoot,
+    ...(typeof obj.title === 'string' && obj.title.trim() ? { title: obj.title.trim() } : {}),
     ...(contentRoot !== authoredRoot ? { contentRootRefused: true as const } : {}),
     ...(typeof obj.output === 'string' ? { output: obj.output } : {}),
     ...(typeof obj.title_matter === 'string' ? { titleMatter: obj.title_matter } : {}),
@@ -231,16 +269,18 @@ export async function assertManifestAbsent(ws: Workspace, dir: string): Promise<
  * An entry listed twice resolves twice, in both positions, as it always has. Null when the folder
  * declares no manifest.
  */
-export async function folioPieces(ws: Workspace, dir: string): Promise<FolioPieces | null> {
+export async function folioPieces(ws: Workspace, dir: string, listing?: ReadonlySet<string>): Promise<FolioPieces | null> {
   const manifest = await readManifest(ws, dir)
   if (!manifest) return null
-  // Containment: no candidate lies outside `dir`, so the Folio's own folder is the whole listing needed.
-  const present = new Set((await ws.listFilesIn(dir)).map((f) => f.path))
+  // Containment: no candidate lies outside `dir`, so the Folio's own folder is the whole listing needed
+  // (`listing`: that folder's listing, when the caller already has it).
+  const present = listing ?? new Set((await ws.listFilesIn(dir)).map((f) => f.path))
   const pieces: string[] = []
   const leftOut: FolioLeftOut[] = []
   for (const file of manifest.files) {
     const path = resolveManifestFilePath(dir, manifest, file, present)
-    if (path) pieces.push(path)
+    if (path && isAgentInstructionsName(path)) leftOut.push({ path: file.path, reason: 'agent-instructions' })
+    else if (path) pieces.push(path)
     else leftOut.push({ path: file.path, reason: manifestEntryPointsOutsideFolio(dir, manifest, file) ? 'outside-folio' : 'not-found' })
   }
   return { pieces, leftOut }
@@ -307,17 +347,42 @@ export async function orderEntriesByFolio<T extends { file: string }>(ws: Worksp
     .map((x) => x.e)
 }
 
-export async function draftManifest(ws: Workspace, dir: string): Promise<string> {
+export async function draftManifest(ws: Workspace, dir: string, onWarning?: (warning: string) => void): Promise<string> {
+  const backupPath = inDir(dir, FOLIO_BACKUP_NAME)
+  if (existsSync(ws.absolute(backupPath))) {
+    try {
+      if (!lstatSync(ws.absolute(backupPath)).isFile()) throw new Error('The Folio backup must be a plain file.')
+      const source = (await ws.readFile(backupPath)).content
+      const json: unknown = JSON.parse(source)
+      if (!json || typeof json !== 'object' || Array.isArray(json) || !Array.isArray((json as { files?: unknown }).files)) throw new Error('The Folio backup has no files array.')
+      const manifest = parseManifest(dir, source)
+      if (!manifest || manifest.contentRootRefused || manifest.unreadableEntries) throw new Error('The Folio backup is not a readable manifest.')
+      const present = new Set((await ws.listFilesIn(dir)).map(file => file.path))
+      const entries = jsonArrayLayout(source, 'files').entries
+      const retained = entries.filter(entry => resolveManifestFilePath(dir, manifest, entry.value as FolioFile, present) !== null)
+      const listed = new Set(retained.map(entry => resolveManifestFilePath(dir, manifest, entry.value as FolioFile, present)))
+      const root = inDir(dir, manifest.contentRoot)
+      const added = (await folioPartsUnderRoot(ws, root)).filter(path => !listed.has(path))
+        .map(path => ({ path: posix.relative(root || '.', path), role: 'section' }))
+      if (retained.length === entries.length && added.length === 0) return source
+      const desired = retained.map(entry => entry.value as Record<string, unknown>)
+      return rewriteJsonArrayByKey(source, 'files', 'path', [...desired, ...added],
+        new Map(desired.map((value, index) => [value, entries.indexOf(retained[index])])))
+    } catch {
+      onWarning?.('The saved running order could not be read. A fresh running order was made.')
+    }
+  }
   const direct = await fallbackFolioParts(ws, dir)
   const contentsSub = await fallbackFolioParts(ws, inDir(dir, 'contents'))
-  const directHasNumberedParts = direct.some((path) => NUMERIC_PREFIX.test(posix.basename(path)))
-  const contentsHasNumberedParts = contentsSub.some((path) => NUMERIC_PREFIX.test(posix.basename(path)))
+  // Numbered by the same rule the chapter order sorts by (`chapterNumber`): a digit run that stands on its own.
+  const directHasNumberedParts = direct.some((path) => chapterNumber(path) !== null)
+  const contentsHasNumberedParts = contentsSub.some((path) => chapterNumber(path) !== null)
   const useContents = contentsSub.length > 0 && (
     direct.length === 0 || (!directHasNumberedParts && contentsHasNumberedParts)
   )
   const contentRoot = useContents ? 'contents' : ''
   const parts = useContents ? contentsSub : direct
-  if (parts.length === 0) throw new Error('This folder has no Markdown files to include in a Folio.')
+  if (parts.length === 0 && !existsSync(ws.absolute(indexNotePath(ws, dir)))) throw new Error('This folder has no Markdown files to include in a Folio.')
   const manifest = {
     schema_version: 1,
     content_root: contentRoot,

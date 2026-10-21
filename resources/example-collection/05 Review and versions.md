@@ -10,9 +10,19 @@ Every wall up here was built by hand, stone by stone, without any mortar at all.
 
 The stone comes out of the field the wall goes round. Nobody carried it far. The big stones go at the bottom and the wall narrows as it rises, and every yard or so a long stone is laid right through from one face to the other to tie the two sides together.
 
-> **Review sessions.** A review session is one sitting of changes. **Start a new review session** begins one, so that what you change from now on is listed apart from what came before. <kbd>⇧⌘C</kbd> opens Review in the right-hand pane, which lists the changes in this file. **Accept session** accepts every change in the session at once.
+> **Review sessions.** A review session is one sitting of changes. **Start a new review session** begins one, so that what you change from now on is listed apart from what came before. The margin beside the text shows the comments and edits in this file as cards. **Accept session** accepts every change in the session at once.
 
-> **Review changes.** Make two or three more changes to the paragraphs above. <kbd>⌥⌘G</kbd> goes to the next change and <kbd>⇧⌥⌘G</kbd> to the previous one. <kbd>⌥⌘↵</kbd> accepts the change you are on and moves to the next. Select a change you have already accepted in Review: **Return change to review** makes it open again, and **Send original to Scratchpad** keeps the words it replaced as a scrap. **Hide strikes** hides what was taken out, and **Hide inserts** hides the marking of what was put in; choosing either again shows them.
+> **Review changes.** Make two or three more changes to the paragraphs above. They appear in the margin as comments and edits.
+>
+> Stepping through them: <kbd>⌥⌘G</kbd> goes to the next item and <kbd>⇧⌥⌘G</kbd> to the previous one, and puts you in its card. There <kbd>A</kbd> accepts it, <kbd>D</kbd> declines it and <kbd>R</kbd> replies; Esc goes back to the text. <kbd>⌥⌘↵</kbd> accepts the item you are on and moves to the next. <kbd>⇧⌘C</kbd> goes to the first item shown. When items are waiting in other pieces, the margin says how many, and <kbd>⌃⌥⌘G</kbd> opens the next piece with items waiting.
+>
+> Where the cards sit: <kbd>⇧⌥⌘V</kbd> switches the cards between Margin and Inline, which puts them under their paragraphs. Below about 1150 pixels of window width they go Inline on their own. <kbd>⇧⌥⌘M</kbd> shows or hides the margin. When several items sit on one paragraph they become one stack of one-line rows, and nothing folds or opens while you are typing in it.
+>
+> Filtering and bulk actions are in the review line in the status bar and its menu. The line counts what is waiting. <kbd>⌃⌥⌘1</kbd> shows all, <kbd>⌃⌥⌘2</kbd> shows comments only and <kbd>⌃⌥⌘3</kbd> shows edits only, and the next and previous keys then step through what is shown. <kbd>⇧⌘A</kbd> accepts everything shown, or only the cards you have selected with Command-click. <kbd>⇧⌘⌫</kbd> declines them, after asking you first, and <kbd>⇧⌘R</kbd> sends the review back to the agent. **Accept all shown, or the selected**, **Decline all shown, or the selected** and **Send the review back to the agent** do the same from the palette.
+>
+> Three more views are modes in the palette, and they are there even when nothing is waiting; Esc goes back to review. **Settled today** shows what you accepted or declined today beside its words; Reopen on its card makes one wait again. **My edits** shows your own recorded edits as cards, with Accept all for the session. **Show quiet fixes** shows the small fixes that otherwise wait without a card.
+>
+> Select a change you have already accepted: **Return change to review** makes it open again, and **Send original to Scratchpad** keeps the words it replaced as a scrap. **Hide strikes** hides what was taken out, and **Hide inserts** hides the marking of what was put in; choosing either again shows them.
 
 ## The gaps
 

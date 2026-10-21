@@ -1,9 +1,11 @@
 import type { MarkdownFile } from '../../preload'
 import { isPathInSearchScope } from '../../shared/search-scope'
+import type { VaultIndex, VaultWorkKind } from '../../shared/vault-index'
 import { fuzzyScore } from './fuzzy'
 
-export type TreeFile = { kind: 'file'; path: string; name: string; isIndex: boolean; isScrap: boolean }
-export type TreeFolder = { kind: 'folder'; path: string; name: string; children: TreeNode[] }
+/** `label` and `work` are set only by the vault Titles pass (`vaultSidebarTree`): the work's title, and its kind. */
+export type TreeFile = { kind: 'file'; path: string; name: string; isIndex: boolean; isScrap: boolean; label?: string; work?: VaultWorkKind }
+export type TreeFolder = { kind: 'folder'; path: string; name: string; children: TreeNode[]; label?: string; work?: VaultWorkKind }
 export type TreeNode = TreeFile | TreeFolder
 
 /** An Index Note: `_<workspace-or-folder>_INDEX.md` — the mockup's BookOpenText rows. */
@@ -58,12 +60,13 @@ export function filterTreeByName(nodes: TreeNode[], query: string): TreeNode[] {
   const filtered: TreeNode[] = []
   for (const node of nodes) {
     if (!isPathInSearchScope(node.path)) continue
+    const matches = fuzzyScore(needle, node.name) !== null || (node.label !== undefined && fuzzyScore(needle, node.label) !== null)
     if (node.kind === 'file') {
-      if (fuzzyScore(needle, node.name) !== null) filtered.push(node)
+      if (matches) filtered.push(node)
       continue
     }
 
-    if (fuzzyScore(needle, node.name) !== null) {
+    if (matches) {
       filtered.push(node)
       continue
     }
@@ -141,4 +144,66 @@ export function folderBrowsePath(files: MarkdownFile[], activePath: string, dire
   const index = siblings.indexOf(activePath)
   if (index === -1 || siblings.length === 0) return null
   return siblings[(index + direction + siblings.length) % siblings.length]
+}
+
+/** What the vault sidebar shows of the tree: the Writing only hide pass and the Titles relabel pass. */
+export type VaultSidebarView = {
+  writingOnly: boolean
+  titles: boolean
+  index: Pick<VaultIndex, 'works' | 'hidden' | 'labels' | 'workFolders'> | null
+}
+
+/** Writing only: drop the vault's hidden set (top-most hidden paths; a hidden folder takes its children). */
+export function hideWritingOnlyHidden(nodes: TreeNode[], hiddenPaths: readonly string[]): TreeNode[] {
+  if (hiddenPaths.length === 0) return nodes
+  const hidden = new Set(hiddenPaths)
+  const walk = (level: TreeNode[]): TreeNode[] => level
+    .filter((node) => !hidden.has(node.path))
+    .map((node) => (node.kind === 'folder' ? { ...node, children: walk(node.children) } : node))
+  return walk(nodes)
+}
+
+const labelOf = (node: TreeNode): string => node.label ?? node.name
+
+/**
+ * Titles: each work is one row carrying its title. A Folio or folder-piece work folder becomes a leaf
+ * (no children, so no expanding); a single-file work keeps its row; folders that are not works keep their
+ * names and recurse. Sorted by displayed label, case-insensitive: Index Notes first (as today), then folders
+ * that are not works, then works and other files.
+ */
+/** The icon a Titles-view work row wears: a Folio its Folio mark, any other folder work a folder, a single-file work a file. */
+export function workRowIcon(isFolder: boolean, work: VaultWorkKind | undefined): 'folio' | 'folder' | 'file' {
+  if (work === 'folio') return 'folio'
+  return isFolder ? 'folder' : 'file'
+}
+
+export function relabelAsTitles(nodes: TreeNode[], index: Pick<VaultIndex, 'works' | 'labels' | 'workFolders'>): TreeNode[] {
+  const kinds = new Map(index.works.map((work) => [work.path, work.kind]))
+  const workFolders = new Set(index.workFolders)
+  const rank = (node: TreeNode): number => (node.kind === 'file' ? (node.isIndex ? 0 : 2) : node.work ? 2 : 1)
+  const walk = (level: TreeNode[]): TreeNode[] => level
+    .map((node): TreeNode => {
+      if (node.kind === 'folder') {
+        if (workFolders.has(node.path)) {
+          return { ...node, children: [], label: index.labels[node.path] ?? node.name, work: kinds.get(node.path) ?? 'folder-piece' }
+        }
+        return { ...node, children: walk(node.children) }
+      }
+      const title = index.labels[node.path]
+      return title === undefined ? node : { ...node, label: title, work: kinds.get(node.path) ?? 'file' }
+    })
+    .sort((a, b) => rank(a) - rank(b) || labelOf(a).toLowerCase().localeCompare(labelOf(b).toLowerCase()))
+  return walk(nodes)
+}
+
+/**
+ * The tree for a vault window: Writing only hides, Titles relabels. With Writing only off and File names on,
+ * (or no index yet) the very same tree comes back, so All files is today's tree.
+ */
+export function vaultSidebarTree(nodes: TreeNode[], view: VaultSidebarView): TreeNode[] {
+  if (!view.index) return nodes
+  let out = nodes
+  if (view.writingOnly) out = hideWritingOnlyHidden(out, view.index.hidden.paths)
+  if (view.titles) out = relabelAsTitles(out, view.index)
+  return out
 }

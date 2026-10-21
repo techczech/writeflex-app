@@ -84,7 +84,7 @@ export function acceptedSentence(card: PlanCard): string {
   const accepted = card.accepted
   if (!accepted) return ''
   const count = accepted.parts.length
-  const shows = `The Plan pane now shows ${inWords(count)} ${count === 1 ? 'part' : 'parts'} in your order.`
+  const shows = `The Folio outline pane now shows ${inWords(count)} ${count === 1 ? 'part' : 'parts'} in your order.`
   const hadList = (card.view?.basis.parts.length ?? 0) > 0
   const index = accepted.createdIndexNote
     ? 'WriteFlex created the Index Note with the running-order list'
@@ -250,7 +250,7 @@ export function PlanProposalCard({ card, actions }: { card: PlanCard; actions: P
           <div className="why">{acceptedSentence(card)}</div>
           {accepted && (
             <div className="card plan-proposal">
-              <div className="ttl">Plan <span>{accepted.folderName}</span></div>
+              <div className="ttl">Folio outline <span>{accepted.folderName}</span></div>
               {accepted.parts.map((part, index) => (
                 <div className="ln" key={`${part.title}-${index}`}><span className="w">{index + 1}</span><span className="nm">{part.title}</span></div>
               ))}

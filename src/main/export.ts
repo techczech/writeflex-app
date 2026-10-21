@@ -13,10 +13,16 @@
  */
 import { posix } from 'node:path'
 import { folioPieces } from './folio'
+import { folioTocDepth, saveExportTocDepth, type TocDepthWriteResult } from './export-toc-depth'
+import { tocDepthOf } from '../shared/toc-depth'
+import { folioFrontMatter, frontMatterExportOrder } from './folio-front-matter'
 import { loadExportWidgets } from './widget-export'
 import { writeFile } from 'node:fs/promises'
 import { listCollection, documentWordCount, type CollectionRow } from './collection'
 import { documentTitle, parseFrontmatter } from './frontmatter'
+import { exportCollectionTitle, exportDocumentTitle } from './export-title'
+import { folioPartPaths } from './folio-part-set'
+import { headingPlainText, partTitleWithHeading, type PartHeadingMode, sameTitle, withoutOwnHeading } from '../shared/folio-part-title'
 import {
   docxImages,
   docxSvgFences,
@@ -30,16 +36,23 @@ import {
 import { buildWikilinkCandidateIndex, collectionCandidates, resolveWikilinkTargetFromIndex } from './wikilinks'
 import {
   assembleDocument,
+  TITLE_PAGE_ANCHOR,
+  type HtmlContentsRow,
   type HtmlDocumentData,
   type HtmlDocumentDesign,
   type HtmlFrontmatterValue,
+  type HtmlOutlineHeading,
 } from '../shared/markdown/html-document'
+import { folioHeadingFlow } from '../shared/folio-heading-flow'
 import { htmlOutline, toHtml } from '../shared/markdown/to-html'
 import { docxBundleContent, docxContent, docxFile } from '../shared/markdown/to-docx'
 import { readDocument, type MarkdownDocument } from '../shared/markdown/model'
 import { externalLinksOnly } from '../shared/markdown/external-links'
 import { frontmatterBlock } from '../shared/markdown/frontmatter'
+import { coverWithDetails, folioHeaderDetails } from '../shared/folio-cover-details'
+import { folioCoverDetails } from './folio-details'
 import type { Workspace } from './workspace'
+import { assertCollectionWritable } from './collection-write-gate'
 
 // `imageSize` lives with the pictures now (both a copy and an export need it); re-exported here so
 // the export's own public surface has not moved under anyone.
@@ -58,6 +71,8 @@ export type HtmlExportOptions = {
   stableBlockIds?: boolean
   frontmatterFields?: readonly string[]
   sidebar?: boolean
+  /** Heading levels the contents lists, 1-6; absent keeps the default. */
+  tocDepth?: number
   design?: HtmlDocumentDesign
   titleBlock?: boolean
   summaryTiles?: boolean
@@ -83,7 +98,15 @@ export type ExportOutcome = {
   /** How many pieces were listed for this export. More than `pieces` only for a Folio whose manifest
    *  lists entries that were left out (file not found, or outside the Folio's folder). */
   listed: number
+  /** Only for an HTML export asked to keep its Contents depth: what saving it with the file did (the
+   *  file as written or found, or the refusal and its sentence). Never fatal: the export is written. */
+  tocDepthSave?: TocDepthWriteResult
 }
+
+/** The export request's own fields (export-ipc.ts). `keepTocDepth`: the writer chose the Contents depth
+ *  in the sheet, so an HTML export uses exactly `html.tocDepth` (absent: Default) and then saves it into
+ *  the file of the scope it exported (absent: removes the key). */
+type KeepTocDepth = { keepTocDepth?: boolean }
 
 /** Split what an emitter could not draw into the two things it can mean. */
 function pictureReport(missed: string[], pictures: LoadedPictures): { missingImages: string[]; unreadableImages: string[] } {
@@ -99,13 +122,12 @@ export function isExportFormat(value: unknown): value is ExportFormat {
 
 // ---- Titles and file names -----------------------------------------------------------------------
 
-// What a piece is CALLED is answered by the frontmatter organ (documentTitle), because the Export
-// sheet asks the same question on screen — and a title that disagrees with the file name offered in
-// the save dialog is the writer noticing the app cannot keep its story straight.
+// The Export sheet, save suggestion and exported file use the same declared-title resolver,
+// so the writer sees the same title at each step.
 
 /** A file name the save dialog can open with: the title, made safe for a file system. */
 export function exportFileName(title: string, format: ExportFormat): string {
-  const stem = title.replace(/[/\\:*?"<>|\n\r\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'export'
+  const stem = title.replace(/\0/g, '').replace(/[/\\:*?"<>|\n\r\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'export'
   return `${stem}.${EXPORT_EXTENSIONS[format]}`
 }
 
@@ -164,6 +186,8 @@ function writeFailure(error: unknown, target: string): Error {
 
 async function write(target: string, content: string | Uint8Array): Promise<void> {
   try {
+    // An export into a Collection is a write to it; anywhere else is never gated.
+    assertCollectionWritable(target)
     await writeFile(target, content)
   } catch (error) {
     throw writeFailure(error, target)
@@ -222,13 +246,15 @@ function stableReaderDocumentId(locator: string, title: string): string {
 function documentData(input: {
   source: string
   document: MarkdownDocument
+  /** The document's first heading is its title, kept in the body: its row is left out of the contents. */
+  dropFirstOutlineRow?: boolean
   idPrefix?: string
   frontmatterFields: readonly string[]
   metadata: HtmlDocumentData['metadata']
 }): HtmlDocumentData {
   return {
     frontmatter: selectedFrontmatter(input.source, input.frontmatterFields),
-    outline: htmlOutline(input.document, input.idPrefix),
+    outline: input.dropFirstOutlineRow ? htmlOutline(input.document, input.idPrefix).slice(1) : htmlOutline(input.document, input.idPrefix),
     metadata: input.metadata,
   }
 }
@@ -253,18 +279,28 @@ function rowMetadata(
  */
 export async function exportDocument(
   workspace: Workspace,
-  input: { path: string; format: ExportFormat; target: string; html?: HtmlExportOptions },
+  input: { path: string; format: ExportFormat; target: string; html?: HtmlExportOptions } & KeepTocDepth,
 ): Promise<ExportOutcome> {
   const { content, file } = await workspace.readFile(input.path)
   const document = readDocument(content)
-  const title = documentTitle(content, input.path)
+  const title = exportDocumentTitle(content)
   const pictures = await loadPictures(workspace, document, input.path)
   if (input.format === 'html') {
     const options = input.html ?? {}
     const parsed = parseFrontmatter(content)
+    // The title is never a contents entry, and is not printed again in the body when the page already carries it
+    // above the text (the masthead title block, or the cover). An opening `#` heading that is not the title stays.
+    const ownTitle = partTitleWithHeading(content, input.path).heading
+    const titleHeading = ownTitle && ownTitle.level === 1 && sameTitle(ownTitle.text, headingPlainText(title)) ? ownTitle : null
+    const titleAbove = (options.titleBlock ?? true) || (options.frontPage ?? false)
+    const body = titleHeading && titleAbove ? withoutOwnHeading(content, input.path) : content
+    const bodyDocument = body === content ? document : readDocument(body)
+    // With the heading kept in the body its anchors are unchanged: the outline is the full one minus the title's own row.
+    const outlineDocument = titleHeading && !titleAbove ? null : bodyDocument
     const data = documentData({
       source: content,
-      document,
+      document: outlineDocument ?? document,
+      dropFirstOutlineRow: outlineDocument === null,
       frontmatterFields: options.frontmatterFields ?? DEFAULT_HTML_FRONTMATTER_FIELDS,
       metadata: {
         title,
@@ -275,7 +311,7 @@ export async function exportDocument(
         words: wordCount(content),
       },
     })
-    const { html, missingImages } = toHtml(content, {
+    const { html, missingImages } = toHtml(body, {
       standalone: true,
       links: 'external-only',
       title,
@@ -286,15 +322,23 @@ export async function exportDocument(
       stableBlockIds: options.stableBlockIds,
       documentData: data,
       sidebar: options.sidebar,
+      // A depth the writer chose to keep is used exactly (absent: Default). Otherwise the request's depth
+      // wins; with none, the document's own `toc_depth` (an export from a command or an agent still
+      // follows it); with neither, the default.
+      tocDepth: input.keepTocDepth ? options.tocDepth : options.tocDepth ?? tocDepthOf(content) ?? undefined,
       design: options.design,
       titleBlock: options.titleBlock,
       summaryTiles: options.summaryTiles,
       frontPage: options.frontPage,
-      ...(options.readerNotes ? { readerNotes: { documentId: stableReaderDocumentId(input.path, title) } } : {}),
-      ...(options.readerEdits ? { readerEdits: { documentId: stableReaderDocumentId(input.path, title) } } : {}),
+      ...(options.readerNotes ? { readerNotes: { documentId: stableReaderDocumentId(input.path, documentTitle(content, input.path)) } } : {}),
+      ...(options.readerEdits ? { readerEdits: { documentId: stableReaderDocumentId(input.path, documentTitle(content, input.path)) } } : {}),
     })
     await write(input.target, html)
-    return { target: input.target, format: 'html', ...pictureReport(missingImages, pictures), pieces: 1, listed: 1 }
+    // Saved after the export is written, into the document the export read, over the text it read.
+    const tocDepthSave = input.keepTocDepth
+      ? await saveExportTocDepth(workspace, { kind: 'document', path: input.path }, options.tocDepth ?? null, content)
+      : undefined
+    return { target: input.target, format: 'html', ...pictureReport(missingImages, pictures), pieces: 1, listed: 1, ...(tocDepthSave ? { tocDepthSave } : {}) }
   }
   const fences = await loadSvgFences(document)
   const { children, missingImages } = docxContent(externalLinksOnly(document), { images: docxImages(pictures), svgFences: docxSvgFences(fences) })
@@ -307,19 +351,45 @@ export async function exportDocument(
 // work. A wikilink to a piece INSIDE the bundle becomes an anchor; a wikilink to anything else
 // degrades to its label text, exactly as it does in a copy. Never a dead anchor, in either direction.
 
+/** Where a piece goes in the exported file (ADR-0046): the cover (the title page), the front matter before the
+ *  contents, or the contents (the only pieces the contents sidebar and the summary tiles list). */
+type BundlePlace = 'cover' | 'front' | 'contents'
+
 type BundlePiece = {
   path: string
   title: string
   source: string
   document: MarkdownDocument
+  /** The id prefix of the piece's headings and notes; its section's anchor is `${prefix}section`. */
+  prefix: string
   anchor: string
+  place: BundlePlace
   data: HtmlDocumentData
+  /** The inputs of the Folio heading flow (folio-heading-flow.ts), kept for a contents piece. */
+  flow: { mode: PartHeadingMode; headings: HtmlOutlineHeading[] }
 }
 
-/** The anchor a piece's section carries, and the id prefix its own headings and notes are namespaced
- *  with, so nine pieces in one file cannot collide. */
+/** The Folio's contents rows (shared/folio-heading-flow.ts): chapters, the parts that continue them, and their headings. */
+function folioContentsRows(contents: readonly BundlePiece[]): HtmlContentsRow[] {
+  const flow = folioHeadingFlow<HtmlOutlineHeading>(contents.map((piece) => ({
+    path: piece.path, title: piece.title, mode: piece.flow.mode, headings: piece.flow.headings,
+  })))
+  return flow.rows.flatMap((row): HtmlContentsRow[] => {
+    if (row.kind === 'mark') return []
+    if (row.kind === 'part') return [{ anchor: contents[row.partIndex].anchor, text: row.text, depth: row.depth, chapter: row.depth === 0 }]
+    return [{ anchor: row.heading.anchor, text: row.text, depth: row.depth, chapter: false }]
+  })
+}
+
+/** The anchor a contents piece's section carries, and the id prefix its own headings and notes are namespaced
+ *  with, so nine pieces in one file cannot collide. The contents sidebar links `p<n>-section`. */
 function sectionPrefix(index: number): string {
   return `p${index + 1}-`
+}
+
+/** The same for a front-matter piece (`f<n>-`, never in the contents) and for the cover. */
+function placePrefix(place: BundlePlace, index: number): string {
+  return place === 'cover' ? 'cover-' : place === 'front' ? `f${index + 1}-` : sectionPrefix(index)
 }
 
 /**
@@ -329,37 +399,69 @@ function sectionPrefix(index: number): string {
  */
 export async function exportBundle(
   workspace: Workspace,
-  input: { dir: string; format: ExportFormat; target: string; html?: HtmlExportOptions },
+  input: { dir: string; format: ExportFormat; target: string; html?: HtmlExportOptions } & KeepTocDepth,
 ): Promise<ExportOutcome> {
   const collection = await listCollection(workspace, input.dir)
   const options = input.html ?? {}
+  const title = await exportCollectionTitle(workspace, input.dir)
+  const exportTitle = title
   const pieces: BundlePiece[] = []
-  // A Folio's HTML follows its manifest: the listed pieces inside its folder, in order. Entries that
+  // A Folio's export (HTML and Word alike) follows its manifest: the listed pieces inside its folder, in order. Entries that
   // are missing or point outside the folder are left out by folio.ts and never read here.
-  const folio = input.format === 'html' ? await folioPieces(workspace, input.dir) : null
-  const paths = folio ? folio.pieces : collection.rows.map(row => row.path)
-  const listed = folio ? folio.pieces.length + folio.leftOut.length : paths.length
+  const folio = await folioPieces(workspace, input.dir)
+  const listedPaths = folio ? folio.pieces : collection.rows.map(row => row.path)
+  const listed = folio ? folio.pieces.length + folio.leftOut.length : listedPaths.length
+  // Front matter first (ADR-0046): the title page first of all, then the other front matter, then the contents.
+  const order = frontMatterExportOrder(listedPaths, await folioFrontMatter(workspace, input.dir))
+  const placed: Array<{ path: string; place: BundlePlace; index: number }> = [
+    ...(order.titlePage !== null ? [{ path: order.titlePage, place: 'cover' as const, index: 0 }] : []),
+    ...order.front.map((path, index) => ({ path, place: 'front' as const, index })),
+    ...order.contents.map((path, index) => ({ path, place: 'contents' as const, index })),
+  ]
+  const paths = placed.map((item) => item.path)
   const files = new Map((await workspace.listFiles()).map(file => [file.path, file]))
-  for (const [index, path] of paths.entries()) {
+  const folioParts = await folioPartPaths(workspace, paths)
+  for (const { path, place, index } of placed) {
     const row = collection.rows.find(row => row.path === path)
     const { content } = await workspace.readFile(path)
-    const document = readDocument(content)
-    const prefix = sectionPrefix(index)
-    const title = row?.title?.trim() || documentTitle(content, path)
+    const prefix = placePrefix(place, index)
+    // The export section uses the declared title; a Folio part's own title heading is still
+    // omitted from its body so the section prints it once.
+    const isPart = folioParts.has(path)
+    const title = exportDocumentTitle(content, isPart ? path : undefined)
+    const ownHeading = isPart ? partTitleWithHeading(content, path).heading : null
+    // A differing heading is still authored content, even when metadata names the section.
+    const body = ownHeading && sameTitle(ownHeading.text, headingPlainText(title))
+      ? withoutOwnHeading(content, path)
+      : content
+    const document = readDocument(body)
     const fm = parseFrontmatter(content)
-    pieces.push({
-      path,
-      title,
+    const data = documentData({
       source: content,
       document,
+      idPrefix: prefix,
+      frontmatterFields: options.frontmatterFields ?? DEFAULT_HTML_FRONTMATTER_FIELDS,
+      metadata: rowMetadata(row ?? { purpose: fm?.purpose ?? null, status: fm?.status ?? 'unsorted', modified: files.get(path)!.modifiedAt, words: documentWordCount(content) }, title),
+    })
+    // The flow reads the part as the sidebar does: its own title heading is a heading of the part, though the body
+    // printed it once as the section title and left it out, so it comes back here with the section's anchor.
+    const named = partTitleWithHeading(content, path)
+    const flowHeadings = body !== content && named.heading
+      ? [{ level: named.heading.level, text: named.heading.text, anchor: `${prefix}section` }, ...data.outline]
+      : [...data.outline]
+    pieces.push({
+      path,
+      // The title page shows the export's one title (export-title.ts: Details, then its own frontmatter title, then the
+      // manifest's), as Word's first section, HTML's cover and HTML's title-page section alike, so the visible title,
+      // the document properties and the file name never disagree (Sol round 3).
+      title: place === 'cover' ? exportTitle : title,
+      source: body,
+      document,
+      prefix,
       anchor: `${prefix}section`,
-      data: documentData({
-        source: content,
-        document,
-        idPrefix: prefix,
-        frontmatterFields: options.frontmatterFields ?? DEFAULT_HTML_FRONTMATTER_FIELDS,
-        metadata: rowMetadata(row ?? { purpose: fm?.purpose ?? null, status: fm?.status ?? 'unsorted', modified: files.get(path)!.modifiedAt, words: documentWordCount(content) }, title),
-      }),
+      place,
+      data,
+      flow: { mode: named.named.mode, headings: flowHeadings },
     })
   }
   if (!pieces.length) {
@@ -377,7 +479,7 @@ export async function exportBundle(
       pieces.map((piece) => ({ title: piece.title, document: externalLinksOnly(piece.document) })),
       { images: docxImages(pictures), svgFences: docxSvgFences(fences) },
     )
-    await write(input.target, await docxFile(children, collection.name))
+    await write(input.target, await docxFile(children, title))
     return { target: input.target, format: 'docx', ...pictureReport(missed, pictures), pieces: pieces.length, listed }
   }
 
@@ -385,10 +487,11 @@ export async function exportBundle(
   // wikilink resolves in the bundle exactly as it resolves in the editor.
   const candidates = await collectionCandidates(workspace, input.dir)
   const candidateIndex = buildWikilinkCandidateIndex(candidates)
-  const anchors = new Map(pieces.map((piece) => [piece.path, piece.anchor]))
-  const sections = await Promise.all(pieces.map(async (piece, index) => {
+  // A link to the title page lands on it: the cover, or with the cover off its section, both `TITLE_PAGE_ANCHOR`.
+  const anchors = new Map(pieces.map((piece) => [piece.path, piece.place === 'cover' ? TITLE_PAGE_ANCHOR : piece.anchor] as const))
+  const sections = await Promise.all(pieces.map(async (piece) => {
     const { html, missingImages: missed, interactionTargets } = toHtml(piece.source, {
-      idPrefix: sectionPrefix(index),
+      idPrefix: piece.prefix,
       headingOffset: 1,
       links: 'external-only',
       stableHeadingIds: (options.readerNotes || options.readerEdits) ? true : options.stableHeadingIds,
@@ -412,13 +515,36 @@ export async function exportBundle(
       },
     })
     for (const missing of missed) missingImages.push(missing) // no spread: one argument per missing picture
-    return { anchor: piece.anchor, title: piece.title, body: html, interactionTargets }
+    return { anchor: piece.anchor, title: piece.title, body: html, interactionTargets, place: piece.place, data: piece.data }
   }))
+  // A Folio's contents is the Outline's tree: the heading flow over the contents parts in running order.
+  const contentsRows = folio ? folioContentsRows(pieces.filter((piece) => piece.place === 'contents')) : undefined
+  const cover = sections.find((section) => section.place === 'cover')
+  const contents = sections.filter((section) => section.place === 'contents')
+  // The Details card's values (the Index Note's header) are the cover's: laid over the title page's own, field by field.
+  const details = folio ? await folioCoverDetails(workspace, input.dir) : null
+  const chipFields = options.frontmatterFields ?? DEFAULT_HTML_FRONTMATTER_FIELDS
+  // A title page that is the cover (the front page is on) takes the Details; as a plain front-matter section it keeps its own title.
+  const coverShown = Boolean(cover && options.frontPage)
+  const base = cover ? { title: cover.title, body: cover.body, data: cover.data } : undefined
+  // A cover's title is the export's one title (export-title.ts: Details, then title page, then manifest), so the
+  // cover, the browser title and the file name never disagree.
+  const coverParts = base ? (coverShown ? { ...coverWithDetails(base, details, chipFields), title } : base) : undefined
+  // A cover drawn on the front page is outside the article the reader surfaces read; as a section it is inside.
+  const readable = sections.filter((section) => section.place !== 'cover' || !options.frontPage)
   await write(input.target, assembleDocument({
-    title: collection.name,
-    sections,
-    documents: pieces.map((piece) => piece.data),
+    title,
+    sections: contents,
+    frontMatter: sections.filter((section) => section.place === 'front'),
+    ...(coverParts ? { cover: coverParts } : {}),
+    ...(!coverShown && folio ? (() => { const header = folioHeaderDetails(details, chipFields); return header ? { folioDetails: header } : {} })() : {}),
+    // The contents sidebar and the summary tiles list the contents only.
+    documents: contents.map((section) => section.data),
+    ...(contentsRows ? { contentsRows } : {}),
     sidebar: options.sidebar,
+    // A depth the writer chose to keep is used exactly (absent: Default). Otherwise the request's depth
+    // wins; with none, the Folio's own (its Index Note's `toc_depth`).
+    tocDepth: input.keepTocDepth ? options.tocDepth : options.tocDepth ?? (await folioTocDepth(workspace, input.dir)) ?? undefined,
     design: options.design,
     titleBlock: options.titleBlock,
     summaryTiles: options.summaryTiles,
@@ -426,17 +552,21 @@ export async function exportBundle(
     ...(options.readerNotes ? {
       readerNotes: {
         documentId: stableReaderDocumentId(input.dir, collection.name),
-        targets: sections.flatMap((section) => section.interactionTargets),
+        targets: readable.flatMap((section) => section.interactionTargets),
       },
     } : {}),
     ...(options.readerEdits ? {
       readerEdits: {
         documentId: stableReaderDocumentId(input.dir, collection.name),
-        targets: sections.flatMap((section) => section.interactionTargets),
+        targets: readable.flatMap((section) => section.interactionTargets),
       },
     } : {}),
   }))
-  return { target: input.target, format: 'html', ...pictureReport(missingImages, pictures), pieces: pieces.length, listed }
+  // Saved after the export is written, into the Index Note of the folder the export bundled.
+  const tocDepthSave = input.keepTocDepth
+    ? await saveExportTocDepth(workspace, { kind: 'folio', dir: input.dir }, options.tocDepth ?? null)
+    : undefined
+  return { target: input.target, format: 'html', ...pictureReport(missingImages, pictures), pieces: pieces.length, listed, ...(tocDepthSave ? { tocDepthSave } : {}) }
 }
 
 /** The name to open the save dialog with, for either scope. */
@@ -445,9 +575,8 @@ export async function suggestedName(
   input: { scope: 'piece'; path: string; format: ExportFormat } | { scope: 'collection'; dir: string; format: ExportFormat },
 ): Promise<string> {
   if (input.scope === 'collection') {
-    const collection = await listCollection(workspace, input.dir)
-    return exportFileName(collection.name, input.format)
+    return exportFileName(await exportCollectionTitle(workspace, input.dir), input.format)
   }
   const { content } = await workspace.readFile(input.path)
-  return exportFileName(documentTitle(content, input.path), input.format)
+  return exportFileName(exportDocumentTitle(content), input.format)
 }

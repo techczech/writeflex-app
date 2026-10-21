@@ -40,8 +40,8 @@ function jsonValueEnd(source: string, start: number): number {
   return index
 }
 
-function objectPropertyLayout(source: string, propertyKey: string): JsonObjectPropertyLayout | null {
-  let index = skipJsonSpace(source, 0)
+function objectPropertyLayout(source: string, propertyKey: string, from = 0): JsonObjectPropertyLayout | null {
+  let index = skipJsonSpace(source, from)
   if (source[index] !== '{') return null
   index += 1
   let match: JsonObjectPropertyLayout | null = null
@@ -67,6 +67,18 @@ function objectPropertyLayout(source: string, propertyKey: string): JsonObjectPr
     index = valueEnd
   }
   return match
+}
+
+/** Where the value of `propertyKey` is in the JSON object that starts at `from` (after any space), without
+ *  normalising any bytes: `valueStart` / `valueEnd` index `source`. Null when the value at `from` is not an object
+ *  or has no such key; throws when the key is written twice. */
+export function jsonObjectPropertyRange(source: string, propertyKey: string, from = 0): { valueStart: number; valueEnd: number } | null {
+  return objectPropertyLayout(source, propertyKey, from)
+}
+
+/** Where the object that starts at `from` ends (one past its closing brace). */
+export function jsonValueRangeEnd(source: string, from: number): number {
+  return jsonValueEnd(source, skipJsonSpace(source, from))
 }
 
 /** Locate one top-level array and its entries without normalising any source bytes. */
@@ -177,4 +189,47 @@ export function rewriteJsonArrayByKey(
       : `${whitespace}${joined}${whitespace}`
   }
   return `${source.slice(0, layout.start + 1)}${inner}${source.slice(layout.end)}`
+}
+
+/**
+ * Set one top-level property of one object entry of a top-level array to a string, retaining every other
+ * byte of the file (the entry's other properties included). An existing property has its value replaced
+ * in place; a missing one is appended after the entry's last property, on its own line in the entry's
+ * indentation when the entry spans lines, else on the same line.
+ */
+export function rewriteJsonArrayEntryStringProperty(source: string, arrayKey: string, entryIndex: number, propertyKey: string, value: string): string {
+  return rewriteJsonArrayEntryProperty(source, arrayKey, entryIndex, propertyKey, value)
+}
+
+/** `rewriteJsonArrayEntryStringProperty` for a string or a boolean value (a manifest entry's `toc`). */
+export function rewriteJsonArrayEntryProperty(source: string, arrayKey: string, entryIndex: number, propertyKey: string, value: string | boolean): string {
+  const entry = jsonArrayLayout(source, arrayKey).entries[entryIndex]
+  if (!entry || typeof entry.value !== 'object' || entry.value === null || Array.isArray(entry.value)) {
+    throw new Error(`Cannot update ${arrayKey} entry ${entryIndex}: it is not an object.`)
+  }
+  const raw = entry.raw
+  const encoded = JSON.stringify(value)
+  let next: string
+  const property = objectPropertyLayout(raw, propertyKey)
+  if (property) {
+    next = `${raw.slice(0, property.valueStart)}${encoded}${raw.slice(property.valueEnd)}`
+  } else {
+    let end = raw.lastIndexOf('}')
+    while (end > 0 && /\s/.test(raw[end - 1])) end -= 1
+    const empty = raw.slice(raw.indexOf('{') + 1, end).trim() === ''
+    const colon = /"\s*:\s/.test(raw) ? ': ' : ':'
+    const pair = `${JSON.stringify(propertyKey)}${colon}${encoded}`
+    if (raw.includes('\n') && !empty) {
+      const eol = raw.includes('\r\n') ? '\r\n' : '\n'
+      const lineStart = raw.lastIndexOf('\n', end - 1) + 1
+      const indent = /^[ \t]*/.exec(raw.slice(lineStart))?.[0] ?? ''
+      next = `${raw.slice(0, end)},${eol}${indent}${pair}${raw.slice(end)}`
+    } else {
+      next = `${raw.slice(0, end)}${empty ? '' : colon === ': ' ? ', ' : ','}${pair}${raw.slice(end)}`
+    }
+  }
+  const result = `${source.slice(0, entry.start)}${next}${source.slice(entry.end)}`
+  const reread = jsonArrayLayout(result, arrayKey).entries[entryIndex]?.value as Record<string, unknown> | undefined
+  if (!reread || reread[propertyKey] !== value) throw new Error(`Cannot update ${arrayKey} entry ${entryIndex} exactly.`)
+  return result
 }

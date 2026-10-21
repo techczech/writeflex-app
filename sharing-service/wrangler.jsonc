@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  // The WriteFlex sharing service. The app uploads the bundle built from this folder
+  // (sharing-service-dist/, scripts/build-sharing-service.ts); upload-config.json there is made
+  // from the fields below. Declare no `vars`: any string bound as ADMIN_SECRET_<id> is an admin key.
+  "name": "writeflex-sharing",
+  "main": "index.ts",
+  "compatibility_date": "2026-05-14",
+  "compatibility_flags": [],
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHARES", "class_name": "SharedPiece" },
+      { "name": "SHARING_REGISTRY", "class_name": "SharingRegistry" }
+    ]
+  },
+  // BARRED: never add a migration that deletes or renames SharingRegistry (`deleted_classes`,
+  // `renamed_classes`, `transferred_classes`), and never clear that object's storage. It keeps the
+  // signing key behind every owner token (signing-key.ts); losing it leaves every share without an
+  // owner, so no app could publish to or turn off any link again.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SharedPiece", "SharingRegistry"] }
+  ],
+  "observability": { "enabled": true }
+}

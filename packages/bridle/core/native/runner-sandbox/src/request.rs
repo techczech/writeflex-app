@@ -12,6 +12,9 @@ pub struct Request {
 }
 
 #[derive(Debug, Deserialize)]
+// The policy mirror is parsed so a malformed request fails closed; the helper
+// acts on `network` here and on the `appContainer` block for everything else.
+#[allow(dead_code)]
 pub struct RunnerSandboxPolicy {
     pub filesystem: FilesystemPolicy,
     pub network: String,
@@ -19,6 +22,9 @@ pub struct RunnerSandboxPolicy {
 }
 
 #[derive(Debug, Deserialize)]
+// The policy mirror is parsed so a malformed request fails closed; the helper
+// acts on `network` here and on the `appContainer` block for everything else.
+#[allow(dead_code)]
 pub struct FilesystemPolicy {
     pub readable: Vec<String>,
     pub writable: Vec<String>,
@@ -26,7 +32,10 @@ pub struct FilesystemPolicy {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // parsed for shape; the helper reads `appContainer.job`
 pub struct ResourcePolicy {
+    // camelCase would give "memoryMb"; the TS request writes "memoryMB".
+    #[serde(rename = "memoryMB")]
     pub memory_mb: u64,
     pub wallclock_sec: u32,
     pub max_processes: u32,
@@ -34,6 +43,8 @@ pub struct ResourcePolicy {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+// Only the Windows confinement path reads every field.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct AppContainerSpec {
     pub name_prefix: String,
     pub capabilities: Vec<String>,
@@ -42,6 +53,11 @@ pub struct AppContainerSpec {
     pub restricted_token: String,
     pub grants: Grants,
     pub job: Job,
+    /// The per-run scratch directory the host created (and deletes). The only
+    /// tree the helper labels Low and grants writes on; every writable grant
+    /// must lie inside it.
+    #[serde(default)]
+    pub scratch_root: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +68,11 @@ pub struct Grants {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+// Only the Windows confinement path reads every field.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct Job {
+    // camelCase would give "memoryMb"; the TS request writes "memoryMB".
+    #[serde(rename = "memoryMB")]
     pub memory_mb: u64,
     pub wallclock_sec: u32,
     pub max_processes: u32,

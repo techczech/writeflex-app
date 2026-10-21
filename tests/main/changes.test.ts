@@ -1,14 +1,16 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile, mkdir, symlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Workspace } from '../../src/main/workspace'
+import { isHiddenWorkspacePath, Workspace } from '../../src/main/workspace'
+import { plantChangeAt } from '../helpers/plant-change-path'
 import {
   ChangeStore,
   parseChangeLine,
   serializeChanges,
   changeJournalPath,
+  closedReasonOf,
   type Change,
   type NewChange,
   type ChangeStatus,
@@ -182,4 +184,123 @@ test('setEditClass refuses an invalid class and leaves the existing record intac
   const c = await store.add(agentEdit({ editClass: null }))
   await expect(store.setEditClass(c.id, 'style' as EditClass)).rejects.toThrow(/malformed/i)
   expect((await store.get(c.id))?.editClass).toBeNull() // unchanged
+})
+
+// ---- Closed with a reason (command line and skill, ticket 01) ----
+
+test('close records the reason, takes the Change out of pending, and survives a reload', async () => {
+  const change = await store.add(agentEdit())
+
+  const closed = await store.close(change.id, '  oldText was not found in 02-method.md.  ')
+
+  expect(closed.status).toBe('rejected')
+  expect(closedReasonOf(closed)).toBe('oldText was not found in 02-method.md.')
+  expect(await store.list({ status: 'pending' })).toEqual([])
+  expect(await store.list({ status: 'accepted' })).toEqual([])
+  const reloaded = await new ChangeStore(new Workspace(root)).get(change.id)
+  expect(reloaded).toEqual(closed)
+  expect(closedReasonOf(reloaded!)).toBe('oldText was not found in 02-method.md.')
+  expect((reloaded as Change & { closedAt?: number }).closedAt).toBeGreaterThan(0)
+})
+
+test('a held Change can be closed; an accepted one is history and is left untouched', async () => {
+  const held = await store.add(agentEdit({ status: 'held' }))
+  const accepted = await store.add(agentEdit({ status: 'accepted' }))
+
+  expect(closedReasonOf(await store.close(held.id, 'The file has gone.'))).toBe('The file has gone.')
+  expect(await store.close(accepted.id, 'The file has gone.')).toEqual(accepted)
+  expect((await store.get(accepted.id))?.status).toBe('accepted')
+})
+
+test('close refuses an empty reason and an unknown id', async () => {
+  const change = await store.add(agentEdit())
+
+  await expect(store.close(change.id, '   ')).rejects.toThrow(/needs a reason/)
+  await expect(store.close('c_missing', 'reason')).rejects.toThrow(/No change with id/)
+  expect((await store.get(change.id))?.status).toBe('pending')
+})
+
+test('reopening a closed Change makes it an ordinary pending one; the same status keeps the reason', async () => {
+  const change = await store.add(agentEdit())
+  await store.close(change.id, 'The file has gone.')
+
+  expect(closedReasonOf(await store.setStatus(change.id, 'rejected'))).toBe('The file has gone.')
+  const reopened = await store.setStatus(change.id, 'pending')
+
+  expect(reopened).toEqual(change)
+  expect(closedReasonOf(reopened)).toBeNull()
+  expect(await readFile(join(root, '.writeflex', 'changes.jsonl'), 'utf8')).not.toContain('closedReason')
+})
+
+test('records written before closure existed still parse, and a closed record round-trips through the ledger parser', async () => {
+  const old = '{"id":"c_old1","path":"a.md","ts":1,"provenance":"agent","editClass":"copy","summary":"s","oldText":"a","newText":"b","status":"rejected","isCorrection":false}'
+  const closed = '{"id":"c_new1","path":"a.md","ts":2,"provenance":"agent","editClass":"copy","category":null,"summary":"s","oldText":"a","newText":"b","status":"rejected","isCorrection":false,"closedReason":"a.md no longer exists.","closedAt":3}'
+  await mkdir(join(root, '.writeflex'), { recursive: true })
+  await writeFile(join(root, '.writeflex', 'changes.jsonl'), `${old}\n${closed}\n`)
+
+  const [first, second] = await store.list()
+
+  expect(first.id).toBe('c_old1')
+  expect(closedReasonOf(first)).toBeNull()
+  expect(closedReasonOf(second)).toBe('a.md no longer exists.')
+  expect(serializeChanges([parseChangeLine(closed)!])).toBe(`${closed}\n`)
+  // A reason of the wrong type, or on a Change that is not rejected, is not a closure.
+  expect(closedReasonOf({ ...second, closedReason: 7 } as unknown as Change)).toBeNull()
+  expect(closedReasonOf({ ...second, status: 'pending' })).toBeNull()
+})
+
+// ---- The status-only door (ticket 01 follow-up): it never stands in for Accept ----
+
+test('the review door refuses to mark an agent or reviewer Change accepted; the record is unchanged', async () => {
+  const agent = await store.add(agentEdit())
+  const reviewer = await store.add(agentEdit({ provenance: 'reviewer', appliedBy: 'agent', reviewerLabel: 'R2' }))
+
+  for (const change of [agent, reviewer]) {
+    await expect(store.setReviewStatus(change.id, 'accepted')).rejects.toThrow(/only by Accept/)
+    expect(await store.get(change.id)).toEqual(change)
+  }
+})
+
+test('the review door still settles the writer\'s own Change as accepted, and moves any Change to held, rejected or pending', async () => {
+  const own = await store.add(agentEdit({ provenance: 'writer', editClass: null }))
+  const agent = await store.add(agentEdit())
+
+  expect((await store.setReviewStatus(own.id, 'accepted')).status).toBe('accepted')
+  expect((await store.setReviewStatus(own.id, 'pending')).status).toBe('pending')
+  expect((await store.setReviewStatus(agent.id, 'held')).status).toBe('held')
+  expect((await store.setReviewStatus(agent.id, 'rejected')).status).toBe('rejected')
+  expect((await store.setReviewStatus(agent.id, 'pending')).status).toBe('pending')
+})
+
+test('a Change whose path is not a document can only end rejected, by any status door', async () => {
+  await mkdir(join(root, '.bridle'), { recursive: true })
+  await symlink(join(root, '.bridle'), join(root, 'notes'))
+  const paths = ['.writeflex/changes.jsonl', 'notes/journal.jsonl', '../escape.md']
+  const moves: Array<(id: string, status: ChangeStatus) => Promise<unknown>> = [
+    (id, status) => store.setStatus(id, status),
+    (id, status) => store.setReviewStatus(id, status),
+    (id, status) => store.saveVersion([id], 'v_1', { [id]: status }),
+  ]
+
+  for (const path of paths) {
+    for (const move of moves) {
+      for (const status of ['accepted', 'pending', 'held'] as const) {
+        // The writer's own provenance is the one the review door lets through to accepted elsewhere.
+        // A dot-folder or `..` path is refused at add (next/0.23): planted in the journal, as a hand edit would.
+        const change = isHiddenWorkspacePath(path)
+          ? await plantChangeAt(root, store, agentEdit({ provenance: 'writer', editClass: null }), path)
+          : await store.add(agentEdit({ path, provenance: 'writer', editClass: null }))
+        await move(change.id, status)
+        const after = (await store.get(change.id))!
+        expect(after.status).toBe('rejected')
+        expect(closedReasonOf(after)).toContain(path)
+        expect(after.snapshotId).toBeUndefined()
+      }
+    }
+  }
+  const plain = await plantChangeAt(root, store, agentEdit(), '.git/config')
+  expect((await store.setReviewStatus(plain.id, 'rejected')).status).toBe('rejected')
+  expect(await store.list({ status: 'accepted' })).toEqual([])
+  expect(await store.list({ status: 'pending' })).toEqual([])
+  expect(await store.list({ status: 'held' })).toEqual([])
 })

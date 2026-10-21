@@ -251,6 +251,26 @@ export function parseMarkdown(text: string): Tree {
   return dialectParser.parse(text)
 }
 
+/** Every inline parser the dialect installs; without them only its block parsers are left. */
+const INLINE_PARSERS = [
+  'Escape', 'Entity', 'InlineCode', 'HTMLTag', 'Emphasis', 'Highlight', 'Strikethrough', 'HardBreak',
+  'FootnoteReference', 'Link', 'Image', 'Autolink', 'FootnoteInline', 'LinkEnd',
+]
+
+/** The dialect's block layer: the same block parsers in the same order, no inline parsing. Inline
+ *  parsing never changes block structure in `@lezer/markdown` (a table row is split on its pipes,
+ *  not on inline nodes), so the blocks are exactly {@link parseMarkdown}'s, at a fraction of the
+ *  cost. Configured in a second step because one `configure` applies `remove` before it adds the
+ *  extensions' own inline parsers. */
+const blockParser = dialectParser.configure({ remove: INLINE_PARSERS })
+
+/** Parse Markdown into its BLOCKS only — headings, paragraphs, lists, code, tables — with no inline
+ *  nodes inside them. For questions about where blocks are, asked of many files at once
+ *  (listing-title.ts). */
+export function parseMarkdownBlocks(text: string): Tree {
+  return blockParser.parse(text)
+}
+
 // ---- What is content, and what is not ---------------------------------------------------------
 // Frontmatter is stage-truth for the app (ADR-0019) and comments are the annotation tier (ADR-0021).
 // Neither is part of the work, so neither ever leaves it: every emitter cleans the source with
@@ -303,7 +323,7 @@ function firstInk(line: string, lineStart: number): number {
  *
  * Only a LEADING mark: a U+FEFF anywhere else is a character the writer typed, and it stays.
  */
-function withoutByteOrderMark(text: string): string {
+export function withoutByteOrderMark(text: string): string {
   return text.startsWith('﻿') ? text.slice(1) : text
 }
 

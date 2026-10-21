@@ -44,3 +44,18 @@ test('a group name still lists the group\'s commands', () => {
 test('a keyword-only match still appears', () => {
   expect(rankPaletteEntries('strong', entries())).toEqual(['Bold'])
 })
+
+test('a command that leads for the query is listed before every label match (ticket 09)', () => {
+  const lead = (label: string, order: number): RankableEntry<string> => ({ item: label, label, searchable: `${label} Review changes review`, fallback: undefined, leadsFor: ['review'], order })
+  const rows: RankableEntry<string>[] = [
+    { item: 'Review changes', label: 'Review changes', searchable: 'Review changes', fallback: undefined, order: 0 },
+    { item: 'Start a review', label: 'Start a review', searchable: 'Start a review', fallback: undefined, order: 1 },
+    lead('Settled today', 2),
+    lead('My edits', 3),
+  ]
+  expect(rankPaletteEntries('review', rows).slice(0, 2)).toEqual(['Settled today', 'My edits'])
+  expect(rankPaletteEntries(' Review ', rows).slice(0, 2)).toEqual(['Settled today', 'My edits'])
+  // Any other query ranks as before.
+  expect(rankPaletteEntries('settled', rows)[0]).toBe('Settled today')
+  expect(rankPaletteEntries('start', rows)[0]).toBe('Start a review')
+})

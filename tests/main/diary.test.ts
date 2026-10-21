@@ -17,6 +17,7 @@ import {
   type DiarySessionRecord,
 } from '../../src/main/diary'
 import { parseFrontmatter } from '../../src/main/frontmatter'
+import { pauseCollectionWrites, resumeCollectionWrites } from '../../src/main/collection-write-gate'
 
 let root: string
 let diaryRoot: string
@@ -193,4 +194,18 @@ test('capture gating caches the Counted decision until Collection invalidation',
   invalidateCountedCollectionCache(root)
   expect(await diaryCaptureRoot(workspace, 'essays/one.md', diaryRoot)).toBe(diaryRoot)
   expect(walks).toBe(2)
+})
+
+test('a diary folder inside a Collection another owner holds is not created or written; the refusal is reported once like any other', async () => {
+  const inside = join(root, 'diary')
+  pauseCollectionWrites(root, 'Saving is paused for this test.')
+  try {
+    expect(await persistDiarySession(inside, session())).toEqual({ name: null, error: 'Saving is paused for this test.' })
+    expect(existsSync(inside)).toBe(false)
+  } finally {
+    resumeCollectionWrites(root)
+  }
+  resumeDiaryDayFile(join(inside, '2026-08-02.md'))
+  expect(await persistDiarySession(inside, session())).toEqual({ name: '2026-08-02.md' })
+  expect(existsSync(join(inside, '2026-08-02.md'))).toBe(true)
 })

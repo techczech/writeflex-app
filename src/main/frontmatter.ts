@@ -228,8 +228,8 @@ export function patternFor(indexNoteText: string | null): Pattern {
 
 /**
  * WHAT A PIECE IS CALLED: its first heading of any level, else the file's own name. Legacy `title:` keys remain
- * intact but never become display truth (ADR-0034). Asked here once because both the Export sheet
- * and export organ must name the Piece identically.
+ * intact but never become listing display truth (ADR-0034). Export has a metadata-first
+ * exception in export-title.ts (owner instruction, 2026-10-19).
  */
 export function documentTitle(source: string, path: string): string {
   const heading = readDocument(source).blocks.find(
@@ -244,4 +244,76 @@ export function documentTitle(source: string, path: string): string {
     if (text.trim()) return text.trim()
   }
   return (path.split('/').pop() ?? path).replace(/\.(?:md|markdown|mdx)$/i, '')
+}
+
+// ---- Nested subset (standard widget recipes, contracts §3 + C2) -------------------------------------
+// A widget recipe (`visualisations/<name>/widget.md`) nests: `source.select.pointer`, `mapping.types.Hours`.
+// The flat reader above keeps indented keys raw, by design; recipes are read by this second reader over the
+// SAME block (`frontmatterBlock`), still with no YAML dependency. The documented subset, and nothing more:
+//   - `key: value` lines; a key with no value opens a map whose keys are indented two spaces deeper;
+//   - maps nest at most three levels (indent 0, 2, 4);
+//   - a value is a quoted scalar ("…" or '…', taken verbatim between the quotes), an integer (`-?digits`),
+//     an inline flow list of scalars (`[a, b]`, split on commas), or plain text (trimmed);
+//   - blank lines and whole-line `#` comments are skipped.
+// Refused (never guessed): tabs or odd indentation, a key deeper than its map allows, dashed block lists,
+// anchors, block scalars, a key written twice in one map.
+
+export type NestedValue = string | number | NestedValue[] | NestedMap
+export type NestedMap = { [key: string]: NestedValue }
+export type NestedFrontmatter =
+  | { ok: true; value: NestedMap; /** Index in the ORIGINAL text where the body starts. */ bodyStart: number }
+  | { ok: false; /** 1-based line of the file, when one line is to blame. */ line?: number; detail: string }
+
+/** Deepest map level a recipe uses (`mapping.types.<field>`). */
+export const NESTED_MAX_DEPTH = 3
+const NESTED_LINE = /^( *)([^\s:#][^:]*?):(?:[ \t]+(.*))?$/
+
+/** One scalar or inline list, by the subset's rules. */
+function nestedScalar(raw: string): NestedValue {
+  const value = raw.trim()
+  if (value.startsWith('[') && value.endsWith(']')) {
+    return value.slice(1, -1).split(',').map((part) => part.trim()).filter((part) => part !== '').map(nestedScalar)
+  }
+  if (/^-?\d+$/.test(value)) return Number(value)
+  if (/^(["']).*\1$/.test(value)) return value.slice(1, -1)
+  return value
+}
+
+/** Read a leading frontmatter block as nested maps. Never throws; refuses what the subset does not cover. */
+export function parseNestedFrontmatter(text: string): NestedFrontmatter {
+  const block = frontmatterBlock(text)
+  if (block === null) return { ok: false, detail: 'the file has no frontmatter block' }
+  const firstLine = 2 // the body lines start on the line after the opening fence
+  const root: NestedMap = {}
+  const stack: Array<{ indent: number; map: NestedMap }> = [{ indent: -2, map: root }]
+  let opened: { indent: number; map: NestedMap } | null = null
+  for (let i = 0; i < block.lines.length; i += 1) {
+    const line = block.lines[i]
+    const at = i + firstLine
+    if (line.trim() === '' || line.trimStart().startsWith('#')) continue
+    if (/^ *\t/.test(line)) return { ok: false, line: at, detail: 'indented with a tab' }
+    const match = NESTED_LINE.exec(line)
+    if (!match || /^-(\s|$)/.test(match[2])) return { ok: false, line: at, detail: 'not a key: value line' }
+    const indent = match[1].length
+    if (indent % 2 !== 0) return { ok: false, line: at, detail: 'indented by an odd number of spaces' }
+    if (opened) {
+      // The line after a `key:` with no value must be its first child, or the map stays empty.
+      if (indent === opened.indent + 2) stack.push(opened)
+      opened = null
+    }
+    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop()
+    const parent = stack[stack.length - 1]
+    if (indent !== parent.indent + 2) return { ok: false, line: at, detail: 'indented deeper than its map' }
+    const key = match[2].trim()
+    if (Object.prototype.hasOwnProperty.call(parent.map, key)) return { ok: false, line: at, detail: `the key ${key} is written twice` }
+    if (match[3] === undefined || match[3].trim() === '') {
+      if (stack.length >= NESTED_MAX_DEPTH) return { ok: false, line: at, detail: `maps nest at most ${NESTED_MAX_DEPTH} levels` }
+      const child: NestedMap = {}
+      parent.map[key] = child
+      opened = { indent, map: child }
+    } else {
+      parent.map[key] = nestedScalar(match[3])
+    }
+  }
+  return { ok: true, value: root, bodyStart: block.end }
 }

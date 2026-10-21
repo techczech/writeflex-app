@@ -130,7 +130,6 @@ for (const shape of SHAPES) {
     const attempts = [
       await moveFolioPiece(ws, DIR, { path: piece('a'), beforePath: null, expected }),
       await addFolioPieces(ws, DIR, { paths: [piece('glossary')], expected }),
-      await removeAddedFolioPieces(ws, DIR, { paths: [expected.at(-1)!], expected }),
     ]
     for (const { result, plan } of attempts) {
       expect(result).toMatchObject({ ok: false, stale: false })
@@ -140,6 +139,10 @@ for (const shape of SHAPES) {
       }
       expect(plan).toBeNull()
     }
+    // An Undo with no Add of its own behind it is refused as stale (folio-add-undo.ts).
+    const undo = await removeAddedFolioPieces(ws, DIR, { token: 'no-such-add' })
+    expect(undo.result).toMatchObject({ ok: false, stale: true })
+    expect(undo.plan).toBeNull()
     expect(await bytesNow()).toEqual(bytes)
     const outline = await folioOutline(ws, piece('a'))
     expect(outline?.orderInPlanOnly).toBe(true)
@@ -154,7 +157,7 @@ test('D: a Folio the Outline can change carries no flag, and its addable files a
   expect(outline?.also.filter((file) => file.addable).map((file) => file.path)).toEqual([piece('glossary'), piece('snippets')])
 })
 
-test('D: a Plan write that would change the Index Note and leave the manifest alone is refused before anything is written', async () => {
+test('D: a Folio outline write that would change the Index Note and leave the manifest alone is refused before anything is written', async () => {
   // [a, b, b, c]: the Plan view moves `a` in the Index Note only (the manifest write is skipped for a Folio with a repeated part).
   await makeFolio({ manifest: manifestOf(['a.md', 'b.md', 'b.md', 'c.md']), index: indexOf(['Alpha', 'Beta', 'Beta', 'Gamma']) })
   const bytes = await bytesNow()
@@ -168,13 +171,13 @@ test('D: a Plan write that would change the Index Note and leave the manifest al
 
 // ---- E: Add adopts exactly the named file ----
 
-test('E: a file that shares its title with another file is not added, and no other file is added in its place', async () => {
+test('E: a file that shares its title with another file is added by its path, and no other file is added in its place', async () => {
+  // Dominik 2026-10-20 ("just put both in and I will rename later"): reverses the earlier refusal.
   await makeFolio({ extra: { 'z.md': '# Shared\n', 'README.md': '# Shared\n' } })
-  const bytes = await bytesNow()
   const { result } = await addFolioPieces(ws, DIR, { paths: [piece('z')], expected: ABCD })
-  expect(result).toEqual({ ok: false, stale: false, message: 'Two files here share the title "Shared". Rename one, or add it from the Plan.' })
-  expect(await bytesNow()).toEqual(bytes)
-  expect((await folioPieces(ws, DIR))!.pieces).toEqual(ABCD)
+  expect(result).toMatchObject({ ok: true, order: [...ABCD, piece('z')] })
+  expect(await read(INDEX)).toContain('- [[./z]]')
+  expect((await folioPieces(ws, DIR))!.pieces).toEqual([...ABCD, piece('z')])
 })
 
 test('E: a content_root Folio: what the Outline marks addable is what Add accepts, and Add of a file in the content folder works', async () => {
@@ -187,14 +190,14 @@ test('E: a content_root Folio: what the Outline marks addable is what Add accept
   expect(expected).toEqual([`${DIR}/chapters/a.md`, `${DIR}/chapters/b.md`])
   const outline = (await folioOutline(ws, `${DIR}/chapters/a.md`))!
   expect(outline.orderInPlanOnly).toBeUndefined()
-  // Every file the Outline lists under "Also in this folder": its addable mark is exactly whether Add accepts it.
+  // Every file the Outline lists under "Not in the outline": its addable mark is exactly whether Add accepts it.
   const bytes = await bytesNow()
   expect(outline.also.length).toBeGreaterThan(0)
   for (const file of outline.also) {
     const attempt = await addFolioPieces(ws, DIR, { paths: [file.path], expected })
     expect([file.path, attempt.result.ok]).toEqual([file.path, file.addable === true])
     if (attempt.result.ok) {
-      const undone = await removeAddedFolioPieces(ws, DIR, { paths: [file.path], expected: [...expected, file.path] })
+      const undone = await removeAddedFolioPieces(ws, DIR, { token: attempt.result.undoToken! })
       expect(undone.result.ok).toBe(true)
     }
   }
@@ -203,52 +206,70 @@ test('E: a content_root Folio: what the Outline marks addable is what Add accept
   const plan = (await readPlan(ws, DIR))!
   expect(plan.unlisted.filter((part) => part.manifestBacked === false).map((part) => part.path)).toEqual([`${DIR}/chapters/extra.md`])
   const added = await addFolioPieces(ws, DIR, { paths: [`${DIR}/chapters/extra.md`], expected })
-  expect(added.result).toEqual({ ok: true, changed: true, order: [...expected, `${DIR}/chapters/extra.md`] })
+  expect(added.result).toMatchObject({ ok: true, changed: true, order: [...expected, `${DIR}/chapters/extra.md`] })
   expect((await folioPieces(ws, DIR))!.pieces).toEqual([...expected, `${DIR}/chapters/extra.md`])
   expect(await read(INDEX)).toContain('- [[Beta]]\n- [[Extra]]')
 })
 
 // ---- G: Undo of an Add ----
 
-test('G: Undo of an Add refuses, before removing anything, when the pieces named are not the tail in the order they were added', async () => {
+test('G: Undo of an earlier Add is refused once a later Add has changed the documents; the later one undoes, then the earlier one', async () => {
   await makeFolio()
-  const both = [piece('glossary'), piece('snippets')]
-  await addFolioPieces(ws, DIR, { paths: both, expected: ABCD })
-  const after = [...ABCD, ...both]
+  const first = await addFolioPieces(ws, DIR, { paths: [piece('glossary')], expected: ABCD })
+  if (!first.result.ok) throw new Error(first.result.message)
+  const second = await addFolioPieces(ws, DIR, { paths: [piece('snippets')], expected: [...ABCD, piece('glossary')] })
+  if (!second.result.ok) throw new Error(second.result.message)
   const bytes = await bytesNow()
-  // The second case ends with the real last piece: only the check made before the first removal keeps it in.
-  for (const paths of [[piece('snippets'), piece('glossary')], [piece('c'), piece('snippets')], [piece('glossary')], [piece('d'), piece('glossary')], [piece('c'), piece('d'), piece('glossary'), piece('snippets'), piece('a'), piece('b'), piece('zz')]]) {
-    expect((await removeAddedFolioPieces(ws, DIR, { paths, expected: after })).result).toMatchObject({ ok: false, stale: true })
-  }
+  expect((await removeAddedFolioPieces(ws, DIR, { token: first.result.undoToken! })).result).toMatchObject({ ok: false, stale: true })
   expect(await bytesNow()).toEqual(bytes)
+  expect((await removeAddedFolioPieces(ws, DIR, { token: second.result.undoToken! })).result).toMatchObject({ ok: true, order: [...ABCD, piece('glossary')] })
+  expect((await removeAddedFolioPieces(ws, DIR, { token: first.result.undoToken! })).result).toMatchObject({ ok: true, order: ABCD })
+  expect(await read(INDEX)).toBe(indexOf(['Alpha', 'Beta', 'Gamma', 'Delta']))
 })
 
-test('G: an Undo that stops part-way says exactly which pieces were taken out and which remain, and the documents agree', async () => {
+test('G: an Undo whose manifest cannot be written puts the Index Note back as the Add left it, says nothing was changed, and can be made again', async () => {
   await makeFolio()
   const three = [piece('glossary'), piece('snippets'), piece('e')]
   await writeFile(join(root, DIR, 'e.md'), '# Epsilon\n')
-  await addFolioPieces(ws, DIR, { paths: three, expected: ABCD })
-  const after = [...ABCD, ...three]
-  // The second removal's manifest write fails (the first, of Epsilon, goes through).
+  const added = await addFolioPieces(ws, DIR, { paths: three, expected: ABCD })
+  if (!added.result.ok) throw new Error(added.result.message)
+  const bytes = await bytesNow()
   const original = ws.saveFileWithoutReadBack.bind(ws)
-  let manifestWrites = 0
   ws.saveFileWithoutReadBack = (async (path: string, content: string, options?: Parameters<typeof original>[2]) => {
-    if (path === MANIFEST && ++manifestWrites === 2) throw new Error(`EACCES: permission denied, open '${join(root, MANIFEST)}'`)
+    if (path === MANIFEST) throw new Error(`EACCES: permission denied, open '${join(root, MANIFEST)}'`)
     return original(path, content, options)
   }) as typeof ws.saveFileWithoutReadBack
-  const { result, plan } = await removeAddedFolioPieces(ws, DIR, { paths: three, expected: after })
+  const { result } = await removeAddedFolioPieces(ws, DIR, { token: added.result.undoToken! })
   ws.saveFileWithoutReadBack = original
-  expect(result.ok).toBe(false)
+  expect(result).toMatchObject({ ok: false, stale: false })
   if (result.ok) return
-  expect(result.partial).toEqual({ removed: [piece('e')], remaining: [piece('glossary'), piece('snippets')], order: [...ABCD, piece('glossary'), piece('snippets')] })
-  expect(result.message).toContain('Taken out again: Epsilon.')
-  expect(result.message).toContain('Still in the running order: Glossary, Snippets.')
+  expect(result.message).toContain('Nothing was changed.')
   expect(result.message).not.toContain(root)
-  expect(plan).not.toBeNull()
-  // The failed removal was rolled back: both documents list the same order, the one the answer names.
-  expect((await folioPieces(ws, DIR))!.pieces).toEqual(result.partial!.order)
-  expect((await readPlan(ws, DIR))!.parts.map((part) => part.path)).toEqual(result.partial!.order)
-  // The remainder can then be undone with what the answer gave.
-  const rest = await removeAddedFolioPieces(ws, DIR, { paths: result.partial!.remaining, expected: result.partial!.order })
-  expect(rest.result).toEqual({ ok: true, changed: true, order: ABCD })
+  expect(await bytesNow()).toEqual(bytes)
+  // The record is kept: the Undo can be made again once the manifest can be written.
+  expect((await removeAddedFolioPieces(ws, DIR, { token: added.result.undoToken! })).result).toMatchObject({ ok: true, order: ABCD })
+})
+
+test('G: an Undo whose rollback fails uses up its token: the documents put back by hand to what the Add left do not revive it', async () => {
+  await makeFolio()
+  const added = await addFolioPieces(ws, DIR, { paths: [piece('glossary')], expected: ABCD })
+  if (!added.result.ok) throw new Error(added.result.message)
+  const [manifestAfter, indexAfter] = await bytesNow()
+  const original = ws.saveFileWithoutReadBack.bind(ws)
+  let indexWrites = 0
+  ws.saveFileWithoutReadBack = (async (path: string, content: string, options?: Parameters<typeof original>[2]) => {
+    if (path === MANIFEST) throw new Error('manifest cannot be written')
+    // The first Index write is the Undo's own; the second is its take-back, which fails: a split state.
+    if (path === INDEX && ++indexWrites === 2) throw new Error('Index Note cannot be put back')
+    return original(path, content, options)
+  }) as typeof ws.saveFileWithoutReadBack
+  const { result } = await removeAddedFolioPieces(ws, DIR, { token: added.result.undoToken! })
+  ws.saveFileWithoutReadBack = original
+  expect(result).toMatchObject({ ok: false, stale: false })
+  expect(await read(INDEX)).not.toBe(indexAfter)
+  expect(await read(MANIFEST)).toBe(manifestAfter!)
+  // Put back by hand to exactly what the Add left: the token is still used up.
+  await writeFile(join(root, INDEX), indexAfter!)
+  expect((await removeAddedFolioPieces(ws, DIR, { token: added.result.undoToken! })).result).toMatchObject({ ok: false, stale: true })
+  expect(await bytesNow()).toEqual([manifestAfter, indexAfter])
 })

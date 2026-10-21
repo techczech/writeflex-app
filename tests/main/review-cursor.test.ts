@@ -115,3 +115,25 @@ test('a reveal whose change is not listed yet stays owed until the list catches 
   expect(owedReveal(request, null, [change('one', 'One'), change('late', 'Late')])?.id).toBe('late')
   expect(owedReveal({ revealId: null, revealSerial: 5 }, null, [change('one', 'One')])).toBeNull()
 })
+
+test('with a filter on, the cursor steps through shown changes only and repairs when the current one is hidden', () => {
+  const events: Array<{ id: string | null; reveal: boolean }> = []
+  const cursor = new ReviewCursor((event) => events.push(event))
+  cursor.sync([change('a', 'Aaa'), change('b', 'Bbb'), change('c', 'Ccc'), change('d', 'Ddd')], 'Aaa. Bbb. Ccc. Ddd.')
+  cursor.setShown(new Set(['b', 'd']))
+  cursor.move(1)
+  cursor.move(1)
+  cursor.move(1)
+  expect(events.map((e) => e.id)).toEqual(['b', 'd'])
+
+  // The current change (d) leaves the shown set: the cursor lands on a shown one without revealing.
+  cursor.setShown(new Set(['a', 'b']))
+  expect(cursor.currentId).toBe('b')
+  expect(events.at(-1)).toEqual({ id: 'b', reveal: false })
+  expect(cursor.select('c')).toBe(false)
+
+  // Clearing the filter brings every change back into the walk.
+  cursor.setShown(null)
+  cursor.move(1)
+  expect(cursor.currentId).toBe('c')
+})

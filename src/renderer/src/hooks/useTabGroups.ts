@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MarkdownFile } from '../../../preload'
-import { isBoardTabId, ownFolderGroup, type TabGroupOf } from './tab-state'
+import { isBoardTabId, isWidgetWorkbenchTabId, ownFolderGroup, workbenchDocumentOf, type TabGroupOf } from './tab-state'
 
 /**
  * The path→group resolver the strip is derived from. Main resolves each open tab's group (nearest
@@ -17,7 +17,9 @@ export function useTabGroups(root: string | null | undefined, tabs: readonly str
   const request = useRef(0)
   // The Board tab joins its Collection folder's group, asked for as a folder path (`dir/`).
   const boardKey = boardDir !== '' && tabs.some(isBoardTabId) ? `${boardDir}/` : null
-  const tabKey = [...tabs.filter((path) => !isBoardTabId(path)), ...(boardKey ? [boardKey] : [])].join('\n')
+  // A widget workbench joins its document's group, asked for as the document's own path.
+  const asked = tabs.map((path) => (isWidgetWorkbenchTabId(path) ? workbenchDocumentOf(path) : path))
+  const tabKey = [...new Set([...asked.filter((path) => !isBoardTabId(path)), ...(boardKey ? [boardKey] : [])])].join('\n')
 
   useEffect(() => window.writeflex.onCollectionChanged?.(() => setCollectionTick((tick) => tick + 1)), [])
 
@@ -43,7 +45,8 @@ export function useTabGroups(root: string | null | undefined, tabs: readonly str
   }, [groups])
   return useCallback((path: string) => {
     const board = isBoardTabId(path)
-    const answer = groups?.[board ? `${boardDir}/` : path]
+    const asked = isWidgetWorkbenchTabId(path) ? workbenchDocumentOf(path) : path
+    const answer = groups?.[board ? `${boardDir}/` : asked]
     if (answer !== undefined) return answer
     const own = board ? boardDir : ownFolderGroup(path)
     const sibling = known.byFolder.get(own)

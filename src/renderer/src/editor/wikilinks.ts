@@ -18,15 +18,24 @@ export type MaterialiseSeed = { title: string; gist: string }
 export const setWikilinkResolutions = StateEffect.define<WikilinkResolution[]>()
 const WIKILINK = /\[\[([^\]\n]*)\]\]/g
 
+/**
+ * The key a link's resolution is filed under. A `./` path link resolves by its exact case (main wikilinks.ts
+ * `resolveWikilinkPath`): `[[./A]]` and `[[./a]]` can name two files, so its key keeps the case. Every other link
+ * resolves case-insensitively, so its key is folded.
+ */
+function resolutionKey(target: string): string {
+  return target.trim().startsWith('./') ? `path:${target}` : `name:${target.toLocaleLowerCase()}`
+}
+
 /** Pure parser/classifier used by the StateField and headless regression tests. */
 export function wikilinkRanges(doc: string, resolutions: WikilinkResolution[]): WikilinkRange[] {
-  const byTarget = new Map(resolutions.map((item) => [item.target.toLocaleLowerCase(), item]))
+  const byTarget = new Map(resolutions.map((item) => [resolutionKey(item.target), item]))
   return [...doc.matchAll(WIKILINK)].map((match) => {
     const raw = match[1]
     const separator = raw.indexOf('|')
     const target = (separator < 0 ? raw : raw.slice(0, separator)).split('#', 1)[0].trim()
     const invalid = target === ''
-    const resolution = invalid ? undefined : byTarget.get(target.toLocaleLowerCase())
+    const resolution = invalid ? undefined : byTarget.get(resolutionKey(target))
     const display = invalid ? 'Untitled idea' : ((separator < 0 ? target : raw.slice(separator + 1).trim()) || target)
     return {
       from: match.index,

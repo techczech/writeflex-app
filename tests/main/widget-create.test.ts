@@ -324,6 +324,23 @@ test('undo removes only the file that was written, and says so when what is ther
   expect(await readFile(join(root, 'essays/assets/pace.html'), 'utf8')).toBe('the writer put this here')
 })
 
+test('R7: undo leaves a widget file another program edited in place (same file, other bytes), and says so', async () => {
+  const written = await write('essays/doc.md', 'essays/assets/pace.html', PAGE)
+  if (!written.ok) throw new Error(written.message)
+  // An edit in place keeps the file's identity: only its bytes say it is no longer what WriteFlex wrote.
+  await writeFile(join(root, 'essays/assets/pace.html'), `${PAGE}<!-- edited by another program -->`, { flag: 'r+' })
+  const undone = await undoWidgetFile(root, written.created)
+  expect(undone).toEqual({ removed: false, reason: 'it changed after WriteFlex wrote it, so it was left as it is' })
+  expect(await readFile(join(root, 'essays/assets/pace.html'), 'utf8')).toBe(`${PAGE}<!-- edited by another program -->`)
+})
+
+test('R7: undo removes a widget file that still holds exactly what WriteFlex wrote', async () => {
+  const written = await write('essays/doc.md', 'essays/assets/pace.html', PAGE)
+  if (!written.ok) throw new Error(written.message)
+  expect(await undoWidgetFile(root, written.created)).toEqual({ removed: true })
+  expect(await exists(join(root, 'essays/assets/pace.html'))).toBe(false)
+})
+
 // ---- the verb ----------------------------------------------------------------------------------
 
 test('proposing writes nothing: validateStage, preview and touchedPaths leave the disk alone', async () => {

@@ -15,13 +15,21 @@ import type { CloseCheckpointRun } from './close-checkpoints'
 import { persistDiarySession } from './diary'
 import { randomUUID } from 'node:crypto'
 import { recordMainProcessDiagnostic } from './shutdown'
+import type { RequestInboxWatch } from './request-inbox-watch'
 
 export type WindowState = {
+  collectionPageActive?: boolean
+  collectionPageFolio?: boolean
   window: BrowserWindow
   ambient: AmbientState | null
   workspace: Workspace | null
   /** Native recursive watcher bound to this window's current Workspace; disposed on rebind/close. */
   workspaceWatcher: WorkspaceWatcher | null
+  /** Answers the command line's requests while this window has the Collection open; disposed on rebind/close. */
+  requestInbox: RequestInboxWatch | null
+  /** Readers' notes collected into this Collection's ledger (0.24 ticket 07). */
+  /** Readers' notes in, and (ticket 08) outcomes and replies back: `look` runs one look now. */
+  readerNotes: { dispose(): void; look?(): Promise<void> } | null
   /** Automatic Counted-Collection session accumulator; main-owned so renderer remounts cannot erase it. */
   diaryCapture: DiaryCaptureTracker | null
   diaryIdleTimer: ReturnType<typeof setTimeout> | null
@@ -77,6 +85,12 @@ export type WindowState = {
   onCloseCancelled: (() => void) | null
   /** Unguessable authority embedded in this window's wf-asset URLs. */
   assetToken: string
+  /** The root the window's page last said it loaded and shows (`renderer:ready`): null for the start
+   *  screen, undefined until it has said. The vault switcher shows a new window only once this is the
+   *  root it was bound to (window-switch.ts, `whenReady`). */
+  rendererRoot: string | null | undefined
+  /** Told on each `renderer:ready`. Set only while main waits for one (the vault switcher). */
+  onRendererReady: (() => void) | null
 }
 
 const states = new Map<number, WindowState>()
@@ -134,8 +148,25 @@ export function isQuitting(): boolean {
   return quitting
 }
 
+/** "A window closed or left its root": told after the window's state was removed or rebound, so
+ *  `allStates()` already shows the change. The vault IPC stops the watchers of roots no window holds. */
+const windowReleaseListeners = new Set<() => void>()
+export function onWindowReleased(listener: () => void): () => void {
+  windowReleaseListeners.add(listener)
+  return () => { windowReleaseListeners.delete(listener) }
+}
+export function notifyWindowReleased(): void {
+  for (const listener of windowReleaseListeners) {
+    try {
+      listener()
+    } catch {
+      // A listener's failure never blocks a window's close or rebind.
+    }
+  }
+}
+
 export function registerWindow(window: BrowserWindow): WindowState {
-  const state: WindowState = { window, ambient: null, workspace: null, workspaceWatcher: null, diaryCapture: null, diaryIdleTimer: null, diaryRoot: null, explicitSession: null, explicitDurationTimer: null, explicitCompletionTimer: null, agent: null, agentReady: null, threads: null, e2eScriptQueues: null, approvalOwners: new Map(), bindGeneration: 0, scraps: null, changes: null, versions: null, pendingFocusFile: null, guideTabWanted: false, pendingFocusLine: null, folderFocus: null, forceClose: false, closing: null, closeWork: null, onCloseCancelled: null, assetToken: randomUUID() }
+  const state: WindowState = { window, ambient: null, workspace: null, workspaceWatcher: null, requestInbox: null, readerNotes: null, diaryCapture: null, diaryIdleTimer: null, diaryRoot: null, explicitSession: null, explicitDurationTimer: null, explicitCompletionTimer: null, agent: null, agentReady: null, threads: null, e2eScriptQueues: null, approvalOwners: new Map(), bindGeneration: 0, scraps: null, changes: null, versions: null, pendingFocusFile: null, guideTabWanted: false, pendingFocusLine: null, folderFocus: null, forceClose: false, closing: null, closeWork: null, onCloseCancelled: null, assetToken: randomUUID(), rendererRoot: undefined, onRendererReady: null }
   const webContentsId = window.webContents.id
   states.set(webContentsId, state)
   window.on('closed', () => {
@@ -143,6 +174,11 @@ export function registerWindow(window: BrowserWindow): WindowState {
     state.bindGeneration += 1 // a still-booting agent disposes itself on arrival (generation mismatch)
     state.workspaceWatcher?.dispose()
     state.workspaceWatcher = null
+    // Its executor stops at once; windows.ts keeps the Collection's lock until it has (waitForRequestDisposals).
+    void state.requestInbox?.dispose()
+    state.readerNotes?.dispose()
+    state.readerNotes = null
+    state.requestInbox = null
     if (state.diaryIdleTimer) clearTimeout(state.diaryIdleTimer)
     state.diaryIdleTimer = null
     if (state.explicitDurationTimer) clearTimeout(state.explicitDurationTimer)
@@ -166,6 +202,7 @@ export function registerWindow(window: BrowserWindow): WindowState {
     if (state.threads) trackThreadsDisposal(state.threads, webContentsId, closeWork)
     else if (state.agent) trackAgentDisposal(state.agent, webContentsId, closeWork)
     states.delete(webContentsId)
+    notifyWindowReleased()
   })
   return state
 }

@@ -12,13 +12,13 @@
  * writes a plan. Undo lives in the desk (board-material-desk.ts), which snapshots before writing.
  */
 
-import { existsSync } from 'node:fs'
-import { readFile, unlink } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { indexNotePath } from './folio'
 import { isScrapsPath, removeScrapFromContent, scrapsPathFor } from './scraps'
 import { parseFrontmatter } from './frontmatter'
-import { slugifyFileName, type Workspace } from './workspace'
+import { DiskChangedUnderBuffer, SavedButNotReadBack, slugifyFileName, type Workspace } from './workspace'
 import type { AppendScrapInput, PromoteOffcutInput } from '../shared/board-material'
 
 const IDEAS_HEADING = /^##(?!#)\s+Ideas\s*#*\s*$/i
@@ -210,18 +210,61 @@ export async function prepareScrapAppend(ws: Workspace, input: AppendScrapInput)
   return { ...plan, pieceTitle }
 }
 
+/** What is at `path` now: its text, or null when there is no file. */
+function textNow(ws: Workspace, path: string): string | null {
+  const absolute = ws.absolute(path)
+  return existsSync(absolute) ? readFileSync(absolute, 'utf8') : null
+}
+
+/** The file still holds what the plan read (`before`; null: no file), or the write is refused as a change
+ *  since the read (ChangedSinceRead), nothing written. */
+function assertAsRead(ws: Workspace, write: MaterialWrite): void {
+  if (write.before === null) {
+    if (existsSync(ws.absolute(write.path))) throw ws.changedSinceRead(write.path, textNow(ws, write.path))
+    return
+  }
+  try {
+    ws.commitOnlyOver(write.path, { kind: 'disk', text: write.before })()
+  } catch (error) {
+    if (error instanceof DiskChangedUnderBuffer) throw ws.changedSinceRead(error.path, error.diskText)
+    throw error
+  }
+}
+
 /**
  * Write a plan's files in order (the receiving file first, the scraps file last, so a failure part
  * way never loses the scrap). A null `after` deletes the file, as ScrapStore.remove does.
+ *
+ * Each file is written only over the text the plan read (`before`), never over a version it did not read
+ * (R5; final review round 2, finding 1): every file is checked before the first is written, and each write
+ * is checked again where it commits (an existing file in the tick of its rename or unlink, a new one by an
+ * exclusive create). A file changed since the read throws ChangedSinceRead.
  */
 export async function writeMaterial(ws: Workspace, writes: MaterialWrite[]): Promise<void> {
+  for (const write of writes) assertAsRead(ws, write)
   for (const write of writes) {
     if (write.after === null) {
-      if (existsSync(ws.absolute(write.path))) await unlink(ws.absolute(write.path))
+      // A turn of the Collection's write turn, as the saves below take for themselves; removed only while
+      // it still holds the text the plan read (R5), compared in the tick of the unlink.
+      await ws.exclusive(write.path, async () => {
+        ws.assertWritable()
+        if (write.before !== null) ws.removeFileOverRead(write.path, write.before)
+      })
     } else if (write.before === null) {
-      await ws.createFile(write.path, write.after)
+      try {
+        await ws.createFile(write.path, write.after)
+      } catch (error) {
+        // Created by someone else since the check: a change since the read.
+        if (existsSync(ws.absolute(write.path))) throw ws.changedSinceRead(write.path, textNow(ws, write.path))
+        throw error
+      }
     } else {
-      await ws.saveFileWithoutReadBack(write.path, write.after, { allowExplicitEmpty: true })
+      try {
+        await ws.saveFileOverRead(write.path, write.after, write.before, { allowExplicitEmpty: true })
+      } catch (error) {
+        // Committed and not read back: written.
+        if (!(error instanceof SavedButNotReadBack)) throw error
+      }
     }
   }
 }

@@ -79,7 +79,7 @@ test('Actions here at a file: every row carries an icon, none of them the agentâ
   }
 })
 
-test("the Plan pane's Help with this report shows the agent icon, not the skill's own", () => {
+test("the Folio outline pane's Help with this report shows the agent icon, not the skill's own", () => {
   const html = renderToStaticMarkup(<PlanProjectionNav onOpenBoard={() => {}} onHelpWithReport={() => {}} />)
   const start = html.indexOf('skill-trigger')
   const button = html.slice(start, html.indexOf('</button>', start) + '</button>'.length)
@@ -124,13 +124,13 @@ test('the palette row for the report skill shows the agent icon; other commands 
   // Handed a non-agent icon, as App could: the palette still draws the agent's for an agent launch.
   const rows = paletteRows(renderPalette([
     { id: REPORT_SKILL_COMMAND, label: 'Help with this report', group: 'Skills', icon: ListOrdered, run: () => {} },
-    { id: 'plan.open', label: 'Open Plan', group: 'Navigation', icon: ListOrdered, run: () => {} },
+    { id: 'plan.open', label: 'Open Folio outline', group: 'Navigation', icon: ListOrdered, run: () => {} },
   ]))
   const report = rows.get('Help with this report')
   expect(report).toContain(AGENT)
   expect(report).toContain('agent-icon')
   expect(report).not.toContain('lucide-list-ordered')
-  const plan = rows.get('Open Plan')
+  const plan = rows.get('Open Folio outline')
   expect(plan).toContain('lucide-list-ordered')
   expect(plan).not.toContain(AGENT)
 })

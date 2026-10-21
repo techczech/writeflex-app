@@ -1,5 +1,6 @@
 export type ReleaseNoteGroup = {
-  title: 'Added' | 'Changed' | 'Fixed'
+  /** 'Added' / 'Changed' / 'Fixed', or the version text of a `### <semver> — date` heading. */
+  title: string
   items: ReleaseNoteItem[]
 }
 
@@ -22,6 +23,7 @@ export type ParsedReleaseNotes = {
 
 const RELEASE_HEADING = /^##\s+\[([^\]]+)\](?:\s+—\s*(.*))?\s*$/
 const GROUP_HEADING = /^###\s+(Added|Changed|Fixed)\s*$/
+const VERSION_HEADING = /^###\s+(\d+\.\d+\.\d+[\w.-]*)(?:\s+—\s*.*)?\s*$/
 const BULLET = /^-\s+(.*)$/
 const BOLD_LEAD = /^\*\*(.+?)\*\*\s*(.*)$/
 
@@ -51,9 +53,9 @@ export function parseReleaseNotes(source: string, currentVersion: string | null,
       continue
     }
     if (!release) continue
-    const groupHeading = line.match(GROUP_HEADING)
+    const groupHeading = line.match(GROUP_HEADING) ?? line.match(VERSION_HEADING)
     if (groupHeading) {
-      group = { title: groupHeading[1] as ReleaseNoteGroup['title'], items: [] }
+      group = { title: groupHeading[1], items: [] }
       release.groups.push(group)
       continue
     }

@@ -9,7 +9,8 @@ import { open } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { fallbackFolioParts, folioPieces, indexNotePath, readManifest } from './folio'
 import { documentTitle } from './frontmatter'
-import { declaresRunningOrder } from './plan'
+import { folioOrderFacts } from './folio-order-facts'
+import { declaresRunningOrder, readFolioFrontMatter } from './plan'
 import { assertRelativeWorkspacePath, type Workspace } from './workspace'
 import { folioPlaceFacts, type FolioPlace } from '../shared/folio-place'
 
@@ -21,8 +22,12 @@ function parentDir(dir: string): string {
   return parent === '.' ? '' : parent
 }
 
-/** The Folio of a folder: where it is and its pieces in running order. Null when the folder is in none. */
-type FolioOfFolder = { dir: string; pieces: string[] } | null
+/** The Folio of a folder: where it is, its pieces in running order and its front-matter parts
+ *  (shared/folio-front-matter.ts). Null when the folder is in none. */
+type FolioOfFolder = { dir: string; pieces: string[]; frontMatter: ReadonlySet<string>; manifest: boolean } | null
+
+/** A failed read of the front matter names none: the heading checks then stay on, as before. */
+const frontMatterOf = (ws: Workspace, dir: string, listing?: ReadonlySet<string>): Promise<ReadonlySet<string>> => readFolioFrontMatter(ws, dir, listing).catch(() => new Set<string>())
 
 /**
  * Answers per workspace root and file folder. A tab switch inside one unchanged Folio finds its Folio
@@ -42,7 +47,7 @@ export function invalidateFolioPlaces(root: string): void {
  * parts under it still declares a Plan, as it does for `readPlan`. Reads the Index Note first, and
  * lists its folder only when the heading is there.
  */
-async function indexDeclaresPlan(ws: Workspace, dir: string): Promise<boolean> {
+export async function indexDeclaresPlan(ws: Workspace, dir: string): Promise<boolean> {
   try {
     const path = indexNotePath(ws, dir)
     if (!declaresRunningOrder((await ws.readFile(path)).content)) return false
@@ -54,11 +59,15 @@ async function indexDeclaresPlan(ws: Workspace, dir: string): Promise<boolean> {
 
 async function findFolio(ws: Workspace, own: string): Promise<FolioOfFolder> {
   for (let cursor = own; ; cursor = parentDir(cursor)) {
-    if (await readManifest(ws, cursor)) return { dir: cursor, pieces: (await folioPieces(ws, cursor))?.pieces ?? [] }
+    if (await readManifest(ws, cursor)) {
+      // One listing of the Folio's folder serves the order and the front matter.
+      const listing = new Set((await ws.listFilesIn(cursor)).map((file) => file.path))
+      return { dir: cursor, pieces: (await folioPieces(ws, cursor, listing))?.pieces ?? [], frontMatter: await frontMatterOf(ws, cursor, listing), manifest: true }
+    }
     if (cursor === '') break
   }
   if (!(await indexDeclaresPlan(ws, own))) return null
-  return { dir: own, pieces: await fallbackFolioParts(ws, own) }
+  return { dir: own, pieces: await fallbackFolioParts(ws, own), frontMatter: await frontMatterOf(ws, own), manifest: false }
 }
 
 function folioOfFolder(ws: Workspace, own: string): Promise<FolioOfFolder> {
@@ -100,10 +109,39 @@ async function neighbour(ws: Workspace, path: string | null): Promise<{ path: st
  * The Folio a workspace path belongs to (same rule and same cache as `folioPlace`): its folder and the
  * pieces in running order, or null. Throws for a path that is not a workspace-relative path.
  */
-export async function folioContaining(ws: Workspace, path: string): Promise<{ dir: string; pieces: string[] } | null> {
+export async function folioContaining(ws: Workspace, path: string): Promise<{ dir: string; pieces: string[]; frontMatter: ReadonlySet<string> } | null> {
   if (path.includes('://')) return null
   assertRelativeWorkspacePath(path)
   return folioOfFolder(ws, parentDir(path))
+}
+
+/**
+ * The Folio that owns a workspace path, by `folioContaining`'s rule but read fresh from disk, never from the
+ * cache: for a write's authority check (the title-conflict fixes, plan-ipc.ts), where a stale answer must not
+ * decide which Folio's front matter is exempt. Throws for a path that is not a workspace-relative path.
+ */
+export async function folioOwning(ws: Workspace, path: string): Promise<{ dir: string; pieces: string[]; frontMatter: ReadonlySet<string> } | null> {
+  if (path.includes('://')) return null
+  assertRelativeWorkspacePath(path)
+  return findFolio(ws, parentDir(path))
+}
+
+/**
+ * The Folio folder a folder belongs to, by `folioContaining`'s rule and cache: the folder itself or the nearest
+ * ancestor with a manifest, else the folder itself when its Index Note declares a Plan; null when it is in no Folio.
+ * The Folio page opens on this folder whatever was open (the Index Note, a part, a part in `content_root`, a nested
+ * part, a sub-folder of the Folio), so it finds the Folio and the Index Note the Outline finds. Throws for a folder
+ * that is not workspace-relative.
+ */
+export async function folioDirOf(ws: Workspace, dir: string): Promise<string | null> {
+  if (dir !== '') assertRelativeWorkspacePath(dir)
+  return (await folioOfFolder(ws, dir))?.dir ?? null
+}
+
+/** `folioDirOf` read fresh from disk, never from the cache: for a write's authority check (folio-index-note.ts). */
+export async function folioDirOwning(ws: Workspace, dir: string): Promise<string | null> {
+  if (dir !== '') assertRelativeWorkspacePath(dir)
+  return (await findFolio(ws, dir))?.dir ?? null
 }
 
 /**
@@ -115,7 +153,11 @@ export async function folioPlace(ws: Workspace, path: string): Promise<FolioPlac
   assertRelativeWorkspacePath(path)
   const folio = await folioOfFolder(ws, parentDir(path))
   if (!folio) return null
-  const facts = folioPlaceFacts(path, folio.pieces, indexNotePath(ws, folio.dir))
+  // A manifest Folio whose Index Note declares a running order takes the Plan's order (what the Plan and the Outline show).
+  // A Plan folder with no manifest keeps its fallback order: its Plan names no file paths to read. Manifest-only Folios are unchanged.
+  const planned = folio.manifest && (await indexDeclaresPlan(ws, folio.dir)) ? (await folioOrderFacts(ws, folio.dir)).order : null
+  const pieces = planned ?? folio.pieces
+  const facts = folioPlaceFacts(path, pieces, indexNotePath(ws, folio.dir))
   return {
     dir: folio.dir,
     name: folio.dir === '' ? posix.basename(ws.root) : posix.basename(folio.dir),
@@ -124,5 +166,6 @@ export async function folioPlace(ws: Workspace, path: string): Promise<FolioPlac
     total: facts.total,
     previous: await neighbour(ws, facts.previous),
     next: await neighbour(ws, facts.next),
+    ...(folio.frontMatter.has(path) ? { frontMatter: true as const } : {}),
   }
 }

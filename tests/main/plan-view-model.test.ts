@@ -31,7 +31,7 @@ const rows: CollectionRow[] = [{
   provenance: { title: 'written', purpose: 'derived', status: 'written' },
 }]
 
-test('Plan rows keep Plan order and join written metadata by path', () => {
+test('Folio outline rows keep Folio outline order and join written metadata by path', () => {
   expect(buildPlanRows(plan, rows)).toEqual([
     expect.objectContaining({ number: 1, title: 'Opening', written: true, stage: 'final draft', words: 610 }),
     expect.objectContaining({ number: 2, title: 'The viva', written: false, stage: null, words: null }),
@@ -39,7 +39,7 @@ test('Plan rows keep Plan order and join written metadata by path', () => {
   ])
 })
 
-test('Plan summary distinguishes a wholly unwritten plan', () => {
+test('Folio outline summary distinguishes a wholly unwritten plan', () => {
   expect(planSummary(buildPlanRows(plan, rows))).toEqual({ parts: 3, written: 2, unwritten: 1, words: 610 })
   expect(planSummary(buildPlanRows({ ...plan, parts: plan.parts.map((part) => ({ ...part, path: null })) }, []))).toEqual({
     parts: 3,

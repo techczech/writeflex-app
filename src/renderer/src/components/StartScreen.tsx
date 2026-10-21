@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Compass, FolderOpen, GripVertical, PenLine, Pin, Trash2, type LucideIcon } from 'lucide-react'
-import type { ExampleCollectionView, PinnedWorkspace, StartScreenModel } from '../../../preload'
+import { BookOpen, Compass, FolderOpen, GripVertical, Library, PenLine, Pin, Trash2, type LucideIcon } from 'lucide-react'
+import type { ExampleCollectionView, PinnedWorkspace, StartScreenModel, StartVault } from '../../../preload'
 import { relativeTime } from './relative-time'
 import { REMOVE_EXAMPLE_TEXT } from './RemoveExampleConfirm'
 
@@ -49,14 +49,19 @@ type RowMenu = { root: string; x: number; y: number }
  * right newest first, a pinned folder never listed twice. Rows reuse the .rec-row family and the
  * tab context-menu styling.
  *
- * Present rows are one roving-tabindex group (pinned first, then recent): one row is tab-reachable,
- * arrows move focus, Enter/Space opens, ⌥↑/⌥↓ reorder a pinned row, ⌘1–⌘9 open the first nine pins.
+ * Present rows are one roving-tabindex group, in the order they are drawn: vault cards (Vaults row on
+ * top), then pins, then Guide and Example collection, then recents: one row is tab-reachable, arrows
+ * move focus, Enter/Space opens, ⌥↑/⌥↓ reorder a pinned row, ⌘1–⌘9 open the first nine pins.
  * A missing pinned folder is a dimmed non-focusable row with Locate… and Unpin buttons.
  *
+ * Vaults (locked-vault-start-screen, DTC review 2026-10-16): a pinned or recent root that is a vault is
+ * listed ONLY as a card in the Vaults row, never again in Pinned or Recent. A pinned vault keeps its
+ * pin but has no ⌘ number; the remaining pins number from ⌘1. No vaults, no Vaults row.
+ *
  * While the Example collection is pinned (ADR-0043, mockup-onboarding-hifi-v2 states 01 and 26),
- * two marked entries, Guide and Example collection, lead the Pinned column above a hairline. They
- * join the roving group but are not pins: no ⌘ number, no reorder, no drag, no context menu, and
- * the person's own pins keep ⌘1–⌘9.
+ * two marked entries, Guide and Example collection, close the Pinned column, below the person's own
+ * pins and a hairline (Dominik 2026-10-19). They join the roving group but are not pins: no ⌘ number,
+ * no reorder, no drag, no context menu, and the person's own pins keep ⌘1–⌘9.
  *
  * Everything listed comes from main as ONE model (`getStartScreen`), computed after the example
  * check: the entries, the pins as numbered, the recents that are not pins. This component compares
@@ -94,6 +99,7 @@ export function StartScreen({ onOpen, onOpenRecent, onOpenExample, onRemoveExamp
   const example = model?.example ?? null
   const pinned = model?.pinned ?? null
   const recents = model?.recents ?? null
+  const vaults = useMemo(() => model?.vaults ?? [], [model])
   const ownPins = useMemo(() => pinned ?? [], [pinned])
   const recentRows = useMemo(() => recents ?? [], [recents])
   // Which rows are pins: by where main listed them, for the keyboard and the context menu.
@@ -101,11 +107,12 @@ export function StartScreen({ onOpen, onOpenRecent, onOpenExample, onRemoveExamp
   // The roving group: every row that can take focus — marked entries, then pins, then recents.
   const sequence = useMemo(
     () => [
-      ...(example ? [GUIDE_KEY, EXAMPLE_KEY] : []),
+      ...vaults.map((v) => v.root),
       ...ownPins.filter((p) => !p.missing).map((p) => p.root),
+      ...(example ? [GUIDE_KEY, EXAMPLE_KEY] : []),
       ...recentRows.map((r) => r.root),
     ],
-    [example, ownPins, recentRows],
+    [vaults, example, ownPins, recentRows],
   )
 
   const focusRoot = useCallback(
@@ -269,6 +276,40 @@ export function StartScreen({ onOpen, onOpenRecent, onOpenExample, onRemoveExamp
     </li>
   )
 
+  const figure = (value: number | null, label: string): JSX.Element => (
+    <span className="vault-fig">
+      <b>{value === null ? '—' : value.toLocaleString('en-GB')}</b>
+      <span>{label}</span>
+    </span>
+  )
+  const vaultCard = (vault: StartVault): JSX.Element => (
+    <button
+      key={vault.root}
+      ref={setRowRef(vault.root)}
+      className="vault-card"
+      data-testid="vault-card"
+      tabIndex={sequence.indexOf(vault.root) === active ? 0 : -1}
+      onFocus={() => setActive(Math.max(0, sequence.indexOf(vault.root)))}
+      onKeyDown={(event) => onRowKeyDown(event, vault.root)}
+      onClick={() => onOpenRecent(vault.root)}
+      title={vault.root}
+    >
+      <span className="vault-card-head">
+        <Library className="icon" aria-hidden="true" />
+        <span className="vault-card-name">{vault.name}</span>
+      </span>
+      <span className="vault-card-path">{vault.location}</span>
+      <span className="vault-card-figs">
+        {figure(vault.works, 'works')}
+        {figure(vault.inProgress, 'in progress')}
+        <span className="vault-fig">
+          <b>{vault.lastWorked === null ? '—' : relativeTime(vault.lastWorked)}</b>
+          <span>last worked by you</span>
+        </span>
+      </span>
+    </button>
+  )
+
   const pinnedList = ownPins
   const menuIndex = menu ? pinnedList.findIndex((p) => p.root === menu.root) : -1
   const menuElement = menu && (
@@ -327,7 +368,14 @@ export function StartScreen({ onOpen, onOpenRecent, onOpenExample, onRemoveExamp
           <kbd>⌘O</kbd>
         </button>
 
-        <div className="start-cols">
+        {vaults.length > 0 ? (
+          <div className="start-vaults" data-testid="vaults-row">
+            <div className="side-label">Vaults</div>
+            <div className="vault-cards">{vaults.map(vaultCard)}</div>
+          </div>
+        ) : null}
+
+        <div className={`start-cols${vaults.length > 0 ? ' after-vaults' : ''}`}>
           <div className="start-recents start-pinned" data-testid="pinned-column">
             <div className="side-label">
               <Pin className="pin-glyph" aria-hidden="true" /> Pinned
@@ -336,13 +384,6 @@ export function StartScreen({ onOpen, onOpenRecent, onOpenExample, onRemoveExamp
               <p className="start-empty">Pin a folder you use often</p>
             ) : (
               <ul className="rec-list" role="list">
-                {example ? (
-                  <>
-                    {markedRow(GUIDE_KEY, 'guide', Compass, 'Guide', 'Opens with the Example collection', 'Guide')}
-                    {markedRow(EXAMPLE_KEY, 'collection', BookOpen, 'Example collection', exampleLine(example), example.root, onRemoveExample)}
-                    {ownPins.length > 0 ? <li className="rec-sep" role="separator" /> : null}
-                  </>
-                ) : null}
                 {ownPins.map((item, index) => (
                   <li
                     key={item.root}
@@ -401,6 +442,13 @@ export function StartScreen({ onOpen, onOpenRecent, onOpenExample, onRemoveExamp
                     )}
                   </li>
                 ))}
+                {example ? (
+                  <>
+                    {ownPins.length > 0 ? <li className="rec-sep" role="separator" /> : null}
+                    {markedRow(GUIDE_KEY, 'guide', Compass, 'Guide', 'Opens with the Example collection', 'Guide')}
+                    {markedRow(EXAMPLE_KEY, 'collection', BookOpen, 'Example collection', exampleLine(example), example.root, onRemoveExample)}
+                  </>
+                ) : null}
               </ul>
             )}
             {pinned !== null && example && ownPins.length === 0 ? <p className="start-empty pad">Pin a folder you use often</p> : null}

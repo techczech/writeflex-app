@@ -354,6 +354,23 @@ test('the fixed line has presets in Settings → Editor, with Custom showing the
   expect(lower).toMatch(/aria-pressed="true"[^>]*>Lower third</)
 })
 
+test('Settings → Editor groups the focus options under Text readability and Text overlay, in that order', () => {
+  const html = renderSettings({ 'editor.focusMode': 'breakup', 'editor.lineFocus.on': true, 'editor.ruler.opacity': 60 })
+  const readability = html.indexOf('>Text readability<')
+  const lead = html.indexOf('aria-label="Anchored lead-in style"')
+  const overlay = html.indexOf('>Text overlay<')
+  expect(readability).toBeGreaterThan(-1)
+  expect(lead).toBeGreaterThan(readability)
+  expect(overlay).toBeGreaterThan(lead)
+  const reading = html.indexOf('aria-label="Reading focus"')
+  expect(reading).toBeGreaterThan(readability)
+  expect(reading).toBeLessThan(overlay)
+  for (const label of ['Line focus', 'Line focus size', 'Line focus follow', 'Line focus dim', 'Ruler', 'Ruler covers', 'Ruler opacity', 'Ruler follow']) {
+    expect(html.indexOf(`aria-label="${label}"`)).toBeGreaterThan(overlay)
+  }
+  expect(html).toMatch(/<option value="breakup" selected="">Sentence breakup<\/option>/)
+})
+
 test('a fixed-line change reads in the changelog with its preset name and a Reset to Top third', () => {
   const html = renderSettings(
     { 'editor.fixedLine': 0.5 },

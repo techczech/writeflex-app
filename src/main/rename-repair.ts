@@ -12,6 +12,7 @@ import {
   buildWikilinkCandidateIndex,
   collectionCandidates,
   extractWikilinks,
+  isPathLink,
   resolveWikilinkTargetFromIndex,
 } from './wikilinks'
 
@@ -325,7 +326,8 @@ async function planLineResolutions(
     const dir = file.directory
     if (file.path !== indexNotePath(view, dir)) continue
     const plan = await readPlan(view, dir)
-    if (!plan) continue
+    // A Plan that shows the manifest's order has no running-order line on disk yet: its parts' lines are not the file's.
+    if (!plan || plan.orderFrom === 'manifest') continue
     const links = extractWikilinks(source)
     const firstLinkByLine = new Map<number, ReturnType<typeof extractWikilinks>[number]>()
     for (const link of links) {
@@ -423,6 +425,9 @@ type PrepareManifestWritesOptions = {
   manifestInputs: ExpectedOptionalFile[]
   presentBeforeRename: ReadonlySet<string>
   presentAfterRename: ReadonlySet<string>
+  /** Folio manifests a step made itself (right as written): not read for bystander references. The caller
+   *  hides the step's other files from the Workspace it passes. */
+  ignore?: (path: string) => boolean
 }
 
 async function prepareManifestWrites({
@@ -438,10 +443,12 @@ async function prepareManifestWrites({
   manifestInputs,
   presentBeforeRename,
   presentAfterRename,
+  ignore,
 }: PrepareManifestWritesOptions): Promise<PreparedWrite[]> {
   const writes: PreparedWrite[] = []
   for (const dir of ['', ...folders]) {
     const path = dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME
+    if (ignore?.(path)) continue
     if (!(await workspacePathExists(workspace, path))) {
       manifestInputs.push({ path, content: null })
       continue
@@ -546,6 +553,30 @@ async function planLinesToPreserve(workspace: Workspace, folders: string[], from
   return paths
 }
 
+const MARKDOWN_EXTENSION = /\.(?:md|markdown|mdx)$/i
+
+/**
+ * The `./` path links that name `toPath` from `fromFile`'s folder, the form the old link had first: with an extension
+ * when it gave one, else without, then the other. Empty when `toPath` is not under that folder (a path link never
+ * climbs).
+ */
+export function pathLinkTargetsFor(fromFile: string, toPath: string, oldTarget: string): string[] {
+  const folder = posix.dirname(fromFile)
+  const relative = folder === '.' ? toPath : posix.relative(folder, toPath)
+  if (!relative || relative === '..' || relative.startsWith('../') || posix.isAbsolute(relative)) return []
+  const bare = withoutMarkdownExtension(relative)
+  const forms = bare === relative ? [`./${relative}`] : [`./${bare}`, `./${relative}`]
+  return MARKDOWN_EXTENSION.test(oldTarget.split('#', 1)[0].trim()) ? forms.reverse() : forms
+}
+
+/** What a link to the renamed file may be rewritten as, best first. A `./` path link stays a path link while the new
+ *  place can be one; only when it cannot does it fall back to the file name, as every other link does. */
+function repairTargets(oldTarget: string, fromFile: string, toPath: string, replacement: string): string[] {
+  if (!isPathLink(oldTarget)) return [replacement]
+  const paths = pathLinkTargetsFor(fromFile, toPath, oldTarget)
+  return paths.length ? paths : [replacement]
+}
+
 function rewrittenTarget(raw: string, replacement: string): string {
   const separator = raw.indexOf('|')
   const target = separator < 0 ? raw : raw.slice(0, separator)
@@ -637,6 +668,7 @@ async function buildRenameRepairPlan(
   afterFiles: CachedMarkdown[],
   renamedContent: string,
   initialIssues: string[],
+  ignore?: (path: string) => boolean,
 ): Promise<RenameRepairPlan> {
   const folders = await workspace.listFolders()
   const readThrough = cachedReads(workspace)
@@ -669,6 +701,7 @@ async function buildRenameRepairPlan(
     manifestInputs,
     presentBeforeRename: new Set(beforeFiles.map(({ file }) => file.path)),
     presentAfterRename: new Set(afterFiles.map(({ file }) => file.path)),
+    ...(ignore ? { ignore } : {}),
   })
 
   for (const { file, source, links, skipped } of markdownReferences.files) {
@@ -696,27 +729,38 @@ async function buildRenameRepairPlan(
         continue
       }
       if (afterResolution.resolve(file.path, source, link) === toPath) continue
-      const verification = isPlanTitleLink
-        ? await rewrittenPlanResolution(
-          workspace,
-          afterFiles,
-          file.path,
-          source,
-          link,
-          replacement,
-          readThrough,
-          afterIndex,
-          manifestWrites,
-        )
-        : resolveWikilinkTargetFromIndex(file.path, replacement, afterIndex).to
-      if (verification !== toPath) {
+      // The link keeps its form: a `./` path link is rewritten as the path to the new place, a name link as the new
+      // file name. When the first candidate would name another file, the next is tried (Sol round 4).
+      const options = repairTargets(link.target, file.path, toPath, replacement)
+      let chosen: string | null = null
+      let verification: string | null = null
+      for (const option of options) {
+        verification = isPlanTitleLink
+          ? await rewrittenPlanResolution(
+            workspace,
+            afterFiles,
+            file.path,
+            source,
+            link,
+            option,
+            readThrough,
+            afterIndex,
+            manifestWrites,
+          )
+          : resolveWikilinkTargetFromIndex(file.path, option, afterIndex).to
+        if (verification === toPath) {
+          chosen = option
+          break
+        }
+      }
+      if (chosen === null) {
         issues.push(
-          `${file.path}: [[${link.target}]] cannot be repaired as [[${replacement}]] because it would resolve to ${verification ?? 'no file'}`,
+          `${file.path}: [[${link.target}]] cannot be repaired as [[${options[0]}]] because it would resolve to ${verification ?? 'no file'}`,
         )
         continue
       }
       const raw = source.slice(link.from + 2, link.to - 2)
-      const repaired = rewrittenTarget(raw, replacement)
+      const repaired = rewrittenTarget(raw, chosen)
       next = `${next.slice(0, link.from)}[[${repaired}]]${next.slice(link.to)}`
       repairedReferences.unshift(`${file.path}: ${link.raw}`)
     }
@@ -745,6 +789,7 @@ async function planRenameRepairBeforeRename(
   fromPath: string,
   toPath: string,
   files: CachedMarkdown[],
+  ignore?: (path: string) => boolean,
 ): Promise<RenameRepairPlan> {
   const renamedFile = files.find(({ file }) => file.path === fromPath)
   if (!renamedFile) throw new Error(`Cannot prepare Rename Repair because ${fromPath} is not in the Workspace file list.`)
@@ -755,7 +800,7 @@ async function planRenameRepairBeforeRename(
   const issues = workspace.isVisiblePath(toPath)
     ? []
     : [`${toPath}: The renamed file is outside the Workspace file list, so its references cannot be repaired.`]
-  return buildRenameRepairPlan(workspace, fromPath, toPath, files, afterFiles, renamedFile.content, issues)
+  return buildRenameRepairPlan(workspace, fromPath, toPath, files, afterFiles, renamedFile.content, issues, ignore)
 }
 
 async function planRenameRepairAfterRename(
@@ -763,6 +808,7 @@ async function planRenameRepairAfterRename(
   fromPath: string,
   toPath: string,
   files: CachedMarkdown[],
+  ignore?: (path: string) => boolean,
 ): Promise<RenameRepairPlan> {
   const listedRenamedFile = files.find(({ file }) => file.path === toPath)
   const renamedOutsideFileList = !listedRenamedFile && await workspacePathExists(workspace, toPath)
@@ -773,7 +819,7 @@ async function planRenameRepairAfterRename(
   const issues = renamedOutsideFileList
     ? [`${toPath}: The renamed file is outside the Workspace file list, so its references cannot be repaired.`]
     : []
-  return buildRenameRepairPlan(workspace, fromPath, toPath, beforeFiles, files, renamedFile.content, issues)
+  return buildRenameRepairPlan(workspace, fromPath, toPath, beforeFiles, files, renamedFile.content, issues, ignore)
 }
 
 /**
@@ -784,7 +830,9 @@ export async function planRenameRepair(
   workspace: Workspace,
   fromPath: string,
   toPath: string,
+  options: { ignore?: (path: string) => boolean } = {},
 ): Promise<RenameRepairPlan> {
+  const ignore = options.ignore
   fromPath = canonicalWorkspacePath(workspace, fromPath)
   toPath = canonicalWorkspacePath(workspace, toPath)
   const listedFiles = await workspace.listFiles()
@@ -793,8 +841,8 @@ export async function planRenameRepair(
     content: (await workspace.readFile(file.path)).content,
   })))
   return files.some(({ file }) => file.path === fromPath)
-    ? planRenameRepairBeforeRename(workspace, fromPath, toPath, files)
-    : planRenameRepairAfterRename(workspace, fromPath, toPath, files)
+    ? planRenameRepairBeforeRename(workspace, fromPath, toPath, files, ignore)
+    : planRenameRepairAfterRename(workspace, fromPath, toPath, files, ignore)
 }
 
 /** Preserve the plan's reference identity when applying it fails after the structural rename. */

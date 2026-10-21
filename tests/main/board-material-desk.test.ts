@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +8,7 @@ import { WorkspaceAgent, type ScriptedStep } from '../../src/main/agent'
 import { BoardMaterialDesk } from '../../src/main/board-material-desk'
 import { buildWriteFlexManifest, writeflexApprovalPolicy } from '../../src/main/capabilities'
 import { ChangeStore } from '../../src/main/changes'
+import { pauseCollectionWrites, resumeCollectionWrites } from '../../src/main/collection-write-gate'
 import { ScrapStore } from '../../src/main/scraps'
 import { Workspace } from '../../src/main/workspace'
 
@@ -204,6 +205,66 @@ test('an agent scraps.promote is a proposal: nothing is written until the writer
   expect(await read(SCRAPS)).toBe(`## ${FAMILIES}\nFamilies share more context.\n`)
 })
 
+// Final review round 2, finding 1 (R5): an accepted scraps.promote writes the tracker and the scraps file only
+// over the text it read. Another program writes one of them after the accept has read it, at the moment its
+// write is staged: nothing is written over that version, and the accept is refused by type (changedOnDisk).
+const outsideAtWrite = (path: string, text: string): { fired: () => boolean } => {
+  let fired = false
+  const saveFile = ws.saveFile.bind(ws)
+  ws.saveFile = (p, content, options) => {
+    if (!fired && p === path) { fired = true; writeFileSync(join(root, path), text) }
+    return saveFile(p, content, options)
+  }
+  return { fired: () => fired }
+}
+
+async function stagedPromotion(): Promise<{ live: WorkspaceAgent; changes: ChangeStore; id: string }> {
+  const changes = new ChangeStore(ws)
+  const step: ScriptedStep = { cap: 'scraps.promote', input: { dir: DIR, origin: PIECE, id: HALL, name: 'Context everywhere' } }
+  const prompt = 'Turn the Hall scrap into an idea'
+  const live = await bootAgent({
+    changes,
+    script: [{ prompt, rounds: [
+      { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
+      { kind: 'message', text: 'Proposed.' },
+    ] }],
+  })
+  await live.runScriptedTurn(prompt, [step])
+  const [change] = await waitForChanges(changes, 1)
+  return { live, changes, id: change.id }
+}
+
+test('an accepted scraps.promote never writes the tracker over a version it did not read (R5, round 2 finding 1)', async () => {
+  const { live, changes, id } = await stagedPromotion()
+  const outside = `${trackerText}- [[written-by-another-program]]\n`
+  const injected = outsideAtWrite(TRACKER, outside)
+  const result = await live.resolveChange(id, 'accept')
+  expect(injected.fired()).toBe(true)
+  expect(result.applied).toBe(false)
+  expect(result.message).toContain('changed on disk while the change was being applied')
+  expect(result.changedOnDisk).toEqual({ path: TRACKER, diskText: outside })
+  expect(await read(TRACKER)).toBe(outside)
+  expect(await read(SCRAPS)).toBe(scrapsText)
+  expect((await changes.get(id))?.status).toBe('pending')
+})
+
+test('an accepted scraps.promote never takes the scrap out of a scraps file changed since its read (R5, round 2 finding 1)', async () => {
+  const { live, id } = await stagedPromotion()
+  const outside = `${scrapsText}\n## s_mtb9yb4zzzzz\nWritten by another program.\n`
+  // Written while the tracker's write is staged: after both reads, before the scraps file's write.
+  const saveFile = ws.saveFile.bind(ws)
+  let fired = false
+  ws.saveFile = (p, content, options) => {
+    if (!fired && p === TRACKER) { fired = true; writeFileSync(join(root, SCRAPS), outside) }
+    return saveFile(p, content, options)
+  }
+  const result = await live.resolveChange(id, 'accept')
+  expect(fired).toBe(true)
+  expect(result.applied).toBe(false)
+  expect(result.changedOnDisk).toEqual({ path: SCRAPS, diskText: outside })
+  expect(await read(SCRAPS)).toBe(outside)
+})
+
 /** Every file under the workspace root with its bytes, Bridle's own journal aside. */
 async function folderListing(): Promise<Record<string, string>> {
   const out: Record<string, string> = {}
@@ -255,4 +316,104 @@ test('Undo turn takes back the agent turn, never a Board step made after it', as
   expect(existsSync(join(root, 'schemas/frames.md'))).toBe(true)
   expect(existsSync(join(root, 'schemas/frames-and-scripts.md'))).toBe(false)
   expect(await read(PIECE)).toBe(appended)
+})
+
+// R7 (final Sol review round 3, P2): a failed Board step puts back only the files it wrote, each only while
+// it still holds what the step wrote. Bridle's restoreTo put every snapshot back over whatever was there.
+
+const promotion = { dir: DIR, scrapsPath: SCRAPS, scrapId: HALL, name: 'High and low context, everywhere' }
+const promotedTracker = `${trackerText}- [[high-and-low-context-everywhere]]\n  > Hall's high and low context cultures.\n`
+
+test('R7: a Board step refused before its first write restores nothing: the other program\'s version stays', async () => {
+  const bridle = (await bootAgent()).hostSnapshots()
+  const outside = `${trackerText}- [[written-by-another-program]]\n`
+  // Written after the step read and snapshotted the tracker, before writeMaterial's first check.
+  const store = bridle.snapshots
+  const snapshots: typeof store = {
+    beginRestorePoint: (label, sessionId) => store.beginRestorePoint(label, sessionId),
+    restoreTo: (id, opts) => store.restoreTo(id, opts),
+    entries: () => store.entries(),
+    snapshotFile: async (absPath, meta) => {
+      const entry = await store.snapshotFile(absPath, meta)
+      if (absPath === ws.absolute(SCRAPS)) writeFileSync(join(root, TRACKER), outside)
+      return entry
+    },
+  }
+  const board = new BoardMaterialDesk(ws, { snapshots, sessionId: bridle.sessionId }, scraps)
+  const result = await board.promoteOffcut(promotion)
+  expect(result).toMatchObject({ ok: false, message: expect.stringContaining('Nothing was changed') })
+  expect(await read(TRACKER)).toBe(outside)
+  expect(await read(SCRAPS)).toBe(scrapsText)
+  expect(board.latest()).toBeNull()
+})
+
+/** Another program writes the scraps file (and optionally the tracker) while the scraps file's write is staged. */
+function outsideAtScrapsWrite(scrapsOutside: string, trackerOutside?: string): () => boolean {
+  const saveFileOverRead = ws.saveFileOverRead.bind(ws)
+  let fired = false
+  ws.saveFileOverRead = (p, next, readText, options) => {
+    if (!fired && p === SCRAPS) {
+      fired = true
+      writeFileSync(join(root, SCRAPS), scrapsOutside)
+      if (trackerOutside !== undefined) writeFileSync(join(root, TRACKER), trackerOutside)
+    }
+    return saveFileOverRead(p, next, readText, options)
+  }
+  return () => fired
+}
+
+test('R7: a Board step failing after its first of two files puts that file back and keeps the outside change on the second', async () => {
+  const board = await desk()
+  const outside = `${scrapsText}\n## s_mtb9yb4zzzzz\nWritten by another program.\n`
+  const fired = outsideAtScrapsWrite(outside)
+  const result = await board.promoteOffcut(promotion)
+  expect(fired()).toBe(true)
+  expect(result).toMatchObject({ ok: false, message: expect.stringContaining('Nothing was changed') })
+  expect(await read(TRACKER)).toBe(trackerText)
+  expect(await read(SCRAPS)).toBe(outside)
+  expect(board.latest()).toBeNull()
+})
+
+test('R7: a file the step wrote and another program changed before the rollback is left as it is and named', async () => {
+  const board = await desk()
+  const scrapsOutside = `${scrapsText}\n## s_mtb9yb4zzzzz\nWritten by another program.\n`
+  const trackerOutside = `${promotedTracker}- [[also-written-by-another-program]]\n`
+  const fired = outsideAtScrapsWrite(scrapsOutside, trackerOutside)
+  const result = await board.promoteOffcut(promotion)
+  expect(fired()).toBe(true)
+  expect(result.ok).toBe(false)
+  if (result.ok) return
+  expect(result.message).toContain(`${TRACKER} changed on disk after WriteFlex wrote it, so it was left as it is.`)
+  expect(result.message).not.toContain('Nothing was changed')
+  expect(await read(TRACKER)).toBe(trackerOutside)
+  expect(await read(SCRAPS)).toBe(scrapsOutside)
+})
+
+test('while another owner holds the Collection, a Board step and its undo are refused and write nothing, the history store included', async () => {
+  const board = await desk()
+  const tree = async (): Promise<Record<string, string>> => Object.fromEntries(await Promise.all(
+    (await readdir(root, { recursive: true, withFileTypes: true })).filter((entry) => entry.isFile())
+      .map(async (entry) => [join(entry.parentPath, entry.name).slice(root.length + 1), await readFile(join(entry.parentPath, entry.name), 'utf8')] as const),
+  ))
+  const input = { dir: DIR, scrapsPath: SCRAPS, scrapId: HALL, name: 'High and low context, everywhere' }
+  const before = await tree()
+  pauseCollectionWrites(root, 'Saving is paused for this test.')
+  try {
+    expect(await board.promoteOffcut(input)).toEqual({ ok: false, message: 'Nothing was changed: Saving is paused for this test.' })
+    expect(await tree()).toEqual(before)
+    expect(board.latest()).toBeNull()
+    resumeCollectionWrites(root)
+    const result = await board.promoteOffcut(input)
+    expect(result.ok).toBe(true)
+
+    const stepped = await tree()
+    pauseCollectionWrites(root, 'Saving is paused for this test.')
+    expect(await board.undo(result.ok ? result.step.id : '')).toEqual({ ok: false, message: "Can't undo: Saving is paused for this test. Nothing was put back." })
+    expect(await tree()).toEqual(stepped)
+    resumeCollectionWrites(root)
+    expect((await board.undo(result.ok ? result.step.id : '')).ok).toBe(true)
+    expect(await read(TRACKER)).toBe(trackerText)
+  } finally {
+    resumeCollectionWrites(root)
+  }
 })

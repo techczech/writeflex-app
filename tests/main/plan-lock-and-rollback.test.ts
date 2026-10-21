@@ -56,7 +56,7 @@ function recordWrites(): { log: string[]; restore: () => void } {
   return { log, restore: () => { ws.saveFileWithoutReadBack = original } }
 }
 
-test('A: two Plan writes started together on one Folio run one after the other, and the documents agree after both', async () => {
+test('A: two Folio outline writes started together on one Folio run one after the other, and the documents agree after both', async () => {
   const { log, restore } = recordWrites()
   // Each is computed against the Folio as it stands when its turn comes: first a goes last, then the new first (b) goes last.
   const [first, second] = await Promise.all([movePart(ws, DIR, 0, 3), movePart(ws, DIR, 0, 3)])
@@ -68,7 +68,7 @@ test('A: two Plan writes started together on one Folio run one after the other, 
   expect(planLockBusy(ws, DIR)).toBe(false)
 })
 
-test('A: different Plan writes (move, adopt, remove) and the Outline route share the one lock', async () => {
+test('A: different Folio outline writes (move, adopt, remove) and the Outline route share the one lock', async () => {
   const { log, restore } = recordWrites()
   const results = await Promise.allSettled([
     movePart(ws, DIR, 0, 3),
@@ -142,7 +142,7 @@ test('B: when the Index Note was changed by something else meanwhile, it is left
   const manifest = await read(MANIFEST)
   const theirs = '# Guide\n\nSomeone else wrote this.\n\n## Running order\n\n- [[Delta]]\n'
   const restore = failManifestWrite(async () => { await writeFile(join(root, INDEX), theirs) })
-  await expect(movePart(ws, DIR, 0, 3)).rejects.toThrow('Check both in the Plan.')
+  await expect(movePart(ws, DIR, 0, 3)).rejects.toThrow('Check both in the Folio outline.')
   restore()
   expect(await read(INDEX)).toBe(theirs)
   expect(await read(MANIFEST)).toBe(manifest)

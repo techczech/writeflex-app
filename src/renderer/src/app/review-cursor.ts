@@ -1,5 +1,6 @@
 import type { Change } from '../../../preload'
 import { resolveChangeRange } from '../editor/change-marks'
+import { staleRange } from './margin-model'
 
 export type ReviewCursorEvent = { id: string | null; reveal: boolean }
 
@@ -10,7 +11,8 @@ function orderedUnresolved(changes: Change[], document: string): Entry[] {
     .map((change, sourceIndex) => ({
       change,
       sourceIndex,
-      position: resolveChangeRange(document, change)?.from ?? Number.POSITIVE_INFINITY,
+      // Where the margin draws it: its words, or the words it was written on when they changed under it (ticket 06).
+      position: (resolveChangeRange(document, change) ?? staleRange(document, change))?.from ?? Number.POSITIVE_INFINITY,
     }))
     .filter(({ change }) => (change.status === 'pending' || change.status === 'held') && !change.snapshotId)
     .sort((a, b) => a.position - b.position || a.sourceIndex - b.sourceIndex)
@@ -22,7 +24,9 @@ function orderedUnresolved(changes: Change[], document: string): Entry[] {
  * distinguishes deliberate navigation (`reveal`) from invariant repair after a resolution.
  */
 export class ReviewCursor {
+  #all: Entry[] = []
   #entries: Entry[] = []
+  #shown: ReadonlySet<string> | null = null
   #currentId: string | null = null
 
   constructor(private readonly onChange: (event: ReviewCursorEvent) => void) {}
@@ -31,10 +35,28 @@ export class ReviewCursor {
     return this.#currentId
   }
 
+  /** Restrict stepping to these ids (what the margin's filter shows), or null for every unresolved change. */
+  setShown(ids: ReadonlySet<string> | null): void {
+    this.#shown = ids
+    this.#refresh()
+  }
+
+  #refresh(): void {
+    const previousIndex = this.#entries.findIndex((entry) => entry.id === this.#currentId)
+    const shown = this.#shown
+    this.#entries = shown ? this.#all.filter((entry) => shown.has(entry.id)) : this.#all
+    this.#repair(previousIndex)
+  }
+
   sync(changes: Change[], document: string): void {
-    const previousEntries = this.#entries
-    const previousIndex = previousEntries.findIndex((entry) => entry.id === this.#currentId)
-    this.#entries = orderedUnresolved(changes, document)
+    const previousIndex = this.#entries.findIndex((entry) => entry.id === this.#currentId)
+    this.#all = orderedUnresolved(changes, document)
+    const shown = this.#shown
+    this.#entries = shown ? this.#all.filter((entry) => shown.has(entry.id)) : this.#all
+    this.#repair(previousIndex)
+  }
+
+  #repair(previousIndex: number): void {
     if (this.#currentId === null || this.#entries.some((entry) => entry.id === this.#currentId)) return
 
     const fallbackIndex = Math.min(Math.max(previousIndex, 0), this.#entries.length - 1)
@@ -62,6 +84,7 @@ export class ReviewCursor {
   settle(id: string, advance: boolean): void {
     const removedIndex = this.#entries.findIndex((entry) => entry.id === id)
     if (removedIndex === -1) return
+    this.#all = this.#all.filter((entry) => entry.id !== id)
     this.#entries = this.#entries.filter((entry) => entry.id !== id)
     if (this.#currentId !== id && !advance) return
 

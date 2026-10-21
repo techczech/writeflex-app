@@ -98,7 +98,7 @@ test('remove marks the part taken out; invalid changes are reported, not half-ap
   expect(proposed.errors).toEqual([
     'move "Nope": no part with that title is in the running order',
     'write out "Opening": that part is already written',
-    'set the role of "Opening": unknown role "opening"; use one of section, vignette, appendix, summary',
+    'set the role of "Opening": unknown role "opening"; use one of section, vignette, appendix, summary, front-matter',
     `adopt ${dir}/01-opening.md: that file is already in the running order`,
   ])
 })
@@ -153,7 +153,7 @@ test('frame 6 and frame 5 sentences', () => {
   expect(undoRefusalMessage({
     drift: [{ path: 'r/02_key.md', kind: 'renamed', fromTitle: 'Key strategic moves', toTitle: 'Moves for 2027' }],
     laterAgentFiles: [],
-  })).toBe("Can't put the order back: you have since renamed Key strategic moves to Moves for 2027, and undoing would bring back the old name in the plan. Undo the rename first, or change the order in the Plan pane.")
+  })).toBe("Can't put the order back: you have since renamed Key strategic moves to Moves for 2027, and undoing would bring back the old name in the Folio outline. Undo the rename first, or change the order in the Folio outline pane.")
   expect(undoRefusalMessage({ drift: [], laterAgentFiles: ['r/draft.md'] }))
-    .toBe("Can't put the order back: a later agent change to draft.md would be undone with it. Undo that turn first, or change the order in the Plan pane.")
+    .toBe("Can't put the order back: a later agent change to draft.md would be undone with it. Undo that turn first, or change the order in the Folio outline pane.")
 })

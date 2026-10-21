@@ -10,9 +10,11 @@ import {
   headingSpacing,
   headingSpacingDecorations,
   headingSpacingOf,
+  headingSpacingOfState,
   paddingAbove,
   paddingBelow,
 } from '../../src/renderer/src/editor/heading-spacing'
+import { markdownDialect } from '../../src/shared/markdown/dialect'
 import { HEADING_SIZE_EM } from '../../src/renderer/src/editor/theme'
 import {
   pendingWriterChanges,
@@ -214,4 +216,56 @@ test("a document's frontmatter is never spaced as a heading, and the title after
   expect(headingSpacingOf(withMetadata).map((spacing) => withMetadata.slice(spacing.from, spacing.to)))
     .toEqual(['# Sources of hallucination', '## Lack of context'])
   expect(above(withMetadata)).toEqual(['none', 'full'])
+})
+
+// --- 0.24.1: headings read off the editor's syntax tree answer exactly what the text parse did ----
+
+const FIXTURES: Record<string, string> = {
+  tight: TIGHT,
+  fenced: ['Prose.', '```bash', '# not a heading', '```', '## Real', 'After.'].join('\n'),
+  setext: ['Title', '=====', 'Body line', 'Sub', '-----', '', 'Para', '# After para'].join('\n'),
+  frontmatter: ['---', 'title: x', '---', '# First', 'text', '## Second', '', '### Third'].join('\n'),
+  frontmatterLoose: ['---', 'title: x', '---', '', '# First', '## Second'].join('\n'),
+  unclosedFence: ['---', 'a: b', '# Heading', 'text'].join('\n'),
+  nestedLists: ['- item', '  # nested heading', '  more', '- other', '## Heading', '1. one', '   continued', '# H'].join('\n'),
+  quote: ['> # quoted', '> text', '', '# top', '## stacked', '### stacked again', 'prose', '#### deep'].join('\n'),
+  blankLines: ['# A', '', '', '## B', '   ', '### C', '', 'text'].join('\n'),
+  crlf: ['# A', 'text', '## B', ''].join('\r\n'),
+  empty: '',
+}
+
+function treeState(doc: string): EditorState {
+  return EditorState.create({ doc, extensions: [markdown({ extensions: markdownDialect() }), headingSpacing] })
+}
+
+for (const [name, text] of Object.entries(FIXTURES)) {
+  test(`tree-based spacing equals the text parse: ${name}`, () => {
+    const state = treeState(text)
+    // CodeMirror normalises line breaks, so the old field saw doc.toString(), not the raw text.
+    const seen = state.doc.toString()
+    expect(headingSpacingOfState(state)).toEqual(headingSpacingOf(seen))
+    expect(flatten(headingSpacingDecorations(state))).toEqual(flatten(headingSpacingDecorations(stateOf(seen))))
+  })
+}
+
+test('tree-based spacing stays equal to the text parse across edits and on random documents', () => {
+  const pieces = ['# H', '## Sub', 'prose', '', '- item', '  cont', '```', '---', 'Title', '====', '> quote', '   ', '1. one']
+  let seed = 7
+  const next = (n: number): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+  for (let round = 0; round < 60; round++) {
+    const text = Array.from({ length: 4 + next(12) }, () => pieces[next(pieces.length)]).join('\n')
+    let state = treeState(text)
+    for (let edit = 0; edit < 3; edit++) {
+      const at = next(state.doc.length + 1)
+      state = state.update({ changes: { from: at, insert: pieces[next(pieces.length)]! + (next(2) ? '\n' : '') } }).state
+      expect(headingSpacingOfState(state)).toEqual(headingSpacingOf(state.doc.toString()))
+    }
+  }
+})
+
+test('the heading-spacing field follows a typed edit', () => {
+  let state = treeState('text\n\nmore')
+  state = state.update({ changes: { from: 0, insert: '## ' } }).state
+  const provided = state.facet(EditorView.decorations).flatMap((source) => typeof source === 'function' ? [] : [source])
+  expect(provided.flatMap((set) => flatten(set)).map((line) => line.cls)).toEqual(['wf-heading-tail'])
 })

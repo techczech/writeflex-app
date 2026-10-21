@@ -2,7 +2,8 @@
  * `plan.propose` in main (ticket 09): turn the agent's input into a checked proposal against the
  * report as it stands, fingerprint the files it depends on, and — on Accept — run the existing Plan
  * operations of src/main/plan.ts in order. This module writes nothing of its own: every write is a
- * Plan operation or the one sanctioned Index-Note creation (`createIndexNote`).
+ * Plan operation or the one sanctioned Index-Note creation (`createIndexNote`, which refuses a second Index Note
+ * inside another Folio for every caller).
  */
 
 import { createHash } from 'node:crypto'
@@ -13,9 +14,11 @@ import { MANIFEST_NAME, indexNotePath, readManifest } from './folio'
 import { adoptPart, insertPart, materialisePart, movePart, readPlan, removePart, setPartRole, type Plan } from './plan'
 import { readPlanForAgent } from './plan-agent-reads'
 import { createIndexNote } from './collection'
+import { indexNoteCreationRefusal } from './folio-index-note'
 import { withPlanLock } from './plan-lock'
 import { collectionCandidates } from './wikilinks'
 import { slugifyFileName, type Workspace } from './workspace'
+import { STALE_PUT_BACK_MESSAGE, unlistedRowRefusal } from '../shared/folio-running-order'
 import {
   ABSENT,
   entriesFromEdits,
@@ -124,6 +127,12 @@ export async function prepareFromBasis(ws: Workspace, input: PlanProposalInput, 
   if (proposed.errors.length) throw new Error(`The proposal was not staged: ${proposed.errors.join('; ')}.`)
   if (proposed.count === 0) throw new Error('The proposal changes nothing in the running order.')
   const ops = planOperations(basis, proposed)
+  // A proposal that would create the Index Note is refused here, at staging, by the rule the creation itself applies
+  // (collection.ts `createIndexNote`): never a second Index Note inside another Folio, never one over a taken path.
+  if (ops.some((op) => op.op === 'createIndexNote')) {
+    const refusal = await indexNoteCreationRefusal(ws, basis.dir)
+    if (refusal) throw new Error(`The proposal was not staged: ${refusal}`)
+  }
   const contentRoot = (await readManifest(ws, basis.dir))?.contentRoot ?? ''
   const targets = ops.flatMap((op) => (op.op === 'materialisePart' ? [materialiseTarget(basis.dir, contentRoot, op.title, op.index)] : []))
   const taken = new Set((await ws.listFiles()).map((file) => file.path))
@@ -211,8 +220,18 @@ async function runPlanOperationsHeld(ws: Workspace, dir: string, ops: PlanOp[]):
         break
       case 'adoptPart': {
         const unlisted = plan?.unlisted.findIndex((part) => part.path === op.path) ?? -1
-        if (unlisted >= 0) await adoptPart(ws, dir, unlisted)
-        else await insertPart(ws, dir, plan?.parts.length ?? 0, { title: op.title })
+        // The index is from the read above; the file can change on disk before the Put back reads again, so the
+        // Put back checks it still names this file and title, and refuses with nothing written if not (review round 2).
+        // A file that is no longer listed is refused, never put back by title (review round 3): another file
+        // may carry that title now. Every adoptPart op names a path (`planOperations` emits it for a stray row only).
+        if (unlisted < 0) throw new Error(STALE_PUT_BACK_MESSAGE)
+        const expected = { title: op.title, path: op.path }
+        await adoptPart(ws, dir, unlisted, {
+          verifyPlan: (seen) => {
+            const refusal = unlistedRowRefusal(seen.unlisted, unlisted, expected)
+            if (refusal) throw new Error(refusal)
+          },
+        })
         break
       }
       case 'insertPart':
@@ -225,9 +244,13 @@ async function runPlanOperationsHeld(ws: Workspace, dir: string, ops: PlanOp[]):
       case 'movePart':
         await movePart(ws, dir, partIndex(plan, op.title), op.to)
         break
-      case 'setPartRole':
-        await setPartRole(ws, dir, partIndex(plan, op.title), op.role)
+      case 'setPartRole': {
+        // The whole card this read found, so the writer refuses if the running order changed on disk before its own read.
+        const index = partIndex(plan, op.title)
+        const part = plan!.parts[index]
+        await setPartRole(ws, dir, index, op.role, { title: part.title, path: part.path, gloss: part.gloss, role: part.role, tags: [...part.tags] })
         break
+      }
       case 'materialisePart': {
         const index = partIndex(plan, op.title)
         if (index !== op.index) throw new Error(`The part ${op.title} is at place ${index + 1}, not ${op.index + 1}; nothing more was written.`)

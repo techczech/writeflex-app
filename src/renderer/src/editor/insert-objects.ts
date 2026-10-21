@@ -1,4 +1,4 @@
-import type { ChangeSpec } from '@codemirror/state'
+import { EditorState, type ChangeSpec } from '@codemirror/state'
 import { mermaidSkeleton, type MermaidType } from './object-editors/mermaid-editor'
 
 export function renumberFootnotes(doc: string): { changes: ChangeSpec[] } | null {
@@ -43,4 +43,24 @@ export function nextFootnoteNumber(doc: string): number {
   let next = 1
   while (used.has(next)) next += 1
   return next
+}
+
+/**
+ * Insert-object Footnote: the next unused marker at `caret` and its empty definition at the end, the whole
+ * document then renumbered by marker position (a marker put before a later one renumbers it).
+ */
+export function insertFootnote(doc: string, caret: number): string {
+  const number = nextFootnoteNumber(doc)
+  const inserted = `${doc.slice(0, caret)}[^${number}]${doc.slice(caret)}\n\n[^${number}]: `
+  const renumbered = renumberFootnotes(inserted)
+  return renumbered ? EditorState.create({ doc: inserted }).update({ changes: renumbered.changes }).newDoc.toString() : inserted
+}
+
+/** What Edit metadata / Insert object → Metadata does for a document: open the block it has, refuse a mid-edit one, or create a bare block. */
+export type MetadataEntry = { kind: 'open' } | { kind: 'malformed' } | { kind: 'create'; insert: string }
+
+export function metadataEntry(doc: string, hasMetadataBlock: boolean): MetadataEntry {
+  if (hasMetadataBlock) return { kind: 'open' }
+  if (doc.startsWith('---')) return { kind: 'malformed' }
+  return { kind: 'create', insert: '---\ntitle: \n---\n\n' }
 }

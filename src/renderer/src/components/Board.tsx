@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
-import { ArrowRight, Bot, Check, Clock3, Columns3, Eye, FilePlus2, Flame, Folder, ListOrdered, ListPlus, ListTree } from 'lucide-react'
+import { ArrowRight, Bot, Check, Clock3, Columns3, Eye, FilePlus2, Flame, Folder, ListOrdered, ListPlus, ListTree, MoreHorizontal } from 'lucide-react'
 import type { BoardStepResult, DrawerScrap, FileReadResult, Offcut, QueryRow } from '../../../preload'
 import { REFERENCE_STATUS_ORDER, UNSORTED_STATUS } from '../../../shared/collection-status'
 import { projectionQuerySource } from '../../../shared/query-source'
@@ -7,7 +7,7 @@ import { humanReadableError } from '../error-text'
 import { boardAge, boardOffcuts, boardSources, groupBoardRows, isOffcutKey, isSourceKey, offcutKey, sourceKey, type BoardSource } from './board-projection'
 import { BoardCardChips, BoardCardDrawer, BoardCardTasks } from './BoardCardMaterial'
 import { BoardActivity, OffcutNamer, OffcutsColumn, OFFCUT_DRAG_MIME, type BoardActivityRow } from './BoardOffcuts'
-import { offcutsHidden, setOffcutsHidden, setSourcesCollapsed, sourcesCollapsed } from './board-view-state'
+import { columnOrder, setColumnOrder, orderColumns, moveColumn, offcutsHidden, setOffcutsHidden, setSourcesCollapsed, sourcesCollapsed } from './board-view-state'
 import { SOURCE_DRAG_MIME, SourceCarryHint, SourcesRail } from './BoardSources'
 import { BOARD_COMMAND_EVENT, type BoardCommandName } from './board-commands'
 import type { QueryInsertionContext } from './Rail'
@@ -27,6 +27,7 @@ export type BoardProps = {
   onFolderPieceSelected: (selection: { dir: string; folderPath: string; mode: 'one' } | null) => void
   onQueryContext: (context: QueryInsertionContext) => void
   onInsertQuery: (context: QueryInsertionContext) => void
+  onOpenCollection?: () => void
   onOpenPlan: () => void
 }
 
@@ -36,7 +37,12 @@ function includesFilter(row: QueryRow, filter: string): boolean {
 }
 
 /** The Board page is a renderer-only projection of collection.query('', …), never a second engine. */
-export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, onListSources, onPieceChanged, seenStatuses, onFolderPieceSelected, onQueryContext, onInsertQuery, onOpenPlan }: BoardProps): JSX.Element {
+export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, onListSources, onPieceChanged, seenStatuses, onFolderPieceSelected, onQueryContext, onInsertQuery, onOpenPlan, onOpenCollection }: BoardProps): JSX.Element {
+  const [isFolio, setIsFolio] = useState(false)
+  const [savedOrder, setSavedOrder] = useState(() => columnOrder(dir))
+  const [selectedColumn, setSelectedColumn] = useState<string | null>(null)
+  const [columnMenu, setColumnMenu] = useState<string | null>(null)
+  const [dragColumn, setDragColumn] = useState<string | null>(null)
   const [rows, setRows] = useState<QueryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
@@ -65,7 +71,7 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
   const [drawerPath, setDrawerPath] = useState<string | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const colsRef = useRef<HTMLDivElement | null>(null)
-  useDragAutoScroll(colsRef, dragPath !== null || dragOffcut !== null || dragSource !== null)
+  useDragAutoScroll(colsRef, dragColumn !== null || dragPath !== null || dragOffcut !== null || dragSource !== null)
   for (const row of rows) {
     const status = row.status?.trim()
     if (status) seenStatuses.add(status)
@@ -95,17 +101,26 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
   }, [dir, loading])
 
   useEffect(() => {
+    setSavedOrder(columnOrder(dir))
+    setSelectedColumn(null)
+    setColumnMenu(null)
+    setIsFolio(false)
+    let cancelled = false
+    const readFolio = () => { void window.writeflex.readFolio?.(dir).then((folio) => { if (!cancelled) setIsFolio(folio !== null) }).catch(() => { if (!cancelled) setIsFolio(false) }) }
+    readFolio()
+    const dispose = window.writeflex.collection.onChanged(readFolio)
     setShowOffcuts(!offcutsHidden(dir))
     setSourcesShown(!sourcesCollapsed(dir))
     setCarrying(null)
     setNaming(null)
     setActivity(null)
+    return () => { cancelled = true; dispose() }
   }, [dir])
 
-  const columns = useMemo(() => groupBoardRows(rows, seenStatuses).map((column) => ({
+  const columns = useMemo(() => orderColumns(groupBoardRows(rows, seenStatuses), savedOrder).map((column) => ({
     ...column,
     rows: column.rows.filter((row) => includesFilter(row, filter)),
-  })), [rows, filter, seenStatuses])
+  })), [rows, filter, seenStatuses, savedOrder])
   const shownRows = useMemo(() => columns.flatMap((column) => column.rows), [columns])
   const offcuts = useMemo(() => boardOffcuts(rows).filter((offcut) => {
     const needle = filter.trim().toLocaleLowerCase()
@@ -309,10 +324,32 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
     setViewMenuOpen(false)
   }, [dir])
 
+  const reorderColumn = (from: string, to: string): void => {
+    const order = columns.map((column) => column.status)
+    const source = order.indexOf(from), target = order.indexOf(to)
+    if (source < 0 || target < 0 || source === target) return
+    order.splice(source, 1)
+    order.splice(target, 0, from)
+    setSavedOrder(order)
+    setColumnOrder(dir, order)
+    setSelectedColumn(from)
+    setColumnMenu(null)
+  }
+  const moveSelectedColumn = (direction: -1 | 1, status = selectedColumn): void => {
+    const targetStatus = status ?? columns.find(column => column.rows.some(row => row.path === selectedPath))?.status
+    if (!targetStatus) { onStatus('Focus a column header or select a card first.'); return }
+    const current = columns.map(column => column.status)
+    const next = moveColumn(current, targetStatus, direction)
+    const target = current[next.indexOf(targetStatus)]
+    if (target) reorderColumn(targetStatus, target)
+  }
+
   // Palette commands on the Board's selection (board-commands.ts).
   const commandRef = useRef<(command: BoardCommandName) => void>(() => {})
   commandRef.current = (command) => {
-    if (command === 'toggle-offcuts') toggleOffcuts()
+    if (command === 'move-column-left') moveSelectedColumn(-1)
+    else if (command === 'move-column-right') moveSelectedColumn(1)
+    else if (command === 'toggle-offcuts') toggleOffcuts()
     else if (command === 'toggle-sources') toggleSources()
     else if (command === 'attach-source') {
       if (carrying && selectedPath) void attachSource(selectedPath, carrying)
@@ -440,8 +477,9 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
           )}
         </div>
         <div className="seg-view" aria-label="Collection projection">
+          <button type="button" aria-pressed="false" onClick={onOpenCollection}><Folder aria-hidden="true" /> {isFolio ? 'Folio' : 'List'}</button>
           <button type="button" aria-pressed="true"><Columns3 aria-hidden="true" /> Board</button>
-          <button type="button" aria-pressed="false" onClick={onOpenPlan}><ListOrdered aria-hidden="true" /> Plan</button>
+          {isFolio && <button type="button" aria-pressed="false" onClick={onOpenPlan}><ListOrdered aria-hidden="true" /> Folio outline</button>}
           <button type="button" disabled title="Outline comes in a later wave"><ListTree aria-hidden="true" /> Outline</button>
         </div>
       </div>
@@ -459,7 +497,7 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
         <div className="board-empty">
           <div className="art" aria-hidden="true">{REFERENCE_STATUS_ORDER.slice(0, 4).map((status) => <span className="ph" key={status} />)}</div>
           <h2>No pipeline yet</h2>
-          <p>This collection has no pieces yet. Create the first Piece and its frontmatter status will place it on the Board.</p>
+          <p>This collection has no pieces yet. Create the first document and its frontmatter status will place it on the Board.</p>
           <div className="pattern" aria-label="Reference pipeline">
             {REFERENCE_STATUS_ORDER.map((status, index) => (
               <span key={status} className="pattern-stage">
@@ -469,7 +507,7 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
             ))}
           </div>
           <div className="be-act">
-            <button className="btn primary" type="button" onClick={() => onNewPiece(dir)}><FilePlus2 aria-hidden="true" /> Create first Piece</button>
+            <button className="btn primary" type="button" onClick={() => onNewPiece(dir)}><FilePlus2 aria-hidden="true" /> New document</button>
           </div>
           <p className="empty-note">Nothing is written until you choose an action.</p>
         </div>
@@ -486,10 +524,17 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
               <section
                 className={`bcol${column.status === UNSORTED_STATUS ? ' unsorted' : ''}${isOver ? ' over armed' : ''}`}
                 data-status={column.status}
-                onDragOver={(event) => { if (dragPath || (dragOffcut && isIdea)) { event.preventDefault(); setOverStatus(column.status) } }}
+                onDragOver={(event) => { if (dragColumn || dragPath || (dragOffcut && isIdea)) { event.preventDefault(); setOverStatus(column.status) } }}
                 onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOverStatus(null) }}
                 onDrop={(event) => {
                   event.preventDefault()
+                  if (dragColumn) {
+                    event.stopPropagation()
+                    reorderColumn(dragColumn, column.status)
+                    setDragColumn(null)
+                    setOverStatus(null)
+                    return
+                  }
                   if (dragOffcut) {
                     const offcut = dragOffcut
                     setDragOffcut(null)
@@ -501,7 +546,17 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
                   if (path) void moveToStatus(path, column.status)
                 }}
               >
-                <div className="bcol-head">
+                <div className="bcol-head" draggable tabIndex={0} aria-label={`${column.status} column`}
+                  onFocus={() => setSelectedColumn(column.status)}
+                  onDragStart={(event) => {
+                    if ((event.target as HTMLElement).closest('button, summary')) { event.preventDefault(); return }
+                    setDragColumn(column.status)
+                    setSelectedColumn(column.status)
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('application/x-writeflex-column', column.status)
+                  }}
+                  onDragEnd={() => { setDragColumn(null); setOverStatus(null) }}>
+
                   <span className={`c-dot ${column.badgeClass}`} />
                   <span className={`c-name ${column.badgeClass}`}>{column.status}</span>
                   <button
@@ -513,6 +568,14 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
                     onClick={() => onInsertQuery(queryContextFor(column.status))}
                   ><ListPlus aria-hidden="true" /></button>
                   <span className="c-count">{column.rows.length}</span>
+                  <div className="board-column-menu">
+                    <button type="button" className="bcol-column-menu" aria-label={`${column.status} column menu`} aria-haspopup="menu" aria-expanded={columnMenu === column.status}
+                      onClick={() => { setSelectedColumn(column.status); setColumnMenu(columnMenu === column.status ? null : column.status) }}><MoreHorizontal aria-hidden="true" /></button>
+                    {columnMenu === column.status && <div className="board-view-pop" role="menu" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setColumnMenu(null); event.currentTarget.parentElement?.querySelector('button')?.focus() } }}>
+                      <button type="button" role="menuitem" autoFocus disabled={columnIndex === 0} onClick={() => moveSelectedColumn(-1, column.status)}>Move left</button>
+                      <button type="button" role="menuitem" disabled={columnIndex === columns.length - 1} onClick={() => moveSelectedColumn(1, column.status)}>Move right</button>
+                    </div>}
+                  </div>
                 </div>
                 <div className="bcol-list">
                   {isIdea && naming && (

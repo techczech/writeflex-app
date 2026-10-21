@@ -5,6 +5,8 @@ import { countWords } from '../editor/word-count'
  *  the elapsed clock keeps running; only the chip's emphasis fades). */
 const IDLE_MS = 90_000
 const TICK_MS = 1_000
+/** The pause in observed edits after which the session's words are counted. */
+const COUNT_DEBOUNCE_MS = 500
 
 export type SessionState = {
   /** Report a file's current text. The FIRST report for a path fixes its baseline (words already
@@ -44,24 +46,53 @@ export function useSession(): SessionState {
     return () => clearInterval(id)
   }, [])
 
-  const observe = useCallback((path: string, doc: string) => {
-    const words = countWords(doc, { excludeCommentLines: true })
+  // Counting words is a whole-document pass, so `observe` only records the text and the count
+  // happens once per pause in typing. The FIRST text seen for a path is kept until it is counted,
+  // because the baseline is that text's words, not the words of whatever it has become by the pause.
+  const pendingRef = useRef(new Map<string, { first: string | null; latest: string; at: number }>())
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout>>()
+
+  const flush = useCallback(() => {
+    clearTimeout(flushTimerRef.current)
+    flushTimerRef.current = undefined
+    const pending = pendingRef.current
+    if (pending.size === 0) return
     const baseline = baselineRef.current
     const current = currentRef.current
-    if (!baseline.has(path)) {
-      // First sight: fix the baseline. This is not "activity" (the reader has added nothing yet), so
-      // it neither bumps the idle clock nor moves the tally.
-      baseline.set(path, words)
+    let moved = false
+    for (const [path, { first, latest, at }] of pending) {
+      let words: number
+      if (!baseline.has(path)) {
+        // First sight: fix the baseline. This is not "activity" (the reader has added nothing yet), so
+        // it neither bumps the idle clock nor moves the tally.
+        const firstWords = countWords(first ?? latest, { excludeCommentLines: true })
+        baseline.set(path, firstWords)
+        current.set(path, firstWords)
+        if (first === null || first === latest) continue
+        words = countWords(latest, { excludeCommentLines: true })
+      } else {
+        words = countWords(latest, { excludeCommentLines: true })
+      }
+      if (current.get(path) === words) continue // a selection-only / no-op update: ignore
       current.set(path, words)
-      return
+      lastActivityRef.current = at
+      moved = true
     }
-    if (current.get(path) === words) return // a selection-only / no-op update: ignore
-    current.set(path, words)
-    lastActivityRef.current = Date.now()
+    pending.clear()
+    if (!moved) return
     let total = 0
     for (const [seenPath, base] of baseline) total += (current.get(seenPath) ?? base) - base
     setSessionWords(total)
   }, [])
+
+  const observe = useCallback((path: string, doc: string) => {
+    const pending = pendingRef.current
+    const prior = pending.get(path)
+    pending.set(path, { first: prior ? prior.first : baselineRef.current.has(path) ? null : doc, latest: doc, at: Date.now() })
+    clearTimeout(flushTimerRef.current)
+    flushTimerRef.current = setTimeout(flush, COUNT_DEBOUNCE_MS)
+  }, [flush])
+  useEffect(() => () => clearTimeout(flushTimerRef.current), [])
 
   const elapsedMs = Math.max(0, now - startRef.current)
   const minutes = Math.floor(elapsedMs / 60_000)

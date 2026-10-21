@@ -24,7 +24,7 @@ export function skillLaunchTarget(
 ): SkillLaunch {
   if (skill?.input === 'folder') {
     return situation.focusedFolder === null
-      ? { kind: 'refused', message: `${displayName} works on a folder. Focus one first, or start it from the Plan or a folder’s menu.` }
+      ? { kind: 'refused', message: `${displayName} works on a folder. Focus one first, or start it from the Folio outline or a folder’s menu.` }
       : { kind: 'folder', dir: situation.focusedFolder }
   }
   if (skill?.input === 'document' && situation.activeFile === null) {

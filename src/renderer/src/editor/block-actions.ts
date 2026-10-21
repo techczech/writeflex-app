@@ -1,6 +1,6 @@
 import { EditorSelection, type ChangeSpec, type EditorState, type StateCommand, type Transaction } from '@codemirror/state'
 import { isolateHistory } from '@codemirror/commands'
-import { getNodeRange } from '@bridle/outline'
+import { getNodeRange } from '@app-patterns/outline'
 import { blocksForSelection, splitLinePrefix } from './block-marks'
 import { skipWriterReviewTracking } from './writer-review'
 import { frontmatterSafeInsertPosition } from '../../../shared/object-markup'

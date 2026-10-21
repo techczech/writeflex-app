@@ -1,15 +1,17 @@
+import { setMetadataCollapsed } from '../editor/metadata-view-state'
 import { createPortal } from 'react-dom'
 import { FolioLine } from './FolioLine'
+import { ReviewMargin, type ReviewMarginProps } from './ReviewMargin'
 import type { FolioPlace } from '../../../shared/folio-place'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type MutableRefObject } from 'react'
 import { commandRan } from '../commands/command-ran'
-import { EditorState, Prec, Transaction } from '@codemirror/state'
-import { EditorView, keymap } from '@codemirror/view'
+import { Compartment, EditorState, Prec, Transaction } from '@codemirror/state'
+import { EditorView, keymap, type ViewUpdate } from '@codemirror/view'
 import { SearchQuery } from '@codemirror/search'
 import { setFindMatches, type FindMatch } from '../editor/find-highlight'
 import { baseExtensions, onEditorUpdate, setSpellcheck } from '../editor/setup'
 import type { ScrapExpansion } from '../editor/scraps'
-import { setChangeMarks, resolveChangeRange, type ChangeMark } from '../editor/change-marks'
+import { resolveChangeRange } from '../editor/change-marks'
 import { setInlineChanges, type InlineChange, type InlineAction } from '../editor/inline-changes'
 import { reconcileReplace } from '../editor/reconcile'
 import { richPasteMarkdown } from '../editor/rich-paste'
@@ -20,8 +22,8 @@ import {
   materialiseDraftingChanges,
   materialiseRecordsTransaction,
   pendingWriterChanges,
-  revisionDecorationsVisible,
   resolveWriterChangeSpec,
+  revisionDecorationsVisible,
   setWriterMode,
   skipWriterReviewTracking,
   type WriterChangeResolution,
@@ -54,7 +56,7 @@ import type { CompareEditorHighlights } from './compare-live'
 import { setCompareHighlights } from '../editor/compare-highlights'
 import { activeBlock, blockHasPendingChange, livePreview, livePreviewBlocks, setOpenLivePreviewBlock, type LivePreviewBlock, type LivePreviewCommand } from '../editor/live-preview'
 import { setEditorViewMode, type EditorViewMode } from '../editor/view-mode'
-import { buildCodeBlock, buildMarkmap, buildMermaid, buildSvg, isSvgFile, isSvgText, nextFootnoteNumber, renumberFootnotes } from '../editor/insert-objects'
+import { buildCodeBlock, buildMarkmap, buildMermaid, buildSvg, insertFootnote, isSvgFile, isSvgText, metadataEntry } from '../editor/insert-objects'
 import { insertBlockObject } from '../editor/insert-block-object'
 import { insertWidgetLine, setWidgetDrop, widgetDropIndicator, widgetDropPoint, widgetDropPosition } from '../editor/insert-widget'
 import { ActionsHere } from './ActionsHere'
@@ -160,6 +162,11 @@ const CURSOR_SAVE_DEBOUNCE_MS = 500
 /** Convert to mind map is offered by Insert object… where Actions here does not list it at the place (a heading's section converts too). */
 const OUTLINE_TO_MIND_MAP = 'outline.toMindMap'
 
+/** A document detached by the document owner (document-owner.ts): read-only while a route that may forget
+ *  it (tab close, folder browse, trash) waits for main, so no keystroke lands in a buffer about to go. */
+const detachedCompartment = new Compartment()
+const DETACHED = [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+
 /**
  * Imperative surface the app (and Tasks 12–16) drive the editor through. All buffer mutation goes
  * via these methods so the per-path state map stays the single owner of undo history, cursor, and
@@ -193,8 +200,12 @@ export type EditorHandle = {
    *  citation takes into the draft (ReadFlex ADR-0003) — App owns the Markdown, the editor owns
    *  where it lands and returning the keyboard to the prose. */
   insertText(text: string, opts?: { block?: boolean }): void
-  /** Drop any cached state for `path` (e.g. its tab closed or the file was deleted). */
+  /** Drop any cached state for `path` (e.g. its tab closed or the file was deleted). A view left showing a
+   *  forgotten, detached document stays read-only until another document is shown. */
   forget(path: string): void
+  /** The document owner's detach: the editor takes no typing for these paths (true) until attached again
+   *  (false). Applied to the live view in this turn, and to a cached document when it is shown. */
+  setReadOnly(paths: readonly string[], readOnly: boolean): void
   /** Move cached/active bookkeeping from `oldPath` to `newPath` after a rename. */
   renamePath(oldPath: string, newPath: string): void
   /** Place the caret at the start of `line` (1-based) in the LIVE view and scroll it to the top. The
@@ -206,6 +217,7 @@ export type EditorHandle = {
    *  cross-file jump (App flushes it once the target buffer is switched in). */
   goToMatch(line: number, column: number, length: number): void
   /** Create or open the document-leading metadata block and focus its title value. */
+  setMetadataCollapsed(collapsed: boolean): void
   editMetadata(): void
   /** Toggle typewriter (centred-cursor) mode on the live view; returns the resulting on/off. The mode
    *  is per-view, not per-file — switchTo reapplies it to whichever EditorState it activates. */
@@ -241,18 +253,11 @@ export type EditorHandle = {
   /** Resolve ONE tracked writer edit by its mark-group id (accept keeps new, reject keeps old, hold keeps
    *  both). Returns true when the edit was found and resolved in the buffer. */
   resolveWriterChange(path: string, localId: string, action: WriterChangeResolution): boolean
-  /** Change Ledger link (Task 5): mark each non-inline Change that resolves to a unique span in the LIVE
-   *  buffer (`.change-mark`), highlight the selected one (`.cid-active`) and scroll it into view. Pending
-   *  agent changes are excluded by App because the inline layer owns those widgets and their link. Called
-   *  whenever the dock's Change set or selection changes; between calls the marks map through edits. */
-  setChangeMarks(changes: Change[], selectedId: string | null): void
   /** Make one current Change the real editor selection and centre it. Cards and commands share this path. */
   revealChange(change: Change): boolean
-  /** Inline track-changes (the default agent-review surface): render each given change as struck original
-   *  text + a proposed-text/action-bar widget in the prose. App passes the changes that should show as
-   *  unapplied proposals (pending agent edits); this layer owns their dock-link selection highlight. */
-  /** Render pending agent changes inline. Returns the ids that could NOT be placed (their original
-   *  text has drifted out of the buffer), so the review pane can badge those cards honestly. */
+  /** Tell the editor where the pending agent changes sit (no prose is drawn for them since ticket 13; an
+   *  agent's proposed object is staged over its render, ADR-0024). Returns the ids that could NOT be placed
+   *  (their original text has drifted out of the buffer), so the margin can flag those cards honestly. */
   setInlineChanges(changes: Change[], selectedId: string | null, suggestions?: Suggestion[]): string[]
   /** Compare mode: temporary content-diff highlights over the live Working editor. */
   setCompareHighlights(highlights: CompareEditorHighlights): void
@@ -329,6 +334,8 @@ type EditorPaneProps = {
   onInlineAction: (id: string, act: InlineAction) => void
   /** Inline track-changes: a pending agent widget was clicked, so App selects its dock card. */
   onInlineSelect: (id: string) => void
+  /** The review margin beside the text (0.23): mounted in the scroller so it scrolls with the text. Absent = no margin. */
+  margin?: ReviewMarginProps | null
   onWikilinkActivate: (link: WikilinkRange) => void
   wikilinkPieces: WikilinkCompletionPiece[]
   writerMode: WriterReviewMode
@@ -375,17 +382,25 @@ type EditorPaneProps = {
  * what makes cursor/undo/scroll survive the round trip.
  */
 export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function EditorPane(
-  { citationForText, onInsertReference, onInsertWidget, onDocChanged, onDocumentTransaction, onDocumentPointerDown, onManualReadAloudScroll, onReadAloudPositionVisibilityChange, onSuggestionResolutionReplay, onSave, hasDocument, folioPlace = null, onOpenFolioPlan, onOpenFolioPiece, hideStrikes, hideInserts, workspaceRoot, assetBaseUrl, onCutToScrap, onScrapDropped, getScrapExpansions, onChangeMarkClick, onInlineAction, onInlineSelect, onWikilinkActivate, wikilinkPieces, writerMode, viewMode, focus, lineOverlay, readAloudPosition, readAloudWord, fixedLine, typewriterOn, onFixedLineChange, onFixedLineCommit, readAloudScrollMode, onWriterReviewChanged, compareToActive = false, overlayOpenRef, onStatus, onReadingRoomAreaPrepared, onReadingRoomAreaInserted },
+  { citationForText, onInsertReference, onInsertWidget, onDocChanged, onDocumentTransaction, onDocumentPointerDown, onManualReadAloudScroll, onReadAloudPositionVisibilityChange, onSuggestionResolutionReplay, onSave, hasDocument, folioPlace = null, onOpenFolioPlan, onOpenFolioPiece, hideStrikes, hideInserts, workspaceRoot, assetBaseUrl, onCutToScrap, onScrapDropped, getScrapExpansions, onChangeMarkClick, onInlineAction, onInlineSelect, margin = null, onWikilinkActivate, wikilinkPieces, writerMode, viewMode, focus, lineOverlay, readAloudPosition, readAloudWord, fixedLine, typewriterOn, onFixedLineChange, onFixedLineCommit, readAloudScrollMode, onWriterReviewChanged, compareToActive = false, overlayOpenRef, onStatus, onReadingRoomAreaPrepared, onReadingRoomAreaInserted },
   ref,
 ): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const [folioLineHost, setFolioLineHost] = useState<HTMLElement | null>(null)
+  const [marginHost, setMarginHost] = useState<HTMLElement | null>(null)
+  const marginListenersRef = useRef(new Set<(update: ViewUpdate) => void>())
+  const subscribeMargin = useCallback((listener: (update: ViewUpdate) => void) => {
+    marginListenersRef.current.add(listener)
+    return () => { marginListenersRef.current.delete(listener) }
+  }, [])
   // The file the live view currently holds. Inactive files live in `statesRef`; the active one
   // lives in the view itself and is only stashed back into the map when we switch away.
   const activePathRef = useRef<string | null>(null)
   const statesRef = useRef<Map<string, EditorState>>(new Map())
   const historicalRef = useRef<{ path: string; liveState: EditorState } | null>(null)
+  // The paths the document owner has detached (setReadOnly).
+  const detachedRef = useRef<Set<string>>(new Set())
   const suppressChangeRef = useRef(false)
   const cursorSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scrollRestoreFrameRef = useRef<number | null>(null)
@@ -608,7 +623,9 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
         doc: content,
         extensions: [
           ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
+          detachedCompartment.of([]),
           citationUpgradeField,
+          EditorView.updateListener.of((update) => { for (const listener of marginListenersRef.current) listener(update) }),
           // Save from within the editor. ⌘S is natively owned by the File menu (menu.ts) and
           // usually arrives as the 'save' menu action; this binding covers synthetic key events
           // (tests) and platforms where the event reaches the renderer instead.
@@ -911,6 +928,11 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
     lineMount.className = 'folio-line-host'
     view.scrollDOM.insertBefore(lineMount, view.contentDOM)
     setFolioLineHost(lineMount)
+    // The review margin lives in the same scroller, out of flow, so its cards scroll with the text.
+    const marginMount = document.createElement('div')
+    marginMount.className = 'wf-margin-host'
+    view.scrollDOM.insertBefore(marginMount, view.contentDOM)
+    setMarginHost(marginMount)
     const noteUserScrollIntent = (): void => {
       readAloudScrollGuardRef.current!.noteUserScrollIntent()
     }
@@ -943,6 +965,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       }
       readAloudScrollGuardRef.current!.dispose()
       setFolioLineHost(null)
+      setMarginHost(null)
       view.destroy()
       viewRef.current = null
     }
@@ -958,7 +981,8 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   useEffect(() => {
     const view = viewRef.current
     if (!view || !activePathRef.current || historicalRef.current) return
-    view.dispatch({ effects: setWriterMode.of(writerMode) })
+    // A mode switch changes no text: it stays out of the undo history, so ⌘Z is never spent on it.
+    view.dispatch({ effects: setWriterMode.of(writerMode), annotations: Transaction.addToHistory.of(false) })
   }, [writerMode])
 
   useEffect(() => {
@@ -1175,19 +1199,6 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
         if (activePathRef.current === path) return viewRef.current?.state.doc.toString() ?? null
         return statesRef.current.get(path)?.doc.toString() ?? null
       },
-      setChangeMarks: (changes, selectedId) => {
-        const view = viewRef.current
-        if (!view) return
-        const doc = view.state.doc.toString()
-        const marks: ChangeMark[] = []
-        for (const c of changes) {
-          const range = resolveChangeRange(doc, c)
-          if (range) marks.push({ id: c.id, from: range.from, to: range.to, pending: c.status === 'pending' })
-        }
-        view.dispatch({
-          effects: setChangeMarks.of({ marks, selectedId }),
-        })
-      },
       setInlineChanges: (changes, selectedId, suggestions = []) => {
         const view = viewRef.current
         if (!view) return []
@@ -1206,13 +1217,17 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       },
       revealChange: (change) => {
         const view = viewRef.current
-        if (!view || !revisionDecorationsVisible(view.state)) return false
+        // Every item's words are in the text, drawn or not (Drafting shows quiet marks, ticket 13): Show in text and
+        // stepping put the caret on them whoever made the change. Where Reviewing draws the change its words are
+        // selected as before; in Drafting the caret sits at their start, so no selection-match highlighting rides on a stray selection.
+        if (!view) return false
         const range = resolveChangeRange(view.state.doc.toString(), change)
         if (!range) return false
         const from = Math.min(range.from, view.state.doc.length)
         const to = Math.min(Math.max(range.to, from), view.state.doc.length)
+        const select = revisionDecorationsVisible(view.state) || change.provenance === 'writer'
         view.dispatch({
-          selection: { anchor: from, head: to },
+          selection: select ? { anchor: from, head: to } : { anchor: from },
           effects: EditorView.scrollIntoView(from, { y: 'center' }),
         })
         return true
@@ -1263,10 +1278,11 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
         activePathRef.current = path
         const cached = statesRef.current.get(path)
         view.setState(cached ?? buildState(content))
-        view.dispatch({ effects: setWriterMode.of(mode) })
+        view.dispatch({ effects: setWriterMode.of(mode), annotations: Transaction.addToHistory.of(false) })
         // The active file lives in the view, never the map, so a later switch stashes fresh state.
         statesRef.current.delete(path)
         // A cached/fresh state resets the compartments, so reapply the live per-view modes.
+        view.dispatch({ effects: detachedCompartment.reconfigure(detachedRef.current.has(path) ? DETACHED : []) })
         setTypewriter(view, typewriterOn)
         if (focusRef.current.mode !== '') setFocusMode(view, focusRef.current.mode, focusRef.current.leadStyle)
         if (lineOverlayActive(lineOverlayRef.current.config)) setLineOverlay(view, lineOverlayRef.current.config, lineOverlayRef.current.fixedLine, reportOverlayHandle, lineOverlayRef.current.drag)
@@ -1428,9 +1444,22 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       },
       forget: (path) => {
         statesRef.current.delete(path)
+        detachedRef.current.delete(path)
         if (activePathRef.current === path) activePathRef.current = null
       },
+      setReadOnly: (paths, readOnly) => {
+        for (const path of paths) {
+          if (readOnly) detachedRef.current.add(path)
+          else detachedRef.current.delete(path)
+        }
+        const view = viewRef.current
+        const active = activePathRef.current
+        if (view && active !== null && paths.includes(active) && !historicalRef.current) {
+          view.dispatch({ effects: detachedCompartment.reconfigure(readOnly ? DETACHED : []) })
+        }
+      },
       renamePath: (oldPath, newPath) => {
+        if (detachedRef.current.delete(oldPath)) detachedRef.current.add(newPath)
         if (activePathRef.current === oldPath) activePathRef.current = newPath
         const cached = statesRef.current.get(oldPath)
         if (cached) {
@@ -1464,19 +1493,19 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
         // Keyboard-first: land in the editor on the selected match, ready to edit it.
         view.focus()
       },
+      setMetadataCollapsed: (collapsed) => { setMetadataCollapsed(workspaceRootRef.current ?? '', collapsed) },
       editMetadata: () => {
         const view = viewRef.current
         if (!view) return
-        const doc = view.state.doc.toString()
         const metadata = livePreviewBlocks(view.state).find((block) => block.kind === 'frontmatter' && block.from === 0)
-        if (metadata) {
+        const entry = metadataEntry(view.state.doc.toString(), metadata !== undefined)
+        if (entry.kind === 'open' && metadata) {
           notifyPendingMetadata(view, metadata)
           view.dispatch({ selection: { anchor: 0 }, effects: setOpenLivePreviewBlock.of(metadata), scrollIntoView: true })
-        } else if (doc.startsWith('---')) {
+        } else if (entry.kind === 'malformed') {
           onStatusRef.current('Metadata is mid-edit or malformed — fix the source before reopening it')
-        } else {
-          const block = '---\ntitle: \n---\n\n'
-          view.dispatch({ changes: { from: 0, insert: block }, selection: { anchor: 0 }, effects: setOpenLivePreviewBlock.of({ from: 0, to: block.length - 1 }), scrollIntoView: true })
+        } else if (entry.kind === 'create') {
+          view.dispatch({ changes: { from: 0, insert: entry.insert }, selection: { anchor: 0 }, effects: setOpenLivePreviewBlock.of({ from: 0, to: entry.insert.length - 1 }), scrollIntoView: true })
         }
       },
       toggleTypewriter: () => {
@@ -1609,14 +1638,11 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       return
     }
     if (id === 'metadata') {
-      const doc = view.state.doc.toString()
       const metadata = livePreviewBlocks(view.state).find((block) => block.kind === 'frontmatter' && block.from === 0)
-      if (metadata) { notifyPendingMetadata(view, metadata); view.dispatch({ selection: { anchor: 0 }, effects: setOpenLivePreviewBlock.of(metadata), scrollIntoView: true }) }
-      else if (doc.startsWith('---')) onStatusRef.current('Metadata is mid-edit or malformed — fix the source before reopening it')
-      else {
-        const block = '---\ntitle: \n---\n\n'
-        view.dispatch({ changes: { from: 0, insert: block }, selection: { anchor: 0 }, effects: setOpenLivePreviewBlock.of({ from: 0, to: block.length - 1 }), scrollIntoView: true })
-      }
+      const entry = metadataEntry(view.state.doc.toString(), metadata !== undefined)
+      if (entry.kind === 'open' && metadata) { notifyPendingMetadata(view, metadata); view.dispatch({ selection: { anchor: 0 }, effects: setOpenLivePreviewBlock.of(metadata), scrollIntoView: true }) }
+      else if (entry.kind === 'malformed') onStatusRef.current('Metadata is mid-edit or malformed — fix the source before reopening it')
+      else if (entry.kind === 'create') view.dispatch({ changes: { from: 0, insert: entry.insert }, selection: { anchor: 0 }, effects: setOpenLivePreviewBlock.of({ from: 0, to: entry.insert.length - 1 }), scrollIntoView: true })
       return
     }
     if (id === 'image') {
@@ -1635,14 +1661,8 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
     else if (id === 'svg') insertText(buildSvg(), { open: true })
     else if (id === 'divider') insertText('---', { block: true })
     else if (id === 'footnote') {
-      const number = nextFootnoteNumber(view.state.doc.toString())
-      const caret = view.state.selection.main.head
-      const marker = `[^${number}]`
-      const definition = `\n\n[^${number}]: `
       const before = view.state.doc.toString()
-      const inserted = `${before.slice(0, caret)}${marker}${before.slice(caret)}${definition}`
-      const renumbered = renumberFootnotes(inserted)
-      const final = renumbered ? EditorState.create({ doc: inserted }).update({ changes: renumbered.changes }).newDoc.toString() : inserted
+      const final = insertFootnote(before, view.state.selection.main.head)
       view.dispatch({ changes: { from: 0, to: before.length, insert: final }, selection: { anchor: final.length }, scrollIntoView: true })
       view.focus()
     }
@@ -1710,11 +1730,15 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   }
 
   return (
-    <div className={classes} ref={paneRef}>
+    <div className={classes} ref={paneRef} data-metadata-workspace={workspaceRoot ?? ""}>
       <div className="editor-host" ref={hostRef} />
       {folioLineHost && folioPlace && onOpenFolioPlan && onOpenFolioPiece && createPortal(
         <FolioLine place={folioPlace} onOpenPlan={onOpenFolioPlan} onOpenPiece={onOpenFolioPiece} />,
         folioLineHost,
+      )}
+      {marginHost && margin && viewRef.current && createPortal(
+        <ReviewMargin {...margin} view={viewRef.current} subscribe={subscribeMargin} />,
+        marginHost,
       )}
       {markerVisible && markerBounds && (
         <FixedLineMarker

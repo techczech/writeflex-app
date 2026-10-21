@@ -6,7 +6,8 @@ import type {
   RenameRepairPlannedWrite,
   RenameRepairResult,
 } from './rename-repair'
-import type { Workspace } from './workspace'
+import { DiskChangedUnderBuffer, DocumentChangedError, SavedButNotReadBack, type Workspace } from './workspace'
+import { fingerprintOfRead } from './guarded-document-read'
 
 class RenameRepairApplyError extends Error {
   constructor(message: string, readonly unrevertedPaths: string[]) {
@@ -135,7 +136,10 @@ export async function applyPlannedRenameRepair(
     const unrevertedPaths: string[] = []
     for (const write of [...applied].reverse()) {
       try {
-        if (await diskContent(workspace, write.path) !== write.content) {
+        // Read through the Workspace (the guarded read where it has one), and put back only while the
+        // file still holds those bytes at the moment of the rename: the save carries their fingerprint.
+        const read = await workspace.readFile(write.path).catch(() => null)
+        if (!read || read.content !== write.content) {
           rollbackFailures.push(`${write.path}: the file changed after Rename Repair wrote it`)
           unrevertedPaths.push(write.path)
           continue
@@ -143,7 +147,19 @@ export async function applyPlannedRenameRepair(
         const current = plan.verification.markdown.find(({ path }) => path === write.path)?.content
           ?? plan.verification.manifests.find(({ path }) => path === write.path)?.content
         if (current === null || current === undefined) throw new Error('The original content is absent from the Rename Repair plan.')
-        await workspace.saveFileWithoutReadBack(write.path, current, { allowExplicitEmpty: true })
+        // Put back only while the file still holds what Rename Repair wrote, compared again in the tick of the
+        // rename (R7) and by the guarded write's fingerprint of the read above: a change made after the check
+        // above is left as it is, never overwritten.
+        try {
+          await workspace.saveFileOver(write.path, current, { kind: 'disk', text: write.content }, { allowExplicitEmpty: true, expect: { fingerprint: fingerprintOfRead(read) } })
+        } catch (putBackError) {
+          if (putBackError instanceof DiskChangedUnderBuffer || putBackError instanceof DocumentChangedError) {
+            rollbackFailures.push(`${write.path}: the file changed after Rename Repair wrote it`)
+            unrevertedPaths.push(write.path)
+            continue
+          }
+          if (!(putBackError instanceof SavedButNotReadBack)) throw putBackError
+        }
       } catch (rollbackError) {
         rollbackFailures.push(`${write.path}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`)
         unrevertedPaths.push(write.path)

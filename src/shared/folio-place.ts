@@ -4,9 +4,12 @@
  * and the tests share one rule. The line above the text and the title-bar button read the result.
  */
 
+import { isAgentInstructionsName } from './folio-agent-files'
+
 /** 'piece' = listed in the running order; 'index' = the Index Note and not itself a piece;
+ *  'instructions' = the Folio's agent instructions (AGENTS.md, CLAUDE.md), never a piece;
  *  'unlisted' = inside the Folio's folder but not in its running order. */
-export type FolioPlaceKind = 'piece' | 'index' | 'unlisted'
+export type FolioPlaceKind = 'piece' | 'index' | 'instructions' | 'unlisted'
 
 export type FolioPlaceFacts = {
   kind: FolioPlaceKind
@@ -31,6 +34,7 @@ export function folioPlaceFacts(path: string, pieces: readonly string[], indexNo
     return { kind: 'piece', position: at + 1, total: order.length, previous: order[at - 1] ?? null, next: order[at + 1] ?? null }
   }
   if (path === indexNote) return { kind: 'index', position: null, total: order.length, previous: null, next: order[0] ?? null }
+  if (isAgentInstructionsName(path)) return { kind: 'instructions', position: null, total: order.length, previous: null, next: null }
   return { kind: 'unlisted', position: null, total: order.length, previous: null, next: null }
 }
 
@@ -44,4 +48,6 @@ export type FolioPlace = {
   total: number
   previous: { path: string; title: string } | null
   next: { path: string; title: string } | null
+  /** The file is one of the Folio's front-matter parts (shared/folio-front-matter.ts): no heading checks on it. */
+  frontMatter?: true
 }

@@ -157,6 +157,29 @@ test('draftManifest keeps numbered top-level parts when contents contains a stra
   ])
 })
 
+test('draftManifest: a digit inside a word (README-v2) is not a chapter number, so numbered contents parts win', async () => {
+  await write('report/README-v2.md', '# Read me again\n')
+  await write('report/contents/01-intro.md', '# Intro\n')
+  await write('report/contents/02-body.md', '# Body\n')
+
+  const draft = JSON.parse(await draftManifest(ws, 'report'))
+
+  expect(draft.content_root).toBe('contents')
+  expect(draft.files.map((f: { path: string }) => f.path)).toEqual(['01-intro.md', '02-body.md'])
+})
+
+test('draftManifest keeps a kapitola-N folder\'s own parts, in chapter order, over a numbered contents folder', async () => {
+  await write('kniha/kapitola-10-y.md', '# Ten\n')
+  await write('kniha/kapitola-2-x.md', '# Two\n')
+  await write('kniha/doslov.md', '# Doslov\n')
+  await write('kniha/contents/01-old.md', '# Old\n')
+
+  const draft = JSON.parse(await draftManifest(ws, 'kniha'))
+
+  expect(draft.content_root).toBe('')
+  expect(draft.files.map((f: { path: string }) => f.path)).toEqual(['kapitola-2-x.md', 'kapitola-10-y.md', 'doslov.md']) // gitleaks:allow (Czech chapter file names, not a key)
+})
+
 test('draftManifest seeds every direct Markdown part in fallback order and excludes folder covers', async () => {
   await write('flat/notes.md', '# Notes\n')
   await write('flat/02_second.md', '# Second\n')

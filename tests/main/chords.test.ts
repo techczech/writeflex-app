@@ -17,7 +17,7 @@ import {
 import { keyboardSheet } from '../../src/renderer/src/commands/keyboard-sheet'
 import { TASK_GROUPS } from '../../src/renderer/src/commands/command-task-groups'
 import { allBindableCommands, cheatSheetColumns, COMMAND_GROUPS, commandRegistry, LEDGER_EXCLUDED } from '../../src/renderer/src/commands/registry'
-import { eventToChord, type ShortcutLike } from '../../src/renderer/src/app/shortcuts'
+import { backspaceChord, eventToChord, type ShortcutLike } from '../../src/renderer/src/app/shortcuts'
 import { CheatSheet } from '../../src/renderer/src/components/CheatSheet'
 
 // Round A T6 (ADR-0028): the chord-resolution layer. Defaults stay registry `keys`; overrides are
@@ -57,7 +57,7 @@ const COMMAND_BACKED_SHEET_ROWS = new Map([
   ['Join lines', 'edit.joinLines'],
   ['Distraction-free', 'view.distractionFree'],
   ['Typewriter mode', 'view.typewriter'],
-  ['Focus…', 'focus.open'],
+  ['Focus and readability…', 'focus.open'],
   ['Fade other paragraphs', 'focus.fade'],
   ['Highlight sentence', 'focus.sentence'],
   ['Segment focus', 'focus.segment'],
@@ -66,7 +66,10 @@ const COMMAND_BACKED_SHEET_ROWS = new Map([
   ['Command palette', 'app.commandPalette'],
   ['Open Agent tab', 'app.agent'],
   ['Scratchpad', 'app.scratchpad'],
-  ['Open Review tab', 'app.review'],
+  ['Focus the review margin', 'review.focusMargin'],
+  ['Accept all / selected', 'review.acceptAll'],
+  ['Decline all / selected', 'review.declineAll'],
+  ['Send review back', 'review.sendBack'],
   ['Open Versions tab', 'app.versions'],
   ['Hide strikes', 'view.hideStrikes'],
   ['Hide inserts', 'view.hideInserts'],
@@ -298,4 +301,15 @@ test('sheet claims move with an override (the collision seam) and log copy names
   expect(chordDisplayForLog(null, 'Shortcut: Fade other paragraphs')).toBe('Not assigned')
   expect(chordDisplayForLog(null, 'Shortcut: Toggle Typewriter Mode')).toBe('⌘T')
   expect(chordDisplayForLog(JSON.stringify({ 'view.typewriter': '' }), 'Shortcut: Toggle Typewriter Mode')).toBe('Not assigned')
+})
+
+// Review margin ticket 04: ⇧⌘⌫ (Decline all) reaches the app table through backspaceChord; eventToChord still gives no ⌫ chord.
+test('a modified Backspace is a chord only through backspaceChord', () => {
+  const key = (over: Record<string, boolean>) => ({ key: 'Backspace', code: 'Backspace', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...over })
+  expect(eventToChord(key({ metaKey: true, shiftKey: true }) as never, 'mac')).toBeNull()
+  expect(backspaceChord(key({ metaKey: true, shiftKey: true }) as never, 'mac')).toBe('⇧⌘⌫')
+  expect(backspaceChord(key({ metaKey: true }) as never, 'mac')).toBe('⌘⌫')
+  expect(backspaceChord(key({ shiftKey: true }) as never, 'mac')).toBeNull()
+  expect(backspaceChord({ ...key({ metaKey: true }), code: 'KeyA', key: 'a' } as never, 'mac')).toBeNull()
+  expect(backspaceChord(key({ ctrlKey: true, shiftKey: true }) as never, 'other')).toBe('⇧⌘⌫')
 })

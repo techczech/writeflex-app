@@ -13,9 +13,14 @@ declare global {
       outboxAutomaticSyncAttempts?(): number
       resetOutboxAutomaticSyncAttempts?(): void
       setStatusBarEvents?(waiting: number, rejected: number): void
-      /** `hold-redo`: a suggestion redo's calls to main wait for `releaseSlowSave`; saves are not held. */
-      setSaveBehaviour?(behaviour: 'normal' | 'slow' | 'fail' | 'hold-redo'): void
+      /** `hold-redo`: a suggestion redo's calls to main wait for `releaseSlowSave`; saves are not held.
+       *  `hold-move`: a rename's, move's or duplicate's call to main waits likewise, after the flush.
+       *  `hold-accept`: an accept's call to main waits likewise, inside the owner's route (the queue held).
+       *  `hold-export`: an export waits likewise once its destination is chosen, before its final check. */
+      setSaveBehaviour?(behaviour: 'normal' | 'slow' | 'fail' | 'hold-redo' | 'hold-move' | 'hold-accept' | 'hold-export'): void
       releaseSlowSave?(): void
+      /** Every save the document owner has sent to main (file:save), in order: path and text. */
+      savesSent?(): Array<{ path: string; content: string }>
       collectionQueryCount?(): number
       resetCollectionQueryCount?(): void
       /** Put the keyboard back in the editor at its current selection (EditorView.focus()). */

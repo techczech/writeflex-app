@@ -85,7 +85,7 @@ test('the Index Note and an unlisted file inside the Folio folder', async () => 
   expect(await folioPlace(ws, 'paper/loose.md')).toMatchObject({ kind: 'unlisted', previous: null, next: null })
 })
 
-test('a folder with a Plan and no manifest uses the fallback order', async () => {
+test('a folder with a Folio outline and no manifest uses the fallback order', async () => {
   await write('talk/_talk_INDEX.md', '# Talk\n\n## Running order\n\n- Start\n- Middle\n')
   await write('talk/02-middle.md', '# Middle\n')
   await write('talk/01-start.md', '# Start\n')
@@ -161,7 +161,7 @@ test('main drops the cached answers on the two pushes that report a collection o
   expect(sendSafe).toContain('invalidateFolioPlaces(state.workspace.root)')
 })
 
-test('the Running order heading is found by the Plan\'s rule: exact, with trailing text, and with no parts', async () => {
+test('the Running order heading is found by the Folio outline\'s rule: exact, with trailing text, and with no parts', async () => {
   await write('exact/_exact_INDEX.md', '# Exact\n\n## Running order\n\n- One\n')
   await write('exact/01-one.md', '# One\n')
   await write('draft/_draft_INDEX.md', '# Draft\n\n## Running order (draft)\n\n- One\n- Two\n')
@@ -175,7 +175,7 @@ test('the Running order heading is found by the Plan\'s rule: exact, with traili
   expect(await folioPlace(ws, 'empty/01-one.md')).toMatchObject({ dir: 'empty', position: 1, total: 1 })
 })
 
-test('what the Plan does not take as its heading declares no Plan', async () => {
+test('what the Folio outline does not take as its heading declares no Folio outline', async () => {
   await write('deeper/_deeper_INDEX.md', '# Deeper\n\n### Running order\n\n- One\n')
   await write('deeper/01-one.md', '# One\n')
   await write('fenced/_fenced_INDEX.md', '# Fenced\n\n```\n## Running order\n```\n')
@@ -185,7 +185,7 @@ test('what the Plan does not take as its heading declares no Plan', async () => 
   for (const dir of ['deeper', 'fenced', 'joined']) expect(await folioPlace(ws, `${dir}/01-one.md`)).toBeNull()
 })
 
-test('a Plan folder reached through a symlink is no Folio, as in the whole-workspace listing', async () => {
+test('a Folio outline folder reached through a symlink is no Folio, as in the whole-workspace listing', async () => {
   await write('talk/_talk_INDEX.md', '# Talk\n\n## Running order\n\n- Start\n')
   await write('talk/01-start.md', '# Start\n')
   await mkdir(join(root, 'alias-home'))
@@ -262,4 +262,14 @@ test('a re-opened workspace root answers from the disk, not from the earlier Wor
   // What bindWorkspace does on open: drop the root's answers, then a new Workspace on the same root.
   invalidateFolioPlaces(root)
   expect(await folioPlace(new Workspace(root), 'paper/a.md')).toMatchObject({ total: 1 })
+})
+
+test('the running order the Index Note declares sets the position and neighbours, not the manifest', async () => {
+  await write(`paper/${MANIFEST_NAME}`, manifest(['a.md', 'b.md', 'c.md']))
+  await write('paper/a.md', '# Alpha\n')
+  await write('paper/b.md', '# Bravo\n')
+  await write('paper/c.md', '# Charlie\n')
+  await write('paper/_paper_INDEX.md', '# Paper\n\n## Running order\n\n- [[Bravo]]\n- [[Charlie]]\n')
+  expect(await folioPlace(ws, 'paper/b.md')).toMatchObject({ kind: 'piece', position: 1, total: 2, previous: null, next: { path: 'paper/c.md' } })
+  expect(await folioPlace(ws, 'paper/a.md')).toMatchObject({ kind: 'unlisted', position: null, total: 2, previous: null, next: null })
 })

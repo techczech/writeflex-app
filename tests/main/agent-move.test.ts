@@ -85,7 +85,7 @@ test('scripted prose.move ingests as one move Change and resolving it relocates 
   expect(all[0].moveTo).toEqual({ from: destination, to: destination })
   expect(all[0].anchor).toEqual({ from: destination - insertAfter.length, to: destination })
 
-  expect(await agent.resolveChange(all[0].id, 'accept')).toEqual({ applied: true })
+  expect(await agent.resolveChange(all[0].id, 'accept')).toMatchObject({ applied: true, receipt: { written: expect.any(String) } })
   expect((await ws.readFile('draft.md')).content).toBe('# Draft\n\nFirst paragraph.\n\nThird paragraph stays.\n\nSecond paragraph to move.\n')
   expect((await changes.get(all[0].id))?.status).toBe('accepted')
 
@@ -93,7 +93,7 @@ test('scripted prose.move ingests as one move Change and resolving it relocates 
   // through this same main-process door after the live Bridle proposal has already settled.
   await ws.saveFile('draft.md', draft)
   await changes.setStatus(all[0].id, 'pending')
-  expect(await agent.resolveChange(all[0].id, 'accept')).toEqual({ applied: true })
+  expect(await agent.resolveChange(all[0].id, 'accept')).toMatchObject({ applied: true, receipt: { written: expect.any(String) } })
   expect((await ws.readFile('draft.md')).content).toBe('# Draft\n\nFirst paragraph.\n\nThird paragraph stays.\n\nSecond paragraph to move.\n')
   expect((await changes.get(all[0].id))?.status).toBe('accepted')
 })
@@ -118,7 +118,7 @@ test('scripted prose.move records the original-buffer destination when source fo
   expect(all[0].moveFrom).toEqual({ from: draft.indexOf(text), to: draft.indexOf(text) + text.length })
   expect(all[0].moveTo).toEqual({ from: destination, to: destination })
 
-  expect(await agent.resolveChange(all[0].id, 'accept')).toEqual({ applied: true })
+  expect(await agent.resolveChange(all[0].id, 'accept')).toMatchObject({ applied: true, receipt: { written: expect.any(String) } })
   expect((await ws.readFile('draft.md')).content).toBe('# Draft\n\nFirst paragraph.\n\nThird paragraph to move.\n\nSecond paragraph stays.\n\n')
   expect((await changes.get(all[0].id))?.status).toBe('accepted')
 })

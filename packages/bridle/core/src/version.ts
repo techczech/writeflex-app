@@ -1,1 +1,1 @@
-export const BRIDLE_VERSION = "0.14.4";
+export const BRIDLE_VERSION = "0.14.5";

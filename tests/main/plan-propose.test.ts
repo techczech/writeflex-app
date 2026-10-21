@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { scriptedSessionFactory } from '@bridle/core'
 import { WorkspaceAgent, type ScriptedStep } from '../../src/main/agent'
+import { pauseCollectionWrites, resumeCollectionWrites } from '../../src/main/collection-write-gate'
 import { MANIFEST_NAME } from '../../src/main/folio'
 import { readPlan } from '../../src/main/plan'
 import { Workspace } from '../../src/main/workspace'
@@ -173,11 +174,11 @@ test('undo refuses when a part was renamed since, and names the rename', async (
   const undone = await agent.undoPlanProposal(id)
   expect(undone.ok).toBe(false)
   if (undone.ok) return
-  expect(undone.message).toBe("Can't put the order back: you have since renamed Key strategic moves to Moves for 2027, and undoing would bring back the old name in the plan. Undo the rename first, or change the order in the Plan pane.")
+  expect(undone.message).toBe("Can't put the order back: you have since renamed Key strategic moves to Moves for 2027, and undoing would bring back the old name in the Folio outline. Undo the rename first, or change the order in the Folio outline pane.")
   expect(await read(indexPath)).toContain('[[Moves for 2027]]')
 })
 
-test('remove takes a part out without deleting its file; materialise writes the file through the Plan operation', async () => {
+test('remove takes a part out without deleting its file; materialise writes the file through the Folio outline operation', async () => {
   await seedReport(`${COVER}\n## Running order\n\n- [[Framework for Community Garden Planning]]\n- [[Key strategic moves]]\n- [[Future directions]]\n`)
   const { agent, id } = await propose([
     { op: 'remove', title: 'Key strategic moves' },
@@ -283,4 +284,72 @@ test('undo keeps a backup that existed before the accepted step, byte for byte',
   expect(await read(`${indexPath}.writeflex-backup`)).toBe('# The pristine copy from an earlier edit\n')
   expect((await agent.undoPlanProposal(id)).ok).toBe(true)
   expect(await folderListing()).toEqual(before)
+})
+
+// R7 (final Sol review round 3, P2): a failed running-order accept puts back only the files it wrote, each
+// only while it still holds what the accept wrote. Bridle's restoreTo put the snapshot back over whatever
+// was there, so the other program's version that made the accept refuse was lost.
+
+/** Another program writes the Index Note while the accept's `nth` write of it (1-based) is staged. */
+function outsideAtIndexWrite(nth: number, outside: string): () => number {
+  const saveFile = ws.saveFile.bind(ws)
+  let seen = 0
+  ws.saveFile = (path, content, options) => {
+    if (path === indexPath && ++seen === nth) writeFileSync(join(root, indexPath), outside)
+    return saveFile(path, content, options)
+  }
+  return () => seen
+}
+
+test('R7: an accept refused at its first Index Note write restores nothing over the other program\'s version', async () => {
+  await seedReport()
+  const before = await folderListing()
+  const { agent, id } = await propose(threeAdds)
+  const outside = `${COVER}\nWritten by another program.\n`
+  const seen = outsideAtIndexWrite(1, outside)
+  const result = await agent.acceptPlanProposal(id)
+  expect(seen()).toBe(1)
+  expect(result).toMatchObject({ ok: false, message: expect.stringContaining('Nothing was changed') })
+  expect(await read(indexPath)).toBe(outside)
+  // Everything else the step made (its pre-write backup) is gone again.
+  expect(await folderListing()).toEqual({ ...before, [indexPath]: Buffer.from(outside).toString('base64') })
+})
+
+test('R7: an Index Note the accept wrote and another program changed before the rollback is left as it is and named', async () => {
+  await seedReport()
+  const { agent, id } = await propose(threeAdds)
+  const outside = `${COVER}\nWritten by another program after the first part was added.\n`
+  const seen = outsideAtIndexWrite(2, outside)
+  const result = await agent.acceptPlanProposal(id)
+  expect(seen()).toBe(2)
+  expect(result.ok).toBe(false)
+  if (result.ok) return
+  expect(result.message).toContain(`${indexPath} changed on disk after WriteFlex wrote it, so it was left as it is.`)
+  expect(await read(indexPath)).toBe(outside)
+})
+
+test('while another owner holds the Collection, accept and undo are refused and write nothing: no file, no backup, no restore point', async () => {
+  await seedReport()
+  const { agent, id } = await propose(threeAdds)
+  const history = async (): Promise<string> => readFile(join(root, '.bridle', 'journal.jsonl'), 'utf8').catch(() => '')
+  const before = { folder: await folderListing(), history: await history() }
+  pauseCollectionWrites(root, 'Saving is paused for this test.')
+  try {
+    expect(await agent.acceptPlanProposal(id)).toEqual({ ok: false, message: 'Nothing was changed: Saving is paused for this test.' })
+    expect({ folder: await folderListing(), history: await history() }).toEqual(before)
+    resumeCollectionWrites(root)
+    expect((await agent.acceptPlanProposal(id)).ok).toBe(true)
+
+    const accepted = { folder: await folderListing(), history: await history() }
+    pauseCollectionWrites(root, 'Saving is paused for this test.')
+    expect(await agent.undoPlanProposal(id)).toEqual({ ok: false, message: "Can't put the order back: Saving is paused for this test." })
+    // Nothing was put back and the step's backup was not removed; the step is still held for undo.
+    expect({ folder: await folderListing(), history: await history() }).toEqual(accepted)
+    expect(existsSync(join(root, `${indexPath}.writeflex-backup`))).toBe(true)
+    resumeCollectionWrites(root)
+    expect((await agent.undoPlanProposal(id)).ok).toBe(true)
+    expect(await folderListing()).toEqual(before.folder)
+  } finally {
+    resumeCollectionWrites(root)
+  }
 })

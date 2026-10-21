@@ -17,7 +17,10 @@ import type { Proposal, ProposalSettlementResult, HostProposalSettlement, Journa
 import { MANIFEST_NAME } from './folio'
 import { planBackupPaths, readPlan } from './plan'
 import { withPlanLock } from './plan-lock'
-import type { Workspace } from './workspace'
+import type { OperationWrite, Workspace } from './workspace'
+import { rollBackOperationWrites, rollbackMessage } from './operation-rollback'
+import { collectionWritesPaused, pausedMessage } from './collection-write-gate'
+import { restoreFailure, type RestoreFailure } from './restore-failure'
 import {
   driftedFiles,
   resolveProposal,
@@ -90,6 +93,9 @@ async function backupsNow(absent: string[]): Promise<StepBackup[]> {
  */
 async function removeBackups(backups: StepBackup[]): Promise<void> {
   for (const backup of backups) {
+    // A backup is a file inside the Collection: it is not removed while this app does not hold the
+    // Collection. It stays as a pristine copy, which is what it would be had the step succeeded.
+    if (collectionWritesPaused(backup.path)) continue
     const now = existsSync(backup.path) ? await readFile(backup.path).catch(() => null) : null
     if (now && now.equals(backup.content)) await rm(backup.path, { force: true })
   }
@@ -187,6 +193,10 @@ export class PlanProposalDesk {
       return { ok: false, message: error instanceof Error ? error.message.replace('was not staged', 'cannot be applied') : String(error) }
     }
     const dir = prepared.basis.dir
+    // The restore point, the snapshots and the files are all inside the Collection: none is written
+    // while this app does not hold it.
+    const paused = pausedMessage(this.workspace.root)
+    if (paused) return { ok: false, message: `Nothing was changed: ${paused}` }
     const sessionId = this.bridle.sessionId()
     const restorePointId = await this.bridle.snapshots.beginRestorePoint(`running order: ${dir || 'workspace root'}`, sessionId, { proposalId: id })
     // The Plan operations leave a pristine-copy backup beside the Index Note and the manifest the
@@ -199,23 +209,25 @@ export class PlanProposalDesk {
     for (const target of targets) {
       await this.bridle.snapshots.snapshotFile(target, { sessionId, capability: PLAN_PROPOSE, origin: 'turn' })
     }
-    const rollBack = async (message: string, backups: StepBackup[]): Promise<PlanAcceptResult> => {
-      await this.bridle.snapshots.restoreTo(restorePointId, { origin: 'turn' }).catch(() => [])
-      await removeBackups(backups)
-      return { ok: false, message }
-    }
+    // Every file the operations write (documents, manifest, stubs, the pristine-copy backups), with what it
+    // held before and what they left. A rollback puts back only those, each only while it still holds what
+    // the step wrote (R7): not Bridle's restoreTo, which would put the snapshots back over a version
+    // another program wrote, the one that made the step refuse (final review round 3, P2). One turn of the
+    // Collection's write turn (collection-write-turn.ts): no save, accept or restore of this app in between.
+    const written: OperationWrite[] = []
+    const rollBack = async (reason: string): Promise<PlanAcceptResult> => (
+      { ok: false, message: rollbackMessage(reason, await this.workspace.exclusiveAll(() => rollBackOperationWrites(this.workspace, written))) }
+    )
     let result
     try {
-      result = await runPlanOperations(this.workspace, dir, prepared.ops)
+      result = await this.workspace.recordingOperationWrites(written, () => runPlanOperations(this.workspace, dir, prepared.ops))
     } catch (error) {
-      // The operations threw part-way, so there are no recorded bytes to check against: any
-      // backup standing now that was absent before the step can only be the step's own.
-      return rollBack(`Nothing was changed: ${error instanceof Error ? error.message : String(error)}`, await backupsNow(absentBackups))
+      return rollBack(error instanceof Error ? error.message : String(error))
     }
     // The backups this step created, with the bytes it wrote, captured the moment its writes end.
     const backups = await backupsNow(absentBackups)
     const settlement = await this.bridle.proposals.settleAsHost(id, { status: 'superseded', reason: 'superseded-by-host' })
-    if (settlement.refused) return rollBack(`Nothing was changed: the proposal was settled elsewhere (${settlement.refused}).`, backups)
+    if (settlement.refused) return rollBack(`the proposal was settled elsewhere (${settlement.refused}).`)
 
     const finalParts = result.plan?.parts ?? []
     const inOrder = new Set(finalParts.flatMap((part) => (part.path ? [part.path] : [])))
@@ -249,19 +261,24 @@ export class PlanProposalDesk {
    * Undo the accepted step, or refuse and say what is in the way: a file the step wrote or depends
    * on that changed since, or a later agent change that the restore would also take back.
    */
-  async undo(id: string): Promise<PlanUndoResult> {
+  undo(id: string): Promise<PlanUndoResult> {
+    // The Folio's Plan lock (plan-lock.ts) first, then ONE turn of the Collection's write turn for the checks
+    // and the restore together: the same order as every Plan write (lock, then the turn its saves take), so
+    // the two never wait on each other. Nothing in this app writes between the check that the step's files
+    // are unchanged and the restore that puts them back, and the restore runs before or after an accept or
+    // a save, never during one.
     const held = this.accepted.get(id)
-    if (!held) return this.undoHeld(id)
-    return withPlanLock(this.workspace, held.dir, () => this.undoHeld(id))
+    if (!held) return this.workspace.exclusiveAll(() => this.undoInTurn(id))
+    return withPlanLock(this.workspace, held.dir, () => this.workspace.exclusiveAll(() => this.undoInTurn(id)))
   }
 
-  private async undoHeld(id: string): Promise<PlanUndoResult> {
+  private async undoInTurn(id: string): Promise<PlanUndoResult> {
     const record = this.accepted.get(id)
-    if (!record) return { ok: false, message: "Can't put the order back from here: this step is no longer held for undo. Change the order in the Plan pane." }
+    if (!record) return { ok: false, message: "Can't put the order back from here: this step is no longer held for undo. Change the order in the Folio outline pane." }
     const drift = await this.pairRenames(record, driftedFiles(record.after, await filesNow(this.workspace, record.dir, record.extra)))
     const entries = await this.bridle.snapshots.entries()
     const point = entries.findIndex((entry) => entry.kind === 'restore-point' && entry.id === record.restorePointId)
-    if (point < 0) return { ok: false, message: "Can't put the order back: its restore point is gone. Change the order in the Plan pane." }
+    if (point < 0) return { ok: false, message: "Can't put the order back: its restore point is gone. Change the order in the Folio outline pane." }
     const ours = new Set(record.targets)
     const laterAgentFiles = [...new Set(entries.slice(point + 1).flatMap((entry) => {
       if (entry.kind === 'undo-action' && (entry.origin ?? 'turn') === 'turn') return ['a folder']
@@ -271,7 +288,16 @@ export class PlanProposalDesk {
     if (drift.length || laterAgentFiles.length) {
       return { ok: false, message: undoRefusalMessage({ drift, laterAgentFiles }) }
     }
-    const restored = await this.bridle.snapshots.restoreTo(record.restorePointId, { origin: 'turn' })
+    const paused = pausedMessage(this.workspace.root)
+    if (paused) return { ok: false, message: `Can't put the order back: ${paused}` }
+    let restored: string[]
+    try {
+      restored = await this.bridle.snapshots.restoreTo(record.restorePointId, { origin: 'turn' })
+    } catch (error) {
+      // Refused: nothing was written and the undo is still held. Stopped part-way: the order is
+      // half put back, and the writer is told which files were and were not.
+      return { ok: false, message: `Can't put the order back. ${restoreFailure(error, this.workspace.root).message}` }
+    }
     await removeBackups(record.backups)
     this.accepted.delete(id)
     return { ok: true, paths: restored.map((path) => this.workspace.relative(path)) }

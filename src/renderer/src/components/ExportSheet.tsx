@@ -15,8 +15,11 @@ import {
   loadExportPresetLastUsed,
   saveExportPresetLastUsed,
   saveExportSheetOptions,
+  sheetTocDepth,
+  tocDepthHomeGoverns,
   type ExportLeftOut,
   type ExportSheetOptions,
+  type ExportTocDepthHome,
 } from './export-sheet-options'
 import {
   createExportPresetState,
@@ -42,8 +45,11 @@ export {
   loadExportPresetLastUsed,
   saveExportPresetLastUsed,
   saveExportSheetOptions,
+  sheetTocDepth,
+  tocDepthHomeGoverns,
   type ExportLeftOut,
   type ExportSheetOptions,
+  type ExportTocDepthHome,
 } from './export-sheet-options'
 
 /**
@@ -59,31 +65,45 @@ export {
 
 export type ExportScope = 'piece' | 'collection'
 
+/** The scope the sheet opens on. A part of a Folio opens on the whole Folio, because that is what a
+ *  writer exporting a Folio's part almost always means; a plain Collection and a lone file keep `piece`. */
+export function defaultExportScope({ hasCollection, inFolio }: { hasCollection: boolean; inFolio: boolean }): ExportScope {
+  return hasCollection && inFolio ? 'collection' : 'piece'
+}
+
 /** What came back from an attempt. `cancelled` is the save dialog being dismissed: nothing written,
  *  nothing said — the sheet simply returns to its choices. */
 export type ExportSheetOutcome =
   | { status: 'cancelled' }
-  | { status: 'done'; target: string; missingImages: string[]; unreadableImages: string[]; pieces: number; listed: number }
+  | { status: 'done'; target: string; missingImages: string[]; unreadableImages: string[]; pieces: number; listed: number; tocDepthNote?: string }
   | { status: 'error'; message: string }
 
 export type ExportSheetProps = {
   /** Scopes the remembered switch combination to this Workspace. */
   workspaceRoot: string
-  /** The active piece's title (its `title:`, else its first heading, else the file's name). */
+  /** The active piece's metadata-first title, resolved by the same main-process rule as export. */
   title: string
   /** The active piece's word count, shown where the mockup shows it. */
   words: number
   /** The Collection this piece sits in, or null — which is what decides whether scope rows exist.
-   *  `pieces` is what Word writes (the Collection's own rows); `htmlPieces` is what HTML writes (for a
-   *  Folio, its listed pieces that exist inside its folder); `leftOut` names the listed Folio entries
-   *  HTML will not write. */
+   *  `pieces` is what Word writes and `htmlPieces` what HTML writes: for a Folio both are its listed pieces
+   *  that exist inside its folder; `leftOut` names the listed Folio entries neither format will write. */
   collection: { name: string; pieces: number; htmlPieces?: number; leftOut?: ExportLeftOut[] } | null
-  onExport: (choice: { scope: ExportScope; format: ExportFormat; html?: HtmlExportOptions }) => Promise<ExportSheetOutcome>
+  onExport: (choice: { scope: ExportScope; format: ExportFormat; html?: HtmlExportOptions; keepTocDepth?: true }) => Promise<ExportSheetOutcome>
   onReveal: () => void
   onClose: () => void
   /** Palette commands reopen the sheet directly at the action's owning mode. */
   initialPresetAction?: ExportPresetOpenAction
+  /** Where each scope's Contents depth is kept (`toc_depth` in the document, or in the Folio's Index
+   *  Note), read before the sheet opened; null for a scope with no such file. The sheet never writes
+   *  it: a depth chosen here rides the export request and main saves it as the HTML export runs. */
+  tocDepthHomes?: Record<ExportScope, ExportTocDepthHome | null>
+  /** Whether `collection` is a Folio (a folder with a manifest). Decides the opening scope only. */
+  inFolio?: boolean
 }
+
+/** Each scope's Contents depth home, as this sheet last knew it. */
+type TocDepthHomes = Record<ExportScope, ExportTocDepthHome | null>
 
 export type ExportPresetOpenAction = 'apply' | 'update' | 'save-as' | 'manage' | 'rename' | 'delete' | 'move-up' | 'move-down'
 
@@ -128,12 +148,16 @@ function rendererStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
   try { return typeof localStorage === 'undefined' ? null : localStorage } catch { return null }
 }
 
-export function ExportSheet({ workspaceRoot, title, words, collection, onExport, onReveal, onClose, initialPresetAction }: ExportSheetProps): JSX.Element {
-  const [scope, setScope] = useState<ExportScope>('piece')
+export function ExportSheet({ workspaceRoot, title, words, collection, onExport, onReveal, onClose, initialPresetAction, tocDepthHomes, inFolio = false }: ExportSheetProps): JSX.Element {
+  // Read once at mount: the parent keys the sheet per open, so each open starts from its own file's default.
+  const [scope, setScope] = useState<ExportScope>(() => defaultExportScope({ hasCollection: collection !== null, inFolio }))
+  // The Contents depth's home per scope. A scope with a home shows and exports the file's value (Default
+  // when it says none); the last-used/preset value is left as it was, for scopes without a home.
+  const [homes, setHomes] = useState<TocDepthHomes>(() => tocDepthHomes ?? { piece: null, collection: null })
   const [presetState, setPresetState] = useState<ExportPresetState | null>(null)
   const presetStateRef = useRef<ExportPresetState | null>(null)
   const [busy, setBusy] = useState(false)
-  const [done, setDone] = useState<{ target: string; missingImages: string[]; unreadableImages: string[]; pieces: number; listed: number; bundled: boolean } | null>(null)
+  const [done, setDone] = useState<{ target: string; missingImages: string[]; unreadableImages: string[]; pieces: number; listed: number; bundled: boolean; tocDepthNote?: string } | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   const running = useRef(false)
 
@@ -194,12 +218,32 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
   const format = presetState?.choice.format ?? 'html'
   const collectionPieces = collection ? (format === 'html' ? collection.htmlPieces ?? collection.pieces : collection.pieces) : 0
   // Only HTML follows a Folio's manifest, so only HTML can leave a listed entry out.
-  const leftOut = collection && format === 'html' ? exportLeftOutLines(collection.leftOut ?? []) : null
-  const options = presetState ? exportSheetOptions(presetState.choice) : DEFAULT_EXPORT_SHEET_OPTIONS
+  const leftOut = collection ? exportLeftOutLines(collection.leftOut ?? []) : null
+  const home = homes[scope === 'collection' && collection ? 'collection' : 'piece']
+  const homeScope: ExportScope = scope === 'collection' && collection ? 'collection' : 'piece'
+  const chosenOptions = presetState ? exportSheetOptions(presetState.choice) : DEFAULT_EXPORT_SHEET_OPTIONS
+  const lastUsedDepth = chosenOptions.tocDepth
+  const shownDepth = sheetTocDepth(lastUsedDepth, home)
+  const { tocDepth: _chosenDepth, ...withoutDepth } = chosenOptions
+  const options: ExportSheetOptions = shownDepth === undefined ? withoutDepth : { ...withoutDepth, tocDepth: shownDepth }
+  // A file's depth is not the preset's to mark as changed.
+  const changedFields = presetState
+    ? tocDepthHomeGoverns(home) ? presetState.changedFields.filter((field) => field !== 'tocDepth') : presetState.changedFields
+    : []
+
   const setOptions = useCallback((next: ExportSheetOptions): void => {
     if (!presetState) return
+    if (home) {
+      // Kept in this sheet only; the export carries it and main saves it with the file as it runs.
+      if (next.tocDepth !== options.tocDepth) {
+        const depth = next.tocDepth ?? null
+        setHomes((current) => current[homeScope] ? { ...current, [homeScope]: { ...current[homeScope]!, depth, chosen: true } } : current)
+      }
+      const { tocDepth: _shown, ...rest } = next
+      next = lastUsedDepth === undefined ? rest : { ...rest, tocDepth: lastUsedDepth }
+    }
     dispatchPreset({ type: 'change', choice: exportPresetChoice(format, next) })
-  }, [dispatchPreset, format, presetState])
+  }, [dispatchPreset, format, home, homeScope, lastUsedDepth, options.tocDepth, presetState])
 
   const setFormat = useCallback((next: ExportFormat): void => {
     if (!presetState) return
@@ -211,7 +255,9 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
     running.current = true
     setBusy(true)
     setProblem(null)
-    void onExport(exportSheetChoice(scope, format, options))
+    // A depth chosen here for a scope with a file home is exported exactly and saved with that file by
+    // main as the HTML export runs; untouched, the sheet sends what the file said when it opened.
+    void onExport(exportSheetChoice(scope, format, options, home))
       .then((outcome) => {
         if (outcome.status === 'done') setDone({ ...outcome, bundled: scope === 'collection' && collection !== null })
         if (outcome.status === 'error') setProblem(outcome.message)
@@ -221,7 +267,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
         running.current = false
         setBusy(false)
       })
-  }, [collection, format, onExport, options, scope])
+  }, [collection, format, home, onExport, options, scope])
 
   // ADR-0029: "↵ is Choose where…". The scope rows and Format buttons are type="button", so a plain ↵ on
   // one would only re-press it; on these choice fields ↵ submits the sheet, as a native radio does.
@@ -300,7 +346,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
                 initialManagementAction={initialPresetAction === 'rename' ? 'rename' : undefined}
               />
               {presetState.mode === 'sheet' && <>
-              <ExportOptionControls format={format} options={options} changedFields={presetState.changedFields} onChange={setOptions} />
+              <ExportOptionControls format={format} options={options} changedFields={changedFields} onChange={setOptions} tocDepthHome={home} />
               {collection && (
                 <div className="export-field">
                   <div className="export-flabel" id="export-scope-label">What</div>
@@ -396,6 +442,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
             {missingLine(done.missingImages, done.unreadableImages)}
           </p>
         )}
+        {done !== null && done.tocDepthNote && <p className="export-toc-note" role="status">{done.tocDepthNote}</p>}
         {problem !== null && <p className="export-error" role="alert">{problem}</p>}
 
         <div className="vm-actions">

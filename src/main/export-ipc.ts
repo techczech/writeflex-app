@@ -1,6 +1,6 @@
 import { isExportFormat, type ExportFormat, type HtmlExportOptions } from './export'
 
-const HTML_OPTION_KEYS = new Set(['sidebar', 'titleBlock', 'summaryTiles', 'frontPage', 'design', 'frontmatterFields', 'readerNotes', 'readerEdits'])
+const HTML_OPTION_KEYS = new Set(['sidebar', 'titleBlock', 'summaryTiles', 'frontPage', 'design', 'tocDepth', 'frontmatterFields', 'readerNotes', 'readerEdits'])
 const FRONTMATTER_FIELDS = new Set(['date', 'status', 'author', 'purpose', 'tags', 'series'])
 
 function format(value: unknown): ExportFormat {
@@ -19,6 +19,7 @@ function htmlOptions(value: unknown): HtmlExportOptions | undefined {
   if (input.frontPage !== undefined && typeof input.frontPage !== 'boolean') throw new Error('Invalid HTML export options.')
   if (input.readerNotes !== undefined && typeof input.readerNotes !== 'boolean') throw new Error('Invalid HTML export options.')
   if (input.readerEdits !== undefined && typeof input.readerEdits !== 'boolean') throw new Error('Invalid HTML export options.')
+  if (input.tocDepth !== undefined && !(typeof input.tocDepth === 'number' && Number.isInteger(input.tocDepth) && input.tocDepth >= 1 && input.tocDepth <= 6)) throw new Error('Invalid HTML export options.')
   if (input.design !== undefined && input.design !== 'a' && input.design !== 'b') throw new Error('Invalid HTML export options.')
   if (input.frontmatterFields !== undefined && (
     !Array.isArray(input.frontmatterFields)
@@ -32,8 +33,16 @@ function htmlOptions(value: unknown): HtmlExportOptions | undefined {
     ...(input.readerNotes === undefined ? {} : { readerNotes: input.readerNotes }),
     ...(input.readerEdits === undefined ? {} : { readerEdits: input.readerEdits }),
     ...(input.design === undefined ? {} : { design: input.design }),
+    ...(input.tocDepth === undefined ? {} : { tocDepth: input.tocDepth as number }),
     ...(input.frontmatterFields === undefined ? {} : { frontmatterFields: [...new Set(input.frontmatterFields as string[])] }),
   }
+}
+
+/** Save the export's Contents depth with the scope's file: true, or absent. Anything else is refused. */
+function keepTocDepth(value: unknown): boolean {
+  if (value === undefined || value === false) return false
+  if (value !== true) throw new Error('Invalid export request.')
+  return true
 }
 
 export function exportDocumentRequest(input: unknown): {
@@ -41,14 +50,17 @@ export function exportDocumentRequest(input: unknown): {
   format: ExportFormat
   target: string
   html?: HtmlExportOptions
+  keepTocDepth?: boolean
 } {
   const request = (input ?? {}) as Record<string, unknown>
   const html = htmlOptions(request.html)
+  const keep = keepTocDepth(request.keepTocDepth)
   return {
     path: String(request.path ?? ''),
     format: format(request.format),
     target: String(request.target ?? ''),
     ...(html === undefined ? {} : { html }),
+    ...(keep ? { keepTocDepth: true } : {}),
   }
 }
 
@@ -57,13 +69,16 @@ export function exportBundleRequest(input: unknown): {
   format: ExportFormat
   target: string
   html?: HtmlExportOptions
+  keepTocDepth?: boolean
 } {
   const request = (input ?? {}) as Record<string, unknown>
   const html = htmlOptions(request.html)
+  const keep = keepTocDepth(request.keepTocDepth)
   return {
     dir: String(request.dir ?? ''),
     format: format(request.format),
     target: String(request.target ?? ''),
     ...(html === undefined ? {} : { html }),
+    ...(keep ? { keepTocDepth: true } : {}),
   }
 }

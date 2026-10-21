@@ -1,3 +1,4 @@
+import type { MetadataValues } from '../shared/metadata-registry'
 import type { AmbientSnapshot } from '../main/ambient'
 import type { ModelDiscoveryReason, ModelRefreshResult, ModelsChecked } from '../shared/model-refresh'
 export type { AmbientSnapshot } from '../main/ambient'
@@ -6,37 +7,71 @@ import { createAuthTransport } from '@bridle/electron/preload'
 import type { AuthTransport } from '@bridle/electron'
 import { multiplexIpcChannel } from './subscriptions'
 import type { ArchivePassageResponse, ArchiveSearchRequest, ArchiveSearchResponse } from '../shared/scout'
+import type { PreserveResult } from '../shared/preserve-receipt'
 import type { OpenLinkResult } from '../main/scout-ipc'
+import type { CaptureRequest, CaptureResponse } from '../shared/research-capture'
 import type { WidgetReadResult } from '../main/widget-ipc'
 import type { WidgetChoices, WidgetDropResult } from '../main/widget-insert'
+import type { OwnFolderFactsAnswer } from '../main/standard-widgets/own-folder'
+import type { CleanUpResult, LeftoverStep } from '../main/standard-widgets/step-journal'
+import type { CreateWidgetCall, CreateWidgetResult, PreviewCall, PreviewResult, UndoResult, UpdateRecipeCall, UpdateRecipeResult } from '../main/standard-widgets/operations'
+import type { PickAnswer } from '../main/standard-widgets/outside-files'
+import type { SourceFileListing } from '../main/standard-widgets/source-files'
+import type { BuildOutcome } from '../main/standard-widgets/build'
 import type { FolioPlace } from '../shared/folio-place'
+import type { SaveBasis } from '../shared/save-basis'
+import type { CollectionChanged } from '../shared/listing-patch'
+import type { FolioAgentInstructionsAction, FolioAgentInstructionsStatus } from '../shared/folio-agent-files'
+export type { FolioAgentInstructionsAction, FolioAgentInstructionsStatus } from '../shared/folio-agent-files'
 export type { FolioPlace } from '../shared/folio-place'
 import type { FolioOutline } from '../shared/folio-outline'
-import type { RunningOrderResult } from '../shared/folio-running-order'
+import type { FolioDetailAnswer, FolioDetailField, FolioDetailUndoAnswer, FolioDetailValuesAnswer, FolioDetailsRead } from '../shared/folio-details'
+import type { VaultIndex } from '../shared/vault-index'
+import type { VaultPreview } from '../shared/vault-preview'
+export type { VaultPreview } from '../shared/vault-preview'
+import type { RootSwitchResult, RootSwitchTarget, SwitcherList } from '../shared/vault-switcher'
+export type { RootSwitchResult, RootSwitchTarget, SwitcherList } from '../shared/vault-switcher'
+export type { VaultHidden, VaultIndex, VaultWork, VaultWorkKind } from '../shared/vault-index'
+import type { PlanCardKey, PlanOrderResult, PlanPartKey, RunningOrderResult } from '../shared/folio-running-order'
 export type { RunningOrderResult } from '../shared/folio-running-order'
 export type { FolioOutline, FolioOutlineFile, FolioOutlineHeading } from '../shared/folio-outline'
 import { RENAME_REPAIR_ISSUE_KINDS } from '../shared/rename-repair-message'
+import { e2eWriteHooksFromProcess } from '../shared/e2e-write-hooks'
+import type { OutsideChangeFields, OutsideSource, OutsideSummary } from '../shared/outside-source'
+import type { ClosedCode } from '../shared/closed-code'
 import type { BoardStatus } from '../shared/collection-status'
 import type { ClipboardKind } from '../main/clipboard'
 import type { ExportFormat, ExportOutcome, HtmlExportOptions } from '../main/export'
+import type { TocDepthRefusal, TocDepthScope, TocDepthSource, TocDepthWriteResult } from '../main/export-toc-depth'
 import type { ExplicitSessionState } from '../shared/explicit-session'
 import type { AgentNote, AgentObjectNote, AgentProseNote } from '../main/agent-notes'
 import type { CollectionDigest } from '../main/digest'
 import type { DrawerScrap, DrawerSource, Offcut, PieceDrawer, SourceUser } from '../main/piece-material'
 import type { ExportPresetSettings } from '../shared/export-presets'
+import type { AttachAddressRequest, SharingDomainsResult, SharingRemovalQuestion, SharingRemoveRequest, SharingResult, SharingSetupStatus } from '../shared/sharing-setup'
+import type { MakeLinkRequest, PieceSharingView, SharingLinkResult } from '../shared/sharing-links'
+import type { OpenedCounts, SharesListView } from '../shared/sharing-shares-list'
+import type { LimitsActionResult, NotesCounts } from '../shared/sharing-notes'
 import type { PlanAcceptEdits, PlanAcceptResult, PlanProposalView, PlanUndoResult } from '../shared/plan-proposal'
 import type { PieceSourceListing } from '../shared/piece-sources'
 import type { AppendScrapInput, AttachSourceInput, BoardStepResult, BoardUndoResult, PromoteOffcutInput } from '../shared/board-material'
 export type { PlanAcceptEdits, PlanAcceptResult, PlanProposalView, PlanUndoResult }
 export type { BoardStep, BoardStepResult, BoardUndoResult } from '../shared/board-material'
+import type { VaultChangedEvent, VaultCreateInput, VaultSettings, VaultView, VaultWriteResult } from '../shared/vault'
+export type { VaultChangedEvent, VaultCreateInput, VaultSettings, VaultStep, VaultView, VaultWriteRefusal, VaultWriteResult } from '../shared/vault'
 
 export type { ClipboardKind, ExportFormat, ExportOutcome, HtmlExportOptions, ExplicitSessionState }
 export type { AgentNote, AgentObjectNote, AgentProseNote, CollectionDigest }
 export type { ExportPresetSettings }
+export type { TocDepthRefusal, TocDepthScope, TocDepthSource, TocDepthWriteResult }
 /** What the sheet is exporting: this piece, or the Collection it sits in (ADR-0029). */
 export type ExportChoice =
   | { scope: 'piece'; path: string; format: ExportFormat }
   | { scope: 'collection'; dir: string; format: ExportFormat }
+/** Title displayed in the Export sheet; source may be the current unsaved buffer. */
+export type ExportTitleChoice =
+  | { scope: 'piece'; path: string; source?: string }
+  | { scope: 'collection'; dir: string; sources?: Array<{ path: string; source: string }> }
 /** What a copy put on the clipboard, so the renderer can say so. */
 export type ClipboardCopyResult = { kind: ClipboardKind; label: string; flavours: string[]; characters: number }
 import type { Skill, SkillInput, SkillLoadError } from '@bridle/core'
@@ -59,8 +94,26 @@ export type FileSaveRefusal = {
   previousRescuePath: string
   rejectedRescuePath: string
 }
-export type FileSaveResult = FileReadResult | FileSaveRefusal
-export type ClearDocumentResult = { file: FileReadResult; rescueDirectory: string | null }
+/** An editor save refused because the disk no longer holds the version the save was based on (its
+ *  SaveBasis). Nothing was written. `diskText`: what is on disk now (null: no file there). */
+export type FileSaveDiskChanged = {
+  refused: 'disk-changed'
+  path: string
+  diskText: string | null
+  message: string
+}
+/** An exclusive create (SaveBasis `create`: a recovery copy) found the name taken. Nothing was written. */
+export type FileSaveNameTaken = { refused: 'name-taken'; path: string; message: string }
+/** A save main made, or found already made: `content` is the file read back, `written` the text the
+ *  buffer is based on from now (what was written, or found when nothing was). They differ only when
+ *  another program wrote the file between the commit and the readback: an outside change. */
+export type FileSaveWritten = FileReadResult & { written: string; seq?: number }
+/** The receipt of one write call main made to an open document (document-owner plan, parcel 1): the text
+ *  THAT call wrote (`written`) and its place in the workspace's order of writes (`seq`). */
+export type WriteReceipt = { written: string; seq: number }
+export type FileSaveResult = FileSaveWritten | FileSaveRefusal | FileSaveDiskChanged | FileSaveNameTaken
+export type { SaveBasis }
+export type ClearDocumentResult = { file: FileReadResult & Partial<WriteReceipt>; rescueDirectory: string | null } | FileSaveDiskChanged
 export type SearchMatch = {
   path: string
   line: number
@@ -93,7 +146,8 @@ export type ExampleChangeResult = { ok: true; outcome: string } | { ok: false; m
 export type ExampleCollectionView = { root: string; location: string; lessonFiles: number }
 /** The start screen's whole model, as main computed it: the marked entries or none, the person's
  *  pins in the order they are numbered, and the recents that are not pins. */
-export type StartScreenModel = { example: ExampleCollectionView | null; pinned: PinnedWorkspace[]; recents: RecentWorkspace[] }
+export type StartVault = { root: string; name: string; location: string; works: number | null; inProgress: number | null; lastWorked: number | null }
+export type StartScreenModel = { example: ExampleCollectionView | null; pinned: PinnedWorkspace[]; recents: RecentWorkspace[]; /** Vaults (pins and recents that hold a vault file), listed only here; absent or empty: no Vaults row. */ vaults?: StartVault[] }
 
 export type JumpKind = 'bookmark' | 'comment' | 'task'
 export type JumpEntry = { kind: JumpKind; file: string; line: number; text: string; done?: boolean }
@@ -137,12 +191,24 @@ export type CollectionRow = {
   status: string | null
   modified: number
   words: number
+  /** Read-only view snapshot derived through the shared search-index facts cache. */
+  searchText?: string
+  tags?: string[]
   bare: boolean
   provenance: { title: 'written' | 'derived'; purpose: 'written' | 'derived'; status: 'written' | 'derived' }
   folderPath?: string
   folderPieceMode?: 'one' | 'many'
 }
-export type Collection = { name: string; cover: CollectionCover | null; rows: CollectionRow[] }
+export type CollectionSubfolder = {
+  path: string
+  name: string
+  title: string | null
+  status: string | null
+  work: 'folio' | 'folder-piece' | 'file' | null
+  pieces: number
+  modified: number
+}
+export type Collection = { name: string; cover: CollectionCover | null; rows: CollectionRow[]; subfolders: CollectionSubfolder[] }
 export type CollectionSignals = {
   frontmatterPattern: boolean
   frontmatterPieceCount: number
@@ -209,11 +275,21 @@ export type CreateStubResult = { created: true; path: string; content: string; s
 export type FolioFile = { path: string; role?: string; render?: string; toc?: boolean }
 export type Folio = { contentRoot: string; output?: string; titleMatter?: string; files: FolioFile[]; contentRootRefused?: true }
 /** A listed Folio entry that an export leaves out, with its path as the manifest wrote it. */
-export type FolioLeftOut = { path: string; reason: 'not-found' | 'outside-folio' }
+export type FolioLeftOut = { path: string; reason: 'not-found' | 'outside-folio' | 'agent-instructions' }
 /** A Folio's listed entries, resolved by main: the pieces in order, and the entries left out. */
 export type FolioPieces = { pieces: string[]; leftOut: FolioLeftOut[] }
-export type PlanPart = { title: string; gloss: string | null; role: string; tags: string[]; path: string | null; line: number; manifestBacked?: boolean }
-export type Plan = { dir: string; indexPath: string; headingLine: number; parts: PlanPart[]; unlisted: PlanPart[] }
+/** What the part-title rule says of a part's file (shared/folio-part-title.ts). */
+export type PlanPartHeading = { title: string; mode: 'own' | 'none' | 'missing'; from: 'heading' | 'frontmatter' | 'file-name'; headingText: string | null; frontmatterTitle: string | null; mismatch: boolean; fingerprint?: string; frontMatter?: true }
+/** Which way a title-conflict fix goes (shared/title-conflict.ts). */
+export type TitleFixDirection = 'heading-to-title' | 'title-to-heading'
+/** A title-conflict fix's answer (main/title-conflict-fix.ts): what was written, each file that was not and why,
+ *  and the token of its one Undo step (null: nothing written). `ok: false`: nothing was written. */
+export type TitleFixAnswer =
+  | { ok: true; written: string[]; skipped: Array<{ path: string; message: string }>; undo: string | null }
+  | { ok: false; message: string }
+export type TitleUndoAnswer = { ok: true; restored: string[]; kept: Array<{ path: string; message: string }> } | { ok: false; message: string }
+export type PlanPart = { title: string; gloss: string | null; role: string; tags: string[]; path: string | null; line: number; manifestBacked?: boolean; putBackRefusal?: string; under?: string; heading?: PlanPartHeading; titlePage?: true; manifestTitlePage?: true; frontMatterOffer?: true }
+export type Plan = { dir: string; indexPath: string; headingLine: number; parts: PlanPart[]; unlisted: PlanPart[]; orderFrom?: 'manifest'; indexNoteAbsent?: true }
 export type PlanPartInput = { title: string; gloss?: string; role?: string }
 
 export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high'
@@ -232,7 +308,7 @@ export type Provenance = 'agent' | 'writer' | 'reviewer'
 export type EditClass = 'copy' | 'content' | 'move' | 'insert' | 'housekeeping'
 export type ChangeStatus = 'pending' | 'accepted' | 'rejected' | 'held'
 export type EditSessionStatus = 'open' | 'reviewing' | 'saved' | 'discarded'
-export type Change = {
+type LedgerChange = {
   id: string
   path: string
   ts: number
@@ -256,9 +332,28 @@ export type Change = {
   versionId?: string
   author?: AuthorIdentity
   /** A new file that accepting this Change also writes (the agent's widgets.create): its workspace-relative
-   *  path and full content, shown in the Review pane; main writes only bytes that hash to `sha256`. */
+   *  path and full content, shown on the margin card; main writes only bytes that hash to `sha256`. */
   newFile?: { path: string; content: string; sha256: string }
+  /** Set when the Change was closed without being applied (its text or file has gone, or its path is
+   *  not a document): the reason to show, and when. Its status is then 'rejected'. */
+  closedReason?: string
+  closedAt?: number
+  /** With `closedReason`: the same reason from a closed list (shared/closed-code.ts), for the dock to
+   *  choose its own sentence by. Absent on a record closed before the code existed: read it with
+   *  `closedCodeOf`, which answers `other` then. */
+  closedCode?: ClosedCode
+  /** A Change over the whole document: `oldText` is the document as it stood, `newText` what it would
+   *  become. It is applied only while the document is exactly `oldText`. */
+  whole?: true
 }
+/**
+ * A Change that came from outside WriteFlex through the command line (ticket 06) also carries
+ * `outsideSource`, `outsideRequest` and, when refused, `outsideRefused` and `outsideIntended`. The
+ * fields and the closed list of sources are defined once, in shared/outside-source.ts.
+ */
+export type Change = LedgerChange & OutsideChangeFields
+export type { OutsideChangeFields, OutsideLook, OutsideSource, OutsideSummary } from '../shared/outside-source'
+export type { ClosedCode } from '../shared/closed-code'
 export type EditSession = {
   id: string
   path: string
@@ -541,7 +636,7 @@ export type SkillMeta = {
 // replaced by @bridle/electron's AuthTransport on the bridle.auth:* channels —
 // the renderer consumes it via useIpcAuthFlow + @bridle/react's AuthFlow.
 
-export type MenuAction = 'save' | 'name-version' | 'new-file' | 'new-folder' | 'capture-idea' | 'follow-wikilink' | 'materialise-stub' | 'close-tab' | 'quick-open' | 'command-palette' | 'open-files' | 'open-tabs' | 'open-board' | 'next-tab' | 'previous-tab' | 'next-folder-file' | 'previous-folder-file' | 'search' | 'archive-search' | 'toggle-outline' | 'open-review' | 'open-versions' | 'toggle-typewriter' | 'open-dialog' | 'redo' | 'prose-zoom-in' | 'prose-zoom-out' | 'prose-zoom-reset' | 'column-width-in' | 'column-width-out'
+export type MenuAction = `collection-page:${import('../shared/collection-page-commands').CollectionPageCommand}` | 'save' | 'name-version' | 'new-file' | 'new-folder' | 'capture-idea' | 'follow-wikilink' | 'materialise-stub' | 'close-tab' | 'quick-open' | 'command-palette' | 'open-files' | 'open-tabs' | 'open-board' | 'next-tab' | 'previous-tab' | 'next-folder-file' | 'previous-folder-file' | 'search' | 'archive-search' | 'toggle-outline' | 'focus-review-margin' | 'switch-margin-view' | 'toggle-margin' | 'open-versions' | 'toggle-typewriter' | 'open-dialog' | 'undo' | 'redo' | 'prose-zoom-in' | 'prose-zoom-out' | 'prose-zoom-reset' | 'column-width-in' | 'column-width-out'
 
 export type RuntimeInfo = { electron: string; chrome: string; node: string; macOS: string }
 
@@ -550,10 +645,67 @@ export type WriteFlexApi = {
   reportRendererError: (error: { message: string; stack: string; url: string }) => Promise<void>
   /** Reload this webContents after the renderer fallback has protected the window. */
   reloadRenderer: () => Promise<void>
+  /** Settings: install the `writeflex` command-line shim; resolves with a readable result either way. */
+  installCommandLineTool: () => Promise<{ ok: boolean; message: string }>
+  /** Sharing's set-up (ticket 02). The token goes in once, on checkToken; no answer ever holds it. */
+  sharing: {
+    status: (options?: { askService?: boolean }) => Promise<SharingSetupStatus>
+    checkToken: (token: string) => Promise<SharingResult>
+    checkSavedToken: () => Promise<SharingResult>
+    chooseAccount: (accountId: string) => Promise<SharingResult>
+    setUp: () => Promise<SharingResult>
+    /** Asked when "Remove sharing?" (or Retry) is shown: the confirmation remove must give back (single-use, this window, minutes, bound to the removal named). */
+    removalConfirmation: () => Promise<SharingRemovalQuestion>
+    remove: (request: SharingRemoveRequest) => Promise<SharingResult>
+    openCloudflare: () => Promise<void>
+    /** Ticket 05: the domains on the chosen account the token can reach, for "Use your own address". */
+    domains: () => Promise<SharingDomainsResult>
+    /** Attach `<name>.<domain>`; main checks both and refuses with the reason before any change. */
+    attachAddress: (request: AttachAddressRequest) => Promise<SharingResult>
+    /** Take your own address off the sharing service; new links use the Cloudflare address. */
+    removeAddress: () => Promise<SharingResult>
+    /** Ticket 03: the open piece's links (by its path in this window's Workspace). No answer holds a token. */
+    piece: (path: string) => Promise<PieceSharingView>
+    /** The Sharing page opened on this piece: main binds every link action of this window to it. */
+    open: (path: string) => Promise<PieceSharingView>
+    /** Ticket 09: a Folio's links (by its folder in this window's Workspace, '' the Workspace itself). */
+    folio: (dir: string, part?: string) => Promise<PieceSharingView>
+    /** The Sharing page opened on this Folio: main binds every link action of this window to it, and
+     *  Turn off and Copy link to `part`'s own piece links (the part open, review round 1, finding 3). */
+    openFolio: (dir: string, part?: string) => Promise<PieceSharingView>
+    /** The Sharing page closed: this window can act on no link until it opens a piece again. */
+    close: () => Promise<boolean>
+    make: (request: MakeLinkRequest) => Promise<SharingLinkResult>
+    rename: (shareId: string, name: string) => Promise<SharingLinkResult>
+    setComments: (shareId: string, comments: boolean) => Promise<SharingLinkResult>
+    turnOff: (shareId: string) => Promise<SharingLinkResult>
+    turnOn: (shareId: string) => Promise<SharingLinkResult>
+    /** Ticket 04: a link whose piece is not found follows to the place main found holding the same file. */
+    followTo: (shareId: string) => Promise<SharingLinkResult>
+    retry: (shareId: string) => Promise<SharingLinkResult>
+    openLink: (shareId: string) => Promise<boolean>
+    /** Copy link: the link's address as main decides it now (null: not a link of the open piece). Copy this, never a cached view. */
+    copyAddress: (shareId: string) => Promise<string | null>
+    /** Ticket 10: the Shares list of this window's Workspace. Main lists its own records and binds exactly
+     *  those links to this window (in place of a piece) until the list closes or is read again. */
+    openList: () => Promise<SharesListView>
+    /** Ticket 10: how many times each link this window's page or list has bound was opened, from the service (null: not known). */
+    opened: () => Promise<OpenedCounts>
+    /** Ticket 07: notes waiting and handled for each link this window has bound, and its Limits panel. */
+    notes: () => Promise<NotesCounts>
+    /** Ticket 07, the Limits panel: Clear handled notes and Raise the limit for this link. */
+    clearHandled: (shareId: string) => Promise<LimitsActionResult>
+    raiseLimit: (shareId: string) => Promise<LimitsActionResult>
+    /** A link or a publish changed (any piece): ask again. */
+    onChanged: (fn: () => void) => () => void
+  }
   /** Keep Mission Control/window-switcher identity in sync with the renderer's document label. */
   setWindowTitle: (title: string) => Promise<void>
   /** Static preload-time fence used only to install the renderer's forced-crash e2e hook. */
   e2eEnabled: boolean
+  /** The e2e write hooks (held, failed or interleaved writes): true only when main passed the argument,
+   *  which it does only in an unpackaged e2e run (shared/e2e-write-hooks.ts). */
+  e2eWriteHooks: boolean
   /** Hidden-window test instrumentation; returns/reset only a call count, never query content. */
   e2eCollectionQueryCount: () => number
   resetE2eCollectionQueryCount: () => void
@@ -573,19 +725,42 @@ export type WriteFlexApi = {
    *  nothing is written and nothing is raised), then one of the two writers runs, then
    *  `revealExport` shows THIS window's last export in the file manager. Rejects with
    *  human-readable copy naming a way forward; `missingImages` is reported, never silent. */
+  exportTitle: (input: ExportTitleChoice) => Promise<string>
   chooseExportTarget: (input: ExportChoice) => Promise<{ target: string | null; name: string }>
-  exportDocument: (input: { path: string; format: ExportFormat; target: string; html?: HtmlExportOptions }) => Promise<ExportOutcome>
-  exportBundle: (input: { dir: string; format: ExportFormat; target: string; html?: HtmlExportOptions }) => Promise<ExportOutcome>
+  /** `keepTocDepth`: the writer chose the Contents depth in the sheet; an HTML export uses exactly
+   *  `html.tocDepth` (absent: Default) and main then saves it with the exported document or the Folio's
+   *  Index Note (`outcome.tocDepthSave`; a refusal never fails the export). */
+  exportDocument: (input: { path: string; format: ExportFormat; target: string; html?: HtmlExportOptions; keepTocDepth?: boolean }) => Promise<ExportOutcome>
+  exportBundle: (input: { dir: string; format: ExportFormat; target: string; html?: HtmlExportOptions; keepTocDepth?: boolean }) => Promise<ExportOutcome>
   revealExport: () => Promise<void>
+  /** Contents depth kept with the file (`toc_depth`): a document's own, or a Folio's in its Index Note.
+   *  Names a SCOPE, never a file: main derives the file (a Markdown document, or the Folio's canonical
+   *  Index Note). Answers null when the scope has no such file. Only an HTML export writes it. */
+  readTocDepth: (scope: TocDepthScope) => Promise<TocDepthSource | null>
   /** Named export presets live in userData/settings.json; last-used choices remain workspace-scoped renderer state. */
   getExportPresetSettings: () => Promise<ExportPresetSettings>
   setExportPresetSettings: (settings: ExportPresetSettings) => Promise<ExportPresetSettings>
   openDialog: (droppedPath?: string) => Promise<WorkspaceState | null>
+  metadataValues: (exclude?: string) => Promise<MetadataValues>
+  setCollectionPageActive: (active: boolean, folio?: boolean) => Promise<void>
   getWorkspace: () => Promise<WorkspaceState>
   /** Every checklist note's progress, read from main's search content cache (no file is read twice). */
-  getChecklistProgress: () => Promise<ChecklistProgress[]>
+  /** With `paths`, just those files' rows (a save patched them in the listing: no walk of the tree). */
+  getChecklistProgress: (input?: { paths: string[] }) => Promise<ChecklistProgress[]>
+  /** The vault index of this window's root (works, Writing only hidden set, Titles labels); null when the
+   *  root is not a vault (no `.writeflex/vault.json`). Ticket 0.25-02. */
+  getVaultIndex: () => Promise<VaultIndex | null>
+  /** What the Make-this-folder-a-vault sheet shows for this window's root: found counts, per-group hide
+   *  counts, support-folder file counts and the distinct raw statuses. Writes nothing anywhere. Null with no folder open. */
+  previewVault: (input?: { hidden?: string[]; supportFolders?: string[] }) => Promise<VaultPreview | null>
   getRecents: () => Promise<RecentWorkspace[]>
   openRecent: (root: string, options?: { newWindow?: boolean }) => Promise<void>
+  /** The vault switcher's Vaults and Folders (vaults ticket 06): pins and recents, each looked at read-only. */
+  getSwitcherList: () => Promise<SwitcherList>
+  /** Move to a listed root, or to what the open dialog picks: a window on it takes THIS window's place,
+   *  and this window closes by its ordinary close (which writes every document). If the close is kept
+   *  open, the new window goes and the result is `stayed`. */
+  switchRoot: (target: RootSwitchTarget) => Promise<RootSwitchResult>
   /** Pinned roots in the user's order, each flagged `missing` when the folder is gone. */
   getPinned: () => Promise<PinnedWorkspace[]>
   /** Pin a recent root, or (no argument) this window's open Workspace. Resolves with the fresh list. */
@@ -652,6 +827,31 @@ export type WriteFlexApi = {
    *  (a hidden or build folder). `unwatchWidget` when the block goes. */
   watchWidget: (documentPath: string, rawPath: string) => Promise<{ watching: boolean }>
   unwatchWidget: (documentPath: string, rawPath: string) => Promise<void>
+  /** Standard widgets (ticket 04a). Create a widget from a source file and insert its line into the document, as one
+   *  undoable step; a document in no Folio gets the folder the writer chose in the own-folder sheet (`placement`).
+   *  Main resolves, reads and writes everything. */
+  createStandardWidget: (request: CreateWidgetCall) => Promise<CreateWidgetResult>
+  /** What is in a document's folder, for the own-folder sheet; `needed: false` when no sheet is shown. Reads only. */
+  standardWidgetOwnFolderFacts: (request: { documentPath: string; sourceFile?: string; name: string; title?: string }) => Promise<OwnFolderFactsAnswer>
+  /** Widget steps that moved documents and were stopped by a crash or a quit (their journals), for the launch notice. Reads only. */
+  standardWidgetLeftoverSteps: () => Promise<LeftoverStep[]>
+  /** The notice's Clean up: removes only the step's own files (each only while unchanged) and puts back the links it changed. */
+  cleanUpStandardWidgetStep: (id: string) => Promise<CleanUpResult>
+  /** Put away the journal of a step past its commit point (nothing on disk changes). */
+  forgetStandardWidgetStep: (id: string) => Promise<void>
+  /** Change the named top-level settings of a widget's recipe and rebuild it, as one undoable step. */
+  updateStandardWidgetRecipe: (request: UpdateRecipeCall) => Promise<UpdateRecipeResult>
+  /** Build a widget from its recipe now. */
+  buildStandardWidget: (recipePath: string) => Promise<BuildOutcome>
+  /** Undo a create or update step by the id it answered with. */
+  undoStandardWidgetStep: (undoId: string) => Promise<UndoResult>
+  /** The page a recipe draft and source (or edited source text) would build; writes nothing. */
+  previewStandardWidget: (request: PreviewCall) => Promise<PreviewResult>
+  /** The CSV and JSON files in the document's Folio folder (or its own folder) and below; no links, bounded. */
+  listStandardWidgetSources: (documentPath: string) => Promise<SourceFileListing>
+  /** Choose file… in the widget workbench: the native picker, in main. A file in the document's folders comes back
+   *  by its workspace path; any other file by an opaque token (never its path) to bring in by Copy or Keep in sync. */
+  pickStandardWidgetSource: (documentPath: string) => Promise<PickAnswer>
   /** widget-frame tells main whether one of the window's widgets is engaged (keys may go to it): by a press
    *  inside it, by the keyboard, or none. Main may refuse a press claim it cannot verify. */
   setWidgetKeyboardOwner: (claim: { engaged: false } | { engaged: true; how: 'press'; frame: string; sinceParentPressMs: number } | { engaged: true; how: 'keyboard'; frame: string }) => Promise<{ accepted: boolean }>
@@ -660,11 +860,15 @@ export type WriteFlexApi = {
   readFrontmatter: (path: string) => Promise<Frontmatter | null>
   /** Writing goal (Round A T5): the writer's own direct `goal:`/`due:` frontmatter write — the
    *  ADR-0019 capture path, never the staged agent capability. `target: null` clears both keys.
-   *  Returns the rewritten file so the renderer can reconcile the open buffer. */
-  setGoal: (path: string, target: number | null, due: string | null) => Promise<FileReadResult>
+   *  Returns the rewritten file so the renderer can reconcile the open buffer, with the receipt of the goal's
+   *  own write (absent when nothing needed writing). `basis`: the version the buffer was based on; over
+   *  any other version on disk nothing is written and the refusal comes back as data. */
+  setGoal: (path: string, target: number | null, due: string | null, basis: SaveBasis) => Promise<(FileReadResult & Partial<WriteReceipt>) | FileSaveDiskChanged>
   /** Tier 1 (ADR-0013): write the buffer to disk. Auto-save calls this continuously; it never snapshots
    *  — history is made by checkpoint() and agent turns. */
-  saveFile: (path: string, content: string) => Promise<FileSaveResult>
+  /** The editor's save. `basis` is the version of the file the buffer was based on: main writes only if the
+   *  disk holds it when the write commits (shared/save-basis.ts), and otherwise answers `disk-changed`. */
+  saveFile: (path: string, content: string, basis: SaveBasis) => Promise<FileSaveResult>
   /** Deliberate emptying path for ADR-0031: main asks for confirmation before bypassing the guard.
    *  A non-empty document is rescued before the question is shown; null means the writer cancelled. */
   clearDocument: (path: string) => Promise<ClearDocumentResult | null>
@@ -672,11 +876,15 @@ export type WriteFlexApi = {
    *  `auto: true` marks an app-made close-checkpoint (gated by the "checkpoint on close" setting); a ⌘S
    *  checkpoint passes no `auto` and always fires. */
   checkpoint: (path: string, opts?: { auto?: boolean }) => Promise<void>
+  /** Keep exactly `text` (a version of `path`) in History before it is replaced. The answer carries a
+   *  receipt (the History entry, sha256) or says why nothing was kept: no History in this window, or the
+   *  file no longer holds that text (main/preserve-version.ts). */
+  preserveVersion: (path: string, text: string) => Promise<PreserveResult>
   /** User file management (ADR-0017): typed names kept faithfully; deletes are OS-Trash only. */
   createFile: (name: string, directory?: string) => Promise<FileReadResult>
   planFileRename: (path: string, newName: string, directory?: string | null) => Promise<FileRenamePlan>
   renameFile: (path: string, newPath: string) => Promise<RenameFileResult>
-  moveFile: (path: string, newPath: string) => Promise<RenameFileResult>
+  moveFile: (path: string, newPath: string, collectionDir?: string) => Promise<RenameFileResult>
   duplicateFile: (path: string) => Promise<FileReadResult>
   pickImage: () => Promise<{ path: string } | null>
   saveImage: (bytes: ArrayBuffer | Uint8Array, ext: string) => Promise<{ path: string }>
@@ -698,11 +906,20 @@ export type WriteFlexApi = {
   addChange: (input: NewChange) => Promise<Change>
   updateWriterChange: (id: string, input: NewChange) => Promise<Change>
   setChangeStatus: (id: string, status: ChangeStatus) => Promise<Change>
+  /** A reply on a reader's note or proposed edit (0.24 ticket 08): kept as plain text on the record and sent to the link it came through. Decides nothing. */
+  replyToReader: (id: string, text: string) => Promise<Change>
   classifyChange: (id: string, editClass: EditClass) => Promise<Change>
   /** Accept/Reject a change from the dock — routed through the live suggestion (disk write) when one
    *  exists, else a direct status move or stored-diff replay. `applied` is false when it could NOT resolve
    *  honestly. Accept may return the rewritten file so the renderer can reconcile a fallback apply. */
-  resolveChange: (id: string, action: 'accept' | 'reject') => Promise<{ applied: boolean; file?: FileReadResult; message?: string }>
+  /** `written`: the text main wrote to the change's file in this call, when it wrote one; `file` is the
+   *  file read back after, which differs from `written` only when another program wrote it between. */
+  resolveChange: (id: string, action: 'accept' | 'reject') => Promise<{ applied: boolean; file?: FileReadResult; written?: string; seq?: number; message?: string; closed?: true; changedOnDisk?: { path: string; diskText: string | null } }>
+  /** How many undecided Changes from outside the ledger holds (in all, per source, per request), the
+   *  limits, and what the app's last look at the command line's inbox did. */
+  outsideSummary: () => Promise<OutsideSummary>
+  /** Reject every undecided Change of one request, or of one source, in one step. Name exactly one. */
+  rejectOutsideChanges: (which: { request: string } | { source: OutsideSource }) => Promise<{ rejected: number }>
   /** Save version (ADR-0014/C6): snapshot the explicit accepted/rejected state without auto-accepting
    *  undecided pending changes; pending proposals persist for a future version. */
   saveChangeVersion: (input: { path: string; changeIds: string[]; name: string; note?: string }) => Promise<{ versionId: string; snapshotId: string; record: Version; accepted: number; rejected: number; pending: number; corpusEntries: number }>
@@ -715,17 +932,22 @@ export type WriteFlexApi = {
   /** Compare two named versions, or a named version and Working, as content diff hunks with ledger attribution. */
   compareVersions: (input: { path: string; fromId: VersionCompareEndpointId; toId: VersionCompareEndpointId; currentContent?: string }) => Promise<VersionCompareResult>
   /** Restore a Version into the live document through main-owned writes and tier-2 checkpoints. */
-  restoreVersion: (input: VersionContentRequest & { currentContent?: string }) => Promise<FileReadResult | null>
+  /** Restore a version as the open document. `basis`: the version of the file the buffer is based on
+   *  (flushed first); main replaces only that version and otherwise answers `disk-changed`. */
+  restoreVersion: (input: VersionContentRequest & { basis: SaveBasis }) => Promise<FileSaveWritten | FileSaveDiskChanged | null>
   /** Collections (Task 23): read a folder as a browsable table of its pieces under an Index-Note cover.
    *  `dir` is workspace-relative ('' = the workspace root). Read-only. */
-  listCollection: (dir: string) => Promise<Collection>
+  listCollection: (dir: string, options?: { includeSearchText?: boolean }) => Promise<Collection>
   /** The 0.6 Collection spine. All projections call this one read-only main-process engine. */
   collection: {
+    beginBatch: () => Promise<void>
+    endBatch: () => Promise<void>
     status: (dir: string) => Promise<CollectionStatus>
     pattern: (dir: string) => Promise<CollectionPattern>
     query: (dir: string, source: string) => Promise<QueryResult>
     unresolvedFolderPieces: (dir: string) => Promise<UnresolvedFolderPiece[]>
     /** Board move: app-owned frontmatter status write; main emits collection invalidation. */
+    addTags: (dir: string, path: string, tags: string[]) => Promise<FileReadResult>
     setStatus: (dir: string, path: string, status: BoardStatus) => Promise<FileReadResult>
     /** Persist the selected folder's one-work/many-files override in its Index Note. */
     setPieceMode: (dir: string, folderPath: string, mode: 'one' | 'many') => Promise<FileReadResult>
@@ -777,14 +999,28 @@ export type WriteFlexApi = {
   readFolioPieces: (dir: string) => Promise<FolioPieces | null>
   /** Which Folio a file belongs to and where it sits in it; null when it is in none. */
   readFolioPlace: (path: string) => Promise<FolioPlace | null>
+  /** The Folio folder a folder belongs to (the folder itself, an ancestor with a manifest, or null): where the Folio page opens. */
+  readFolioDir: (dir: string) => Promise<string | null>
   /** The Outline's Folio part: the Folio of this file with its pieces and the folder's other files, with headings. Read-only. */
   readFolioOutline: (path: string) => Promise<FolioOutline | null>
+  /** The Folio outline's Details card (0.26 ticket 4). The Folio is named by its folder; main derives its Index Note. */
+  folioDetails: {
+    /** The seven fields as the card shows them, and the Index Note text they were read from (the next write's basis). */
+    read: (dir: string) => Promise<FolioDetailsRead>
+    /** Set one field (null removes its key) in the Index Note's header, only over `basis`, the Index Note text last read. */
+    set: (dir: string, field: FolioDetailField, value: string | null, basis: string) => Promise<FolioDetailAnswer>
+    /** Undo the change `token` names, only while the Index Note holds exactly what it left. */
+    undo: (dir: string, token: string) => Promise<FolioDetailUndoAnswer>
+    /** The Author, Audience and Language values other files in the Workspace use (read-only), with the writer's name first for Author. */
+    values: () => Promise<FolioDetailValuesAnswer>
+  }
   /** The Outline's running-order changes. Pieces are named by path, with the running order the caller saw
    *  (`expected`); main refuses, writing nothing, when that is no longer the running order. */
   folioRunningOrder: {
     movePiece: (dir: string, path: string, beforePath: string | null, expected: string[]) => Promise<RunningOrderResult>
     addPieces: (dir: string, paths: string[], expected: string[]) => Promise<RunningOrderResult>
-    removeAdded: (dir: string, paths: string[], expected: string[]) => Promise<RunningOrderResult>
+    /** Undo of an Add, by the token its answer carried (`undoToken`). */
+    removeAdded: (dir: string, token: string) => Promise<RunningOrderResult>
   }
   /** Tab groups (direction D): each workspace-relative path's group folder — nearest Folio, else
    *  nearest Index Note folder, else its own folder ('' = root). Read-only; nothing is stored. */
@@ -792,13 +1028,72 @@ export type WriteFlexApi = {
   /** Make Folio: draft + (after a native confirm) write the manifest; returns its path, or null if the
    *  writer cancels. Errors if a manifest already exists. Pushes `collection:changed`. */
   makeFolio: (dir: string) => Promise<string | null>
+  onFolioFlushRequested: (fn: (input: { id: string; dir: string }) => void) => () => void
+  replyFolioFlush: (id: string, saved: boolean) => Promise<void>
+  createNestedFolio: (dir: string) => Promise<string>
+  turnBackIntoCollection: (dir: string) => Promise<boolean>
+  /** A Folio's agent instructions (AGENTS.md, CLAUDE.md): their state for the Plan's and the Folder
+   *  dashboard's row (null when `dir` is not a Folio), and the author's requests from it. */
+  folioAgentInstructions: {
+    read: (dir: string) => Promise<FolioAgentInstructionsStatus | null>
+    act: (dir: string, action: FolioAgentInstructionsAction) => Promise<FolioAgentInstructionsStatus>
+  }
   plan: {
     read: (dir: string) => Promise<Plan | null>
-    adoptPart: (dir: string, unlistedIndex: number) => Promise<Plan>
+    /** Put back one "Not in the outline" row; `expected` is that row's file and title as shown, so a list that changed meanwhile is refused.
+     *  `asFrontMatter`: "Add as front matter" (ADR-0046), for a row offered as front matter (`frontMatterOffer`). */
+    adoptPart: (dir: string, unlistedIndex: number, expected: PlanPartKey, asFrontMatter?: boolean) => Promise<Plan>
     insertPart: (dir: string, at: number, part: PlanPartInput) => Promise<Plan>
     movePart: (dir: string, from: number, to: number) => Promise<Plan>
     removePart: (dir: string, index: number) => Promise<Plan>
+    /** Change one card's role; `expected` is that card's whole line as shown (title, file, gloss, role, tags), so a running order that moved meanwhile is refused. */
+    setPartRole: (dir: string, index: number, role: string, expected: PlanCardKey) => Promise<Plan>
+    /** Put the whole running order in `order` (`order[k]` = index into `expected` of the part at k), in one write. Sort by chapter number and its Undo. */
+    reorderParts: (dir: string, order: number[], expected: PlanPartKey[]) => Promise<PlanOrderResult>
+    /** Add files at the end of the running order, in the order given, in one write (Add all from this folder). */
+    addParts: (dir: string, paths: string[], expected: PlanPartKey[]) => Promise<PlanOrderResult>
+    /** Undo of `addParts`: take the files (the last parts of `expected`) out again. */
+    /** Undo of an Add all, by the token its answer carried (`undoToken`). */
+    removeAdded: (dir: string, token: string) => Promise<PlanOrderResult>
     materialisePart: (dir: string, index: number) => Promise<{ plan: Plan; path: string }>
+    /** The Plan's choice per part: no heading in the text (`heading: none`) or its own heading. */
+    setHeadingMode: (dir: string, path: string, mode: 'own' | 'none') => Promise<Plan>
+    /** The same choice for a part whose Folio is not known to the caller (the margin card): main finds the Folio. */
+    setHeadingModeOfPart: (path: string, mode: 'own' | 'none') => Promise<Plan | null>
+    /** The same, for the part open in the editor (the document owner's route): written only over `basis`, the
+     *  version the buffer is based on; `written` is this call's receipt (absent: nothing written), `content`
+     *  the file read back after it. Refused (the part is not the version `basis` names): nothing was written,
+     *  and `diskText` is what is on disk, for the changed-on-disk notice (as setGoal). */
+    setHeadingModeOfOpenPart: (path: string, mode: 'own' | 'none', basis: SaveBasis) => Promise<{ plan: Plan | null; written?: string; content?: string } | FileSaveDiskChanged>
+  }
+  /** Opening a Folio: stage the title proposals for the Folio holding this file, once per Folio per window. */
+  checkFolioPartTitles: (path: string) => Promise<{ proposed: number } | null>
+  /** The title-conflict buttons (Plan, Outline): main writes, over the version `fingerprint` names. */
+  titleConflict: {
+    /** One part of the Folio at `dir`. */
+    fixPart: (dir: string, item: { path: string; fingerprint: string }, direction: TitleFixDirection) => Promise<TitleFixAnswer>
+    /** Every part named, in one Undo step (the Plan header's "… for all N"). */
+    fixFolio: (dir: string, items: Array<{ path: string; fingerprint: string }>, direction: TitleFixDirection) => Promise<TitleFixAnswer>
+    /** Undo the step `token` names. */
+    undo: (token: string) => Promise<TitleUndoAnswer>
+  }
+  /** The vault of THIS window's root (`.writeflex/vault.json`, vaults ticket 01). Main owns the file;
+   *  no call names a root or a file. Pin paths are folder or `.md` document paths inside the root;
+   *  every view tells each pin's kind (`pinKinds`: [path, folder | document | missing] pairs). */
+  vault: {
+    /** The root's vault, or null when it is not one. Writes nothing. */
+    get: () => Promise<VaultView | null>
+    /** Make the root a vault (one write); refuses when it already is one. Missing fields take defaults. */
+    create: (input?: VaultCreateInput) => Promise<VaultWriteResult>
+    /** Pin an existing folder or `.md` document inside the root, applied onto the file as it is now on disk. */
+    addPin: (path: string) => Promise<VaultWriteResult>
+    removePin: (path: string) => Promise<VaultWriteResult>
+    /** New pin order, applied onto the file as it is now (pins added elsewhere meanwhile are kept). */
+    reorderPins: (order: string[]) => Promise<VaultWriteResult>
+    /** Whole save of the settings read with `baseHash`; `changed` (nothing written) when the file moved on. */
+    save: (settings: VaultSettings, baseHash: string) => Promise<VaultWriteResult>
+    /** Every change to this root's vault file: own writes (`outside: false`) and outside ones. */
+    onChanged: (fn: (event: VaultChangedEvent) => void) => () => void
   }
   /** The Board's material steps (scraps tickets 02 and 03), each one undo group. */
   boardMaterial: {
@@ -975,6 +1270,8 @@ export type WriteFlexApi = {
     search: (request: ArchiveSearchRequest) => Promise<ArchiveSearchResponse>
     passage: (passageId: string) => Promise<ArchivePassageResponse>
   }
+  /** "Capture to research…": main runs `scout capture` for the Piece's folder (or its Folio's) and answers with the filed path or a sentence for the writer. */
+  captureResearch: (request: CaptureRequest) => Promise<CaptureResponse>
   /** Open a `writeflex://open?path=…&line=N` link clicked in a draft (same parser as browser links). */
   openWriteflexLink: (url: string) => Promise<OpenLinkResult>
   /** The app version (package.json), for the status-bar corner. Static — fetch once. */
@@ -1002,6 +1299,16 @@ export type WriteFlexApi = {
   /** A native window close (red light, Window menu, ⌘Q) was intercepted: the renderer acks, flushes its
    *  LIVE dirty set (saving is automatic, ADR-0012), then closeWindow() — or cancelClose() if a write fails. */
   onCloseRequested: (fn: () => void) => () => void
+  /** Main called off the close it asked for (the vault switcher's bound ran out): the close in flight
+   *  must not send closeWindow() or cancelClose() when its flush ends. Answer with acknowledgeAbandonClose(). */
+  onAbandonClose: (fn: () => void) => () => void
+  /** This page has dropped the abandoned close; main takes its close answers again. */
+  acknowledgeAbandonClose: () => Promise<void>
+  /** The page has loaded its workspace view: `root`, or null for the start screen. A window the vault
+   *  switcher opened hidden is shown only once this names the root it was bound to. */
+  reportRendererReady: (root: string | null) => Promise<void>
+  /** A one-line status from main for the status bar ("Switching to Notes…"). */
+  onStatus: (fn: (message: string) => void) => () => void
   onTrace: (fn: (e: TraceEvent) => void) => () => void
   onApproval: (fn: (req: ApprovalRequest) => void) => () => void
   onSuggestions: (fn: (s: Suggestion[]) => void) => () => void
@@ -1019,8 +1326,12 @@ export type WriteFlexApi = {
   onChangesChanged: (fn: () => void) => () => void
   /** A Version record landed; reload the active document's spine. */
   onVersionsChanged: (fn: () => void) => () => void
-  /** A Collection write landed (New piece / create Index Note): refresh the tree and the open view. */
-  onCollectionChanged: (fn: () => void) => () => void
+  /** A Collection write landed (New piece / create Index Note): refresh the tree and the open view.
+   *  The payload is `null` except after an own save in place, when it carries that file's fresh
+   *  listing entry so the tree can patch it instead of re-listing (shared/listing-patch.ts). */
+  onCollectionChanged: (fn: (change: CollectionChanged | null) => void) => () => void
+  /** The vault index after main recomputed it on a change in this root (null if the root stopped being a vault). */
+  onVaultIndexChanged: (fn: (index: VaultIndex | null) => void) => () => void
   /** A guarded Diary write refusal, already reduced to human-readable text by main. */
   onDiaryError: (fn: (message: string) => void) => () => void
   /** Genuine external filesystem changes, as Workspace-relative paths, for open-buffer reconcile. */
@@ -1052,6 +1363,7 @@ const subscribeMenuAction = multiplexIpcChannel<MenuAction>(ipcRenderer, 'menu:a
 const subscribeExampleChanged = multiplexIpcChannel<{ change: 'removed' | 'restored' }>(ipcRenderer, 'example:changed')
 const subscribeGuideShow = multiplexIpcChannel<null>(ipcRenderer, 'guide:show')
 const subscribeSettingChanged = multiplexIpcChannel<{ key: string; value: SettingValue | null }>(ipcRenderer, 'settings:changed')
+const subscribeVaultChanged = multiplexIpcChannel<VaultChangedEvent>(ipcRenderer, 'vault:changed')
 const subscribeCollectionQueryChanged = multiplexIpcChannel<CollectionQueryInvalidation>(ipcRenderer, 'collection:query-changed')
 let collectionQueryCount = 0
 const collectionQueriesInFlight = new Map<string, Promise<QueryResult>>()
@@ -1140,23 +1452,72 @@ function validateFileRenameResult(value: unknown): RenameFileResult {
 const api: WriteFlexApi = {
   reportRendererError: (error) => ipcRenderer.invoke('diagnostics:renderer-error', error),
   reloadRenderer: () => ipcRenderer.invoke('diagnostics:reload-renderer'),
+  installCommandLineTool: () => ipcRenderer.invoke('cli:install'),
+  sharing: {
+    status: (options) => ipcRenderer.invoke('sharing:status', { askService: options?.askService === true }),
+    checkToken: (token) => ipcRenderer.invoke('sharing:check-token', token),
+    checkSavedToken: () => ipcRenderer.invoke('sharing:check-saved-token'),
+    chooseAccount: (accountId) => ipcRenderer.invoke('sharing:choose-account', accountId),
+    setUp: () => ipcRenderer.invoke('sharing:set-up'),
+    removalConfirmation: () => ipcRenderer.invoke('sharing:removal-confirmation'),
+    remove: (request) => ipcRenderer.invoke('sharing:remove', { confirmation: request.confirmation }),
+    openCloudflare: () => ipcRenderer.invoke('sharing:open-cloudflare'),
+    domains: () => ipcRenderer.invoke('sharing:domains'),
+    attachAddress: (request) => ipcRenderer.invoke('sharing:attach-address', { name: request.name, domain: request.domain }),
+    removeAddress: () => ipcRenderer.invoke('sharing:remove-address'),
+    piece: (path) => ipcRenderer.invoke('sharing:piece', path),
+    open: (path) => ipcRenderer.invoke('sharing:open', path),
+    folio: (dir, part) => ipcRenderer.invoke('sharing:folio', part === undefined ? dir : { dir, part }),
+    openFolio: (dir, part) => ipcRenderer.invoke('sharing:open-folio', part === undefined ? dir : { dir, part }),
+    close: () => ipcRenderer.invoke('sharing:close'),
+    make: (request) => ipcRenderer.invoke('sharing:make', request.folio !== undefined
+      ? { folio: request.folio, name: request.name, comments: request.comments }
+      : { path: request.path, name: request.name, comments: request.comments }),
+    rename: (shareId, name) => ipcRenderer.invoke('sharing:rename', { shareId, name }),
+    setComments: (shareId, comments) => ipcRenderer.invoke('sharing:set-comments', { shareId, comments }),
+    turnOff: (shareId) => ipcRenderer.invoke('sharing:turn-off', { shareId }),
+    turnOn: (shareId) => ipcRenderer.invoke('sharing:turn-on', { shareId }),
+    followTo: (shareId) => ipcRenderer.invoke('sharing:follow-to', { shareId }),
+    retry: (shareId) => ipcRenderer.invoke('sharing:retry', { shareId }),
+    openLink: (shareId) => ipcRenderer.invoke('sharing:open-link', { shareId }),
+    copyAddress: (shareId) => ipcRenderer.invoke('sharing:copy-address', { shareId }),
+    openList: () => ipcRenderer.invoke('sharing:open-list'),
+    opened: () => ipcRenderer.invoke('sharing:opened'),
+    notes: () => ipcRenderer.invoke('sharing:notes'),
+    clearHandled: (shareId) => ipcRenderer.invoke('sharing:clear-handled', { shareId }),
+    raiseLimit: (shareId) => ipcRenderer.invoke('sharing:raise-limit', { shareId }),
+    onChanged: (fn) => {
+      const listener = (): void => fn()
+      ipcRenderer.on('sharing:changed', listener)
+      return () => { ipcRenderer.removeListener('sharing:changed', listener) }
+    },
+  },
   setWindowTitle: (title) => ipcRenderer.invoke('window:set-title', title),
   e2eEnabled: process.env.WRITEFLEX_E2E === '1',
+  e2eWriteHooks: e2eWriteHooksFromProcess(process.argv, process.env),
   e2eCollectionQueryCount: () => collectionQueryCount,
   resetE2eCollectionQueryCount: () => { collectionQueryCount = 0 },
   clipboardText: () => clipboard.readText(),
   copyToClipboard: (markdown, kind, path) => ipcRenderer.invoke('clipboard:copy', { markdown, kind, path }),
+  exportTitle: (input) => ipcRenderer.invoke('export:title', input),
   chooseExportTarget: (input) => ipcRenderer.invoke('export:choose', input),
   exportDocument: (input) => ipcRenderer.invoke('export:document', input),
   exportBundle: (input) => ipcRenderer.invoke('export:bundle', input),
   revealExport: () => ipcRenderer.invoke('export:reveal'),
+  readTocDepth: (input) => ipcRenderer.invoke('export:toc-depth:read', input),
   getExportPresetSettings: () => ipcRenderer.invoke('export-presets:get'),
   setExportPresetSettings: (settings) => ipcRenderer.invoke('export-presets:set', settings),
   openDialog: (droppedPath) => ipcRenderer.invoke('workspace:open-dialog', droppedPath),
+  metadataValues: (exclude) => ipcRenderer.invoke('metadata:values', exclude),
+  setCollectionPageActive: (active, folio = false) => ipcRenderer.invoke('menu:collection-active', { active, folio }),
   getWorkspace: () => ipcRenderer.invoke('workspace:get'),
-  getChecklistProgress: () => ipcRenderer.invoke('workspace:checklist-progress'),
+  getChecklistProgress: (input) => ipcRenderer.invoke('workspace:checklist-progress', input),
+  getVaultIndex: () => ipcRenderer.invoke('vault:index'),
+  previewVault: (input) => ipcRenderer.invoke('vault:preview', input ?? {}),
   getRecents: () => ipcRenderer.invoke('workspace:recents'),
   openRecent: (root, options) => ipcRenderer.invoke('workspace:open-recent', root, options),
+  getSwitcherList: () => ipcRenderer.invoke('workspace:switcher-list'),
+  switchRoot: (target) => ipcRenderer.invoke('workspace:switch', target),
   getPinned: () => ipcRenderer.invoke('workspace:pinned'),
   pinWorkspace: (root) => ipcRenderer.invoke('workspace:pin', root),
   unpinWorkspace: (root) => ipcRenderer.invoke('workspace:unpin', root),
@@ -1197,17 +1558,29 @@ const api: WriteFlexApi = {
   setWidgetKeyboardOwner: (claim) => ipcRenderer.invoke('widget:keyboard-owner', claim),
   watchWidget: (documentPath, rawPath) => ipcRenderer.invoke('widget:watch', { documentPath, rawPath }),
   unwatchWidget: (documentPath, rawPath) => ipcRenderer.invoke('widget:unwatch', { documentPath, rawPath }),
+  createStandardWidget: (request) => ipcRenderer.invoke('standard-widget:create', request),
+  standardWidgetOwnFolderFacts: (request) => ipcRenderer.invoke('standard-widget:own-folder-facts', request),
+  standardWidgetLeftoverSteps: () => ipcRenderer.invoke('standard-widget:leftover-steps'),
+  cleanUpStandardWidgetStep: (id) => ipcRenderer.invoke('standard-widget:clean-up-step', { id }),
+  forgetStandardWidgetStep: (id) => ipcRenderer.invoke('standard-widget:forget-step', { id }),
+  updateStandardWidgetRecipe: (request) => ipcRenderer.invoke('standard-widget:update-recipe', request),
+  buildStandardWidget: (recipePath) => ipcRenderer.invoke('standard-widget:build', { recipePath }),
+  undoStandardWidgetStep: (undoId) => ipcRenderer.invoke('standard-widget:undo', { undoId }),
+  previewStandardWidget: (request) => ipcRenderer.invoke('standard-widget:preview', request),
+  listStandardWidgetSources: (documentPath) => ipcRenderer.invoke('standard-widget:list-sources', { documentPath }),
+  pickStandardWidgetSource: (documentPath) => ipcRenderer.invoke('standard-widget:pick-source', { documentPath }),
   readFrontmatter: (path) => ipcRenderer.invoke('frontmatter:read', path),
-  setGoal: (path, target, due) => ipcRenderer.invoke('goal:set', { path, target, due }),
-  saveFile: (path, content) => ipcRenderer.invoke('file:save', { path, content }),
+  setGoal: (path, target, due, basis) => ipcRenderer.invoke('goal:set', { path, target, due, basis }),
+  saveFile: (path, content, basis) => ipcRenderer.invoke('file:save', { path, content, basis }),
   clearDocument: (path) => ipcRenderer.invoke('file:clear', { path }),
   checkpoint: (path, opts) => ipcRenderer.invoke('snapshot:checkpoint', { path, ...(opts?.auto ? { auto: true } : {}) }),
+  preserveVersion: (path, text) => ipcRenderer.invoke('snapshot:preserve', { path, text }),
   createFile: (name, directory) => ipcRenderer.invoke('file:create', { name, directory }),
   planFileRename: (path, newName, directory) => ipcRenderer
     .invoke('file:rename-repair-paths', { path, newName, directory })
     .then(validateFileRenamePlan),
   renameFile: (path, newPath) => ipcRenderer.invoke('file:rename', { path, newPath }).then(validateFileRenameResult),
-  moveFile: (path, newPath) => ipcRenderer.invoke('file:move', { path, newPath }).then(validateFileRenameResult),
+  moveFile: (path, newPath, collectionDir) => ipcRenderer.invoke('file:move', { path, newPath, collectionDir }).then(validateFileRenameResult),
   duplicateFile: (path) => ipcRenderer.invoke('file:duplicate', { path }),
   pickImage: () => ipcRenderer.invoke('assets:pick-image'),
   saveImage: (bytes, ext) => ipcRenderer.invoke('assets:save-image', { bytes, ext }),
@@ -1225,20 +1598,26 @@ const api: WriteFlexApi = {
   addChange: (input) => ipcRenderer.invoke('changes:add', input),
   updateWriterChange: (id, input) => ipcRenderer.invoke('changes:update-writer', { id, input }),
   setChangeStatus: (id, status) => ipcRenderer.invoke('changes:set-status', { id, status }),
+  replyToReader: (id, text) => ipcRenderer.invoke('changes:reader-reply', { id, text }),
   classifyChange: (id, editClass) => ipcRenderer.invoke('changes:classify', { id, editClass }),
   resolveChange: (id, action) => ipcRenderer.invoke('changes:resolve', { id, action }),
+  outsideSummary: () => ipcRenderer.invoke('changes:outside-summary'),
+  rejectOutsideChanges: (which) => ipcRenderer.invoke('changes:reject-outside', which),
   saveChangeVersion: (input) => ipcRenderer.invoke('changes:save-version', input),
   listVersions: (scope) => ipcRenderer.invoke('versions:list', scope),
   renameVersion: (id, name) => ipcRenderer.invoke('versions:rename', { id, name }),
   versionContent: (input) => ipcRenderer.invoke('versions:content', input),
   compareVersions: (input) => ipcRenderer.invoke('versions:compare', input),
   restoreVersion: (input) => ipcRenderer.invoke('versions:restore', input),
-  listCollection: (dir) => ipcRenderer.invoke('collection:list', { dir }),
+  listCollection: (dir, options) => ipcRenderer.invoke('collection:list', { dir, ...options }),
   collection: {
+    beginBatch: () => ipcRenderer.invoke('collection:begin-batch'),
+    endBatch: () => ipcRenderer.invoke('collection:end-batch'),
     status: (dir) => ipcRenderer.invoke('collection:status', { dir }),
     pattern: (dir) => ipcRenderer.invoke('collection:pattern', { dir }),
     query: queryCollection,
     unresolvedFolderPieces: (dir) => ipcRenderer.invoke('collection:unresolved-folder-pieces', { dir }),
+    addTags: (dir, path, tags) => ipcRenderer.invoke('collection:add-tags', { dir, path, tags }),
     setStatus: (dir, path, status) => ipcRenderer.invoke('collection:set-status', { dir, path, status }),
     setPieceMode: (dir, folderPath, mode) => ipcRenderer.invoke('collection:set-piece-mode', { dir, folderPath, mode }),
     links: (dir, from, content) => ipcRenderer.invoke('collection:links', { dir, from, content }),
@@ -1278,21 +1657,58 @@ const api: WriteFlexApi = {
   readFolio: (dir) => ipcRenderer.invoke('folio:read', { dir }),
   readFolioPieces: (dir) => ipcRenderer.invoke('folio:pieces', { dir }),
   readFolioPlace: (path) => ipcRenderer.invoke('folio:place', { path }),
+  readFolioDir: (dir) => ipcRenderer.invoke('folio:dir', { dir }),
   readFolioOutline: (path) => ipcRenderer.invoke('folio:outline', { path }),
+  folioDetails: {
+    read: (dir) => ipcRenderer.invoke('folio:read-details', { dir }),
+    set: (dir, field, value, basis) => ipcRenderer.invoke('folio:set-detail', { dir, field, value, basis }),
+    undo: (dir, token) => ipcRenderer.invoke('folio:undo-detail', { dir, token }),
+    values: () => ipcRenderer.invoke('folio:detail-values', {}),
+  },
   folioRunningOrder: {
     movePiece: (dir, path, beforePath, expected) => ipcRenderer.invoke('folio:move-piece', { dir, path, beforePath, expected }),
     addPieces: (dir, paths, expected) => ipcRenderer.invoke('folio:add-pieces', { dir, paths, expected }),
-    removeAdded: (dir, paths, expected) => ipcRenderer.invoke('folio:remove-added', { dir, paths, expected }),
+    removeAdded: (dir, token) => ipcRenderer.invoke('folio:remove-added', { dir, token }),
   },
   resolveTabGroups: (paths) => ipcRenderer.invoke('tabs:groups', { paths }),
   makeFolio: (dir) => ipcRenderer.invoke('folio:create', { dir }),
+  onFolioFlushRequested: on('folio:flush-requested'),
+  replyFolioFlush: (id, saved) => ipcRenderer.invoke('folio:flush-result', { id, saved }),
+  createNestedFolio: (dir) => ipcRenderer.invoke('folio:create-nested', { dir }),
+  turnBackIntoCollection: (dir) => ipcRenderer.invoke('folio:turn-back', { dir }),
+  folioAgentInstructions: {
+    read: (dir) => ipcRenderer.invoke('folio:agent-instructions', { dir }),
+    act: (dir, action) => ipcRenderer.invoke('folio:agent-instructions-act', { dir, action }),
+  },
   plan: {
     read: (dir) => ipcRenderer.invoke('plan:read', { dir }),
-    adoptPart: (dir, unlistedIndex) => ipcRenderer.invoke('plan:adopt-part', { dir, unlistedIndex }),
+    adoptPart: (dir, unlistedIndex, expected, asFrontMatter) => ipcRenderer.invoke('plan:adopt-part', { dir, unlistedIndex, expected, ...(asFrontMatter ? { asFrontMatter: true } : {}) }),
     insertPart: (dir, at, part) => ipcRenderer.invoke('plan:insert-part', { dir, at, part }),
     movePart: (dir, from, to) => ipcRenderer.invoke('plan:move-part', { dir, from, to }),
     removePart: (dir, index) => ipcRenderer.invoke('plan:remove-part', { dir, index }),
+    setPartRole: (dir, index, role, expected) => ipcRenderer.invoke('plan:set-part-role', { dir, index, role, expected }),
+    reorderParts: (dir, order, expected) => ipcRenderer.invoke('plan:reorder-parts', { dir, order, expected }),
+    addParts: (dir, paths, expected) => ipcRenderer.invoke('plan:add-parts', { dir, paths, expected }),
+    removeAdded: (dir, token) => ipcRenderer.invoke('plan:remove-added', { dir, token }),
     materialisePart: (dir, index) => ipcRenderer.invoke('plan:materialise-part', { dir, index }),
+    setHeadingMode: (dir, path, mode) => ipcRenderer.invoke('plan:set-heading-mode', { dir, path, mode }),
+    setHeadingModeOfPart: (path, mode) => ipcRenderer.invoke('plan:set-heading-mode', { path, mode, locate: true }),
+    setHeadingModeOfOpenPart: (path, mode, basis) => ipcRenderer.invoke('plan:set-heading-mode', { path, mode, locate: true, basis }),
+  },
+  checkFolioPartTitles: (path) => ipcRenderer.invoke('folio:check-part-titles', { path }),
+  titleConflict: {
+    fixPart: (dir, item, direction) => ipcRenderer.invoke('title:fix-part', { dir, item, direction }),
+    fixFolio: (dir, items, direction) => ipcRenderer.invoke('title:fix-folio', { dir, items, direction }),
+    undo: (token) => ipcRenderer.invoke('title:undo', { token }),
+  },
+  vault: {
+    get: () => ipcRenderer.invoke('vault:get'),
+    create: (input) => ipcRenderer.invoke('vault:create', input ?? {}),
+    addPin: (path) => ipcRenderer.invoke('vault:add-pin', { path }),
+    removePin: (path) => ipcRenderer.invoke('vault:remove-pin', { path }),
+    reorderPins: (order) => ipcRenderer.invoke('vault:reorder-pins', { order }),
+    save: (settings, baseHash) => ipcRenderer.invoke('vault:save', { settings, baseHash }),
+    onChanged: (fn) => subscribeVaultChanged(fn),
   },
   boardMaterial: {
     promoteOffcut: (input) => ipcRenderer.invoke('board-material:promote-offcut', input),
@@ -1374,6 +1790,7 @@ const api: WriteFlexApi = {
     search: (request) => ipcRenderer.invoke('archive:search', request),
     passage: (passageId) => ipcRenderer.invoke('archive:passage', passageId),
   },
+  captureResearch: (request) => ipcRenderer.invoke('research:capture', request),
   openWriteflexLink: (url) => ipcRenderer.invoke('links:open-writeflex', url),
   getAppVersion: () => ipcRenderer.invoke('app:version'),
   getRuntimeInfo: () => ipcRenderer.invoke('app:runtime-info'),
@@ -1382,6 +1799,10 @@ const api: WriteFlexApi = {
   closeUnsaved: () => ipcRenderer.invoke('window:close-unsaved'),
   cancelClose: () => ipcRenderer.invoke('window:cancel-close'),
   acknowledgeClose: () => ipcRenderer.invoke('window:close-ack'),
+  onAbandonClose: on<void>('window:abandon-close'),
+  acknowledgeAbandonClose: () => ipcRenderer.invoke('window:abandon-close-ack'),
+  reportRendererReady: (root) => ipcRenderer.invoke('renderer:ready', root),
+  onStatus: on<string>('window:status'),
   onCloseRequested: (fn) => {
     closeRequestListeners += 1
     if (!appStartReported) {
@@ -1407,7 +1828,8 @@ const api: WriteFlexApi = {
   onScrapsChanged: on('scraps:changed'),
   onChangesChanged: on('changes:changed'),
   onVersionsChanged: on('versions:changed'),
-  onCollectionChanged: on('collection:changed'),
+  onCollectionChanged: on<CollectionChanged | null>('collection:changed'),
+  onVaultIndexChanged: on('vault:index-changed'),
   onDiaryError: on('diary:error'),
   onFileChangedOnDisk: on('file:changed-on-disk')
 }

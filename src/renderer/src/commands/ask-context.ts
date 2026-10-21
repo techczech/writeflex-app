@@ -11,7 +11,7 @@
 //   image                                  the image's path
 //   empty document                         nothing
 import type { EditorState } from '@codemirror/state'
-import { getSectionRange } from '@bridle/outline'
+import { getSectionRange } from '@app-patterns/outline'
 import { blockSpanAt } from '../editor/block-actions'
 import { livePreviewBlocks } from '../editor/live-preview'
 import type { Place } from './place'

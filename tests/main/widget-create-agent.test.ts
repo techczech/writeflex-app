@@ -7,7 +7,7 @@ import { WorkspaceAgent, type ScriptedStep } from '../../src/main/agent'
 import { capabilityEnabled } from '../../src/main/capabilities'
 import { ChangeStore, changeJournalPath, newFilePartOf } from '../../src/main/changes'
 import { widgetFileSha256 } from '../../src/main/widget-create'
-import { isHiddenWorkspacePath, Workspace } from '../../src/main/workspace'
+import { isHiddenWorkspacePath, SavedButNotReadBack, Workspace } from '../../src/main/workspace'
 import { writeflexApprovalPolicy } from '../../src/main/capabilities'
 import { parseFrontmatter } from '../../src/main/frontmatter'
 import type { Capability } from '@bridle/core'
@@ -211,7 +211,7 @@ test('another Change with the same document, path and hash cannot vouch for the 
   const journal = changeJournalPath()
   const records = (await readFile(join(root, journal), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
   for (const record of records) if (record.id === newer.id) record.newFile = { path: FILE, content: other, sha256: widgetFileSha256(other) }
-  await ws.saveEditorText(journal, records.map((record) => JSON.stringify(record)).join('\n') + '\n') // the route review finding used, below the IPC refusal
+  await ws.saveEditorText(journal, records.map((record) => JSON.stringify(record)).join('\n') + '\n', { kind: 'disk', text: await readFile(join(root, journal), 'utf8') }) // the route review finding used, below the IPC refusal
   expect(newFilePartOf(await changes.get(newer.id))?.content).toBe(other) // the card now shows B
 
   const result = await live.resolveChange(newer.id, 'accept')
@@ -280,17 +280,15 @@ for (const key of ['permissions.createFiles', 'permissions.proseEdits']) {
   }
 }
 
-/** A workspace whose save commits and whose read-back then fails. */
+/** A workspace whose save commits and whose read-back then fails. The agent's verbs save through the guarded
+ *  (document-only) write, whose read-back is the guarded read, not `readFile`: so the failure is raised where
+ *  saveFile raises it for a failed read-back, after the write has committed. */
 class ReadBackFails extends Workspace {
   failing = false
-  #saving = false
   override async saveFile(...args: Parameters<Workspace['saveFile']>): ReturnType<Workspace['saveFile']> {
-    this.#saving = true
-    try { return await super.saveFile(...args) } finally { this.#saving = false }
-  }
-  override async readFile(path: string): ReturnType<Workspace['readFile']> {
-    if (this.failing && this.#saving && path === 'essays/doc.md') throw new Error('post-save read failed')
-    return super.readFile(path)
+    const saved = await super.saveFile(...args)
+    if (this.failing && args[0] === 'essays/doc.md') throw new SavedButNotReadBack(args[0], 'post-save read failed')
+    return saved
   }
 }
 

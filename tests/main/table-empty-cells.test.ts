@@ -126,7 +126,7 @@ test('HTML: the empty cell is an empty <td>, so "3" stays under the third column
   const { html } = toHtml(GAPS)
   const rows = [...html.matchAll(/<tr>(.*?)<\/tr>/g)].map((row) => [...row[1].matchAll(/<t[dh][^>]*>(.*?)<\/t[dh]>/g)].map((cell) => cell[1]))
   expect(rows).toEqual([['A', 'B', 'C'], ['1', '', '3'], ['', '5', '']])
-  expect(toHtml(GAPS, { tableRegions: true }).html).toBe(`<div class="wf-table-region">${html}</div>`)
+  expect(toHtml(GAPS, { tableRegions: true }).html).toBe(`<div class="wf-table-region table-scroll">${html}</div>`)
 })
 
 test('plain text: the empty cell keeps its tab', () => {

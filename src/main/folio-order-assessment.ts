@@ -15,16 +15,18 @@
 import { manifestContentRootRefused, manifestEntryPointsOutsideFolio, resolveManifestFilePath, type Folio } from './folio'
 import { readPlanWithManifest, type Plan } from './plan'
 import type { Workspace } from './workspace'
+import { isAgentInstructionsName } from '../shared/folio-agent-files'
 
 export type OutlineOrderReason =
-  | 'no-index' // the Index Note is a file the workspace does not list, so there is no Plan to read
-  | 'no-manifest' // the order follows file names; a Plan write would change only the Index Note
+  | 'no-index' // the Index Note is a file the workspace does not list, so there is no Folio outline to read
+  | 'no-manifest' // the order follows file names; a Folio outline write would change only the Index Note
   | 'outside-entry' // an entry points outside the Folio's folder (or content_root leaves it)
   | 'missing-file' // an entry's file is not there
-  | 'unreadable-entry' // an element of `files` is not an entry with a path, so a rewrite from the Plan's parts would not carry it
+  | 'unreadable-entry' // an element of `files` is not an entry with a path, so a rewrite from the Folio outline's parts would not carry it
   | 'listed-twice' // a file is listed twice, in the manifest or in the Index Note
   | 'part-without-file' // a running-order line of the Index Note has no file
   | 'disagree' // the Index Note and the manifest list different files or a different order
+  | 'agent-instructions' // an entry names AGENTS.md, CLAUDE.md or a conflict copy of either, which is never a part
 
 export type OutlineOrderAssessment =
   | { ok: true; order: string[] }
@@ -45,6 +47,7 @@ export function assessOutlineOrder(plan: Plan | null, manifest: Folio | null, pr
     if (manifestEntryPointsOutsideFolio(plan.dir, manifest, file)) return { ok: false, reason: 'outside-entry' }
     const path = resolveManifestFilePath(plan.dir, manifest, file, present)
     if (!path) return { ok: false, reason: 'missing-file' }
+    if (isAgentInstructionsName(path)) return { ok: false, reason: 'agent-instructions' }
     manifestOrder.push(path)
   }
   if (hasRepeat(manifestOrder)) return { ok: false, reason: 'listed-twice' }

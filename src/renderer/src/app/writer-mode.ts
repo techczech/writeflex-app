@@ -47,6 +47,11 @@ export type WriterMode = {
   currentSessionIdForFile: (path: string) => string | undefined
   /** Cancel a debounced flush (save-version flushes explicitly and must not race the timer). */
   cancelPendingFlush: () => void
+  /** Record every tracked edit still waiting for its debounce and wait for every flush in flight (the
+   *  window's close awaits this before it lets the window go). Never rejects. */
+  flushWriterChangesNow: () => Promise<WriterDrainResult>
+  /** No debounced flush is waiting and none is running: a close can go without draining. */
+  writerChangesIdle: () => boolean
   /** Drop a file's memoised writer-change state after its edits are settled into a version. */
   clearFileWriterState: (path: string) => void
   /** Per-path localId↔storeId table — review actions map store ids back to editor marks through this. */
@@ -85,6 +90,99 @@ export async function sendOriginalToScratchpad(
 }
 
 /**
+ * How tracked writer edits reach the ledger in time: a 700 ms debounce per editing burst, flushes
+ * serialised per path, and a drain the window's close awaits (vaults 06 review round 2: a close that
+ * beat the debounce lost the pending review record). React-free so the close's guarantee is testable.
+ */
+export type WriterFlushQueue = {
+  /** Run `flush(path)` behind every flush already queued for that path; its result. */
+  enqueue(path: string): Promise<string[]>
+  /** An edit landed in `path`: (re)start the debounce. */
+  schedule(path: string): void
+  /** Cancel the debounce timer (the path stays owed: `drain` still records it). */
+  cancel(): void
+  /** Cancel the debounce, flush every path still owed, and wait until no path is owed and no flush is in
+   *  flight, including paths edited while it waits. Never rejects: a path whose flush failed stays owed
+   *  and is listed in `failed` (round 3, S3). */
+  drain(): Promise<WriterDrainResult>
+  /** Nothing owed and nothing in flight. */
+  idle(): boolean
+}
+
+/** What a drain could not record: the paths whose last flush failed. They stay owed. */
+export type WriterDrainResult = { failed: string[] }
+
+export function createWriterFlushQueue(options: {
+  flush: (path: string) => Promise<string[]>
+  delayMs?: number
+  setTimer?: (run: () => void, ms: number) => unknown
+  clearTimer?: (handle: unknown) => void
+}): WriterFlushQueue {
+  const delayMs = options.delayMs ?? 700
+  const setTimer = options.setTimer ?? ((run, ms) => setTimeout(run, ms))
+  const clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>))
+  const chains = new Map<string, Promise<string[]>>()
+  /** Paths with an edit the debounce has not yet recorded. */
+  const owed = new Set<string>()
+  let timer: unknown = null
+  /** Told how the last flush queued for a path ended (a drain listens for failures). */
+  const observers = new Set<(path: string, ok: boolean) => void>()
+
+  const enqueue = (path: string): Promise<string[]> => {
+    owed.delete(path)
+    const run = (): Promise<string[]> => options.flush(path)
+    const prev = chains.get(path) ?? Promise.resolve([])
+    const next = prev.then(run, run)
+    chains.set(path, next)
+    // Only the last flush queued for a path decides: an earlier one that failed is retried by it.
+    const settle = (ok: boolean): void => {
+      if (chains.get(path) !== next) return
+      chains.delete(path)
+      // A failed flush leaves the path owed, so the next drain tries it again (round 3, S3).
+      if (!ok) owed.add(path)
+      for (const observe of observers) observe(path, ok)
+    }
+    void next.then(() => settle(true), () => settle(false))
+    return next
+  }
+  const cancel = (): void => {
+    if (timer !== null) { clearTimer(timer); timer = null }
+  }
+  return {
+    enqueue,
+    schedule(path) {
+      owed.add(path)
+      cancel()
+      timer = setTimer(() => {
+        timer = null
+        void enqueue(path).catch(() => {})
+      }, delayMs)
+    },
+    cancel,
+    async drain() {
+      const failed = new Set<string>()
+      const observe = (path: string, ok: boolean): void => { if (ok) failed.delete(path); else failed.add(path) }
+      observers.add(observe)
+      try {
+        // Edits and flushes can arrive while it waits: snapshot again after every wait, until nothing
+        // is owed (except what failed in this drain, tried once) and nothing runs.
+        for (;;) {
+          cancel() // an armed debounce's path is still owed: it is flushed below
+          const due = [...owed].filter((path) => !failed.has(path))
+          if (due.length === 0 && chains.size === 0) break
+          for (const path of due) void enqueue(path).catch(() => {})
+          await Promise.allSettled([...chains.values()])
+        }
+      } finally {
+        observers.delete(observe)
+      }
+      return { failed: [...failed] }
+    },
+    idle: () => timer === null && owed.size === 0 && chains.size === 0,
+  }
+}
+
+/**
  * The Drafting/Reviewing writer-mode domain (ADR-0016): which mode each file is in, how tracked writer
  * edits reach the ledger (debounced flush), and the fold that collapses tracking into settled text.
  */
@@ -95,7 +193,6 @@ export function useWriterMode(deps: WriterModeDeps): WriterMode {
   const writerModes = useRef<Map<string, WriterReviewMode>>(new Map())
   const latestWriterChanges = useRef<Map<string, WriterPendingChange[]>>(new Map())
   const recordedWriterChanges = useRef<Map<string, Map<string, string>>>(new Map())
-  const writerChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ADR-0025 §3: a writer session is a per-document span, bounded by open→close and startable on demand.
   // Lazily minted on the first edit for a path and dropped when the file's state is cleared, so a
@@ -140,53 +237,42 @@ export function useWriterMode(deps: WriterModeDeps): WriterMode {
   // records each localId→storeId claim, so two overlapping flushes (debounce + save-version + fold can
   // all fire) each missed the claim and ADDED duplicate records for the same tracked edit. Each flush
   // now chains behind the previous one for its path and reads the pending set when it actually RUNS.
-  const flushChains = useRef(new Map<string, Promise<string[]>>())
-  const flushWriterChanges = useCallback((path: string): Promise<string[]> => {
-    const run = async (): Promise<string[]> => {
-      const pending = editorRef.current?.pendingWriterChanges(path) ?? latestWriterChanges.current.get(path) ?? []
-      latestWriterChanges.current.set(path, pending)
-      if (pending.length === 0) return []
-      const pathMap = recordedWriterChanges.current.get(path) ?? new Map<string, string>()
-      recordedWriterChanges.current.set(path, pathMap)
-      const ids = await syncWriterChanges({
-        path,
-        pending,
-        pathMap,
-        sessionId: currentSessionId(path),
-        addChange: ledger.addChange,
-        updateWriterChange: ledger.updateWriterChange,
-      })
-      if (activeRef.current === path) await reloadChanges()
-      return ids
-    }
-    const prev = flushChains.current.get(path) ?? Promise.resolve([])
-    const next = prev.then(run, run)
-    flushChains.current.set(path, next)
-    void next.finally(() => {
-      if (flushChains.current.get(path) === next) flushChains.current.delete(path)
+  // The flush itself, as of this render (the latest ledger, editor and reload). The queue runs it from
+  // the debounce, an explicit call, or the close's drain, behind the flushes already queued for the path.
+  const runWriterFlush = useCallback(async (path: string): Promise<string[]> => {
+    const pending = editorRef.current?.pendingWriterChanges(path) ?? latestWriterChanges.current.get(path) ?? []
+    latestWriterChanges.current.set(path, pending)
+    if (pending.length === 0) return []
+    const pathMap = recordedWriterChanges.current.get(path) ?? new Map<string, string>()
+    recordedWriterChanges.current.set(path, pathMap)
+    const ids = await syncWriterChanges({
+      path,
+      pending,
+      pathMap,
+      sessionId: currentSessionId(path),
+      addChange: ledger.addChange,
+      updateWriterChange: ledger.updateWriterChange,
     })
-    return next
+    if (activeRef.current === path) await reloadChanges()
+    return ids
   }, [ledger, editorRef, activeRef, reloadChanges, currentSessionId])
+  const runFlush = useRef(runWriterFlush)
+  runFlush.current = runWriterFlush
+  const flushQueue = useRef<WriterFlushQueue | null>(null)
+  if (flushQueue.current === null) flushQueue.current = createWriterFlushQueue({ flush: (path) => runFlush.current(path) })
+  const queue = flushQueue.current
+  const flushWriterChanges = useCallback((path: string): Promise<string[]> => queue.enqueue(path), [queue])
 
   const onWriterReviewChanged = useCallback((path: string, changes: WriterPendingChange[]) => {
     latestWriterChanges.current.set(path, changes)
-    if (writerChangeTimer.current) clearTimeout(writerChangeTimer.current)
-    writerChangeTimer.current = setTimeout(() => {
-      writerChangeTimer.current = null
-      void flushWriterChanges(path)
-    }, 700)
-  }, [flushWriterChanges])
+    queue.schedule(path)
+  }, [queue])
 
-  const cancelPendingFlush = useCallback(() => {
-    if (writerChangeTimer.current) {
-      clearTimeout(writerChangeTimer.current)
-      writerChangeTimer.current = null
-    }
-  }, [])
+  const cancelPendingFlush = useCallback(() => queue.cancel(), [queue])
+  const flushWriterChangesNow = useCallback(() => queue.drain(), [queue])
+  const writerChangesIdle = useCallback(() => queue.idle(), [queue])
 
-  useEffect(() => () => {
-    if (writerChangeTimer.current) clearTimeout(writerChangeTimer.current)
-  }, [])
+  useEffect(() => () => queue.cancel(), [queue])
 
   // Folding is a display operation under ADR-0025: record the marks, restore clean Drafting text, and
   // keep the records pending so Reviewing can reveal the same session again. Save-version still uses
@@ -233,6 +319,8 @@ export function useWriterMode(deps: WriterModeDeps): WriterMode {
     openedAtForFile,
     currentSessionIdForFile,
     cancelPendingFlush,
+    flushWriterChangesNow,
+    writerChangesIdle,
     clearFileWriterState,
     recordedWriterChanges,
   }

@@ -1,8 +1,11 @@
+import { layoutOf } from '../../../shared/markdown/frontmatter-edit'
+import { metadataRows } from '../../../shared/document-metadata'
+import { mountFrontmatterEditor } from './object-editors/frontmatter-editor'
+import { metadataWorkspace } from './metadata-view-state'
 import { WidgetType, type EditorView } from '@codemirror/view'
 import { LanguageDescription, type Language } from '@codemirror/language'
 import { classHighlighter, highlightCode } from '@lezer/highlight'
 import { languages } from '@codemirror/language-data'
-import { parseFrontmatterEntries } from '../../../shared/object-markup'
 import type { QueryResult, QueryRow } from '../../../preload'
 import { QUERY_SORTABLE_FIELDS, compactQuerySummary, formatQueryDate, queryStatusBadgeClass, rewriteQuerySortLine, type QuerySortableField } from './query-object'
 import { sanitiseSvg } from '../../../shared/sanitise-svg'
@@ -139,38 +142,32 @@ export class TableWidget extends LivePreviewWidget {
 }
 
 export class FrontmatterWidget extends LivePreviewWidget {
-  constructor(source: string, selected: boolean, readonly pending: boolean) { super(source, selected) }
-  eq(other: WidgetType): boolean { return other instanceof FrontmatterWidget && other.source === this.source && other.selected === this.selected && other.pending === this.pending }
-  toDOM(): HTMLElement {
+  constructor(source: string, selected: boolean, readonly pending: boolean, readonly documentPath: string | null = null, private readonly editMetadata?: (view: EditorView) => void) { super(source, selected) }
+  eq(other: WidgetType): boolean { return other instanceof FrontmatterWidget && other.source === this.source && other.selected === this.selected && other.pending === this.pending && other.documentPath === this.documentPath }
+  private panel?: ReturnType<typeof mountFrontmatterEditor>
+  toDOM(view: EditorView): HTMLElement {
+    this.panel?.destroy?.()
+    this.panel = undefined
     const shell = this.shell('frontmatter')
-    if (this.pending) {
-      const badge = document.createElement('span')
-      badge.className = 'lp-pending-review'
-      badge.textContent = 'pending review'
-      shell.appendChild(badge)
+    if (this.pending) shell.append(Object.assign(document.createElement('span'), { className: 'lp-pending-review', textContent: 'pending review' }))
+    const layout = layoutOf(this.source)
+    const inner = layout ? this.source.slice(layout.openEnd, layout.closeStart).replace(/\r?\n$/, '') : this.source
+    const editMetadata = (): void => { this.editMetadata?.(view) }
+    if (!metadataRows(inner).some(row => row.editable)) {
+      const note = document.createElement('span'); note.textContent = 'unparseable — press ↵'
+      const raw = document.createElement('pre'); raw.textContent = inner
+      const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = 'Edit fields'; edit.setAttribute('aria-label', 'Edit document metadata')
+      edit.addEventListener('click', editMetadata)
+      shell.append(note, raw, edit)
+      return shell
     }
-    const inner = this.source.replace(/^---\n/, '').replace(/\n---\n?$/, '')
-    const entries = parseFrontmatterEntries(inner)
-    if (entries.length === 1 && entries[0].kind === 'raw') {
-      shell.classList.add('lp-render-failed')
-      const source = document.createElement('pre'); source.textContent = this.source
-      const note = document.createElement('div'); note.className = 'lp-render-error'; note.textContent = 'unparseable — press ↵ to fix the raw YAML'
-      shell.append(source, note); return shell
-    }
-    const table = document.createElement('table'); table.className = 'yamlt'
-    for (const entry of entries) {
-      const row = table.insertRow()
-      if (entry.kind === 'raw') {
-        const cell = row.insertCell(); cell.colSpan = 2; cell.className = 'yamlt-raw'; cell.textContent = entry.lines
-        continue
-      }
-      row.insertCell().textContent = entry.key
-      const value = row.insertCell()
-      if (entry.kind === 'scalar') value.textContent = entry.value
-      else entry.values.forEach((item) => { const chip = document.createElement('span'); chip.className = 'chip'; chip.textContent = item; value.appendChild(chip) })
-    }
-    shell.appendChild(table); return shell
+    this.panel = mountFrontmatterEditor(inner, { workspace: metadataWorkspace(view.dom), path: this.documentPath, readonly: true, edit: editMetadata })
+    shell.append(this.panel.element)
+    return shell
   }
+  ignoreEvent(event: Event): boolean { return !!(event.target as HTMLElement)?.closest('button,input,select,.metadata-help') || super.ignoreEvent(event) }
+  destroy(): void { this.panel?.destroy?.() }
+
 }
 
 export class CodeWidget extends LivePreviewWidget {

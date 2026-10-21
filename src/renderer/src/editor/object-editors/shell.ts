@@ -28,7 +28,7 @@ export function textareaEditor(source: string, className = 'oe-markup'): Mounted
 }
 
 export function mountShell(options: {
-  kind: string; editor: MountedEditor; markup?: MountedEditor; editorLabel?: string; editorDisabledTitle?: string
+  kind: string; editor: MountedEditor; markup?: MountedEditor; editorLabel?: string; markupLabel?: string; editorDisabledTitle?: string
   parseEditor?(source: string): MountedEditor | null; normaliseSource?(source: string): string | null; notParsedNote?: string; primaryTab?: 'editor' | 'markup'; foot: string; api: ObjectEditorApi
 }): HTMLElement {
   const shell = document.createElement('div'); shell.className = 'oe'; shell.tabIndex = -1
@@ -52,7 +52,7 @@ export function mountShell(options: {
   if (options.markup) {
     const editorTab = document.createElement('button'); editorTab.type = 'button'; editorTab.textContent = options.editorLabel ?? 'Editor'
     if (options.editorDisabledTitle) { editorTab.disabled = true; editorTab.title = options.editorDisabledTitle }
-    const markupTab = document.createElement('button'); markupTab.type = 'button'; markupTab.textContent = 'Markup'
+    const markupTab = document.createElement('button'); markupTab.type = 'button'; markupTab.textContent = options.markupLabel ?? 'Markup'
     const primaryTab = options.primaryTab ?? 'editor'
     ;(primaryTab === 'editor' ? editorTab : markupTab).className = 'on'
     editorTab.addEventListener('click', () => {

@@ -3,6 +3,7 @@ import documentTemplate from './document.html?raw'
 import plainDocumentTemplate from './document-plain.html?raw'
 import documentWithoutSidebarTemplate from './document-without-sidebar.html?raw'
 import frontPageTemplate from './document-front-page.html?raw'
+import frontPageBodyTemplate from './document-front-page-body.html?raw'
 import sidebarLinkTemplate from './document-sidebar-link.html?raw'
 import bundleSectionTemplate from './document-bundle-section.html?raw'
 import plainBundleSectionTemplate from './document-bundle-section-plain.html?raw'
@@ -36,8 +37,16 @@ export type DocumentParts = {
   sections?: readonly HtmlDocumentSection[]
   /** Export-safe source data used to build document chrome without reparsing rendered HTML. */
   documents?: readonly HtmlDocumentData[]
+  /**
+   * A Folio's contents as the Outline shows it (ADR-0046, folio-heading-flow.ts): one row per chapter, continuing
+   * part and heading, in running order, front matter left out. When present the sidebar lists these instead of
+   * the documents' own outlines; `tocDepth` cuts at the row's depth (a chapter is depth 1).
+   */
+  contentsRows?: readonly HtmlContentsRow[]
   /** Contents navigation is present unless explicitly disabled. */
   sidebar?: boolean
+  /** How many heading levels the contents lists, 1-6; absent is the default four. The body is unaffected. */
+  tocDepth?: number
   /** Locked document treatment. Defaults to the light rail. */
   design?: HtmlDocumentDesign
   /** Title, standfirst and selected frontmatter fields are present unless explicitly disabled. */
@@ -46,6 +55,18 @@ export type DocumentParts = {
   summaryTiles?: boolean
   /** A cover screen filling the first viewport, entered by a click or a scroll. Defaults off. */
   frontPage?: boolean
+  /**
+   * Front matter (ADR-0046): sections exported before the contents, in the body, and never in the contents
+   * sidebar or the summary tiles (`documents` holds the contents only).
+   */
+  frontMatter?: readonly HtmlDocumentSection[]
+  /**
+   * The Folio's title page (ADR-0046). With `frontPage` on it is the cover, in place of the generated one: its
+   * title, and its body as written beneath. With `frontPage` off it is the first front-matter section.
+   */
+  cover?: HtmlDocumentCover
+  /** A Folio's Details for the generated cover and masthead, used only when there is no title page (a collection has no document data of its own). */
+  folioDetails?: HtmlFolioHeaderDetails
   /** Annotation manifest and stable target ids. Omitted structurally when reader notes are off. */
   readerNotes?: ReaderNotesDocument
   /** Edit-diff manifest and stable target ids. Omitted structurally when reader edits are off. */
@@ -53,9 +74,21 @@ export type DocumentParts = {
 }
 
 export type HtmlDocumentDesign = 'a' | 'b'
+/** One row of a Folio's contents. `depth` counts from the chapter level: 0 is a chapter, 1 sits one level in. */
+export type HtmlContentsRow = { anchor: string; text: string; depth: number; chapter: boolean }
 export type HtmlOutlineHeading = { level: number; text: string; anchor: string }
 export type HtmlFrontmatterValue = string | number | readonly string[]
 export type HtmlDocumentSection = { anchor: string; title: string; body: string }
+/** A title page: its title, its rendered body, and its own selected header fields (for the chips, when shown). */
+export type HtmlDocumentCover = {
+  title: string
+  body: string
+  data?: HtmlDocumentData
+  /** The Folio's standfirst from its Details (shown under the title, above the title page's own body). */
+  standfirst?: string
+}
+/** What a Folio with no title page shows on its generated cover and masthead, from its Details (shared/folio-cover-details.ts). */
+export type HtmlFolioHeaderDetails = { standfirst: string | null; frontmatter: Readonly<Record<string, HtmlFrontmatterValue>> }
 export type ReaderNotesDocument = { documentId: string; targets: readonly string[] }
 export type ReaderEditsDocument = { documentId: string; targets: readonly string[] }
 
@@ -130,9 +163,11 @@ function escapeAttribute(text: string): string {
   return escapeHtml(text).replace(/"/g, '&quot;')
 }
 
-/** How the emitter opens the wrapper around a table in an HTML file export (to-html.ts closes the
- * tag). Its presence in the body is what brings the table styles and the table script into the page. */
-export const TABLE_REGION_OPEN = '<div class="wf-table-region"'
+/** How the emitter opens the wrapper around a table (to-html.ts closes the tag). The `table-scroll`
+ * class gives the table its own horizontal scroll box at a narrow width, in the file export and on the
+ * sharing reader page alike (both render through this emitter). Its presence in the body is what brings
+ * the table styles and the table script into the page. */
+export const TABLE_REGION_OPEN = '<div class="wf-table-region table-scroll"'
 
 /**
  * The table script as it goes into the page: one inline `<script>`, built from the script's own
@@ -171,27 +206,51 @@ function sidebarLink(input: { className: string; anchor: string; text: string })
   })
 }
 
-function sidebarLinks(documents: readonly HtmlDocumentData[]): string {
+/** The deepest heading the contents lists when the writer chose no depth: the long-standing four levels. */
+export const DEFAULT_CONTENTS_DEPTH = 4
+
+/** The depth the contents lists: a chosen whole number 1-6, else the default. Anything else is not a choice. */
+export function contentsDepth(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 6 ? value : DEFAULT_CONTENTS_DEPTH
+}
+
+/**
+ * The contents links. A heading deeper than `depth` is left out of the list only (the document keeps it).
+ * Every listed heading is indented to its true depth, counted from the shallowest one listed, and a
+ * collection's piece titles sit one level above its headings.
+ */
+function sidebarLinks(documents: readonly HtmlDocumentData[], depth: number, rows?: readonly HtmlContentsRow[]): string {
+  if (rows) {
+    return rows.filter((row) => row.depth + 1 <= depth)
+      .map((row) => sidebarLink({ className: row.chapter ? 'piece-link' : `level-${row.depth + 1}`, anchor: row.anchor, text: row.text }))
+      .join('\n')
+  }
   const collection = documents.length > 1
+  const shown = documents.map((document) => document.outline.filter((heading) => heading.level >= 1 && heading.level <= depth))
+  const shallowest = Math.min(...shown.flat().map((heading) => heading.level), 6)
   return documents.flatMap((document, index) => {
     const piece = collection
       ? [sidebarLink({ className: 'piece-link', anchor: `p${index + 1}-section`, text: document.metadata.title })]
       : []
-    const headings = document.outline
-      .filter((heading) => heading.level >= 1 && heading.level <= 4)
-      .map((heading) => sidebarLink({
-        className: `level-${collection ? heading.level + 1 : heading.level}`,
-        anchor: heading.anchor,
-        text: heading.text,
-      }))
+    const headings = shown[index].map((heading) => sidebarLink({
+      className: `level-${heading.level - shallowest + 1 + (collection ? 1 : 0)}`,
+      anchor: heading.anchor,
+      text: heading.text,
+    }))
     return [...piece, ...headings]
   }).join('\n')
 }
 
+/** The anchor of a title page that is exported as a section (its cover is off). */
+export const TITLE_PAGE_ANCHOR = 'wf-title-page'
+
 function documentBody(parts: DocumentParts, sidebar: boolean): string {
   if (!parts.sections) return parts.body ?? ''
   const template = sidebar ? bundleSectionTemplate : plainBundleSectionTemplate
-  return parts.sections.map((section, index) => {
+  const titlePage: HtmlDocumentSection[] = parts.cover && !(parts.frontPage ?? false)
+    ? [{ anchor: TITLE_PAGE_ANCHOR, title: parts.cover.title, body: parts.cover.body }]
+    : []
+  return [...titlePage, ...(parts.frontMatter ?? []), ...parts.sections].map((section, index) => {
     const rendered = fill(template, {
       anchor: () => escapeAttribute(section.anchor),
       'section-style': () => PLAIN_BUNDLE_STYLES.section,
@@ -229,7 +288,7 @@ function frontmatterValue(field: string, value: HtmlFrontmatterValue): string {
   return Array.isArray(value) ? value.join(', ') : String(value)
 }
 
-function metadata(data: HtmlDocumentData | undefined, design: HtmlDocumentDesign): string {
+function metadata(data: Pick<HtmlDocumentData, 'frontmatter'> | undefined, design: HtmlDocumentDesign): string {
   if (!data) return ''
   const template = design === 'a' ? chipATemplate : chipBTemplate
   const chips = Object.entries(data.frontmatter).flatMap(([field, value]) => {
@@ -283,12 +342,13 @@ function documentHeader(parts: DocumentParts, design: HtmlDocumentDesign): strin
   if (!titleBlock) return summaryTiles ? summary(parts, true) : ''
   const collection = parts.sections !== undefined
   const data = collection ? undefined : parts.documents?.[0]
-  const standfirst = data?.metadata.description?.trim()
+  const details = collection ? parts.folioDetails : undefined
+  const standfirst = data?.metadata.description?.trim() ?? details?.standfirst?.trim()
   const template = design === 'a' ? mastheadATemplate : mastheadBTemplate
   return fill(template, {
     'masthead-title': () => escapeHtml(parts.title),
     standfirst: () => standfirst ? fill(standfirstTemplate, { standfirst: () => escapeHtml(standfirst) }) : '',
-    metadata: () => metadata(data, design),
+    metadata: () => metadata(data ?? details, design),
     summary: () => summaryTiles ? summary(parts, false) : '',
   })
 }
@@ -298,13 +358,36 @@ function documentHeader(parts: DocumentParts, design: HtmlDocumentDesign): strin
  * cover (a plain in-page link, so it works with scripting off) or simply by scrolling past it. */
 function frontPage(parts: DocumentParts, design: HtmlDocumentDesign): string {
   if (!parts.frontPage) return ''
+  if (parts.cover) return titlePageCover(parts.cover, design)
   const collection = parts.sections !== undefined
   const data = collection ? undefined : parts.documents?.[0]
-  const standfirst = data?.metadata.description?.trim()
+  const details = collection ? parts.folioDetails : undefined
+  const standfirst = data?.metadata.description?.trim() ?? details?.standfirst?.trim()
   return fill(frontPageTemplate, {
     'cover-title': () => escapeHtml(parts.title),
     standfirst: () => standfirst ? fill(standfirstTemplate, { standfirst: () => escapeHtml(standfirst) }) : '',
-    metadata: () => metadata(data, design),
+    metadata: () => metadata(data ?? details, design),
+  })
+}
+
+/**
+ * Whether a title-page cover carries the Date / Status / Author chips under its body. On: the owner approved the
+ * cover chips as drawn in ADR-0046 mockup e (2026-10-19). Flip here and nowhere else.
+ */
+export const TITLE_PAGE_COVER_CHIPS = true
+
+/** The chips under a title-page cover: the title page's own selected header fields, or nothing (`TITLE_PAGE_COVER_CHIPS`). */
+export function titlePageCoverChips(cover: HtmlDocumentCover, design: HtmlDocumentDesign, show: boolean = TITLE_PAGE_COVER_CHIPS): string {
+  return show ? metadata(cover.data, design) : ''
+}
+
+/** The cover drawn from the Folio's title page: its title, its body as written beneath, then the chips (if shown).
+ *  It carries the title page's anchor, so a link to the title page lands on the cover. */
+function titlePageCover(cover: HtmlDocumentCover, design: HtmlDocumentDesign): string {
+  return `<span class="front-page-anchor" id="${TITLE_PAGE_ANCHOR}" aria-hidden="true"></span>\n` + fill(frontPageTemplate, {
+    'cover-title': () => escapeHtml(cover.title),
+    standfirst: () => (cover.standfirst ? fill(standfirstTemplate, { standfirst: () => escapeHtml(cover.standfirst as string) }) : '') + fill(frontPageBodyTemplate, { body: () => cover.body }),
+    metadata: () => titlePageCoverChips(cover, design),
   })
 }
 
@@ -318,9 +401,9 @@ const READER_BADGE_LABEL: Record<ReaderModes, string> = {
   both: 'Comment or suggest edits',
 }
 const READER_RETURN_LABEL: Record<ReaderModes, string> = {
-  notes: 'Export notes',
+  notes: 'Export comments',
   edits: 'Export edits',
-  both: 'Export notes and edits',
+  both: 'Export comments and edits',
 }
 
 /** What the explainer says before it says how. the user's sentences, answered 2026-09-12: the reader
@@ -403,7 +486,7 @@ export function assembleDocument(parts: DocumentParts): string {
     styles: () => hasTables ? `${pageStyles}\n${tableStylesheet}` : pageStyles,
     design: () => design,
     'sidebar-title': () => escapeHtml(parts.title),
-    sidebar: () => sidebarLinks(parts.documents ?? []),
+    sidebar: () => sidebarLinks(parts.documents ?? [], contentsDepth(parts.tocDepth), parts.contentsRows),
     'document-header': () => documentHeader(parts, design),
     // The table script follows the document body, once, however many tables the page holds.
     body: () => `${hasWidgets ? WIDGET_EXPORT_RUNTIME : ''}${body}${hasTables ? tableRuntimeFill(TABLE_RUNTIME_SCRIPT) : ''}`,

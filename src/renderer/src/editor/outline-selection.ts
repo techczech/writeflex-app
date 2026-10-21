@@ -3,7 +3,7 @@ import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import { deleteSections, headingIndexAt, moveSections, newHeadingEdit, sectionRoots, sectionSpan, shiftSections, type SectionsEdit } from './outline-sections'
 import { extractOutline } from './outline'
 import { EditorSelection } from '@codemirror/state'
-import { lowerLineLevel, lowerSubtreeLevel, moveBlockDown, moveBlockUp, moveSubtreeDown, moveSubtreeUp, raiseLineLevel, raiseSubtreeLevel } from '@bridle/outline'
+import { lowerLineLevel, lowerSubtreeLevel, moveBlockDown, moveBlockUp, moveSubtreeDown, moveSubtreeUp, raiseLineLevel, raiseSubtreeLevel } from '@app-patterns/outline'
 
 /**
  * The outline's several selected sections (outline package, ticket 17). The panel owns the picking; the

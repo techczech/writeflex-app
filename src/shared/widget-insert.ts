@@ -126,6 +126,26 @@ export function insertWidgetInText(doc: string, rawPath: string, position: 'star
   return next
 }
 
+/** How many lines `doc` has (a final newline ends the last line; it does not start another). */
+export function documentLineCount(doc: string): number {
+  return linesOf(doc).length - (doc.endsWith('\n') && doc.length > 0 ? 1 : 0) || 1
+}
+
+/**
+ * The document text with the embed line put where a caret on 1-based `line` puts it, as the editor's own Insert
+ * widget does (after the paragraph that line is in; after a code fence or frontmatter it is inside). Throws when
+ * `line` is not a line of `doc`, or the result does not hold exactly one more widget.
+ */
+export function insertWidgetAtLine(doc: string, rawPath: string, line: number): string {
+  const embed = widgetEmbedLine(rawPath)
+  const count = documentLineCount(doc)
+  if (!Number.isSafeInteger(line) || line < 1 || line > count) throw new Error(`There is no line ${line} in this document; it has ${count}.`)
+  const before = scanWidgets(doc).length
+  const next = applyWidgetPlan(doc, planWidgetInsert(doc, linesOf(doc)[line - 1].to, embed))
+  if (scanWidgets(next).length !== before + 1) throw new Error('The line could not be inserted as a widget at that place (is it inside a code block?).')
+  return next
+}
+
 /** The raw line of each widget, in ordinal order, found by matching the model's widgets against the text's lines. */
 function widgetLines(doc: string): Line[] {
   const widgets = scanWidgets(doc)

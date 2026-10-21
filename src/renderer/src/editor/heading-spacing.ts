@@ -1,8 +1,10 @@
+import { ensureSyntaxTree, language, syntaxTree, syntaxTreeAvailable } from '@codemirror/language'
 import { RangeSetBuilder, StateField, type EditorState, type Extension } from '@codemirror/state'
+import type { Tree } from '@lezer/common'
 import { Decoration, EditorView, type DecorationSet } from '@codemirror/view'
 import { parseMarkdown } from '../../../shared/markdown/dialect'
-import { frontmatterBlock } from '../../../shared/markdown/frontmatter'
-import { blockRangesOf } from './focus-modes'
+import { FRONTMATTER_FENCE, frontmatterBlock } from '../../../shared/markdown/frontmatter'
+import { blockRangesOf, type ParagraphRange } from './focus-modes'
 import { HEADING_SIZE_EM } from './theme'
 
 /**
@@ -54,16 +56,34 @@ type HeadingRange = { from: number; to: number; level: number }
  * as the outline panel and the exporters read it. ATX and Setext both count.
  */
 function headingRangesOf(text: string): HeadingRange[] {
+  return headingRangesInTree(parseMarkdown(text))
+}
+
+/** Blocks that cannot contain a heading: skipping them keeps the walk to the block skeleton. */
+const NO_HEADINGS_INSIDE = new Set(['Paragraph', 'FencedCode', 'CodeBlock', 'HTMLBlock', 'Table'])
+
+function headingRangesInTree(tree: Tree): HeadingRange[] {
   const headings: HeadingRange[] = []
-  parseMarkdown(text).iterate({
+  tree.iterate({
     enter(node) {
       const match = node.name.match(/^(?:ATX|Setext)Heading(\d)$/)
-      if (!match) return
+      if (!match) return NO_HEADINGS_INSIDE.has(node.name) ? false : undefined
       headings.push({ from: node.from, to: node.to, level: Number(match[1]) })
       return false
     },
   })
   return headings
+}
+
+/** The space above one heading, given its neighbour in the same run of lines (see headingSpacingOf). */
+function spaceAbove(
+  block: ParagraphRange,
+  previous: ParagraphRange | null,
+  previousIsHeading: boolean,
+): HeadingSpaceAbove {
+  // A blank line leaves a gap of more than the single newline that separates adjacent blocks.
+  const typedBlankLineAbove = previous !== null && block.from - previous.to > 1
+  return previous === null || typedBlankLineAbove ? 'none' : previousIsHeading ? 'reduced' : 'full'
 }
 
 /**
@@ -101,13 +121,75 @@ export function headingSpacingOf(text: string): HeadingSpacing[] {
     const block = index >= 0 ? blocks[index]! : { from: heading.from, to: heading.to }
     const before = index > 0 ? blocks[index - 1]! : null
     const previous = before && before.from >= metadataEnd ? before : null
-    // A blank line leaves a gap of more than the single newline that separates adjacent blocks.
-    const typedBlankLineAbove = previous !== null && block.from - previous.to > 1
-    const above: HeadingSpaceAbove = previous === null || typedBlankLineAbove
-      ? 'none'
-      : blockIsHeading[index - 1]
-        ? 'reduced'
-        : 'full'
+    const above = spaceAbove(block, previous, index > 0 && blockIsHeading[index - 1]!)
+    return { from: block.from, to: Math.max(heading.to, block.to), level: heading.level, above }
+  })
+}
+
+const isBlankLine = (text: string): boolean => text.trim() === ''
+
+/** A run of non-blank lines: blocks never cross a blank line, so a run is all the block rule needs. */
+type Run = { from: number; to: number; blocks: ParagraphRange[]; headings: HeadingRange[] }
+
+/** The run of non-blank lines around `pos`, with its blocks (ADR-0039) in document coordinates. */
+function runAround(state: EditorState, pos: number): Run {
+  const { doc } = state
+  let first = doc.lineAt(pos).number
+  let last = first
+  while (first > 1 && !isBlankLine(doc.line(first - 1).text)) first--
+  while (last < doc.lines && !isBlankLine(doc.line(last + 1).text)) last++
+  const from = doc.line(first).from
+  const to = doc.line(last).to
+  const blocks = blockRangesOf(doc.sliceString(from, to)).map((block) => ({ from: block.from + from, to: block.to + from }))
+  return { from, to, blocks, headings: [] }
+}
+
+/** Where the leading frontmatter ends (0 for none), reading only the lines up to its closing fence. */
+function metadataEndOf({ doc }: EditorState): number {
+  if (!FRONTMATTER_FENCE.test(doc.line(1).text.replace(/^\uFEFF/, ''))) return 0
+  for (let number = 2; number <= doc.lines; number++) {
+    if (!FRONTMATTER_FENCE.test(doc.line(number).text.replace(/\r$/, ''))) continue
+    const closing = doc.line(number)
+    return frontmatterBlock(doc.sliceString(0, Math.min(doc.length, closing.to + 1)))?.end ?? 0
+  }
+  return 0
+}
+
+/** The headings of the editor's own incremental syntax tree, as complete as it can be made now. */
+function treeOf(state: EditorState): Tree {
+  return syntaxTreeAvailable(state) ? syntaxTree(state) : ensureSyntaxTree(state, state.doc.length, 25) ?? syntaxTree(state)
+}
+
+/**
+ * {@link headingSpacingOf} read off the editor's incremental syntax tree instead of re-parsing the
+ * document, and with the block rule applied only to the runs of lines that hold a heading. The
+ * answer is the same: a block never crosses a blank line, and a heading's neighbour only matters
+ * when it sits in the same run (a blank line between them is the 'none' state anyway).
+ *
+ * Without a language in the state (a bare EditorState) there is no tree, and the text path answers.
+ */
+export function headingSpacingOfState(state: EditorState): HeadingSpacing[] {
+  if (!state.facet(language)) return headingSpacingOf(state.doc.toString())
+  const { doc } = state
+  const metadataEnd = metadataEndOf(state)
+  const headings = headingRangesInTree(treeOf(state)).filter((heading) => heading.from >= metadataEnd)
+  if (headings.length === 0) return []
+
+  const located: Array<{ heading: HeadingRange; run: Run }> = []
+  let run: Run | null = null
+  for (const heading of headings) {
+    if (!run || heading.from < run.from || heading.from > run.to) run = runAround(state, heading.from)
+    run.headings.push(heading)
+    located.push({ heading, run })
+  }
+
+  return located.map(({ heading, run }) => {
+    const index = run.blocks.findIndex((block) => block.from <= heading.from && heading.from <= block.to)
+    const block = index >= 0 ? run.blocks[index]! : { from: heading.from, to: heading.to }
+    const before = index > 0 ? run.blocks[index - 1]! : null
+    const previous = before && before.from >= metadataEnd ? before : null
+    const previousIsHeading = before !== null && run.headings.some((other) => other.from <= before.to && other.to >= before.from)
+    const above = spaceAbove(block, previous, previousIsHeading)
     return { from: block.from, to: Math.max(heading.to, block.to), level: heading.level, above }
   })
 }
@@ -154,7 +236,7 @@ function lineSpacings(state: EditorState): Map<number, LineSpacing> {
     return created
   }
 
-  for (const spacing of headingSpacingOf(state.doc.toString())) {
+  for (const spacing of headingSpacingOfState(state)) {
     const above = paddingAbove(spacing)
     if (above > 0) {
       const head = at(spacing.from)
@@ -184,7 +266,10 @@ export function headingSpacingDecorations(state: EditorState): DecorationSet {
 const headingSpacingField = StateField.define<DecorationSet>({
   create: (state) => headingSpacingDecorations(state),
   update(value, transaction) {
-    return transaction.docChanged ? headingSpacingDecorations(transaction.state) : value
+    // The tree changes when the document does AND when a background parse finishes later.
+    return transaction.docChanged || syntaxTree(transaction.state) !== syntaxTree(transaction.startState)
+      ? headingSpacingDecorations(transaction.state)
+      : value
   },
   provide: (field) => EditorView.decorations.from(field),
 })

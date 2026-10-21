@@ -95,8 +95,13 @@ export type CapabilityServices = {
   scraps?: ScrapStore
   onScrapsChanged?: () => void
   onFileRead?: (path: string) => void
+  prepareFolioInstructions?: (dir: string) => Promise<void>
+  trashFile?: (absolute: string) => Promise<void>
   checkpointFile?: (path: string) => Promise<void>
   notifyFilesChangedOnDisk?: (paths: string[]) => void
+  /** A file was renamed by a capability: whatever tracks documents by path follows it (the review
+   *  ledger's undecided Changes from outside, as for a rename the writer makes in the app). */
+  onFileRenamed?: (from: string, to: string) => Promise<void>
   /** The skill whose run this agent is (a skill thread): recorded as `skill:` on agent notes it leaves. */
   activeSkillName?: string
   /** A prose note landed under agent-notes/ (notes.create): the Agent notes pane re-lists. */
@@ -109,7 +114,7 @@ export type CapabilityServices = {
    */
   widgetFileShown?: (file: { documentPath: string; path: string; sha256: string }) => Promise<boolean>
   /** Something the writer must be told about an accept that succeeded (the document saved but could not be read
-   *  back): carried into that accept's response and shown in the Review pane. */
+   *  back): carried into that accept's response and shown on the margin card. */
   acceptNotice?: (text: string) => void
 }
 
@@ -497,6 +502,22 @@ function uniqueRange(content: string, needle: string, field: string, path: strin
   return range(first, needle.length)
 }
 
+/**
+ * Text could not be placed in a document. The message is the reason as before; `code` says which of
+ * the two usual reasons it was (the text is not there, or is there more than once), for a caller
+ * that records it from a closed list (shared/closed-code.ts).
+ */
+export class PlacementError extends Error {
+  override readonly name = 'PlacementError'
+  constructor(message: string, readonly code: 'target-gone' | 'target-repeated' | 'other') {
+    super(message)
+  }
+}
+
+/** `uniqueRange`'s refusal for `needle` in `content`, with its code. */
+const notPlaced = (content: string, needle: string, message: string): PlacementError =>
+  new PlacementError(message, !needle ? 'other' : content.indexOf(needle) === -1 ? 'target-gone' : 'target-repeated')
+
 const overlaps = (a: { from: number; to: number }, b: { from: number; to: number }): boolean =>
   a.from < b.to && b.from < a.to
 
@@ -537,14 +558,14 @@ export type ResolvedProseMove = {
 
 export function resolveProseMove(content: string, input: ProseMoveInput): ResolvedProseMove {
   const moveFrom = uniqueRange(content, input.text, 'text', input.path)
-  if (typeof moveFrom === 'string') throw new Error(moveFrom)
+  if (typeof moveFrom === 'string') throw notPlaced(content, input.text, moveFrom)
   const anchor = uniqueRange(content, input.insertAfter, 'insertAfter', input.path)
-  if (typeof anchor === 'string') throw new Error(anchor)
-  if (overlaps(moveFrom, anchor)) throw new Error('insertAfter must not overlap the text being moved; choose a separate unique destination anchor.')
+  if (typeof anchor === 'string') throw notPlaced(content, input.insertAfter, anchor)
+  if (overlaps(moveFrom, anchor)) throw new PlacementError('insertAfter must not overlap the text being moved; choose a separate unique destination anchor.', 'other')
 
   const withoutSource = joinAfterRemoval(content.slice(0, moveFrom.from), content.slice(moveFrom.to))
   const anchorInWithoutSource = uniqueRange(withoutSource, input.insertAfter, 'insertAfter', input.path)
-  if (typeof anchorInWithoutSource === 'string') throw new Error(anchorInWithoutSource)
+  if (typeof anchorInWithoutSource === 'string') throw notPlaced(withoutSource, input.insertAfter, anchorInWithoutSource)
   const inserted = insertBlockAfter(withoutSource, anchorInWithoutSource.to, input.text)
   const nextContent = content.endsWith('\n') && !inserted.endsWith('\n') ? `${inserted}\n` : inserted
   // Pending Change ranges are rendered against the current, pre-apply buffer:
@@ -570,8 +591,23 @@ export function resolveProseInsert(content: string, input: ProseInsertInput): { 
     return { nextContent: insertBlockAfter(content, afterMetadata > 0 ? afterMetadata : content.length, input.text) }
   }
   const anchor = uniqueRange(content, input.insertAfter, 'insertAfter', input.path)
-  if (typeof anchor === 'string') throw new Error(anchor)
+  if (typeof anchor === 'string') throw notPlaced(content, input.insertAfter, anchor)
   return { nextContent: insertBlockAfter(content, anchor.to, input.text) }
+}
+
+/**
+ * Where an insert asked for from OUTSIDE WriteFlex goes (the command line's `insert` and
+ * `insert-object`), in one place for the three that must agree: the validator that says a request can
+ * be placed, the check after another Change is accepted, and accept itself. With an anchor it is
+ * `resolveProseInsert`. With none it is the END OF THE DOCUMENT, after any frontmatter and after all
+ * the prose, as the Change's own summary says ("Add text at the end").
+ *
+ * The in-app agent's `prose.insert` with no anchor is NOT this: it keeps `resolveProseInsert`, whose
+ * anchorless place in a document that has frontmatter is just after the frontmatter.
+ */
+export function resolveOutsideInsert(content: string, input: Pick<ProseInsertInput, 'path' | 'insertAfter' | 'text'>): { nextContent: string } {
+  if (input.insertAfter === '') return { nextContent: insertBlockAfter(content, content.length, input.text) }
+  return resolveProseInsert(content, { ...input, category: 'other', summary: '' })
 }
 
 /**
@@ -697,6 +733,7 @@ export function writeflexApprovalPolicy(isEnabled?: (name: string) => boolean, w
     if (capability.name === 'scraps.promote') return 'stage'
     // And a source attached to a piece (scraps ticket 03): one frontmatter line, proposed, never written directly.
     if (capability.name === 'sources.attach') return 'stage'
+    if (capability.name === 'folio.turn_back') return trigger.trust === 'background' ? 'deny' : 'ask'
     const trusted = trigger.trust === 'interactive' || trigger.trust === 'trusted_app'
     if (capability.risk === 'read') return 'allow'
     if (capability.risk === 'destructive') return trusted ? 'ask' : 'deny'

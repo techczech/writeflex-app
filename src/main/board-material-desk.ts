@@ -4,7 +4,9 @@
  * files), and attach a source to a piece (one line in the piece's frontmatter).
  *
  * Follows PlanProposalDesk's restore-point pattern: one restore point, a snapshot of every file the
- * step writes, then the writes; a failed write rolls back to the restore point. The snapshots are
+ * step writes, then the writes. A failed write rolls back only the files the step wrote, each only while
+ * it still holds what the step wrote (R7, operation-rollback.ts); a refusal before the first write puts
+ * nothing back, so the other version that caused it stays. The snapshots are
  * `origin: 'host'` — the writer's own act on the Board — so the agent's Undo turn (which restores
  * `turn` snapshots only) never takes a Board step back, and this desk's undo never takes back an
  * agent turn. Undo is refused whenever it would overwrite something that changed afterwards.
@@ -12,10 +14,14 @@
  * The desk holds one step: the latest, which the activity row's Undo ⌘⇧Z reaches.
  */
 
+import { queueThenTurn } from './collection-write-order'
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import type { JournalEntry } from '@bridle/core'
-import type { Workspace } from './workspace'
+import type { OperationWrite, Workspace } from './workspace'
+import { rollBackOperationWrites, rollbackMessage } from './operation-rollback'
+import { pausedMessage } from './collection-write-gate'
+import { restoreFailure } from './restore-failure'
 import type { ScrapStore } from './scraps'
 import { prepareOffcutPromotion, prepareScrapAppend, writeMaterial, type MaterialWrite } from './board-material'
 import { prepareSourceAttach } from './source-attach'
@@ -108,22 +114,30 @@ export class BoardMaterialDesk {
     capability: string,
     prepare: () => Promise<{ label: string; activity: string; writes: MaterialWrite[] }>,
   ): Promise<BoardStepResult> {
-    return this.scraps.exclusive(async (): Promise<BoardStepResult> => {
+    // The scrap store's queue, then ONE turn of the Collection's write turn (collection-write-order.ts)
+    // from the read the step is planned from to its last write.
+    return queueThenTurn(this.scraps, this.workspace, async (): Promise<BoardStepResult> => {
       let prepared
       try {
         prepared = await prepare()
       } catch (error) {
         return { ok: false, message: message(error) }
       }
+      // The restore point, the snapshots and the files are all inside the Collection: none is
+      // written while this app does not hold it.
+      const paused = pausedMessage(this.workspace.root)
+      if (paused) return { ok: false, message: `Nothing was changed: ${paused}` }
       const sessionId = this.bridle.sessionId()
       const restorePointId = await this.bridle.snapshots.beginRestorePoint(prepared.label, sessionId)
       const targets = prepared.writes.map((write) => this.workspace.absolute(write.path))
       for (const target of targets) await this.bridle.snapshots.snapshotFile(target, { sessionId, capability, origin: 'host' })
+      const written: OperationWrite[] = []
       try {
-        await writeMaterial(this.workspace, prepared.writes)
+        await this.workspace.recordingOperationWrites(written, () => writeMaterial(this.workspace, prepared.writes))
       } catch (error) {
-        await this.bridle.snapshots.restoreTo(restorePointId, { origin: 'host' }).catch(() => [])
-        return { ok: false, message: `Nothing was changed: ${message(error)}` }
+        // Not Bridle's restoreTo: it puts each snapshot back over whatever is there now, which would
+        // overwrite the other program's version that refused the write (final review round 3, P2).
+        return { ok: false, message: rollbackMessage(message(error), await rollBackOperationWrites(this.workspace, written)) }
       }
       const step: BoardStep = { id: restorePointId, kind, activity: prepared.activity }
       this.held = { step, targets, after: prepared.writes.map((write) => ({ path: write.path, content: write.after })) }
@@ -136,7 +150,10 @@ export class BoardMaterialDesk {
    * any of them changed since, or when a later Board step on another file would be taken back with it.
    */
   undo(id: string): Promise<BoardUndoResult> {
-    return this.scraps.exclusive(async (): Promise<BoardUndoResult> => {
+    // The scrap store's queue, then ONE turn of the Collection's write turn for the checks and the
+    // restore together (collection-write-order.ts): nothing in this app writes between the check
+    // that the step's files are unchanged and the restore that puts them back.
+    return queueThenTurn(this.scraps, this.workspace, async (): Promise<BoardUndoResult> => {
       const held = this.held
       if (!held || held.step.id !== id) return { ok: false, message: 'That change is no longer held for undo.' }
       const changed: string[] = []
@@ -153,7 +170,16 @@ export class BoardMaterialDesk {
         || (entry.kind === 'undo-action' && entry.origin === 'host')
       ))
       if (laterHostWrite) return { ok: false, message: "Can't undo: a later change would be taken back with it. Nothing was put back." }
-      const restored = await this.bridle.snapshots.restoreTo(id, { origin: 'host' })
+      const paused = pausedMessage(this.workspace.root)
+      if (paused) return { ok: false, message: `Can't undo: ${paused} Nothing was put back.` }
+      let restored: string[]
+      try {
+        restored = await this.bridle.snapshots.restoreTo(id, { origin: 'host' })
+      } catch (error) {
+        // Refused: nothing was written and the step is still held. Stopped part-way: the step is
+        // half undone, and the writer is told which files were and were not put back.
+        return { ok: false, message: `Can't undo. ${restoreFailure(error, this.workspace.root).message}` }
+      }
       this.held = null
       return { ok: true, paths: restored.map((path) => this.workspace.relative(path)) }
     })

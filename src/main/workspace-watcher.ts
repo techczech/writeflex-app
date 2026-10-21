@@ -3,6 +3,12 @@ import { isAbsolute, posix } from 'node:path'
 
 export const OWN_WRITE_DEDUPE_MS = 5_000
 export const WATCH_BURST_DEBOUNCE_MS = 220
+/**
+ * How long a path the watcher saw vanish is waited for before it counts as gone (sharing ticket 04:
+ * a shared piece deleted outside WriteFlex). Several bursts long, so a move another program makes as
+ * copy-then-delete, or delete-then-create, is seen whole.
+ */
+export const WATCH_SETTLE_MS = 2_000
 
 function normaliseWatchPath(path: string): string {
   return posix.normalize(path.replaceAll('\\', '/'))
@@ -44,12 +50,20 @@ export type WatchableWorkspace = {
 
 export type WorkspaceWatcher = { dispose: () => void }
 
-/** Native macOS recursive watcher. Bursts collapse into one sorted workspace-relative path payload. */
-export function createWorkspaceWatcher(
+/** Where the watcher's raw events go: document paths in sorted bursts. (The vault settings file has
+ *  its own watcher, vault-watcher.ts, which runs whatever this setting says.) */
+export type WatchRouter = { take: (filename: string) => void; dispose: () => void }
+
+/**
+ * The watcher's rule, apart from the native watch so it can be tested: ignored paths (every dot-path,
+ * `.writeflex` included) are dropped, and every other path is collected into a burst for `onChanged`
+ * unless the app wrote it itself.
+ */
+export function createWatchRouter(
   workspace: WatchableWorkspace,
   onChanged: (paths: string[]) => void,
   debounceMs = WATCH_BURST_DEBOUNCE_MS,
-): WorkspaceWatcher {
+): WatchRouter {
   const pending = new Set<string>()
   let timer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
@@ -62,10 +76,8 @@ export function createWorkspaceWatcher(
     onChanged(paths)
   }
 
-  const watcher: FSWatcher = watch(
-    workspace.root,
-    { recursive: true, encoding: 'utf8' },
-    (_event, filename) => {
+  return {
+    take: (filename) => {
       if (disposed || !filename) return
       const path = normaliseWatchPath(String(filename))
       if (isIgnoredWorkspaceWatchPath(path) || workspace.wasRecentlyWrittenByApp(path)) return
@@ -73,15 +85,37 @@ export function createWorkspaceWatcher(
       if (timer) clearTimeout(timer)
       timer = setTimeout(flush, debounceMs)
     },
-  )
-
-  return {
     dispose: () => {
       if (disposed) return
       disposed = true
       if (timer) clearTimeout(timer)
       timer = null
       pending.clear()
+    },
+  }
+}
+
+/** Native macOS recursive watcher. Bursts collapse into one sorted workspace-relative path payload. */
+export function createWorkspaceWatcher(
+  workspace: WatchableWorkspace,
+  onChanged: (paths: string[]) => void,
+  debounceMs = WATCH_BURST_DEBOUNCE_MS,
+): WorkspaceWatcher {
+  const router = createWatchRouter(workspace, onChanged, debounceMs)
+  let disposed = false
+  const watcher: FSWatcher = watch(
+    workspace.root,
+    { recursive: true, encoding: 'utf8' },
+    (_event, filename) => {
+      if (!disposed && filename) router.take(String(filename))
+    },
+  )
+
+  return {
+    dispose: () => {
+      if (disposed) return
+      disposed = true
+      router.dispose()
       watcher.close()
     },
   }

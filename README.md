@@ -32,6 +32,14 @@ bun run build
 bunx electron-builder --mac --dir --publish never -c.mac.identity=null -c.mac.notarize=false
 ```
 
+## Workflow security
+
+The tests workflow runs gitleaks and validates every remote action against its exact commit and recorded version. Every job verifies the checkout commit against its recorded GitHub ref in a built-in shell step before checkout executes. The checked-out checker then validates all remaining action pins before setup or packaging. Every later action, including the secret scanner, runs only after pin validation. The dependency-free checker accepts a restricted block-mapping YAML subset; ambiguous forms and explicit scalar-indentation indicators fail closed. Scalar bodies end at the mapping key column, including dash-prefixed keys. Local composite and Node actions are recursively checked; local Docker actions are refused because their image or Dockerfile can introduce mutable external dependencies. Repository-root resolution uses platform path operations on Windows and macOS.
+
+The checker follows local action references and scans the local actions directory. It accepts block mappings with plain or quoted `uses` keys and scalar values. Unsupported forms, including flow mappings, YAML anchors, aliases and escaped keys, fail closed. Keep action definitions in this format.
+
+Draft releases require both Mac installers. Each asset deletion, notes edit and upload rechecks that the release is still a draft. GitHub does not provide an atomic draft-only mutation, so publishing during that final check-to-request interval remains a race. Avoid publishing while the workflow is updating the draft.
+
 ## Licence
 
 WriteFlex's own code is [MIT licensed](LICENSE), copyright 2026 Dominik Lukeš. The bundled Zotero reader is a separate AGPL-3.0 program loaded at run time; it keeps its own [COPYING](packages/readflex/reader-embed/vendor/COPYING), [README and changed HTML source](packages/readflex/reader-embed/vendor/README.md). Its upstream repository is https://github.com/zotero/reader; the exact upstream commit is not pinned. See [third-party notices](docs/THIRD-PARTY-NOTICES.md) for recorded provenance and how to request source, and the sound pack's [credits](resources/sounds/CREDITS.md).

@@ -324,8 +324,8 @@ test('one badge names the modes, one return action carries them back, and passag
   expect(both).toContain('<span class="reader-badge-text">Comment or suggest edits</span>')
   expect(notesOnly).toContain('<span class="reader-badge-text">Comment</span>')
   expect(editsOnly).toContain('<span class="reader-badge-text">Suggest edits</span>')
-  expect(both).toContain('class="reader-return" id="wf-reader-return" type="button">Export notes and edits</button>')
-  expect(notesOnly).toContain('class="reader-return" id="wf-reader-return" type="button">Export notes</button>')
+  expect(both).toContain('class="reader-return" id="wf-reader-return" type="button">Export comments and edits</button>')
+  expect(notesOnly).toContain('class="reader-return" id="wf-reader-return" type="button">Export comments</button>')
   expect(editsOnly).toContain('class="reader-return" id="wf-reader-return" type="button">Export edits</button>')
 
   // The explainer opens with what this copy of the document IS, before it says how.
