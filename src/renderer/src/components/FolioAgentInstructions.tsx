@@ -102,6 +102,7 @@ export const FolioAgentInstructionsPill = forwardRef<FolioAgentPillHandle, { dir
   const [status, setStatus] = useState<FolioAgentInstructionsStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  const [requests, setRequests] = useState<AgentPillRequest[]>([])
   const root = useRef<HTMLSpanElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const reload = useCallback(() => {
@@ -126,16 +127,19 @@ export const FolioAgentInstructionsPill = forwardRef<FolioAgentPillHandle, { dir
   }, [dir, onStatus, reload])
 
   const model = status ? agentPillModel(status) : null
-  useImperativeHandle(ref, () => ({
-    run: (request) => {
-      if (!model) return
-      // "Write both" with only one file to write writes that one; with nothing to write it says so.
-      const writes = model.items.filter((item) => item.id !== 'both' && !/^Restore/.test(item.label))
-      const item = agentPillItemFor(model, request) ?? (request === 'both' && writes.length === 1 ? writes[0] : null)
-      if (item && !busy) void perform(item)
-      else if (!item) onStatus(model.items.length === 0 ? 'Both agent instruction files are already written.' : 'That agent instruction file is already written.')
-    },
-  }), [busy, model, onStatus, perform])
+  useImperativeHandle(ref, () => ({ run: request => setRequests(current => [...current, request]) }), [])
+
+  // A command can mount this inspector before its status read finishes. Keep each invocation until
+  // the real status is available, and resolve the next one after the preceding write has refreshed it.
+  useEffect(() => {
+    if (!model || busy || requests.length === 0) return
+    const [request, ...remaining] = requests
+    setRequests(remaining)
+    const writes = model.items.filter((item) => item.id !== 'both' && !/^Restore/.test(item.label))
+    const item = agentPillItemFor(model, request) ?? (request === 'both' && writes.length === 1 ? writes[0] : null)
+    if (item) void perform(item)
+    else onStatus(model.items.length === 0 ? 'Both agent instruction files are already written.' : 'That agent instruction file is already written.')
+  }, [busy, model, onStatus, perform, requests])
 
   useEffect(() => {
     if (!open) return

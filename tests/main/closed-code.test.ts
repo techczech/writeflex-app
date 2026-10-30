@@ -41,7 +41,7 @@ const edit = (over: Partial<NewChange> = {}): NewChange => ({
 const journal = async (): Promise<Array<Record<string, unknown>>> =>
   (await readFile(join(root, changeJournalPath()), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
 const makeAgent = async (): Promise<WorkspaceAgent> => {
-  agent = await WorkspaceAgent.create({ workspace, appDataDir: appData, changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
+  agent = await WorkspaceAgent.create({ mode: 'work', workspace, appDataDir: appData, changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
   return agent
 }
 async function file(...requests: Array<[string, Record<string, unknown>]>): Promise<Change[]> {

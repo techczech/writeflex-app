@@ -82,7 +82,7 @@ test('retired tab-layout preferences and changelog rows are discarded on load', 
     ],
   }))
   const store = new SettingsStore(path)
-  expect(store.values()).toEqual({ 'editor.spellcheck': false })
+  expect(store.values()).toEqual({ 'agent.mode': 'work', 'editor.spellcheck': false })
   expect(store.changelog().map((entry) => entry.key)).toEqual(['editor.spellcheck'])
   const persisted = JSON.parse(await readFile(path, 'utf8')) as { values: Record<string, unknown>; changelog: Array<{ key: string }> }
   expect(persisted.values['editor.tabLayout']).toBeUndefined()
@@ -102,7 +102,7 @@ test('values: generic get/set round-trip, persisted across a reload', async () =
   store.set('editor.spellcheck', false, 'Spellcheck')
   expect(store.get('appearance.theme')).toBe('dark')
   expect(store.get('editor.spellcheck')).toBe(false)
-  expect(store.values()).toEqual({ 'appearance.theme': 'dark', 'editor.spellcheck': false })
+  expect(store.values()).toEqual({ 'agent.mode': 'work', 'appearance.theme': 'dark', 'editor.spellcheck': false })
   const reloaded = new SettingsStore(path)
   expect(reloaded.get('appearance.theme')).toBe('dark')
   expect(reloaded.get('editor.spellcheck')).toBe(false)

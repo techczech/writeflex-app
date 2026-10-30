@@ -3,6 +3,8 @@ import type { ReviewActions } from './review-actions'
 import { marginKind, marginSource, type MarginItem, type MarginSettledRow } from './margin-model'
 import { isAddHeadingProposal } from '../../../shared/part-title-proposal'
 import { tagTitle } from '../components/outside-dock-model'
+import { metadataFieldsOf, metadataSegments } from './metadata-proposal'
+import { frontmatterFieldChanges } from '../../../shared/markdown/frontmatter-proposal'
 
 /**
  * What one margin card says and does, as data. Pure: the card component draws this, and tests run its
@@ -386,7 +388,13 @@ export function describeMarginCard(card: MarginItem, marker: number, now: number
     replyException: fromReader ? replyExceptionOf(readerRepliesOf(change, now)) : null,
     body: note && !fromReader && change.summary.trim() ? change.summary : null,
     // A stale edit is drawn on its own words: the sentence it stands beside now is not the one it was written in.
-    segments: change.newFile ? [{ kind: 'text', text: change.summary }] : note && (fromReader || change.summary.trim()) ? [] : document !== undefined && card.anchor && !card.stale ? changeInSentence(document, card.anchor, change.oldText, change.newText) : diffSegments(change.oldText, change.newText),
+    segments: change.newFile ? [{ kind: 'text', text: change.summary }] : note && (fromReader || change.summary.trim()) ? [] : change.frontmatter === true
+      // A change to the metadata carries its whole old and new blocks: the card says the keys that differ, placed or not.
+      ? metadataSegments(frontmatterFieldChanges(change.oldText, change.newText)) ?? diffSegments(change.oldText, change.newText)
+      : document !== undefined && card.anchor && !card.stale
+      // A change to the metadata only says the keys and values it changes, not its raw lines (metadata-proposal.ts).
+      ? metadataSegments(metadataFieldsOf(document, card.anchor, change.newText) ?? []) ?? changeInSentence(document, card.anchor, change.oldText, change.newText)
+      : diffSegments(change.oldText, change.newText),
     newFilePath: change.newFile?.path ?? null,
     primary: keyed(primary),
     more: keyed(more),

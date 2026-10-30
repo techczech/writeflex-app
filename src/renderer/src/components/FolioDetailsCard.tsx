@@ -1,3 +1,4 @@
+import { sectionExportOptions, type FolioSectionExportField } from '../../../shared/folio-sections'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { CalendarDays, ChevronDown, Languages, UserRound, UsersRound } from 'lucide-react'
 import {
@@ -70,13 +71,14 @@ export const FolioDetailsCard = forwardRef<FolioDetailsCardHandle, FolioDetailsC
   const [message, setMessage] = useState<string | null>(null)
   const [open, setOpen] = useState<PickedField | null>(null)
   const [values, setValues] = useState<FolioDetailValues | null>(null)
-  const [pending, setPending] = useState<ReadonlyMap<FolioDetailField, string | null>>(new Map())
+  const [pending, setPending] = useState<ReadonlyMap<FolioDetailField | FolioSectionExportField, string | null>>(new Map())
   const draftsRef = useRef<Drafts>(NO_DRAFTS)
   const writeRef = useRef(write)
   writeRef.current = write
   const statusRef = useRef(onStatus)
   statusRef.current = onStatus
   const writerRef = useRef<FolioDetailsWriter | null>(null)
+  const focusPending = useRef(false)
   const titleRef = useRef<HTMLInputElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
 
@@ -111,9 +113,17 @@ export const FolioDetailsCard = forwardRef<FolioDetailsCardHandle, FolioDetailsC
   useImperativeHandle(ref, () => ({
     focus: () => {
       cardRef.current?.scrollIntoView({ block: 'nearest' })
-      titleRef.current?.focus()
+      if (titleRef.current?.disabled) focusPending.current = true
+      else { focusPending.current = false; titleRef.current?.focus() }
     },
   }), [])
+
+  useEffect(() => {
+    if (focusPending.current && read?.ok && titleRef.current && !titleRef.current.disabled) {
+      focusPending.current = false
+      titleRef.current.focus()
+    }
+  }, [read])
 
   const focusField = useCallback((field: FolioDetailField) => {
     cardRef.current?.querySelector<HTMLElement>(`[data-folio-detail="${field}"]`)?.focus()
@@ -340,6 +350,13 @@ export const FolioDetailsCard = forwardRef<FolioDetailsCardHandle, FolioDetailsC
             <div className="fd-sub"><span className="fd-l">Language</span>{pickedField('language', <Languages className="fd-icon" aria-hidden="true" />)}</div>
           </div>
         </div>
+        <fieldset className="fd-section-export"><legend>Section pages in exports</legend>
+          {([['section-title-pages', 'Start each section on its own page'], ['section-contents', 'Show the section’s contents in HTML']] as const).map(([field, label]) => {
+            const options = sectionExportOptions(details?.text ?? '')
+            const checked = pending.has(field) ? pending.get(field) === 'true' : field === 'section-title-pages' ? options.titlePages : options.contents
+            return <label key={field}><input type="checkbox" checked={checked} disabled={!details} onChange={event => void writerRef.current?.set(field, event.target.checked ? 'true' : null)} />{label}</label>
+          })}
+        </fieldset>
         {message && <p className="fd-message" role="alert" data-folio-details-message="true">{message}</p>}
         <div className="fd-foot">
           <span title={details?.indexPath}>Saved in the Index Note header · <kbd>⌘Z</kbd> undoes</span>

@@ -60,7 +60,7 @@ const lockFree = async (): Promise<boolean> => !existsSync(ownerLockPath(fx.root
 async function openedByTheApp(target: WriteFixture = fx): Promise<{ workspace: Workspace; versions: VersionStore; changes: ChangeStore; agent: WorkspaceAgent }> {
   const workspace = new Workspace(target.root)
   const changes = new ChangeStore(workspace)
-  const agent = await WorkspaceAgent.create({ workspace, appDataDir: appData, changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
+  const agent = await WorkspaceAgent.create({ mode: 'work', workspace, appDataDir: appData, changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
   agents.push(agent)
   return { workspace, versions: new VersionStore(workspace), changes, agent }
 }

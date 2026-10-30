@@ -144,12 +144,13 @@ test('an agent tasks.toggle is a proposal: nothing is written until the writer a
   const changes = new ChangeStore(ws)
   const step: ScriptedStep = { cap: 'tasks.toggle', input: { path: NOTE, line: 13 } }
   const prompt = 'Tick the schema example point'
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes,
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([{
       prompt,
       rounds: [
+        { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
         { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
         { kind: 'message', text: 'Proposed.' },
       ],

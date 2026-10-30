@@ -1,3 +1,4 @@
+import { unescapePlanLink } from '../shared/plan-line'
 import { posix } from 'node:path'
 import { collectionPattern, collectionStatus, localCalendarDate } from './collection'
 import { parseFrontmatter } from './frontmatter'
@@ -145,17 +146,22 @@ function aliasesOf(extra: Record<string, unknown>): string[] {
 
 /** Every piece under `dir` as a wikilink candidate. Exported because the Collection bundle
  *  (main/export.ts) must resolve links by the SAME rule the editor resolves them by. */
-export async function collectionCandidates(ws: Pick<Workspace, 'listFiles' | 'readFile'>, dir: string): Promise<Candidate[]> {
-  return candidatesFrom(ws, await ws.listFiles(), dir)
+export async function collectionCandidates(ws: Pick<Workspace, 'listFiles' | 'readFile'>, dir: string, onUnreadable?: (path: string) => void): Promise<Candidate[]> {
+  return candidatesFrom(ws, await ws.listFiles(), dir, onUnreadable)
 }
 
-async function candidatesFrom(ws: Pick<Workspace, 'readFile'>, listing: Awaited<ReturnType<Workspace['listFiles']>>, dir: string): Promise<Candidate[]> {
+async function candidatesFrom(ws: Pick<Workspace, 'readFile'>, listing: Awaited<ReturnType<Workspace['listFiles']>>, dir: string, onUnreadable?: (path: string) => void): Promise<Candidate[]> {
   const files = listing.filter((file) => dir === '' || file.path.startsWith(`${dir}/`))
   // Title and aliases come from the per-file facts cache (file-facts.ts): a file is re-read and
   // re-parsed only when it changed, so resolving links after each typing pause stays cheap.
   const reader = await factsReader(ws, files, listing)
-  return mapBounded(files, FACTS_READ_CONCURRENCY, async (file) => {
-    const facts = await reader.read(file)
+  const candidates = await mapBounded(files, FACTS_READ_CONCURRENCY, async (file) => {
+    let facts
+    try { facts = await reader.read(file) } catch (error) {
+      if (!onUnreadable) throw error
+      onUnreadable(file.path)
+      return null
+    }
     const { title, aliases } = facts.derive('wikilinks:candidate', (content) => ({
       title: candidateTitle(content, file.path),
       aliases: aliasesOf(parseFrontmatter(content)?.extra ?? {}),
@@ -163,6 +169,7 @@ async function candidatesFrom(ws: Pick<Workspace, 'readFile'>, listing: Awaited<
     const basename = posix.basename(file.path).replace(/\.(?:md|markdown|mdx)$/i, '')
     return { path: file.path, title, basename, aliases: [...aliases] }
   })
+  return candidates.filter((candidate): candidate is Candidate => candidate !== null)
 }
 
 /** A piece's title as a wikilink candidate carries it: frontmatter title, else first level-1 heading, else file name. */
@@ -188,8 +195,8 @@ const MARKDOWN_EXTENSION = /\.(?:md|markdown|mdx)$/i
 
 /** The workspace path a `./` path link spells, as written (extension or none), or null when it cannot name a file:
  *  it climbs, is absolute, has a backslash, ends in `/`, or, with `within`, lies outside that folder. */
-function pathLinkPlace(from: string, target: string, within?: string): string | null {
-  const wanted = target.trim()
+function pathLinkPlace(from: string, target: string, within?: string, decode = true): string | null {
+  const wanted = decode ? unescapePlanLink(target.trim()) : target.trim()
   if (!isPathLink(wanted) || wanted.includes('\\') || wanted.split('/').includes('..')) return null
   const folder = posix.dirname(from)
   const full = posix.normalize(posix.join(folder === '.' ? '' : folder, wanted))
@@ -225,8 +232,8 @@ export function pathLinkNewFile(from: string, target: string, within?: string): 
  * One rule for every reader of a link: the editor and the Collection graph (`resolveWikilinkTargetFromIndex`) and the
  * Folio's running-order lines (plan.ts `resolvePlanLink`).
  */
-export function resolveWikilinkPath(from: string, target: string, index: CandidateIndex, within?: string): string | null {
-  const full = pathLinkPlace(from, target, within)
+function matchingPath(from: string, target: string, index: CandidateIndex, within?: string, decode = true): string | null {
+  const full = pathLinkPlace(from, target, within, decode)
   if (full === null) return null
   const scoped = within !== undefined && within !== '' && within !== '.'
   const pool = (index.get(`path:${withoutMarkdownExtension(full).toLocaleLowerCase()}`) ?? [])
@@ -240,6 +247,13 @@ export function resolveWikilinkPath(from: string, target: string, index: Candida
   if (exact.length) return exact.length === 1 ? exact[0] : null
   const folded = named.filter((path) => stem(path).toLocaleLowerCase() === full.toLocaleLowerCase())
   return folded.length === 1 ? folded[0] : null
+}
+
+/** Accept old literal percent paths as well as escaped paths; two possible files require repair. */
+export function resolveWikilinkPath(from: string, target: string, index: CandidateIndex, within?: string): string | null {
+  const decoded = matchingPath(from, target, index, within)
+  const raw = unescapePlanLink(target) === target ? decoded : matchingPath(from, target, index, within, false)
+  return decoded && raw && decoded !== raw ? null : decoded ?? raw
 }
 
 /** Which piece `target` means, judged from `from` (`resolveWikilinkTargetFromIndex`): a `./` path link by its path
@@ -257,7 +271,12 @@ export function resolveWikilinkTarget(from: string, target: string, pieces: Cand
  * folder for its running order).
  */
 export function resolveWikilinkTargetFromIndex(from: string, target: string, index: CandidateIndex, scope: { within?: string } = {}): { to: string | null; ambiguous?: string[] } {
-  if (isPathLink(target)) return { to: resolveWikilinkPath(from, target, index, scope.within) }
+  if (isPathLink(target)) {
+    const decoded = matchingPath(from, target, index, scope.within)
+    const raw = unescapePlanLink(target) === target ? decoded : matchingPath(from, target, index, scope.within, false)
+    if (decoded && raw && decoded !== raw) return { to: null, ambiguous: [decoded, raw] }
+    return { to: decoded ?? raw }
+  }
   const wanted = withoutMarkdownExtension(target).toLocaleLowerCase()
   const tiers = [index.get(`title:${wanted}`), index.get(`basename:${wanted}`), index.get(`alias:${wanted}`)]
   const matches = tiers.find((tier) => (tier?.length ?? 0) > 0) ?? []

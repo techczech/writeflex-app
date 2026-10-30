@@ -46,6 +46,19 @@ export interface SecretsCipher {
   decryptString(bytes: Buffer): string
 }
 
+/**
+ * Smoke mode (packaged launch check): safeStorage is never called, because on macOS it reaches the
+ * Keychain. The returned cipher reports encryption unavailable and refuses to encrypt or decrypt.
+ */
+export function gateCipherForSmoke(real: () => SecretsCipher, smoke: boolean): SecretsCipher {
+  if (!smoke) return { isEncryptionAvailable: () => real().isEncryptionAvailable(), encryptString: (t) => real().encryptString(t), decryptString: (b) => real().decryptString(b) }
+  return {
+    isEncryptionAvailable: () => false,
+    encryptString: () => { throw new Error('encryption unavailable in smoke mode') },
+    decryptString: () => { throw new Error('encryption unavailable in smoke mode') },
+  }
+}
+
 /** The files a slot lives in. `read` throws an error with code ENOENT when the file is not there. */
 export interface SecretsFiles {
   exists(path: string): boolean

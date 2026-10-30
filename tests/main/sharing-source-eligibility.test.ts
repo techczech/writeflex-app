@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // Ticket 11, Sol review round 3 (P1): the source rule at the publisher's common boundary
 // (src/main/sharing-source-eligibility.ts; sharing-publisher.ts publishNow; sharing-folio.ts per part).
 // A shared piece whose file is replaced by a link (symlink) to a hidden or support file inside the
@@ -271,3 +272,6 @@ test('round 4 P1-2: isEligibleFolioMetadata: no .md needed; refused as typed or 
   symlinkSync(join(w.root, '.bridle/G'), join(w.root, 'G'))
   expect(isEligibleFolioMetadata(w.root, 'G/_report-structure.json')).toBe(false)
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

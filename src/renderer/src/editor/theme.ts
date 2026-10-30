@@ -48,6 +48,9 @@ const editorChrome = EditorView.theme({
     color: 'var(--prose-ink, #26262a)',
     // measure + the mockup's 72px side padding (border-box), centred in the pane.
     maxWidth: 'calc(var(--prose-measure, 660px) + 2 * 72px)',
+    // Metadata and other rendered blocks must shrink with the pane, like the prose.
+    minWidth: '0',
+    flexShrink: '1',
     margin: '0 auto',
     padding: '56px 72px 30vh',
     caretColor: 'var(--accent)',

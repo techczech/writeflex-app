@@ -214,3 +214,47 @@ test('a sandbox that forbids writing in the Collection is reported, naming the f
     await rm(sealed, { recursive: true, force: true })
   }
 })
+
+
+for (const target of ['paper/chapter', '.']) {
+  test(`create-manifest refuses a related existing Folio from ${target}`, async () => {
+    await mkdir(join(fx.root, 'paper/chapter'), { recursive: true })
+    await writeFile(join(fx.root, 'paper/_paper_INDEX.md'), '# Paper\n\n## Running order\n- Part\n')
+    await writeFile(join(fx.root, 'paper/chapter/01-Part.md'), '# Part')
+    await writeFile(join(fx.root, '01-Part.md'), '# Root part')
+    const result = await fx.cli(['create-manifest', target])
+    expect(result.code).not.toBe(0)
+    expect(result.json.error?.message).toContain('paper')
+    expect(existsSync(join(fx.root, target === '.' ? '' : target, MANIFEST_NAME))).toBe(false)
+  })
+}
+
+test('create-manifest returns an unreadable-folder check notice in its text and JSON result', async () => {
+  await mkdir(join(fx.root, 'paper/locked'), { recursive: true })
+  await writeFile(join(fx.root, 'paper/01-Part.md'), '# Part\n')
+  const locked = join(fx.root, 'paper/locked/_locked_INDEX.md')
+  await writeFile(locked, '## Running order\n')
+  await chmod(locked, 0)
+  try {
+    const result = await fx.cli(['create-manifest', 'paper'])
+    expect(result.code).toBe(0)
+    expect(result.json.result?.notices).toEqual(expect.arrayContaining([expect.stringContaining('Skipped paper/locked')]))
+    expect(existsSync(join(fx.root, 'paper/_report-structure.json'))).toBe(true)
+  } finally { await chmod(locked, 0o600) }
+})
+
+test('trash retains a set-aside declaring note entry for Put Back', async () => {
+  const ws = new Workspace(fx.root)
+  const path = 'book/ch/_ch_INDEX.md'
+  await fx.write(path, '# Cover\n')
+  await fx.write('book/_book_INDEX.md', '## Running order\n')
+  await ws.saveEditorText(path, '## Running order\n', { kind: 'disk', text: '# Cover\n' })
+  const store = '.writeflex/folio-declarations-set-aside.json'
+  const before = await fx.read(store)
+  const failed = await fx.cli(['trash', path], { write: { trash: async () => { throw new Error('Trash refused') } } })
+  expect(failed.code).not.toBe(0)
+  expect(await fx.read(store)).toBe(before)
+  const result = await fx.cli(['trash', path])
+  expect(result.code).toBe(0)
+  expect(await fx.read(store)).toBe(before)
+})

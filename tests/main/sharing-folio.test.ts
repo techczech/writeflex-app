@@ -1,16 +1,19 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // Share a Folio (sharing ticket 09; spec sections 4.2, 6.1 rows "Folio part added, removed or
 // reordered" and "Folio part missing on disk", test matrix row Folio): the publisher's Folio rendering,
 // one case per matrix row (parts in order; reorder; part added; part removed; part missing on disk),
 // against the real sharing service in memory (tests/helpers/sharing-publish-world.ts). No network.
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test, spyOn } from 'bun:test'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildShipped, removeShipped } from '../helpers/sharing-world.ts'
 import { publishWorld } from '../helpers/sharing-publish-world.ts'
-import { folioDirPath, folioRunningOrder, isFolio, partKeysFor, PART_KEY, renderFolioLink } from '../../src/main/sharing-folio.ts'
+import { folioDirPath, folioRunningOrder, isFolio, partKeysFor, PART_KEY, renderFolioLink, sharingMetadataWorkspace } from '../../src/main/sharing-folio.ts'
 import { RemotePictureRefused } from '../../src/main/sharing-remote-pictures.ts'
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { factsReader } from '../../src/main/file-facts'
+import * as frontMatterReader from '../../src/main/folio-front-matter'
 import { partMissingText } from '../../src/shared/sharing-links.ts'
 
 beforeAll(buildShipped)
@@ -56,7 +59,7 @@ describe('a Folio link: the matrix row Folio', () => {
     expect(w.publishes()).toHaveLength(1)
     const body = w.last()
     expect(body).toMatchObject({ kind: 'folio', title: 'Teaching notes, autumn term', comments: true })
-    expect(body.chips).toEqual([{ label: 'Author', value: 'Dominik' }, { label: 'Parts', value: '3' }])
+    expect(body.chips).toEqual([{ label: 'Author', value: 'Dominik' }])
     expect(w.titles()).toEqual(ORDER)
     // Each part's own `#` heading is its title, printed once by the page: it is not in the part's text.
     expect(body.parts[0].html).not.toContain('>What a reading list is for<')
@@ -65,7 +68,7 @@ describe('a Folio link: the matrix row Folio', () => {
     const page = await w.readerPage(w.shareId)
     expect(page.status).toBe(200)
     expect(page.text).toContain('Contents')
-    expect(ascending(orderOn(page.text, ['href="#part-1">1. What a reading list is for', 'href="#part-2">2. Setting the first week', 'href="#part-3">3. Marking without a rubric']))).toBe(true)
+    expect(ascending(orderOn(page.text, ['href="#part-1">What a reading list is for', 'href="#part-2">Setting the first week', 'href="#part-3">Marking without a rubric']))).toBe(true)
     expect(ascending(orderOn(page.text, ['Most reading lists are written', 'The first week sets', 'A rubric tells students', 'Made with WriteFlex']))).toBe(true)
     expect(page.text).not.toContain('OTHER_PIECE_WORDS')
     expect(w.made.view.mark).toEqual({ kind: 'shared' })
@@ -90,10 +93,10 @@ describe('a Folio link: the matrix row Folio', () => {
     w.write(MANIFEST, manifest(ORDER[0], 'Setting a reading pace', ORDER[1], ORDER[2]))
     await w.save(MANIFEST, part('Setting a reading pace'))
     expect(w.titles()).toEqual([ORDER[0], 'Setting a reading pace', ORDER[1], ORDER[2]])
-    expect(w.last().chips).toContainEqual({ label: 'Parts', value: '4' })
+    expect(w.last().chips.some(chip => chip.label === 'Parts')).toBe(false)
     const page = await w.readerPage(w.shareId)
     expect(page.text).toContain('PACE_WORDS')
-    expect(page.text).toContain('href="#part-2">2. Setting a reading pace')
+    expect(page.text).toContain('href="#part-2">Setting a reading pace')
   })
 
   test('part removed: the reader page loses it, and its text with it', async () => {
@@ -300,7 +303,7 @@ test('an Index Note that is a link to an Agent note, a dot-folder or out of the 
     symlinkSync(target, index)
     const folio = await publish()
     expect(folio.title).toBe('Folio')
-    expect(folio.chips).toEqual([{ label: 'Parts', value: '1' }])
+    expect(folio.chips).toEqual([])
     expect(folio.parts.map((entry) => entry.title)).toEqual(['A'])
     expect(JSON.stringify(folio)).not.toMatch(/CANARY/)
   }
@@ -309,7 +312,7 @@ test('an Index Note that is a link to an Agent note, a dot-folder or out of the 
   symlinkSync('sources/cover.md', index)
   const folio = await publish()
   expect(folio.title).toBe('The cover in the Folio')
-  expect(folio.chips).toEqual([{ label: 'Author', value: 'Dominik' }, { label: 'Parts', value: '1' }])
+  expect(folio.chips).toEqual([{ label: 'Author', value: 'Dominik' }])
 })
 
 test('folioDirPath: inside the Workspace, no dot-folder, no agent-notes', () => {
@@ -318,3 +321,102 @@ test('folioDirPath: inside the Workspace, no dot-folder, no agent-notes', () => 
   expect(folioDirPath('a/./b')).toBe('a/b')
   for (const bad of ['../x', '/abs', 'a/../../x', '.writeflex', 'x/agent-notes', 'x/.git/y', 3, null]) expect(folioDirPath(bad)).toBeNull()
 })
+
+
+test('title matter supplies the cover title and chips, while Details overrides fields and the cover is not a body part', async () => {
+  const w = await publishWorld({ files: {
+    ...files(),
+    [MANIFEST]: JSON.stringify({ title: 'Manifest title', files: [{ path: 'cover.md', role: 'title-matter' }, { path: 'preface.md', role: 'front-matter' }, { path: `${ORDER[0]}.md` }] }),
+    [INDEX]: '---\nauthor: Details author\n---\n',
+    [part('cover')]: '---\nrole: title-matter\ntitle: Cover title\nauthor: Cover author\ndate: 2026-10-22\nstatus: proposed-for-review\nstatus_label: Working draft for review\n---\n# Cover title\n',
+    [part('preface')]: '# Preface\n\nPreface words.\n',
+  } })
+  const made = await w.publisher.make(w.root, DIR, { name: null, comments: true }, 'folio')
+  expect(made.ok).toBe(true)
+  const body = w.publishes().at(-1)!.body
+  expect(body.title).toBe('Cover title')
+  expect(body.parts.map(p => p.title)).toEqual(['Preface', ORDER[0]])
+  expect(body.chips).toEqual([{ label: 'Date', value: '2026-10-22' }, { label: 'Status', value: 'Working draft for review' }, { label: 'Author', value: 'Details author' }])
+  w.write(INDEX, '---\ntitle: Details title\nstatus: final\n---\n')
+  const updated = (await renderFolioLink(w.root, DIR, '/s/x/images/', {}))!.folio
+  expect(updated.title).toBe('Details title')
+  expect(updated.chips).toContainEqual({ label: 'Status', value: 'final' })
+})
+
+
+test('the export title precedence is shared: manifest title wins over a Details heading', async () => {
+  const w = await publishWorld({ files: { ...files(),
+    [MANIFEST]: JSON.stringify({ title: 'Declared manifest title', files: [{ path: `${ORDER[0]}.md` }] }),
+    [INDEX]: '# Older Details heading\n',
+  } })
+  expect((await renderFolioLink(w.root, DIR, '/s/x/images/', {}))!.folio.title).toBe('Declared manifest title')
+})
+
+test('title-matter metadata behind a refused symlink never enters the cover', async () => {
+  const w = await publishWorld({ files: { ...files(),
+    [MANIFEST]: JSON.stringify({ files: [{ path: 'cover.md', role: 'title-matter' }, { path: `${ORDER[0]}.md` }] }),
+    [INDEX]: 'No declared title.\n',
+    'agent-notes/private.md': '---\nrole: title-matter\ntitle: PRIVATE_COVER_CANARY\nauthor: PRIVATE_AUTHOR_CANARY\n---\n',
+  } })
+  symlinkSync('../agent-notes/private.md', join(w.root, part('cover')))
+  const rendered = (await renderFolioLink(w.root, DIR, '/s/x/images/', {}))!.folio
+  expect(rendered.title).toBe('Folio')
+  expect(rendered.chips).toEqual([])
+  expect(JSON.stringify(rendered)).not.toContain('CANARY')
+})
+
+for (const bodyText of ['', 'A subtitle and abstract.', '![Cover illustration](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1cAAAAASUVORK5CYII=)']) {
+  test(`title matter keeps real body content and a cover-only Folio publishes: ${bodyText}`, async () => {
+    for (const only of [false, true]) {
+      const w = await publishWorld({ files: {
+        [MANIFEST]: JSON.stringify({ title_matter: 'cover.md', files: [{ path: 'cover.md' }, ...(!only ? [{ path: 'body.md' }] : [])] }),
+        [part('cover')]: `---\ntitle: Cover title\n---\n# Cover title\n\n${bodyText}\n`,
+        [part('body')]: '# Body\n\nMain text.\n',
+      } })
+      const made = await w.publisher.make(w.root, DIR, { name: null, comments: true }, 'folio')
+      expect(made.ok).toBe(true)
+      const published = w.publishes().at(-1)!.body
+      expect(published.parts.map(p => p.title)).toEqual(bodyText || only ? ['Cover title', ...(!only ? ['Body'] : [])] : ['Body'])
+      const cover = published.parts.find(p => p.title === 'Cover title')
+      if (cover) {
+        expect(cover.html).not.toContain('>Cover title</h')
+        if (bodyText) expect(cover.html).toContain(bodyText.startsWith('!') ? 'Cover illustration' : bodyText)
+      }
+      const page = await w.readerPage(made.ok ? made.shareId! : '')
+      if (only) expect(page.text).toContain('id="part-1"')
+      if (bodyText) expect(page.text).toContain(bodyText.startsWith('!') ? 'Cover illustration' : bodyText)
+    }
+  })
+}
+
+test('sharing metadata bypasses a warm raw file-facts cache for hidden comments and ineligible files', async () => {
+  const w = await publishWorld({ files: {
+    [MANIFEST]: manifest(ORDER[0]),
+    [part(ORDER[0])]: PARTS[part(ORDER[0])],
+    [INDEX]: '<!-- HIDDEN_METADATA_CANARY -->\n# Public title\n',
+    'Elsewhere/private.md': '# INELIGIBLE_METADATA_CANARY\n',
+  } })
+  const ws = sharingMetadataWorkspace(w.root, DIR)
+  const listing = await ws.listFiles()
+  // Warm the actual raw cache; sharing must never consume these entries.
+  await ws.searchIndex.ensure(listing, new Set(listing.map(file => file.path)))
+  expect(ws.searchIndex.get(INDEX)?.content).toContain('HIDDEN_METADATA_CANARY')
+  const reader = await factsReader(ws, listing, listing)
+  const index = listing.find(file => file.path === INDEX)!
+  expect((await reader.read(index)).content).toBe('\n# Public title\n')
+  const refused = listing.find(file => file.path === 'Elsewhere/private.md')!
+  expect(ws.searchIndex.get(refused.path)?.content).toContain('INELIGIBLE_METADATA_CANARY')
+  await expect(reader.read(refused)).rejects.toThrow('could not read this Folio')
+})
+
+test('sharing resolves front matter only once for cover and title', async () => {
+  const w = await publishWorld({ files: files() })
+  const read = spyOn(frontMatterReader, 'folioFrontMatter')
+  try {
+    await renderFolioLink(w.root, DIR, '/s/x/images/', {})
+    expect(read).toHaveBeenCalledTimes(1)
+  } finally { read.mockRestore() }
+})
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

@@ -11,9 +11,32 @@ import {
   writerReviewing,
   writerReviewModeForContent,
   writerReviewModeOf,
+  writerReviewRemovedSpans,
   type WriterReviewMode,
   type WriterPendingChange,
 } from '../../src/renderer/src/editor/writer-review'
+
+test('removed spans project the raw Reviewing buffer onto exactly the persistence text', () => {
+  const strip = (state: EditorState): string => {
+    const raw = state.doc.toString()
+    let out = ''
+    let kept = 0
+    for (const span of writerReviewRemovedSpans(state)) { out += raw.slice(kept, span.from); kept = span.to }
+    return out + raw.slice(kept)
+  }
+  // A pending replacement and a pending deletion, both before later text.
+  let state = reviewingState('The old draft goes here.\n\nLater text stays.\n')
+  const replaceFrom = state.doc.toString().indexOf('old')
+  state = state.update({ changes: { from: replaceFrom, to: replaceFrom + 3, insert: 'new' } }).state
+  const deleteFrom = state.doc.toString().indexOf(' goes')
+  state = state.update({ changes: { from: deleteFrom, to: deleteFrom + ' goes'.length, insert: '' } }).state
+  expect(writerReviewRemovedSpans(state).length).toBeGreaterThan(0)
+  expect(strip(state)).toBe(documentTextForPersistence(state))
+  expect(documentTextForPersistence(state)).toContain('The new draft here.')
+  // Drafting carries no marks: nothing is excluded.
+  const drafting = EditorState.create({ doc: 'Plain.\n', extensions: [writerReviewing({ initialMode: 'drafting' })] })
+  expect(writerReviewRemovedSpans(drafting)).toEqual([])
+})
 
 test('revision decorations are visible only in Reviewing', () => {
   const drafting = EditorState.create({ doc: 'Draft', extensions: [writerReviewing({ initialMode: 'drafting' })] })

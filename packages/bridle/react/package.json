@@ -1,6 +1,6 @@
 {
   "name": "@bridle/react",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "type": "module",
   "exports": {
@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build:js": "bun build ./src/index.ts --outdir dist --target browser --format esm --packages external",
-    "build:types": "tsc -p tsconfig.build.json",
+    "build:types": "node ../../../node_modules/writeflex-build-typescript/bin/tsc -p tsconfig.build.json",
     "build": "bun run build:js && bun run build:types"
   },
   "devDependencies": {

@@ -1,4 +1,5 @@
-import { watch, type FSWatcher } from 'node:fs'
+import { invalidateFolioDeclarations, watchFolioDeclarations } from './folio-declaration'
+import { lstatSync, watch, type FSWatcher } from 'node:fs'
 import { isAbsolute, posix } from 'node:path'
 
 export const OWN_WRITE_DEDUPE_MS = 5_000
@@ -14,21 +15,67 @@ function normaliseWatchPath(path: string): string {
   return posix.normalize(path.replaceAll('\\', '/'))
 }
 
-/** Short-lived record of paths WriteFlex itself changed, shared by every write route in Workspace. */
-export class OwnWriteTracker {
-  readonly #paths = new Map<string, number>()
+/**
+ * What a file looks like on disk, as far as the own-write rule needs: its device and inode (a rename keeps
+ * both), its size and its modification time to the nanosecond. Taken from the staged file's own handle, or by
+ * `fstat` of the temporary file, before the rename that gives it its name (spec-folio-room § 6.6 D-WATCH-1).
+ */
+export type FileIdentity = { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint }
 
-  record(path: string, at = Date.now()): void {
-    this.#paths.set(normaliseWatchPath(path), at)
+/** The state an own write leaves at its path: that file, or nothing there (a delete, the old name of a move). */
+export type OwnWriteExpectation = FileIdentity | 'absent'
+
+/** The identity of `stats` (taken with `{ bigint: true }`). */
+export function fileIdentityOf(stats: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint }): FileIdentity {
+  return { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeNs: stats.mtimeNs }
+}
+
+/** Looks at an absolute path without following a link (`lstatSync` with `bigint`); throws as lstat does. */
+export type LookAt = (absolute: string) => { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint }
+
+const lookAtDisk: LookAt = (absolute) => lstatSync(absolute, { bigint: true })
+
+const sameIdentity = (a: FileIdentity, b: FileIdentity): boolean =>
+  a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs
+
+/**
+ * Short-lived record of the state each WriteFlex write left at its path, shared by every write route in
+ * Workspace (D-WATCH-1). An event for a path is the app's own only while the path, looked at now, still
+ * holds exactly the state the write left (or nothing, for `'absent'`), within `OWN_WRITE_DEDUPE_MS`. Any
+ * other state, a look that fails, or a write that recorded no state, and the event is delivered: there is
+ * no rule by time alone.
+ */
+export class OwnWriteTracker {
+  readonly #paths = new Map<string, { at: number; expected: OwnWriteExpectation | null }>()
+
+  /** `locate` turns a workspace-relative path into the absolute one to look at; `lookAt` is the look. */
+  constructor(private readonly locate: (path: string) => string, private readonly lookAt: LookAt = lookAtDisk) {}
+
+  /** Records the state the write leaves at `path`. Without `expected` the path is recorded with no state,
+   *  which suppresses nothing: whatever the write leaves there is delivered. */
+  record(path: string, expected?: OwnWriteExpectation, at = Date.now()): void {
+    this.#paths.set(normaliseWatchPath(path), { at, expected: expected ?? null })
   }
 
   isRecent(path: string, at = Date.now()): boolean {
     const key = normaliseWatchPath(path)
-    const writtenAt = this.#paths.get(key)
-    if (writtenAt === undefined) return false
-    if (at - writtenAt <= OWN_WRITE_DEDUPE_MS) return true
-    this.#paths.delete(key)
-    return false
+    const written = this.#paths.get(key)
+    if (written === undefined) return false
+    if (at - written.at > OWN_WRITE_DEDUPE_MS) {
+      this.#paths.delete(key)
+      return false
+    }
+    const { expected } = written
+    if (expected === null) return false
+    let now: FileIdentity | 'absent'
+    try {
+      now = fileIdentityOf(this.lookAt(this.locate(key)))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') return false
+      now = 'absent'
+    }
+    if (expected === 'absent' || now === 'absent') return expected === now
+    return sameIdentity(expected, now)
   }
 }
 
@@ -64,6 +111,7 @@ export function createWatchRouter(
   onChanged: (paths: string[]) => void,
   debounceMs = WATCH_BURST_DEBOUNCE_MS,
 ): WatchRouter {
+  const releaseDeclarations = watchFolioDeclarations(workspace.root)
   const pending = new Set<string>()
   let timer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
@@ -71,15 +119,17 @@ export function createWatchRouter(
   const flush = (): void => {
     timer = null
     if (disposed || pending.size === 0) return
-    const paths = [...pending].sort((a, b) => a.localeCompare(b))
+    const paths = [...pending].filter(path => !workspace.wasRecentlyWrittenByApp(path)).sort((a, b) => a.localeCompare(b))
     pending.clear()
-    onChanged(paths)
+    if (paths.length) onChanged(paths)
   }
 
   return {
     take: (filename) => {
       if (disposed || !filename) return
       const path = normaliseWatchPath(String(filename))
+      // Hidden Folio sidecars matter; app journals do not invalidate declarations.
+      invalidateFolioDeclarations(workspace.root, path)
       if (isIgnoredWorkspaceWatchPath(path) || workspace.wasRecentlyWrittenByApp(path)) return
       pending.add(path)
       if (timer) clearTimeout(timer)
@@ -88,6 +138,7 @@ export function createWatchRouter(
     dispose: () => {
       if (disposed) return
       disposed = true
+      releaseDeclarations()
       if (timer) clearTimeout(timer)
       timer = null
       pending.clear()
@@ -101,22 +152,50 @@ export function createWorkspaceWatcher(
   onChanged: (paths: string[]) => void,
   debounceMs = WATCH_BURST_DEBOUNCE_MS,
 ): WorkspaceWatcher {
-  const router = createWatchRouter(workspace, onChanged, debounceMs)
+  let router: WatchRouter | null = null
   let disposed = false
-  const watcher: FSWatcher = watch(
-    workspace.root,
-    { recursive: true, encoding: 'utf8' },
-    (_event, filename) => {
-      if (!disposed && filename) router.take(String(filename))
-    },
-  )
+  let retried = false
+  let watcher: FSWatcher | null = null
+
+  const start = (): void => {
+    const nextRouter = createWatchRouter(workspace, onChanged, debounceMs)
+    let next: FSWatcher
+    try {
+      next = watch(workspace.root, { recursive: true, encoding: 'utf8' }, (_event, filename) => {
+        if (!disposed && filename) nextRouter.take(String(filename))
+      })
+    } catch (error) { nextRouter.dispose(); throw error }
+    router = nextRouter
+    watcher = next
+    next.on('error', (error) => {
+      if (disposed || watcher !== next) return
+      console.warn('The Collection watcher failed; releasing its cache so Folio reads check disk.', error)
+      nextRouter.dispose()
+      router = null
+      watcher = null
+      next.close()
+      if (retried) {
+        console.warn('The replacement Collection watcher failed; no further recreation will be attempted. Folio reads will check disk; outside changes will not reach the file tree.')
+        return
+      }
+      retried = true
+      console.warn('Attempting to recreate the Collection watcher once.')
+      try { start() }
+      catch (restartError) {
+        console.warn('The Collection watcher could not be recreated. Folio reads will check disk; outside changes will not reach the file tree.', restartError)
+      }
+    })
+  }
+  start()
 
   return {
     dispose: () => {
       if (disposed) return
       disposed = true
-      router.dispose()
-      watcher.close()
+      router?.dispose()
+      router = null
+      watcher?.close()
+      watcher = null
     },
   }
 }

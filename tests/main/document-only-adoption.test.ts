@@ -60,12 +60,13 @@ afterEach(async () => {
 })
 
 async function boot(steps?: ScriptedStep[]): Promise<WorkspaceAgent> {
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, services: { scraps: new ScrapStore(ws) },
     changes, onChangesChanged: () => {},
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     ...(steps
       ? { sessionFactory: scriptedSessionFactory([{ prompt: 'go', rounds: [
+          { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: steps.map((step) => step.cap) } }] },
           { kind: 'tool-calls', calls: steps.map((step) => ({ name: step.cap, arguments: step.input as Record<string, unknown> })) },
           { kind: 'message', text: 'done' },
         ] }]) }

@@ -19,10 +19,11 @@
  * (folio-agent-instructions.test.ts) checks each statement against the code so the two cannot drift.
  */
 
+import { BACKUP_SUFFIX, BACKUP_RECORD_SUFFIX } from '../shared/backup-files'
 import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync } from 'node:fs'
 import { posix } from 'node:path'
-import { MANIFEST_NAME } from './folio'
+import { FOLIO_BACKUP_NAME, MANIFEST_NAME } from './folio'
 import type { Workspace } from './workspace'
 import {
   AGENTS_FILE,
@@ -42,12 +43,26 @@ export const FOLIO_RULES = {
   manifest: MANIFEST_NAME,
   roles: PLAN_ROLES,
   defaultRole: 'section',
-  backupSuffix: '.writeflex-backup',
+  backupSuffix: BACKUP_SUFFIX,
+  backupRecordSuffix: BACKUP_RECORD_SUFFIX,
   coverNames: ['README.md', 'index.md'],
   agentFiles: [AGENTS_FILE, CLAUDE_FILE],
   numberedExamples: ['01-intro.md', '02_method.md'],
   runningOrderHeading: '## Running order',
   appFolder: '.writeflex',
+  binFolder: '.folio-bin',
+  binIndex: '.bin-index.json',
+  supportFiles: ['_<folder>_EVIDENCE-AND-NOTES.md', '_<folder>_MAP.canvas'],
+  indexNote: '_<folder>_INDEX.md',
+  turnBackBackup: FOLIO_BACKUP_NAME,
+  /** Turn back's private receipt; retired ones are `.folio-turn-back-retired-<hash>.json`. */
+  turnBackReceipt: '.folio-turn-back.json',
+  turnBackRetiredReceipt: '.folio-turn-back-retired-<hash>.json',
+  /** The five folders for everything that is not a part or a support file, in the order the text lists them. */
+  folders: ['data', 'research', 'assets', 'offcuts', 'archive'],
+  captureManifest: 'research/_manifest.jsonl',
+  moveMap: 'research/move-map-<YYYY-MM-DD>.tsv',
+  archivedExports: 'archive/exports-<YYYY-MM-DD>/',
 } as const
 
 const BEGIN_PREFIX = '<!-- BEGIN WriteFlex Folio instructions ('
@@ -69,25 +84,61 @@ export function maintainedInstructionsBody(): string {
     '',
     '### Files',
     '',
+    `- A folder is a Folio when it has \`${r.manifest}\`, or an Index Note \`${r.indexNote}\` with a \`${r.runningOrderHeading}\` list. Either one is enough. \`${r.turnBackBackup}\` alone does not make a Folio, and neither do numbered file names. Turning a Folio back into a collection clears both; clearing only one leaves it a Folio. Turn back parks the manifest and the Running order in \`${r.turnBackReceipt}\`; Make Folio restores them exactly; nothing is deleted.`,
     `- \`${r.manifest}\` (the manifest) holds the running order. Its \`files\` array lists the parts in order; each entry has a \`path\` and a \`role\` (one of: ${roles}). When \`content_root\` is set, it names the folder inside this one where the parts sit, and each \`path\` is relative to it.`,
     '- A part is a Markdown file in this folder, or in `content_root`. A part never lies outside this folder.',
-    `- \`_<folder name>_INDEX.md\`, when there is one, is the Index Note. Its \`${r.runningOrderHeading}\` list records the same order as the manifest: change both the same way, or WriteFlex shows that they disagree.`,
-    `- Never parts: files whose names start with \`_\`, the cover notes (${r.coverNames.map((name) => `\`${name}\``).join(', ')}, \`_<folder name>.md\`), backups ending \`${r.backupSuffix}\`, and the agent instructions ${r.agentFiles.map((name) => `\`${name}\``).join(' and ')} (and sync conflict copies of either).`,
+    `- \`_<folder name>_INDEX.md\`, when there is one, is the Index Note. Its \`${r.runningOrderHeading}\` list records the same order as the manifest: change both the same way, or WriteFlex shows that they disagree. A folder has at most one Index Note with a Running order at its top level; when a Folio's contents move in, the incoming one replaces the old one.`,
+    '- A running-order line `[[Title]]` names the file whose title it equals, ignoring letter case and the `.md` ending; a title is the frontmatter `title`, else the first `# ` heading, else the file name. If no title matches, the file name is tried next, then aliases. A `[[./path]]` line names the file at that path. After any change, check that every Running order line resolves and that the line count equals the number of `files` entries.',
+    `- The Index Note, the map and the evidence-and-notes file carry the folder's name. When the folder is renamed, or its contents move to another folder, rename all three to match, or WriteFlex stops finding them.`,
+    `- Never parts: files whose names start with \`_\`, the cover notes (${r.coverNames.map((name) => `\`${name}\``).join(', ')}, \`_<folder name>.md\`), backups ending \`${r.backupSuffix}\`, \`.canvas\` files, anything inside a folder whose name starts with \`.\` (such as \`${r.appFolder}/\` and \`${r.binFolder}/\`), and the agent instructions ${r.agentFiles.map((name) => `\`${name}\``).join(' and ')} (and sync conflict copies of either).`,
     '- A Markdown file with no entry in the manifest is in the folder but not in the running order.',
+    '- A section page is an ordinary part whose own frontmatter says `folio: section` (case-insensitive, quotes allowed). Every contents part after it belongs to that section until the next section page. Parts before the first section belong to none. Front matter never belongs to a section. Heading levels do not determine membership; the chapter and continues rule runs within each section. Keep the mark in the page only, never in the manifest. The Index Note options `section-title-pages: true` and `section-contents: true` opt into separate opening pages and section contents links in HTML; both default off.',
     `- Front matter (a title page, a preface, acknowledgements) has the role \`front-matter\` and \`"toc": false\` in its entry; its entries come first in \`files\`. It exports before the contents page and is never listed in it. A part whose own frontmatter says \`role: title-matter\` is the title page, and the export uses it as the cover.`,
+    '',
+    '### Folders',
+    '',
+    `- At the top level sit only the parts, the manifest, the Index Note, the map, the evidence-and-notes file and ${r.agentFiles.map((name) => `\`${name}\``).join(' and ')}. Everything else goes in one of five folders, made when first needed. Subfolders at any depth are allowed.`,
+    `- \`${r.folders[0]}/\`: datasets and analysis output (CSV, JSON, spreadsheets). \`${r.folders[1]}/\`: what the text relies on (sources, literature, notes on sources, evidence, author notes). \`${r.folders[2]}/\`: images, media and widget HTML. \`${r.folders[3]}/\`: words that might go back into a part (cut passages, earlier drafts to reuse). \`${r.folders[4]}/\`: superseded material kept for the record (old drafts, old exports, dated copies).`,
+    '- Sort by function, not by file name or type: `research/` if the text relies on it, `offcuts/` if its words might go back into a part, `archive/` if it is superseded. Apply file-type rules to loose single files only.',
+    '- Keep a self-contained unit together in one subfolder: a report with its own widgets, a literature bundle with its CSV. Do not split it by file type.',
+    `- A Folio's folders hold supporting material, never another Folio. If you find a folder there with \`${r.manifest}\`, an Index Note \`${r.indexNote}\` with a \`${r.runningOrderHeading}\` list, or a \`${r.turnBackBackup}\`, ask the writer. To undo it: remove the \`${r.runningOrderHeading}\` section, rename \`${r.indexNote}\` and \`${r.supportFiles[1]}\` to plain names, and move \`${r.turnBackBackup}\`, \`${r.turnBackReceipt}\` and any \`${r.turnBackRetiredReceipt}\` into \`${r.folders[4]}/\` under plain names. Never delete.`,
+    `- Never create a manifest or add a \`${r.runningOrderHeading}\` to an Index Note in any folder inside or above a Folio. WriteFlex refuses this from its own tools and command line, but a direct file write from your own tools is not checked and can change which folder is the Folio.`,
+    `- There is no exports folder. Current exports stay where the writer exported them; move superseded exports to \`${r.archivedExports}\`.`,
+    `- \`scout capture\` writes in \`${r.folders[1]}/\` and records each capture in \`${r.captureManifest}\`; \`--where-used\` skips \`${r.folders[1]}/\`. \`scout capture --project <folder> --into <sub>\` writes below \`${r.folders[1]}/<sub>/\`; omit \`--into\` for the top level. After you move a capture within \`${r.folders[1]}/\`, run \`scout capture --project <folder> --moved <old> <new>\` (paths relative to \`${r.folders[1]}/\`; it updates only that capture's receipt), then check \`${r.captureManifest}\` for \`sources[].file\` values (relative to the Folio root) still pointing at old locations of files you moved, and fix them. To merge two \`${r.folders[1]}/\` folders, move the captured files in, append the incoming manifest lines and fix their \`sources[].file\` paths. Material scout did not capture may use any subfolder.`,
+    '',
+    '### Moving files',
+    '',
+    `- A move is one change. In the same change, rewrite every reference to the moved file inside the Folio: relative Markdown links and images, includes, frontmatter \`source:\` paths, \`${r.captureManifest}\` \`sources[].file\` (relative to the Folio root, not to \`${r.folders[1]}/\`), \`[Simulation: …]\` lines, and relative links that leave the Folio (recount the \`../\`).`,
+    '- Absolute paths and `writeflex://` links in archived records stay as they were; they describe the past.',
+    '- Use `git mv` when the Folio is in git. Never delete to tidy; move.',
+    `- Write a move map \`${r.moveMap}\` in the same change: one row per moved file, old path, a tab, new path, workspace-relative. WriteFlex version history is keyed by path and does not follow a move made outside WriteFlex; the writer reattaches it with the map. Do not edit \`${r.appFolder}/\` to fix history.`,
+    '- To prove nothing was deleted, check every row of the move map: the new path exists and the old one is gone. Do not rely on git rename detection; it reports a heavily edited moved file as a deletion plus an addition.',
     '',
     '### WriteFlex\'s own files: do not edit by hand',
     '',
-    `- The \`${r.appFolder}/\` folder and any file ending \`${r.backupSuffix}\`.`,
-    `- The part of \`${AGENTS_FILE}\` between the BEGIN and END lines. If it is edited, WriteFlex stops updating it.`,
+    `- The \`${r.appFolder}/\` folder and any file ending \`${r.backupSuffix}\`. A \`*${r.backupSuffix}\` belongs to the file as it was when WriteFlex made it; after files are moved or renamed outside WriteFlex it may describe a different file. Never restore from one by hand.`,
+    `- Any file ending \`${r.backupRecordSuffix}\` records which file a backup belongs to; keep it beside its backup.`,
+    `- The \`${r.binFolder}/\` folder (the Folio bin) and \`${r.binFolder}/${r.binIndex}\`. Files there are parts the writer removed: never parts, never exported, shared or counted. Do not add, move, edit, rename or delete anything in it, and do not read it as a list of parts. Only the writer empties it, in Finder.`,
+    `- The part of \`${AGENTS_FILE}\` between the BEGIN and END lines. If it is edited, WriteFlex stops updating it. WriteFlex writes the block only on Make Folio or when the writer clicks Restore in the Folio's agent-instructions panel. Never write or repair the block yourself: if \`${AGENTS_FILE}\` is empty or has no block, leave it and tell the writer that Restore writes it again. Write your own instructions only below an existing END line.`,
     '',
     '### Changing the Folio',
     '',
     `- Add a part: create the Markdown file, starting with a \`# Title\` line, then add \`{ "path": "<file name>", "role": "${r.defaultRole}" }\` to \`files\`. Its place in \`files\` is its place in the Folio.`,
     '- Move a part: move its entry within `files`. Change nothing else in the manifest, and keep it valid JSON.',
-    '- Leave a part out: remove its entry. The file stays in the folder.',
+    '- Leave a part out: remove its entry (from the manifest and the Running order). The file stays in the folder. Never delete a Folio file, whatever the reason; WriteFlex never deletes one either.',
+    `- Remove a part for the writer: in WriteFlex, Delete on a part moves its file to \`${r.binFolder}/\` and offers Undo. The \`writeflex\` command has no route to the bin; do not use its \`trash\` on a part. Remove the entry and leave the file.`,
+    `- Restore is the writer's action in the bin (Restore puts the file at the Folio's top level, at the end of the running order). Do not copy files out of \`${r.binFolder}/\` to restore them.`,
     '- Sections are the headings inside a part. Move a section by moving its heading and its text from one part file to another.',
     `- Numbered file names (\`${r.numberedExamples[0]}\`, \`${r.numberedExamples[1]}\`) give the order only while there is no manifest; once there is one, the manifest decides.`,
+    '',
+    '### The Folio workspace',
+    '',
+    '- WriteFlex opens a Folio as one workspace with the tabs Outline, Text, Cards, Map, Flags, Evidence and Files. The writer sees the same files you do: the Index Note, the manifest, the parts, the evidence-and-notes file and the map. The tabs add no other file; Cards groups parts by their status.',
+    '- The Index Note Running order is the order of record; the manifest is its export order. Keep both aligned when changing the order. Synopsis is the plan-line gloss, priority is #priority-high, #priority-medium or #priority-low, and labels come from the Index Note labels list and its matching #label- tags. Status lives in each written part’s frontmatter; an unwritten part is an idea.',
+    '- A needs-work flag is ==words==<!--flag:needs-citation-->, ==words==<!--flag:rewrite-->, ==words==<!--flag:check-fact--> or ==words==<!--flag:expand-->. Clearing a flag keeps its words. Code and metadata never contain flags.',
+    '- Evidence and notes: preserve author text; sections are ## [[Part title]], with ### Evidence linked source lists and ### Notes prose. File fingerprints are owned <!--wf:sha1-16=0123456789abcdef--> comments; do not fabricate them. Zotero quotation text is read live from its stored annotation links.',
+    '- Maps use JSON Canvas nodes and edges. Unknown fields belong to their author. Only edges labelled exactly path propose an order; writing that order requires a separate reviewed running-order edit. Part metadata comes from the plan, not map nodes.',
+    `- ${r.supportFiles.map((name) => `\`${name}\``).join(' and ')} are reserved Folio support files, never parts or export content. Preserve their unknown or authored content. Removing a part from the running order never deletes its files or evidence.`,
     '',
     '### Proposing a change',
     '',
@@ -242,7 +293,7 @@ export function withBlockAppended(text: string): string {
  * refreshed only when unedited. A missing CLAUDE.md is written; an existing one is left alone.
  * Returns the paths written.
  */
-export async function writeFolioAgentInstructions(ws: Workspace, dir: string, beforeChange?: BeforeChange): Promise<string[]> {
+export async function writeFolioAgentInstructions(ws: Workspace, dir: string, beforeChange?: BeforeChange, options?: { preserveExisting?: boolean }): Promise<string[]> {
   const agentsPath = pathIn(dir, AGENTS_FILE)
   const claudePath = pathIn(dir, CLAUDE_FILE)
   const written: string[] = []
@@ -250,7 +301,7 @@ export async function writeFolioAgentInstructions(ws: Workspace, dir: string, be
   if (agents.kind === 'absent') {
     await writeGuarded(ws, agentsPath, null, newAgentsFile())
     written.push(agentsPath)
-  } else if (agents.kind === 'file') {
+  } else if (agents.kind === 'file' && !options?.preserveExisting) {
     const parsed = parseAgentsText(agents.text)
     if (parsed.kind === 'none') {
       await writeGuarded(ws, agentsPath, agents.text, withBlockAppended(agents.text), beforeChange)

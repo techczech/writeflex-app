@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -20,6 +20,8 @@ export type BridleDiscoveryResult = {
   at: number;
   discovery: 'succeeded' | 'failed' | 'skipped';
   reason?: BridleDiscoveryReason;
+  /** True only when a previously discovered catalogue is served after a failed or skipped check. */
+  stale?: boolean;
 };
 export type BridleModelRefreshOutcome = BridleDiscoveryResult & {
   models: RegistryModels;
@@ -68,6 +70,8 @@ export type BridleModelServiceOptions = {
   appDataDir: string;
   include?: string[];
   fetch?: typeof globalThis.fetch;
+  /** Codex CLI client version sent to discovery; defaults to OPENAI_CODEX_CLIENT_VERSION. */
+  codexClientVersion?: string;
   /**
    * After a successful forced check, a forced `refreshModels` within this window returns that
    * check's report (marked `reused`) and asks no provider. Default 10 seconds.
@@ -77,6 +81,7 @@ export type BridleModelServiceOptions = {
 
 type CachedProviderModels = {
   checkedAt: number;
+  accountFingerprint?: string;
   etag?: string;
   models: RegistryModel[];
 };
@@ -175,13 +180,15 @@ function readCache(path: string, families: Map<string, ProviderFamily>): ModelCa
     const providers: Record<string, CachedProviderModels> = {};
     for (const [providerId, value] of Object.entries(root.providers)) {
       if (!families.has(providerId) || typeof value !== "object" || value === null) continue;
-      const entry = value as { checkedAt?: unknown; etag?: unknown; models?: unknown };
+      const entry = value as { checkedAt?: unknown; accountFingerprint?: unknown; etag?: unknown; models?: unknown };
       if (typeof entry.checkedAt !== "number" || !Number.isFinite(entry.checkedAt) || !Array.isArray(entry.models)) continue;
       // An empty list is never a valid discovery; older builds stored one as success.
       if (entry.models.length === 0) continue;
       if (!entry.models.every((model) => validRegistryModel(model, providerId))) continue;
       providers[providerId] = {
         checkedAt: entry.checkedAt,
+        ...(typeof entry.accountFingerprint === "string" && /^[a-f0-9]{64}$/.test(entry.accountFingerprint)
+          ? { accountFingerprint: entry.accountFingerprint } : {}),
         ...(typeof entry.etag === "string" ? { etag: entry.etag } : {}),
         models: entry.models,
       };
@@ -192,6 +199,7 @@ function readCache(path: string, families: Map<string, ProviderFamily>): ModelCa
       ? {
         at: last.at,
         discovery: last.discovery!,
+        ...(last.stale === true ? { stale: true } : {}),
         ...(last.reason && DISCOVERY_REASONS.includes(last.reason) ? { reason: last.reason } : {}),
       } : undefined;
     return { version: 1, providers, ...(lastDiscovery ? { lastDiscovery } : {}) };
@@ -240,13 +248,25 @@ function extractOpenAIAccountId(token: string): string {
  * higher `minimal_client_version`. Set it to the Codex CLI release that lists the model
  * (`codex --version`, or `client_version` in `~/.codex/models_cache.json`); the fixture test
  * fails until it is at least the fixture's highest minimum.
+ * Hosts can use `codexClientVersion` to override this default without a Bridle release.
  */
 export const OPENAI_CODEX_CLIENT_VERSION = "0.160.1";
+/** Last-resort ChatGPT model before any successful discovery. */
+export const DEFAULT_OPENAI_CODEX_MODEL = "gpt-5.5";
 
-function openAICodexModelsUrl(baseUrl: string): string {
+export type BridleSavedModelResolution = {
+  modelId?: string;
+  reason?: {
+    code: "saved-model-not-offered" | "provider-unavailable";
+    savedId: string;
+    replacementId?: string;
+  };
+};
+
+function openAICodexModelsUrl(baseUrl: string, clientVersion: string): string {
   const normalized = baseUrl.replace(/\/$/, "");
   const root = normalized.endsWith("/codex") ? normalized : `${normalized}/codex`;
-  return `${root}/models?client_version=${encodeURIComponent(OPENAI_CODEX_CLIENT_VERSION)}`;
+  return `${root}/models?client_version=${encodeURIComponent(clientVersion)}`;
 }
 
 class DiscoveryOfflineError extends Error {}
@@ -256,12 +276,13 @@ async function discoverOpenAICodexModels(
   family: ProviderFamily,
   auth: BridleAuth,
   fetcher: typeof globalThis.fetch,
-): Promise<{ models: RegistryModel[]; etag?: string } | null> {
+  clientVersion: string,
+): Promise<{ models: RegistryModel[]; accountFingerprint: string; etag?: string } | null> {
   const token = await auth.storage.getApiKey(family.provider.id);
   // No usable token: nothing was asked, so this is "not signed in", never "discovered zero".
   if (!token) return null;
   const accountId = extractOpenAIAccountId(token);
-  const response = await fetcher(openAICodexModelsUrl(family.provider.baseUrl ?? family.template.baseUrl), {
+  const response = await fetcher(openAICodexModelsUrl(family.provider.baseUrl ?? family.template.baseUrl, clientVersion), {
     method: "GET",
     headers: {
       authorization: `Bearer ${token}`,
@@ -285,7 +306,7 @@ async function discoverOpenAICodexModels(
         : model.slug as string,
     }));
   const etag = response.headers.get("etag");
-  return { models, ...(etag ? { etag } : {}) };
+  return { models, accountFingerprint: createHash("sha256").update(accountId).digest("hex"), ...(etag ? { etag } : {}) };
 }
 
 function localRegistryModels(auth: BridleAuth, include?: string[]): RegistryModels {
@@ -311,6 +332,7 @@ export class BridleModelService {
   readonly #cachePath: string;
   readonly #families: Map<string, ProviderFamily>;
   readonly #fetch: typeof globalThis.fetch;
+  readonly #codexClientVersion: string;
   #cache: ModelCatalogCache;
   #refreshQueue: Promise<unknown> = Promise.resolve();
   readonly #forcedFloorMs: number;
@@ -328,6 +350,7 @@ export class BridleModelService {
     this.#cachePath = join(opts.appDataDir, "model-catalog.json");
     this.#families = providerFamilies(opts.include);
     this.#fetch = opts.fetch ?? globalThis.fetch;
+    this.#codexClientVersion = opts.codexClientVersion ?? OPENAI_CODEX_CLIENT_VERSION;
     this.#forcedFloorMs = opts.forcedRefreshFloorMs ?? DEFAULT_FORCED_REFRESH_FLOOR_MS;
     this.#cache = readCache(this.#cachePath, this.#families);
     this.#rebuildDescriptors();
@@ -344,6 +367,7 @@ export class BridleModelService {
   }
 
   list(): RegistryModels {
+    this.#rebuildDescriptors();
     const all = [...this.#descriptors.entries()].map(([descriptorKey, descriptor]) => (
       registryModel(descriptor, this.#approximated.has(descriptorKey))
     ));
@@ -353,12 +377,50 @@ export class BridleModelService {
     };
   }
 
+  /**
+   * Uses models[] response order after filtering visibility=list and supported_in_api=true.
+   * The same order survives in the last good disk cache. Before discovery, ChatGPT uses
+   * the fallback constant; other providers use their first bundled runnable descriptor.
+   * Returns undefined when this service does not carry the provider.
+   */
+  recommendedModel(providerId: string): string | undefined {
+    this.#rebuildDescriptors();
+    const discovered = this.#usableCachedProvider(providerId)?.models[0];
+    if (discovered) return discovered.id;
+    if (LIVE_DISCOVERY_PROVIDERS.some((id) => id === providerId) && this.#descriptors.has(key(providerId, DEFAULT_OPENAI_CODEX_MODEL))) {
+      return DEFAULT_OPENAI_CODEX_MODEL;
+    }
+    const first = this.#families.get(providerId)?.local[0];
+    if (first) return first.id;
+    return undefined;
+  }
+
+  resolveSavedModel(providerId: string, savedId: string): BridleSavedModelResolution {
+    this.#rebuildDescriptors();
+    if (this.#descriptors.has(key(providerId, savedId))) return { modelId: savedId };
+    const modelId = this.recommendedModel(providerId);
+    return {
+      modelId,
+      reason: modelId === undefined
+        ? { code: "provider-unavailable", savedId }
+        : { code: "saved-model-not-offered", savedId, replacementId: modelId },
+    };
+  }
+
   async refresh(): Promise<RegistryModels> {
     return (await this.refreshWithOutcome()).models;
   }
 
   lastDiscovery(): BridleDiscoveryResult | null {
-    return this.#cache.lastDiscovery ? { ...this.#cache.lastDiscovery } : null;
+    const last = this.#cache.lastDiscovery;
+    if (!last) return null;
+    const { stale: _stale, ...result } = last;
+    const servingPrevious = this.#discoverableFamilies().some((family) => {
+      const id = family.provider.id;
+      return this.#usableCachedProvider(id) !== undefined
+        && (last.discovery !== "succeeded" || !this.#auth.status(id).configured);
+    });
+    return { ...result, ...(servingPrevious ? { stale: true } : {}) };
   }
 
   onChange(listener: (models: RegistryModels, outcome: BridleModelRefreshOutcome) => void): () => void {
@@ -384,7 +446,7 @@ export class BridleModelService {
     if (opts.force) {
       if (this.#pendingForced) return this.#pendingForced;
       const last = this.#lastForced;
-      if (last) {
+      if (last && this.#fresh(Infinity)) {
         const age = Date.now() - last.settledAt;
         if (age >= 0 && age < this.#forcedFloorMs) return Promise.resolve({ ...last.report, reused: true });
       }
@@ -422,7 +484,7 @@ export class BridleModelService {
     const signedIn = this.#discoverableFamilies().filter((family) => this.#auth.status(family.provider.id).configured);
     if (signedIn.length === 0) return false;
     return signedIn.every((family) => {
-      const checkedAt = this.#cache.providers[family.provider.id]?.checkedAt;
+      const checkedAt = this.#usableCachedProvider(family.provider.id)?.checkedAt;
       if (checkedAt === undefined) return false;
       const age = now - checkedAt;
       return age >= 0 && age < maxAgeMs;
@@ -464,7 +526,7 @@ export class BridleModelService {
       try {
         await prepareAuthProvider(this.#auth, id);
         const discovered = this.#auth.status(id).configured
-          ? await discoverOpenAICodexModels(family, this.#auth, this.#fetch)
+          ? await discoverOpenAICodexModels(family, this.#auth, this.#fetch, this.#codexClientVersion)
           : null;
         if (!discovered) {
           providerReason = 'not-signed-in';
@@ -473,6 +535,7 @@ export class BridleModelService {
         } else {
           this.#cache.providers[id] = {
             checkedAt: Date.now(),
+            accountFingerprint: discovered.accountFingerprint,
             ...(discovered.etag ? { etag: discovered.etag } : {}),
             models: discovered.models,
           };
@@ -507,9 +570,10 @@ export class BridleModelService {
     }
     const at = Date.now();
     this.#cache.lastDiscovery = { at, discovery, ...(reason ? { reason } : {}) };
+    this.#cache.lastDiscovery = this.lastDiscovery()!;
     await writeCache(this.#cachePath, this.#cache).catch(() => undefined);
     const report: BridleModelRefreshReport = {
-      models: this.list(), discovery, at, ...(reason ? { reason } : {}), throttled: false, reused: false, providers,
+      models: this.list(), ...this.lastDiscovery()!, throttled: false, reused: false, providers,
     };
     // Only a successful forced check opens the floor (every check closed it when it began).
     this.#lastForced = forced && discovery === 'succeeded' ? { settledAt: Date.now(), report } : null;
@@ -524,16 +588,31 @@ export class BridleModelService {
     // listed id has a descriptor and no undefined reaches AgentSession.setModel.
     // `available` separately means Bridle has configured credentials. Whether
     // the provider accepts a request is verified only by a live runtime call.
+    this.#rebuildDescriptors();
     const descriptor = this.#descriptors.get(key(providerId, modelId));
     if (!descriptor) throw new BridleModelNotListedError(providerId, modelId);
     return descriptor;
+  }
+
+  #usableCachedProvider(providerId: string): CachedProviderModels | undefined {
+    const cached = this.#cache.providers[providerId];
+    if (!cached || !this.#auth.status(providerId).configured) return cached;
+    // Synchronous reads must reject another account's list before any refresh can run.
+    const credential = this.#auth.storage.get(providerId);
+    if (credential?.type !== "oauth") return undefined;
+    try {
+      const fingerprint = createHash("sha256").update(extractOpenAIAccountId(credential.access)).digest("hex");
+      return fingerprint === cached.accountFingerprint ? cached : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   #rebuildDescriptors(): void {
     const descriptors = new Map<string, Model<Api>>();
     const approximated = new Set<string>();
     for (const family of this.#families.values()) {
-      const discovered = this.#cache.providers[family.provider.id]?.models;
+      const discovered = this.#usableCachedProvider(family.provider.id)?.models;
       if (!discovered) {
         // No successful live discovery: the bundled catalogue is the list.
         for (const model of family.local) descriptors.set(key(model.provider, model.id), model);

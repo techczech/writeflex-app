@@ -1,11 +1,23 @@
+import { readRoomState } from '../shared/folio-room'
+import type { FolioRoomStateStore } from './folio-room-ipc'
+import { openFolioFileIdentity } from './folio-identity-open'
+import { writeMap, undoMap, validateMapOps } from './folio-map'
+import { roomStateKey } from './folio-room'
+import { parseEvidenceTransfer } from '../shared/folio-evidence-transfer'
+import { evidenceOps } from '../shared/folio-evidence'
 import { posix } from 'node:path'
-import { MANIFEST_NAME } from './folio'
+import { folioPieces, indexNotePath, MANIFEST_NAME } from './folio'
+import { readExportOrderAgreement } from './folio-order-assessment'
 import { folioContaining, folioOwning } from './folio-place'
 import { canonicalFolioDir } from './folio-dir'
 import { addFolioPieces, moveFolioPiece, removeAddedFolioPieces } from './folio-running-order'
 import { addPlanParts, removeAddedPlanParts, reorderPlanParts } from './plan-running-order'
+import { FolioWorkspace } from './folio-workspace'
+import { writeRoomAuthoring } from './folio-room-authoring'
+import type { LabelChange, RoomAuthoringRequest } from '../shared/folio-room-authoring'
+import { addRoomCard, notInRunningOrderNow, removeRoomCard, reorderRoomParts } from './folio-room-writes'
 import { PartChangedError, setPartHeadingMode } from './folio-part-proposals'
-import { adoptPart, insertPart, materialisePart, movePart, readFolioFrontMatter, readFolioPlan, readPlan, removePart, setPartRole, type Plan, type PlanWriteOptions } from './plan'
+import { adoptPart, alignManifestWithPlan, ExportOrderChanged, insertPart, MANIFEST_NOT_READABLE, PlanWrittenButNotReRead, materialisePart, movePart, readFolioFrontMatter, readFolioPlan, readPlan, removePart, setPartRole, type Plan, type PlanWriteOptions, prepareFolioIdentityLinks } from './plan'
 import { assertRelativeWorkspacePath, DiskChangedUnderBuffer, SaveWithoutBasis, type Workspace } from './workspace'
 import { PLAN_ROLES } from '../shared/plan-line'
 import { isSaveBasis } from '../shared/save-basis'
@@ -13,17 +25,22 @@ import { orderFor } from './folio'
 import { fixTitleConflicts, undoTitleFix, type TitleFixRequest } from './title-conflict-fix'
 import type { TitleFixDirection } from '../shared/title-conflict'
 import { unlistedRowRefusal, type PlanCardKey, type PlanPartKey } from '../shared/folio-running-order'
+import type { ExportOrderCheck, ExportOrderExpected, ExportOrderRepairResult } from '../shared/export-order-agreement'
+import { withoutAbsolutePaths } from '../shared/plain-error-text'
 
 type PlanIpcEvent = { sender: { id: number } }
 export type PlanIpcHandler = (event: PlanIpcEvent, input: any) => unknown | Promise<unknown>
 export type PlanIpcRegistrar = { handle: (channel: string, handler: PlanIpcHandler) => void }
 
 export type PlanIpcDependencies<State> = {
+  identityStore?: FolioRoomStateStore
   stateForSender: (id: number) => State
   requireWorkspace: (state: State) => Workspace
   checkpointFile: (state: State, path: string) => Promise<void>
   notifyCollectionChanged: (state: State, paths: string[]) => void
   notifyChangedOnDisk: (state: State, paths: string[]) => void
+  /** Show bin in Finder: open a folder (absolute path) in the file manager. Opening only; absent: the bin is not shown. */
+  revealFolder?: (absolute: string) => Promise<void>
   /** Stage the title proposals for the Folio at `dir` (ticket 0.23-09). Run after a part is added; best effort, never throws to the caller. */
   proposePartTitles?: (state: State, dir: string) => Promise<void>
 }
@@ -36,6 +53,13 @@ function planPartKeyList(value: unknown): PlanPartKey[] {
   ))
   if (!valid) throw new Error('Invalid running order.')
   return (value as PlanPartKey[]).map((item) => ({ title: item.title, path: item.path }))
+}
+
+/** What the export sheet read and passes back to the repair: the running order and whether a manifest was there. */
+function exportOrderExpected(value: unknown): ExportOrderExpected {
+  const item = typeof value === 'object' && value !== null ? value as Partial<ExportOrderExpected> : null
+  if (!item || typeof item.manifestExists !== 'boolean') throw new Error('Invalid running order.')
+  return { parts: planPartKeyList(item.parts), manifestExists: item.manifestExists }
 }
 
 /** The card a role request says it saw: its whole line, so two cards with one title are told apart (review round 2). Null when malformed. */
@@ -63,6 +87,16 @@ function indexList(value: unknown): number[] {
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new Error('Invalid running order.')
   return value as string[]
+}
+
+/**
+ * The Folio room's `createManifest` on an order write (plan.ts `PlanWriteOptions.createManifest`, spec D-ORD-2): absent
+ * keeps today's behaviour, `true` asks for the manifest to be created on a Folio that has none. Anything else is refused.
+ */
+function withCreateManifest(options: PlanWriteOptions, value: unknown, refusal: string): PlanWriteOptions {
+  if (value === undefined) return options
+  if (typeof value !== 'boolean') throw new Error(refusal)
+  return value ? { ...options, createManifest: true } : options
 }
 
 /** An Undo's token as sent: a non-empty string (an unknown one is refused as stale by folio-add-undo.ts). */
@@ -173,6 +207,46 @@ export function registerPlanIpcHandlers<State>(
     return readFolioPlan(workspace, collectionDir(workspace, input))
   })
 
+  const identityStore = (): FolioRoomStateStore => {
+    if (!dependencies.identityStore) throw new Error('Folio linking app state is unavailable. Nothing was written.')
+    return dependencies.identityStore
+  }
+  const attempted = (workspace: Workspace, dir: string) => readRoomState(identityStore().folioRoomState(roomStateKey(workspace, dir))).identityLinksAttempted === true
+  const markAttempted = (workspace: Workspace, dir: string) => {
+    const key = roomStateKey(workspace, dir)
+    const store = identityStore()
+    const current = readRoomState(store.folioRoomState(key))
+    if (!store.setFolioRoomState(key, { ...current, identityLinksAttempted: true })) throw new Error('Could not remember this Folio’s completed chapter-link action.')
+  }
+  // Only explicit author opening/command calls these. A negative preflight never enters a renderer save queue.
+  ipc.handle('plan:identity-check', async (event, input: { dir?: string; root?: string; force?: boolean }) => {
+    const { workspace } = context(event)
+    if (input?.root !== workspace.root) throw new Error('The Collection changed. Open the Folio again.')
+    const dir = collectionDir(workspace, input)
+    if (!input.force && attempted(workspace, dir)) return false
+    const qualifies = (await prepareFolioIdentityLinks(workspace, dir)) !== null
+    return qualifies
+  })
+  ipc.handle('plan:open', async (event, input: { dir?: string; root?: string; force?: boolean }) => {
+    const { workspace, options, state } = context(event)
+    if (input?.root !== workspace.root) throw new Error('The Collection changed. Open the Folio again.')
+    const dir = collectionDir(workspace, input)
+    // The lock also makes two windows attempting the same Folio a single automatic attempt.
+    const { withPlanLock } = await import('./plan-lock')
+    return withPlanLock(workspace, dir, async () => {
+      if (!input.force && attempted(workspace, dir)) return { changed: false }
+      const result = await openFolioFileIdentity(workspace, dir, options)
+      if (result.changed && result.indexPath) {
+        dependencies.notifyCollectionChanged(state, [result.indexPath])
+        dependencies.notifyChangedOnDisk(state, [result.indexPath])
+      }
+      try { markAttempted(workspace, dir) } catch (error) {
+        return { ...result, warning: error instanceof Error ? error.message : String(error) }
+      }
+      return result
+    })
+  })
+
   // Put back names the row the owner saw, by file and title, not only its place: a list that changed meanwhile
   // (another writer added or removed a file) is refused under the lock before anything is written (review round 2 P1).
   // `asFrontMatter`: "Add as front matter" (ADR-0046), the same guarded Put back with the part's role set to front matter;
@@ -196,7 +270,7 @@ export function registerPlanIpcHandlers<State>(
     return plan
   })
 
-  ipc.handle('plan:insert-part', async (event, input: { dir?: string; at?: number; part?: { title?: string; gloss?: string; role?: string } }) => {
+  ipc.handle('plan:insert-part', async (event, input: { dir?: string; at?: number; part?: { title?: string; gloss?: string; role?: string }; createManifest?: unknown }) => {
     if (!Number.isInteger(input?.at) || typeof input?.part?.title !== 'string') throw new Error('Invalid Folio outline insertion.')
     if (input.part.gloss !== undefined && typeof input.part.gloss !== 'string') throw new Error('Invalid Folio outline gloss.')
     if (input.part.role !== undefined && typeof input.part.role !== 'string') throw new Error('Invalid Folio outline role.')
@@ -207,16 +281,16 @@ export function registerPlanIpcHandlers<State>(
       ...(input.part.gloss !== undefined ? { gloss: input.part.gloss } : {}),
       ...(input.part.role !== undefined ? { role: input.part.role } : {}),
     }
-    const plan = await insertPart(workspace, dir, input.at as number, part, pageOptions)
+    const plan = await insertPart(workspace, dir, input.at as number, part, withCreateManifest(pageOptions, input.createManifest, 'Invalid Folio outline insertion.'))
     publish(plan, [dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME])
     return plan
   })
 
-  ipc.handle('plan:move-part', async (event, input: { dir?: string; from?: number; to?: number }) => {
+  ipc.handle('plan:move-part', async (event, input: { dir?: string; from?: number; to?: number; createManifest?: unknown }) => {
     if (!Number.isInteger(input?.from) || !Number.isInteger(input?.to)) throw new Error('Invalid Folio outline move.')
     const { workspace, pageOptions, publish } = context(event)
     const dir = collectionDir(workspace, input)
-    const plan = await movePart(workspace, dir, input.from as number, input.to as number, pageOptions)
+    const plan = await movePart(workspace, dir, input.from as number, input.to as number, withCreateManifest(pageOptions, input.createManifest, 'Invalid Folio outline move.'))
     publish(plan, [dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME])
     return plan
   })
@@ -234,29 +308,163 @@ export function registerPlanIpcHandlers<State>(
   // moved meanwhile (another writer, an agent) is refused before anything is written (review P2), and so is a
   // card that reads exactly like another, since the request cannot say which of the two was meant (round 2).
   ipc.handle('plan:set-part-role', async (event, input: { dir?: string; index?: number; role?: string; expected?: unknown }) => {
-    if (!Number.isInteger(input?.index) || typeof input?.role !== 'string' || !(PLAN_ROLES as readonly string[]).includes(input.role)) throw new Error('Invalid Folio outline role.')
+    if (!Number.isInteger(input?.index) || typeof input?.role !== 'string' || input.role !== 'section-page' && !(PLAN_ROLES as readonly string[]).includes(input.role)) throw new Error('Invalid Folio outline role.')
     const expected = planCardKey(input.expected)
     if (!expected) throw new Error('Invalid Folio outline role.')
     const index = input.index as number
-    const { workspace, pageOptions, publish } = context(event)
+    const { state, workspace, pageOptions, publish } = context(event)
     const dir = collectionDir(workspace, input)
     // The writer checks the card under the lock (plan.ts `setPartRole`).
-    const plan = await setPartRole(workspace, dir, index, input.role as string, expected, pageOptions)
-    publish(plan, [dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME])
+    const plan = await setPartRole(new FolioWorkspace(workspace, dir), dir, index, input.role as string, expected, pageOptions)
+    publish(plan, [dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME, ...(expected.path ? [expected.path] : [])])
+    if (plan.sectionRoleUndoToken && expected.path) dependencies.notifyChangedOnDisk(state, [expected.path])
     return plan
   })
 
   // The Plan's whole-order changes (plan-running-order.ts): Sort by chapter number, Add all from this folder,
   // and the Undo of each. They name the running order the caller saw, as titles and files, and call the Plan
   // writes above; a refusal is an answer, never an error with a path in it.
-  ipc.handle('plan:reorder-parts', async (event, input: { dir?: string; order?: unknown; expected?: unknown }) => {
+  // `createManifest` (the Folio room's order writes, spec D-ORD-2): a Folio with an Index Note and no manifest gets its manifest in the same write.
+  // `room: true` (the Folio room's drag, ⌥↑↓ and their Undo, ticket 11): written through the room's pinned view
+  // (`FolioWorkspace`), with `createManifest`, and refused while two running-order lines share a title (D-PART-2).
+  ipc.handle('plan:reorder-parts', async (event, input: { dir?: string; order?: unknown; expected?: unknown; createManifest?: unknown; room?: unknown }) => {
     const order = indexList(input?.order)
     const expected = planPartKeyList(input?.expected)
+    if (input?.room !== undefined && input?.room !== true) throw new Error('Invalid running order.')
     const { workspace, options, publishOrder } = context(event)
+    const writeOptions = withCreateManifest(options, input.createManifest, 'Invalid running order.')
     const dir = collectionDir(workspace, input)
-    const outcome = await reorderPlanParts(workspace, dir, { order, expected }, options)
+    const outcome = input.room === true
+      ? await reorderRoomParts(new FolioWorkspace(workspace, dir), { order, expected }, options)
+      : await reorderPlanParts(workspace, dir, { order, expected }, writeOptions)
     publishOrder(dir, outcome)
     return outcome.result
+  })
+
+  // The Folio room's New card (ticket 11): an unwritten part at the end of the running order, through the room's
+  // pinned view, only while the running order is `expected` and no part has its title. A refusal is an answer.
+  ipc.handle('plan:room-new-card', async (event, input: { dir?: string; title?: unknown; expected?: unknown }) => {
+    if (typeof input?.title !== 'string' || input.title.length > 500) throw new Error('Invalid new card.')
+    const expected = planPartKeyList(input.expected)
+    const { workspace, options, publishOrder } = context(event)
+    const dir = collectionDir(workspace, input)
+    const outcome = await addRoomCard(new FolioWorkspace(workspace, dir), { title: input.title, expected }, options)
+    publishOrder(dir, outcome)
+    return outcome.result
+  })
+
+  // Its Undo: the card's line taken out again, only while the running order is the one New card left (`expected`).
+  ipc.handle('plan:room-remove-card', async (event, input: { dir?: string; index?: unknown; title?: unknown; expected?: unknown }) => {
+    if (!Number.isInteger(input?.index) || typeof input?.title !== 'string') throw new Error('Invalid Undo.')
+    const expected = planPartKeyList(input.expected)
+    const { workspace, options, publishOrder } = context(event)
+    const dir = collectionDir(workspace, input)
+    const outcome = await removeRoomCard(new FolioWorkspace(workspace, dir), { index: input.index as number, title: input.title, expected }, options)
+    publishOrder(dir, outcome)
+    return outcome.result
+  })
+
+  ipc.handle('plan:room-map', async (event, input: { dir?: string; session?: string; stateKey?: string; ops?: unknown; token?: string }) => {
+    if (!input || typeof input !== 'object') throw new Error('Invalid map edit.')
+    const { workspace, options, state } = context(event)
+    const dir = collectionDir(workspace, input)
+    if (input.stateKey !== roomStateKey(workspace, dir) || typeof input.session !== 'string' || !input.session || input.session.length > 128) throw new Error('The workspace changed. The map was not saved.')
+    const ws = new FolioWorkspace(workspace, dir)
+    const answer = typeof input.token === 'string' ? await undoMap(ws, input.token, { beforeWrite: options.beforeIndexWrite, session: input.session, expectedOwner: input.stateKey }) : await writeMap(ws, validateMapOps(input.ops), { beforeWrite: options.beforeIndexWrite, session: input.session, expectedOwner: input.stateKey })
+    if (answer.ok && answer.path) { dependencies.notifyCollectionChanged(state, [answer.path]); dependencies.notifyChangedOnDisk(state, [answer.path]) }
+    return answer
+  })
+
+  ipc.handle('plan:room-authoring', async (event, input: { dir?: string; request?: unknown }) => {
+    const raw = input?.request as Record<string, unknown> | null
+    if (!raw || typeof raw !== 'object') throw new Error('Invalid Folio edit.')
+    const op = raw.op
+    let request: RoomAuthoringRequest
+    if (op === 'attachEvidence' && typeof raw.part === 'string' && typeof raw.stateKey === 'string' && raw.stateKey.length < 4000 && typeof raw.session === 'string' && raw.session.length > 0 && raw.session.length <= 128) {
+      const source = parseEvidenceTransfer(JSON.stringify(raw.source)); if (!source) throw new Error('Invalid evidence source.')
+      request = { op, part: raw.part, stateKey: raw.stateKey, session: raw.session, source }
+    } else if (op === 'evidence' && typeof raw.stateKey === 'string' && raw.stateKey.length < 4000 && typeof raw.session === 'string' && raw.session.length > 0 && raw.session.length <= 128) request = { op, session: raw.session, stateKey: raw.stateKey, ops: evidenceOps(raw.ops) }
+    else if (op === 'undo') request = { op, token: undoToken(raw.token), ...(typeof raw.session === 'string' && raw.session.length <= 128 ? { session: raw.session } : {}) }
+    else if (op === 'restore') {
+      if (typeof raw.id !== 'string' || raw.id === '' || raw.id.length > 300 || raw.id.includes('\u0000')) throw new Error('Invalid Folio bin item.')
+      request = { op, id: raw.id }
+    } else if (op === 'showBin') request = { op }
+    else if (op === 'remove') {
+      const expected = Array.isArray(raw.expected) ? raw.expected.map(planCardKey) : []
+      if (expected.some((card) => !card)) throw new Error('Invalid Folio selection.')
+      request = { op, indices: indexList(raw.indices), expected: expected as PlanCardKey[] }
+    } else if (op === 'labels') {
+      const change = raw.change as Record<string, unknown> | null
+      if (!change || !['add', 'rename', 'delete'].includes(String(change.op)) || (raw.basis !== null && typeof raw.basis !== 'string')
+        || (change.op !== 'delete' && typeof change.name !== 'string') || (change.op !== 'add' && typeof change.slug !== 'string')) throw new Error('Invalid label edit.')
+      request = { op, change: change as LabelChange, basis: raw.basis as string | null }
+    } else {
+      const expected = planCardKey(raw.expected)
+      if (!expected || !Number.isInteger(raw.index)) throw new Error('Invalid Folio card.')
+      if (op === 'clearFlag' && Number.isInteger(raw.from) && typeof raw.fingerprint === 'string' && /^[0-9a-f]{64}$/.test(raw.fingerprint)) request = { op, index: raw.index as number, expected, from: raw.from as number, fingerprint: raw.fingerprint }
+      else if (op === 'locate' && typeof raw.path === 'string') { assertRelativeWorkspacePath(raw.path); request = { op, index: raw.index as number, expected, path: raw.path } }
+      else if (op === 'start') request = { op, index: raw.index as number, expected }
+      else if (op === 'status' && typeof raw.status === 'string') request = { op, index: raw.index as number, expected, status: raw.status }
+      else if (op === 'line') {
+        const change = raw.change as Record<string, unknown> | null
+        if (!change || typeof change !== 'object' || Array.isArray(change)
+          || Object.keys(change).some((key) => !['gloss', 'priority', 'label'].includes(key))
+          || Object.values(change).some((value) => value !== null && typeof value !== 'string')) throw new Error('Invalid part edit.')
+        request = { op, index: raw.index as number, expected, change }
+      } else throw new Error('Invalid Folio edit.')
+    }
+    const { workspace, options, state } = context(event)
+    const dir = collectionDir(workspace, input)
+    const answer = await writeRoomAuthoring(new FolioWorkspace(workspace, dir), request, { ...options, ...(dependencies.revealFolder ? { revealFolder: dependencies.revealFolder } : {}) })
+    if (answer.ok) {
+      // The paths the write itself names: the Plan is not read again for them (spec folio-workspace § 5, one plan load).
+      const paths = [...new Set([...(answer.paths ?? [indexNotePath(workspace, dir), dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME]), ...(answer.path ? [answer.path] : [])])]
+      dependencies.notifyCollectionChanged(state, paths)
+      if (paths.length) dependencies.notifyChangedOnDisk(state, paths)
+    }
+    return answer
+  })
+
+  // The export sheet's and the Share page's out-of-step line (spec § 8 D-ORD-3): a read, so it writes nothing (I-4).
+  // Null when the Folio has no Index Note: then there is no running order for the export to disagree with.
+  ipc.handle('plan:export-order', async (event, input: { dir?: string }): Promise<ExportOrderCheck | null> => {
+    const { workspace } = context(event)
+    const read = await readExportOrderAgreement(workspace, collectionDir(workspace, input))
+    if (!read) return null
+    const parts = read.plan.parts.map((part) => ({ title: part.title, path: part.path }))
+    return { agreement: read.agreement, expected: { parts, manifestExists: read.manifestExists }, unreadableMessage: MANIFEST_NOT_READABLE }
+  })
+
+  // Make export follow the running order: the manifest alone is written (plan.ts `alignManifestWithPlan`), and only
+  // while the running order and the manifest's presence are still `expected`, what the line was computed from. A
+  // refusal is an answer, never an error.
+  ipc.handle('plan:align-manifest', async (event, input: { dir?: string; expected?: unknown }): Promise<ExportOrderRepairResult> => {
+    const expected = exportOrderExpected(input?.expected)
+    const { state, workspace, options } = context(event)
+    const dir = collectionDir(workspace, input)
+    const manifest = dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME
+    const pieces = async (): Promise<number> => (await folioPieces(workspace, dir).catch(() => null))?.pieces.length ?? 0
+    // A repair that created the manifest (none was there when the line was read): the files it keeps in export that
+    // the running order does not list, so the sentence can name them (review S-2). A read; nothing is written.
+    const strays = async (): Promise<{ notInRunningOrder?: string[] }> => {
+      if (expected.manifestExists) return {}
+      const paths = await notInRunningOrderNow(workspace, dir)
+      return paths.length > 0 ? { notInRunningOrder: paths } : {}
+    }
+    try {
+      // Through the room's pinned view (ticket 11, review follow-up): the manifest, its pristine copy and that copy's
+      // removal on a refusal are each written only physically inside the Folio's own folder.
+      const written = await alignManifestWithPlan(new FolioWorkspace(workspace, dir), dir, expected, options)
+      if (written) dependencies.notifyCollectionChanged(state, [manifest])
+      return { ok: true, changed: written !== null, pieces: await pieces(), ...(written ? await strays() : {}) }
+    } catch (error) {
+      if (error instanceof PlanWrittenButNotReRead) {
+        dependencies.notifyCollectionChanged(state, [manifest])
+        return { ok: true, changed: true, pieces: await pieces(), ...await strays() }
+      }
+      if (error instanceof ExportOrderChanged) return { ok: false, message: error.message }
+      return { ok: false, message: withoutAbsolutePaths(error instanceof Error ? error.message : String(error), workspace.root) }
+    }
   })
 
   ipc.handle('plan:add-parts', async (event, input: { dir?: string; paths?: unknown; expected?: unknown }) => {

@@ -9,31 +9,46 @@ export async function deriveProposalPreview(
     audit?: AuditLog;
   },
 ): Promise<ProposalPreview> {
-  // Staleness only means anything for a still-actionable proposal: it warns the
-  // reviewer that the files moved under a PENDING proposal. Once a proposal is
-  // adopted/rejected/superseded the files legitimately differ from the baseline
-  // (adoption is *why* they changed), so a "files changed" warning there is
-  // false and confusing. Gate on status exactly as the store's isStale does.
-  // Uses the directory-safe hash so a folder baseline never reads a folder.
-  let stale = false;
+  // An explicit stale settlement remains visible. Adopted/rejected/superseded
+  // proposals do not become stale merely because execution changed their files.
+  // Still-proposed plain-file baselines retain lazy checks; folder state comes
+  // from the store's explicit recheck or fresh Adoption verification.
+  const baselines = proposal.baseline?.map(boundedBaselinePreview);
+  let stale = proposal.status === "stale";
   if (proposal.status === "proposed") {
-    for (const baseline of proposal.baseline ?? []) {
-      if (await contentHashOf(baseline.path) !== baseline.hash) {
+    for (const baseline of baselines ?? []) {
+      // Folder previews reflect stored state. Only explicit recheck/Adoption
+      // walks the tree; rendering the same card must not repeat that work.
+      if (baseline.directory) continue;
+      if (await baselineHash(baseline) !== baseline.hash) {
         stale = true;
         break;
       }
     }
   }
 
+  const directories = baselines?.flatMap((entry) => {
+    const directory = entry.directory;
+    if (!directory) return [];
+    // Construct overflow previews explicitly, so old journals with partial
+    // entries cannot accidentally present an incomplete list as the contents.
+    return [directory.baseline === "too-large"
+      ? { path: entry.path, baseline: "too-large" as const, entryCount: directory.entryCount, bytes: directory.bytes, message: "too many to list" }
+      : { path: entry.path, ...directory,
+          ...(directory.tier === "metadata" ? { message: metadataBaselineNotice(directory.entryCount) } : {}),
+        }];
+  });
+  const listing = directories?.length ? { directories } : {};
   if (proposal.kind === "action") {
     // A structural Action (folder move/delete/create) still previews as an
     // op-card when it declares renderOps — the reviewer sees "rename A → B", not
-    // a raw JSON payload — even though it carries no content baseline.
+    // a raw JSON payload. Folder listings accompany the declared operations.
     const structuralOps = capability.renderOps?.(proposal.payload);
     if (structuralOps) {
-      return { kind: "file-ops", ops: structuralOps, inferred: false, stale };
+      return { kind: "file-ops", ops: structuralOps, inferred: false, stale, ...listing };
     }
     return {
+      ...listing,
       kind: "invocation",
       capability: capability.name,
       description: capability.description,
@@ -45,7 +60,7 @@ export async function deriveProposalPreview(
     };
   }
 
-  const fallbackPaths = proposal.baseline?.map((entry) => entry.path) ?? [];
+  const fallbackPaths = baselines?.map((entry) => entry.path) ?? [];
   let paths = fallbackPaths;
   try {
     // touchedPaths may read the workspace and therefore runs on every render.
@@ -81,11 +96,12 @@ export async function deriveProposalPreview(
   }
   const renderedOps = capability.renderOps?.(proposal.payload);
   if (renderedOps) {
-    return { kind: "file-ops", ops: renderedOps, inferred: false, stale };
+    return { kind: "file-ops", ops: renderedOps, inferred: false, stale, ...listing };
   }
   const rendered = capability.renderChange?.(proposal.payload);
   if (paths.length === 1 && rendered?.length === 1) {
     return {
+      ...listing,
       kind: "text-diff",
       before: existsSync(rendered[0]!.path) ? await readFile(rendered[0]!.path, "utf8") : "",
       after: rendered[0]!.after,
@@ -93,13 +109,14 @@ export async function deriveProposalPreview(
     };
   }
 
-  const baselineByPath = new Map((proposal.baseline ?? []).map((entry) => [entry.path, entry.hash]));
+  const baselineByPath = new Map((baselines ?? []).map((entry) => [entry.path, entry.hash]));
   return {
     kind: "file-ops",
     ops: paths.map((path) => ({
       op: baselineByPath.get(path) === ABSENT_HASH ? "create" : existsSync(path) ? "modify" : "delete",
       path,
     })),
+    ...listing,
     inferred: true,
     stale,
   };
@@ -107,4 +124,4 @@ export async function deriveProposalPreview(
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { ABSENT_HASH } from "../snapshots.ts";
-import { contentHashOf } from "../hashing.ts";
+import { baselineHash, metadataBaselineNotice, boundedBaselinePreview } from "../hashing.ts";

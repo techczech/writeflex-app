@@ -23,7 +23,7 @@ import { rollBackOperationWrites, rollbackMessage } from './operation-rollback'
 import { pausedMessage } from './collection-write-gate'
 import { restoreFailure } from './restore-failure'
 import type { ScrapStore } from './scraps'
-import { prepareOffcutPromotion, prepareScrapAppend, writeMaterial, type MaterialWrite } from './board-material'
+import { prepareOffcutPromotion, prepareScrapAppend, recordLosslessBoardCopy, writeMaterial, type LosslessBoardTake, type MaterialWrite } from './board-material'
 import { prepareSourceAttach } from './source-attach'
 import {
   OFFCUT_BECAME_IDEA,
@@ -79,7 +79,7 @@ export class BoardMaterialDesk {
   promoteOffcut(input: PromoteOffcutInput): Promise<BoardStepResult> {
     return this.apply('idea', OFFCUT_TO_IDEA_CAPABILITY, async () => {
       const plan = await prepareOffcutPromotion(this.workspace, input)
-      return { label: `offcut to idea: ${plan.target}`, activity: OFFCUT_BECAME_IDEA, writes: [plan.tracker, plan.scraps] }
+      return { label: `offcut to idea: ${plan.target}`, activity: OFFCUT_BECAME_IDEA, writes: [plan.tracker, ...(plan.scraps ? [plan.scraps] : [])], ...(plan.lossless ? { lossless: plan.lossless } : {}) }
     })
   }
 
@@ -87,7 +87,7 @@ export class BoardMaterialDesk {
   appendScrap(input: AppendScrapInput): Promise<BoardStepResult> {
     return this.apply('append', SCRAP_TO_PIECE_CAPABILITY, async () => {
       const plan = await prepareScrapAppend(this.workspace, input)
-      return { label: `scrap to end of ${input.piece}`, activity: scrapAddedTo(plan.pieceTitle), writes: [plan.piece, plan.scraps] }
+      return { label: `scrap to end of ${input.piece}`, activity: scrapAddedTo(plan.pieceTitle), writes: [plan.piece, ...(plan.scraps ? [plan.scraps] : [])], ...(plan.lossless ? { lossless: plan.lossless } : {}) }
     })
   }
 
@@ -112,7 +112,7 @@ export class BoardMaterialDesk {
   private apply(
     kind: BoardStepKind,
     capability: string,
-    prepare: () => Promise<{ label: string; activity: string; writes: MaterialWrite[] }>,
+    prepare: () => Promise<{ label: string; activity: string; writes: MaterialWrite[]; lossless?: LosslessBoardTake }>,
   ): Promise<BoardStepResult> {
     // The scrap store's queue, then ONE turn of the Collection's write turn (collection-write-order.ts)
     // from the read the step is planned from to its last write.
@@ -133,14 +133,23 @@ export class BoardMaterialDesk {
       for (const target of targets) await this.bridle.snapshots.snapshotFile(target, { sessionId, capability, origin: 'host' })
       const written: OperationWrite[] = []
       try {
-        await this.workspace.recordingOperationWrites(written, () => writeMaterial(this.workspace, prepared.writes))
+        await this.workspace.recordingOperationWrites(written, async () => {
+          await writeMaterial(this.workspace, prepared.writes)
+          // The scrap half last, as with a scraps file: a failure before it never loses the scrap,
+          // and its own failure rolls the document writes back below. A lossless item is COPIED
+          // (spec P4): the candidate stays, and only a historical use is recorded on it.
+          if (prepared.lossless) await recordLosslessBoardCopy(this.workspace, prepared.lossless, prepared.writes[0].path)
+        })
       } catch (error) {
         // Not Bridle's restoreTo: it puts each snapshot back over whatever is there now, which would
         // overwrite the other program's version that refused the write (final review round 3, P2).
         return { ok: false, message: rollbackMessage(message(error), await rollBackOperationWrites(this.workspace, written)) }
       }
       const step: BoardStep = { id: restorePointId, kind, activity: prepared.activity }
-      this.held = { step, targets, after: prepared.writes.map((write) => ({ path: write.path, content: write.after })) }
+      this.held = {
+        step, targets,
+        after: prepared.writes.map((write) => ({ path: write.path, content: write.after })),
+      }
       return { ok: true, step, paths: prepared.writes.map((write) => write.path) }
     })
   }
@@ -172,6 +181,9 @@ export class BoardMaterialDesk {
       if (laterHostWrite) return { ok: false, message: "Can't undo: a later change would be taken back with it. Nothing was put back." }
       const paused = pausedMessage(this.workspace.root)
       if (paused) return { ok: false, message: `Can't undo: ${paused} Nothing was put back.` }
+      // A lossless copy's historical use record is not part of Undo: the candidate was retained,
+      // and restoring its record would roll back outside metadata edits. Only the receiving
+      // document (and a legacy scraps file, for a legacy step) goes back.
       let restored: string[]
       try {
         restored = await this.bridle.snapshots.restoreTo(id, { origin: 'host' })

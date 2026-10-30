@@ -932,12 +932,12 @@ describe('Review r4 fixes', () => {
     expect(snapshot(w.root)).toEqual(files)
   })
 
-  test('P2b: a pick bound to report/chapters, whose manifest then turns malformed: the create (which folioContaining would send to report) is refused by name; nothing in report, no grant', async () => {
+  test('P2b: a pick uses the shared outer Folio, and malformed nested metadata still refuses the create by name; nothing written, no grant', async () => {
     const w = world({ 'report/chapters/doc.md': DOC, 'report/_report-structure.json': FOLIO(['chapters/doc.md']), 'report/chapters/_report-structure.json': FOLIO(['doc.md']) })
     const p = await outsidePick(w, join(w.outside, 'attendance.csv'), 'report/chapters/doc.md')
-    expect(p.folder.path).toBe('report/chapters')
+    expect(p.folder.path).toBe('report')
     writeFileSync(join(w.root, 'report/chapters/_report-structure.json'), MALFORMED)
-    // folioContaining passes over the malformed manifest: it answers report, where the create would write.
+    // Readers select the outer Folio; the pick's original boundary still refuses unreadable metadata.
     expect((await folioContaining(w.ws, 'report/chapters/doc.md'))?.dir).toBe('report')
     const files = snapshot(w.root)
     const made = await createStandardWidget(w.ws, w.desk, { documentPath: 'report/chapters/doc.md', name: 'Attendance', recipe: recipe(), outside: { pick: p, inclusion: 'sync' } }, { grants: w.store })

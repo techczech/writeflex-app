@@ -15,6 +15,7 @@ import { TOKEN, world } from './sharing-world.ts'
 import { attachSharingService } from './fake-sharing-service.ts'
 import type { FakeCloudflare } from './fake-cloudflare.ts'
 import { fakeService, type ServiceModule } from './sharing-service-runtime.ts'
+import { trackScratch } from './scratch-dirs.ts'
 
 export async function publishWorld(options: { files?: Record<string, string>; render?: SharingPublisherPorts['render']; renderFolio?: SharingPublisherPorts['renderFolio']; fake?: FakeCloudflare; ports?: Partial<SharingPublisherPorts> } = {}) {
   const w = world(options.fake ? { fake: options.fake } : {})
@@ -23,7 +24,7 @@ export async function publishWorld(options: { files?: Record<string, string>; re
   expect((await w.setup.setUp()).ok).toBe(true)
   const svc = fakeService(serviceModule as unknown as ServiceModule)
   attachSharingService(w.fake, serviceModule as unknown as ServiceModule, svc)
-  const root = mkdtempSync(join(tmpdir(), 'writeflex-share-ws-'))
+  const root = trackScratch(mkdtempSync(join(tmpdir(), 'writeflex-share-ws-')))
   const write = (path: string, text: string): void => {
     mkdirSync(dirname(join(root, path)), { recursive: true })
     writeFileSync(join(root, path), text)

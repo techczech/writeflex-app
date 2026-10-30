@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 /**
  * Running order of a Folio that has a manifest and no Index Note (what "Make a Folio" leaves): the Outline's
  * three routes change the manifest's `files` array only, never create an Index Note, and refuse, writing
@@ -293,5 +294,5 @@ test('a Folio with both documents is still changed in both, as before', async ()
   expect(result).toMatchObject({ ok: true })
   expect(manifestOnly).toBeUndefined()
   expect(plan?.parts.map((part) => part.title)).toEqual(['Gamma', 'Alpha', 'Beta', 'Delta'])
-  expect(await read(INDEX)).toContain('- [[Gamma]]\n- [[Alpha]]\n- [[Beta]]\n- [[Delta]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[Gamma]]\n- [[Alpha]]\n- [[Beta]]\n- [[Delta]]', {"Alpha":"./a.md|Alpha","Beta":"./b.md|Beta","Gamma":"./c.md|Gamma","Delta":"./d.md|Delta"}))
 })

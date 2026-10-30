@@ -332,3 +332,11 @@ test('only the bare kbd pair gets through; other raw HTML and unpaired tags are 
   const unpaired = toHtml('Press <kbd>B alone\n').html
   expect(unpaired).not.toContain('<kbd')
 })
+
+test('workspace image URLs require an explicit per-window preview origin; normal exports still refuse them', () => {
+  const source = '![Local](assets/a.png)'
+  expect(toHtml(source, { images: { resolve: () => 'wf-asset://window-token/assets/a.png' } }).html).not.toContain('<img')
+  expect(toHtml(source, { images: { workspaceAssetBase: 'wf-asset://window-token', resolve: () => 'wf-asset://window-token/assets/a.png' } }).html).toContain('<img src="wf-asset://window-token/assets/a.png"')
+  expect(toHtml(source, { images: { workspaceAssetBase: 'wf-asset://window-token', resolve: () => 'wf-asset://other-token/assets/a.png' } }).html).not.toContain('<img')
+  expect(toHtml(source, { images: { workspaceAssetBase: 'wf-asset://window-token', resolve: () => 'javascript:alert(1)' } }).html).not.toContain('<img')
+})

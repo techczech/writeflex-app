@@ -15,11 +15,12 @@ Open WriteFlex, choose a folder of Markdown files, or explore the Example collec
 
 ## Build from source
 
-Install [Bun](https://bun.sh) 1.3.14 and Node.js 24. On Windows, also install Rust and the Visual Studio C++ build tools for the sandbox helper.
+Install [Bun](https://bun.sh) 1.3.10 and Node.js 24. On Windows, also install Rust and the Visual Studio C++ build tools for the sandbox helper.
 
 ```sh
 bun install
 bun run typecheck
+node node_modules/playwright/cli.js install chromium-headless-shell
 bun test
 bun run build
 bun run dev

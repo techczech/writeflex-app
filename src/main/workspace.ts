@@ -1,10 +1,17 @@
+import { invalidateFolioDeclarations, guardFolioWrite, finishFolioWrite, guardFolioFolderMove, finishFolioMove, guardFolioRemoval, carriesSetAsideIndex, EditorFolioAuthority, type FolioWriteOptions } from './folio-declaration'
+import { readStoreFile, writeStoreFile } from './checked-store-write'
+import { settleVersionMoves, withVersionMove } from './version-moves'
+import { sameFile, storeFolder } from './checked-store-append'
+import { BACKUP_RECORD_SUFFIX } from '../shared/backup-files'
+import { prepareBackupLineage } from './backup-guard'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { join, relative, resolve, sep, dirname, basename, extname, isAbsolute, posix } from 'node:path'
-import { lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
-import { constants as fsConstants, copyFileSync, existsSync, linkSync, lstatSync, readFileSync, realpathSync, renameSync, unlinkSync } from 'node:fs'
+import { lstat, mkdir, open, readdir, readFile, realpath, rename, stat } from 'node:fs/promises'
+import { constants as fsConstants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync } from 'node:fs'
 import { parseFrontmatter } from './frontmatter'
-import { OwnWriteTracker } from './workspace-watcher'
+import { OwnWriteTracker, fileIdentityOf, type FileIdentity, type OwnWriteExpectation } from './workspace-watcher'
 import { SearchIndex, SEARCH_INDEX_READ_CONCURRENCY } from './search-index'
+import { blankFlagTags, dropBlankedTags } from '../shared/markdown/flags'
 import { comparePieces, parseQuery, pieceTitle, snippetOf, type LineHit, type PieceHit, type RankKey, type Snippet } from './search-query'
 import { isPathInSearchScope } from '../shared/search-scope'
 import { textForSave } from '../shared/line-endings'
@@ -14,13 +21,14 @@ import { assertCollectionWritable } from './collection-write-gate'
 import { DocumentReadRefused, asFileSystemError, readDocumentBytesGuarded, readDocumentFile } from './guarded-document-read'
 import { GuardedMoveRefused, moveDocumentGuarded } from './guarded-document-move'
 import { recordMainProcessDiagnostic } from './shutdown'
-import { GuardedWriteRefused, carryLeftover, documentSaveSeams, writeDocumentGuarded, type CommitTarget, type FolderIdentity } from './guarded-document-write'
+import { GuardedWriteRefused, carryLeftover, documentSaveSeams, standsAsPinnedFolder, writeDocumentGuarded, type CommitTarget, type FolderIdentity } from './guarded-document-write'
 import { CollectionWriteTurn } from './collection-write-turn'
 
 export { WritesPausedError } from './collection-write-gate'
 
 export type MarkdownFile = { path: string; name: string; directory: string; modifiedAt: number; size: number }
 export type FileReadResult = { file: MarkdownFile; content: string }
+
 /** An editor save's answer: the file read back after the write (`content`), and the text the save put
  *  there, or found already there when it wrote nothing (`written`). The two differ only when another
  *  program wrote the file between the commit and the readback: then `written` is what the buffer is
@@ -45,9 +53,21 @@ const refusalScope = new AsyncLocalStorage<ChangedSinceReadRefusal[]>()
 /** One write a multi-file operation made (R7): the file's text just before it, read in the tick of the
  *  commit (null: no file), and the text it left (null: it removed the file). A rollback puts `before`
  *  back only while the file still holds `after` (operation-rollback.ts). */
-export type OperationWrite = { path: string; before: string | null; after: string | null; /** Not text, or its earlier text could not be read: never put back. */ unknown?: true }
+export type OperationWrite = {
+  path: string
+  before: string | null
+  after: string | null
+  /** Not text, or its earlier text could not be read: never put back. */
+  unknown?: true
+  /** Remove only an empty folder with the identity this operation created. */
+  createdFolder?: { dev: number; ino: number }
+  /** Retain set-aside evidence until its original sidecar has been restored exactly. */
+  removeAfterRestore?: { path: string; bytes: string }
+}
 /** The writes made inside one operation (its async context: `recordingOperationWrites`). */
 const operationWriteScope = new AsyncLocalStorage<OperationWrite[]>()
+// Rebind restored versions only after every rollback file (including provenance) is put back.
+const restoringOperation = new AsyncLocalStorage<Map<string, string>>()
 /** A checklist note's progress as the Files tree and Quick Open show it: "done / total". */
 export type ChecklistProgress = { path: string; done: number; total: number }
 /** A reference-material file under research/ (Task 21, PRD S30). `kind` drives the row icon and the
@@ -152,24 +172,32 @@ export class NotADocumentPathError extends Error {
   }
 }
 
+/** An empty save refused over a document with text; the document is untouched. The rescue paths are null when no
+ *  rescue copies were written: a pinned save (`inFolder`) never writes outside its folder, so its refusal writes
+ *  nothing at all (Folio room ticket 01, fix round 2). Every other empty save writes both copies. */
 export class EmptyWriteRefusal extends Error {
   override readonly name = 'EmptyWriteRefusal'
 
   constructor(
     readonly path: string,
-    readonly rescueDirectory: string,
-    readonly previousRescuePath: string,
-    readonly rejectedRescuePath: string,
-    /** The text that was on disk and was rescued (previousRescuePath): the version a Clear confirms. */
+    readonly rescueDirectory: string | null,
+    readonly previousRescuePath: string | null,
+    readonly rejectedRescuePath: string | null,
+    /** The text that was on disk (and, when rescued, is in previousRescuePath): the version a Clear confirms. */
     readonly previousText = '',
   ) {
     super(
       `WriteFlex prevented an empty save over ${path}. The previous content is intact. ` +
-      `Rescue copies are in ${rescueDirectory}. Choose “Clear document…” from the Command Palette ` +
-      'if you meant to remove everything.',
+      (rescueDirectory === null ? '' : `Rescue copies are in ${rescueDirectory}. `) +
+      'Choose “Clear document…” from the Command Palette if you meant to remove everything.',
     )
   }
 }
+
+/** An EmptyWriteRefusal that wrote its rescue copies (every empty save without `inFolder`). */
+export type RescuedEmptyWriteRefusal = EmptyWriteRefusal & { rescueDirectory: string; previousRescuePath: string; rejectedRescuePath: string }
+export const isRescuedEmptyWriteRefusal = (error: unknown): error is RescuedEmptyWriteRefusal =>
+  error instanceof EmptyWriteRefusal && error.rescueDirectory !== null && error.previousRescuePath !== null && error.rejectedRescuePath !== null
 
 /**
  * An editor save refused because the file on disk is not the version the buffer was based on (its
@@ -244,6 +272,11 @@ const SOURCE_DIRS = ['research']
 
 /** Codes link(2) gives where the filesystem cannot make hard links (as against a taken name). */
 const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'])
+
+/** @internal Test seams of the atomic (not `documentOnly`) save, never in production: `afterStage`
+ *  runs once the new bytes are staged in their temporary file, before the commit (the atomic save's
+ *  counterpart of the guarded write's `afterStage`); `afterCommit` runs after the rename that commits. */
+export const atomicWriteSeams: { afterStage?: (absolute: string) => Promise<void>; afterCommit?: (absolute: string) => Promise<void> } = {}
 
 /** Whether anything is at `absolute` (a file, a folder, a link, even a dangling one), without reading it. */
 function nameIsTaken(absolute: string): boolean {
@@ -333,10 +366,15 @@ export function extractFrontmatterTags(content: string): string[] {
 
 /** For a tag-only query: locate the frontmatter list item whose value matches a tag term, so the
  *  single per-file hit selects the tag value. Falls back to the first line. */
+/** A snippet without the blanked flag tags, its marks moved to follow the text. */
+function cleanSnippet(snippet: Snippet): Snippet {
+  return dropBlankedTags(snippet.text, snippet.marks)
+}
+
 function lineContext(lines: string[], index: number): SearchMatch['context'] {
   return {
-    before: lines.slice(Math.max(0, index - 2), index).map((line) => line.slice(0, 200)),
-    after: lines.slice(index + 1, index + 3).map((line) => line.slice(0, 200)),
+    before: lines.slice(Math.max(0, index - 2), index).map((line) => dropBlankedTags(line.slice(0, 200)).text),
+    after: lines.slice(index + 1, index + 3).map((line) => dropBlankedTags(line.slice(0, 200)).text),
   }
 }
 
@@ -369,11 +407,14 @@ function locateTagHit(lines: string[], tagTerms: string[]): Omit<SearchMatch, 'p
 
 export class Workspace {
   #realRoot: string | undefined
-  readonly #ownWrites = new OwnWriteTracker()
+  readonly #ownWrites = new OwnWriteTracker((path) => join(this.root, path))
   /** One writer at a time in this Collection, for every writer in this process (collection-write-turn.ts). */
   readonly #turn = new CollectionWriteTurn()
+  /** Announce committed document writes and removals; listeners cannot refuse storage. */
+  onDocumentWritten: ((path: string) => void) | undefined
   /** Told a non-fatal notice about a write that succeeded: a guarded create whose temporary file could not be
-   *  removed (`GuardedWriteResult.leftover`). The app sets it to its window's status line (ipc.ts). */
+   *  removed (`GuardedWriteResult.leftover`), or typed running order ignored in an existing Folio.
+   *  The app sets it to its window's status line (ipc.ts). */
   onWriteNotice: ((message: string) => void) | undefined
   /** Content cache behind `search` (search-index.ts). Public so the watcher can invalidate paths and
    *  tests can count reads at the seam. */
@@ -432,6 +473,7 @@ export class Workspace {
   /** A monotonic count of this workspace's committed writes: each write's `seq`. */
   #writeSeq = 0
   #committed(absolute: string, content: string | Uint8Array): { seq: number } {
+    try { this.onDocumentWritten?.(this.relative(absolute)) } catch { /* A notification never refuses a committed save. */ }
     this.#writeSeq += 1
     const seq = this.#writeSeq
     if (typeof content === 'string') writeReceiptScope.getStore()?.push({ path: this.relative(absolute), written: content, seq })
@@ -463,7 +505,34 @@ export class Workspace {
   /** Run `call` outside every per-call record (receipts, refusals, operation writes): a rollback's own
    *  writes are not the operation's writes, nor receipts or refusals of the call that asked for it. */
   outsideCallRecords<T>(call: () => Promise<T>): Promise<T> {
-    return writeReceiptScope.exit(() => refusalScope.exit(() => operationWriteScope.exit(call)))
+    if (restoringOperation.getStore()) return call()
+    const restored = new Map<string, string>()
+    return restoringOperation.run(restored, () => writeReceiptScope.exit(() => refusalScope.exit(() => operationWriteScope.exit(async () => {
+      try { return await call() }
+      finally {
+        // A record created by the operation may still need removing, or an older record may
+        // still need restoring. Do not change its bytes until all guarded put-backs finish.
+        await this.exclusiveAll(async () => {
+          for (const [path, content] of restored) {
+            prepareBackupLineage(this, path, () => {}, content)(content)
+          }
+        })
+      }
+    }))))
+  }
+  /** App-owned whole-file store writes share the collection turn and operation rollback record. */
+  async writeAppStoreFile(path: string, update: (previous: string | null) => string): Promise<void> {
+    await this.exclusiveAll(async () => {
+      this.assertWritable()
+      const read = await readStoreFile(this.root, path)
+      if (read.state === 'refused') throw new Error(read.message)
+      const content = update(read.state === 'present' ? read.bytes.toString('utf8') : null)
+      await writeStoreFile(this.root, path, content, { mode: read.state === 'present' ? 'replace' : 'create', expect: read.state === 'present' ? read : null })
+      this.#recordOperationWrite(this.absolute(path), read.state === 'present' ? read.bytes.toString('utf8') : null, content)
+    })
+  }
+  #folioWriteOptions(): FolioWriteOptions {
+    return { notice: message => this.announceWriteNotice(message), writeStore: (path, content) => this.writeAppStoreFile(path, content) }
   }
   /** The text at `absolute` now, for an operation-write record, when one is being kept (else undefined).
    *  Called in the tick of the commit; a file that cannot be read as text is recorded as unknown (the
@@ -500,11 +569,36 @@ export class Workspace {
     return own ? { written: own.written, seq: own.seq } : undefined
   }
 
-  /** Mark an app-owned filesystem mutation before it lands so the native watcher cannot race it. */
-  recordOwnWrite(path: string, at = Date.now()): void {
-    this.#ownWrites.record(path, at)
+  /**
+   * Mark an app-owned filesystem mutation before it lands so the native watcher cannot race it. `expected` is the
+   * state the mutation leaves at `path` (D-WATCH-1): the staged file's identity, taken before the rename, or
+   * `'absent'` for a delete. The watcher drops an event for `path` only while the path still holds that state, within
+   * five seconds; without `expected` nothing is suppressed (the event is delivered).
+   */
+  recordOwnWrite(path: string, expected?: OwnWriteExpectation, at = Date.now()): void {
+    invalidateFolioDeclarations(this.root, path)
+    this.#ownWrites.record(path, expected, at)
     // The write is about to land; the cached text for this path is stale by definition.
     this.searchIndex.invalidate([path])
+  }
+
+  /**
+   * Undo the own-write records of `paths` after the mutation that made them failed: what stands there is not the
+   * state it would have left, and an `'absent'` left standing would hide another program's later delete. Each
+   * path is recorded with no state, so its events are delivered (D-WATCH-1).
+   */
+  forgetOwnWrites(...paths: string[]): void {
+    for (const path of paths) this.#ownWrites.record(path)
+  }
+
+  /** `act`, with the own-write records of `paths` forgotten if it fails. */
+  async #forgettingOnFailure<T>(paths: string[], act: () => Promise<T>): Promise<T> {
+    try {
+      return await act()
+    } catch (error) {
+      this.forgetOwnWrites(...paths)
+      throw error
+    }
   }
 
   wasRecentlyWrittenByApp(path: string, at = Date.now()): boolean {
@@ -701,10 +795,26 @@ export class Workspace {
    *  writeFile truncates BEFORE it writes, so an app quit (or kill) racing a save could leave the
    *  document 0 bytes on disk — which is exactly how walk-sample.md was wiped on 2026-07-11. Rename
    *  is atomic on one filesystem: the file is always either the old text or the new, never empty. */
-  async #writeAtomic(absolute: string, content: string | Uint8Array, beforeCommit?: () => void, exclusive = false): Promise<{ seq: number }> {
+  async #writeAtomic(absolute: string, content: string | Uint8Array, beforeCommit?: () => void, exclusive = false, folioOptions = this.#folioWriteOptions()): Promise<{ seq: number }> {
     this.assertWritable()
+    const folioCommit = await guardFolioWrite(this, this.relative(absolute), content, folioOptions)
     const tmp = `${absolute}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`
-    await writeFile(tmp, content, typeof content === 'string' ? 'utf8' : undefined)
+    // Staged through a handle, so the state the rename leaves at the name is taken from the temporary file
+    // itself (fstat), never from the name after the commit (D-WATCH-1).
+    let staged: FileIdentity
+    const handle = await open(tmp, 'w')
+    try {
+      await handle.writeFile(content, typeof content === 'string' ? 'utf8' : undefined)
+      staged = fileIdentityOf(await handle.stat({ bigint: true }))
+    } finally {
+      await handle.close()
+    }
+    if (atomicWriteSeams.afterStage) {
+      try { await atomicWriteSeams.afterStage(absolute) } catch (error) {
+        try { unlinkSync(tmp) } catch { /* a stray temp file is not a changed document */ }
+        throw error
+      }
+    }
     if (exclusive) {
       // Create, never replace: link(2) fails with EEXIST when the name is taken by anything (a file, a
       // folder), and the new name appears with all of its content at once.
@@ -712,7 +822,8 @@ export class Workspace {
       try {
         beforeCommit?.()
         before = this.#textBeforeOperationWrite(absolute, true)
-        this.recordOwnWrite(this.relative(absolute))
+        // A hard link keeps the inode; the copy below makes a new one, so its event is delivered.
+        this.recordOwnWrite(this.relative(absolute), staged)
         try {
           linkSync(tmp, absolute)
         } catch (linkError) {
@@ -730,6 +841,7 @@ export class Workspace {
       const receipt = this.#committed(absolute, content)
       this.#recordOperationWrite(absolute, before, content)
       try { unlinkSync(tmp) } catch { /* the copy is made; a stray temp name is harmless */ }
+      await finishFolioWrite(this, this.relative(absolute), content, folioOptions, folioCommit)
       return receipt
     }
     if (beforeCommit) {
@@ -739,15 +851,19 @@ export class Workspace {
         throw refusal
       }
       const before = this.#textBeforeOperationWrite(absolute, false)
-      this.recordOwnWrite(this.relative(absolute))
+      this.recordOwnWrite(this.relative(absolute), staged)
       renameSync(tmp, absolute)
+      if (atomicWriteSeams.afterCommit) await atomicWriteSeams.afterCommit(absolute)
       this.#recordOperationWrite(absolute, before, content)
+      await finishFolioWrite(this, this.relative(absolute), content, folioOptions, folioCommit)
       return this.#committed(absolute, content)
     }
     const before = this.#textBeforeOperationWrite(absolute, false)
-    this.recordOwnWrite(this.relative(absolute))
+    this.recordOwnWrite(this.relative(absolute), staged)
     await rename(tmp, absolute)
+    if (atomicWriteSeams.afterCommit) await atomicWriteSeams.afterCommit(absolute)
     this.#recordOperationWrite(absolute, before, content)
+    await finishFolioWrite(this, this.relative(absolute), content, folioOptions, folioCommit)
     return this.#committed(absolute, content)
   }
 
@@ -811,13 +927,14 @@ export class Workspace {
   /** The guarded write for a `documentOnly` save (guarded-document-write.ts), its refusals in this Workspace's own errors.
    *  Like `#writeAtomic` it returns this call's receipt and records the write for an operation's rollback
    *  (R7). `nameTaken`: a create over a taken name throws `NameTaken` (an exclusive save), not the create's sentence. */
-  async #writeDocument(path: string, content: string | Uint8Array, mode: 'create' | 'replace', expect?: { fingerprint: string }, beforeCommit?: (target?: CommitTarget) => void, nameTaken = false, inFolder?: FolderIdentity): Promise<{ seq: number }> {
+  async #writeDocument(path: string, content: string | Uint8Array, mode: 'create' | 'replace', expect?: { fingerprint: string }, beforeCommit?: (target?: CommitTarget) => void, nameTaken = false, inFolder?: FolderIdentity, folioOptions = this.#folioWriteOptions()): Promise<{ seq: number }> {
     const absolute = this.absolute(path)
     let before: string | null | undefined
     let leftover: string | undefined
     try {
       ;({ leftover } = await writeDocumentGuarded(this, path, content, mode, {
         seams: documentSaveSeams,
+        folioOptions,
         ...(expect ? { expect } : {}),
         ...(inFolder ? { inFolder } : {}),
         // The caller's check first (it may refuse the commit), then the own-write record, then the rename.
@@ -825,7 +942,8 @@ export class Workspace {
         beforeCommit: (target) => {
           beforeCommit?.(target)
           before = this.#textBeforeOperationWrite(absolute, mode === 'create')
-          this.recordOwnWrite(this.relative(absolute))
+          // The staged file's identity, from its own handle: what the commit leaves at the name (D-WATCH-1).
+          this.recordOwnWrite(this.relative(absolute), target.staged)
         },
       }))
     } catch (error) {
@@ -865,10 +983,13 @@ export class Workspace {
   /** The guarded move for a `documentOnly` rename (guarded-document-move.ts), its refusals in this Workspace's own errors. */
   async #moveDocument(from: string, to: string, kind: PathKind): Promise<void> {
     try {
-      await moveDocumentGuarded(this, from, to, kind, {
+      // A move that fails after its records were made forgets them: the old name is not left empty.
+      await this.#forgettingOnFailure([from], () => moveDocumentGuarded(this, from, to, kind, {
         seams: documentSaveSeams,
-        beforeCommit: () => { this.recordOwnWrite(from); this.recordOwnWrite(to) },
-      })
+        // The old name is left empty (or, for a change of letter case only, still names the file); the new one holds
+        // what was moved, as it was immediately before the move (D-WATCH-1).
+        beforeCommit: ({ moved, sameName }) => { this.recordOwnWrite(from, sameName ? moved : 'absent'); this.recordOwnWrite(to, moved) },
+      }))
     } catch (error) {
       if (!(error instanceof GuardedMoveRefused)) throw error
       const { code, path } = error
@@ -892,12 +1013,16 @@ export class Workspace {
    */
   async saveFile(path: string, content: string, options: SaveFileOptions = {}): Promise<SavedFileResult> {
     this.assertWritable()
-    const held = options.expect && !options.documentOnly ? { ...options, documentOnly: true } : options
+    // An expecting or a pinned save is always the guarded one: `#writeAtomic` knows no pin (Folio room ticket 01).
+    const held = (options.expect || options.inFolder) && !options.documentOnly ? { ...options, documentOnly: true } : options
     return this.exclusive(path, () => this.#saveFileHeld(path, content, held))
   }
 
-  async #saveFileHeld(path: string, content: string, options: SaveFileOptions): Promise<SavedFileResult> {
+  async #saveFileHeld(path: string, content: string, options: SaveFileOptions, folioOptions = this.#folioWriteOptions()): Promise<SavedFileResult> {
     this.assertWritable()
+    try { settleVersionMoves(this.root, true) } catch (error) {
+      console.error('WriteFlex could not settle version history before saving; unresolved history remains recoverable.', { root: this.root, error })
+    }
     if (options.documentOnly) this.assertDocumentPath(path)
     const absolute = this.absolute(path)
     // An empty write the guard below lets through (no file, or a file with no text) commits only over what
@@ -907,12 +1032,23 @@ export class Workspace {
       ? this.commitOnlyOver(path, { kind: 'new' })
       : undefined
     if (!options.allowExplicitEmpty && content.trim() === '' && existsSync(absolute)) {
+      // A pinned save (`inFolder`) is checked against its pin before this branch reads or writes anything: the
+      // rescue copies below are written outside the Folio, so a swapped folder must be refused first, with the
+      // guarded write's own refusal, and nothing written anywhere (Folio room ticket 01, fix round 1).
+      if (options.inFolder) this.#assertInPinnedFolder(path, absolute, options.inFolder)
       const previous = options.documentOnly ? (await this.#readDocument(path)).content : await readFile(absolute, 'utf8')
       // Let through because the file held no text: it commits only over that same text (checked in the
       // rename tick), so text another program writes while the empty file is staged is never erased
       // unasked (final review round 1, finding 2). A refusal is DiskChangedUnderBuffer, nothing written.
       if (!options.exclusive) emptyOnlyOver = this.commitOnlyOver(path, { kind: 'disk', text: previous })
       if (previous.trim() !== '') {
+        // Again after the read awaited: a folder swapped meanwhile is refused as swapped. A pinned save that holds
+        // its pin is refused with no rescue copies, which would be written outside its folder; the document is
+        // untouched, so nothing is lost (Folio room ticket 01, fix round 2).
+        if (options.inFolder) {
+          this.#assertInPinnedFolder(path, absolute, options.inFolder)
+          throw new EmptyWriteRefusal(this.relative(absolute), null, null, null, previous)
+        }
         const rescueDirectory = '.writeflex/rescue'
         const rescueAbsolute = this.absolute(rescueDirectory)
         await mkdir(rescueAbsolute, { recursive: true })
@@ -939,6 +1075,12 @@ export class Workspace {
         )
       }
     }
+    let finishLineage: ((content: string) => void) | undefined
+    const originalBeforeCommit = options.beforeCommit
+    options = { ...options, beforeCommit: (target) => {
+      originalBeforeCommit?.(target)
+      if (!restoringOperation.getStore()) finishLineage = prepareBackupLineage(this, path, (absolute, before, after) => this.#recordOperationWrite(absolute, before, after))
+    } }
     const beforeCommit = emptyOnlyOver
       ? (target?: CommitTarget) => { options.beforeCommit?.(target); emptyOnlyOver() }
       : options.beforeCommit
@@ -948,10 +1090,12 @@ export class Workspace {
       // code above waited is refused there, and with `expect` so is a document that changed. An
       // exclusive save is a create whatever stands there (the guarded link refuses a taken name).
       const standing = options.exclusive ? null : await lstat(absolute).catch(() => null)
-      ;({ seq } = await this.#writeDocument(path, content, standing ? 'replace' : 'create', options.expect, beforeCommit, options.exclusive === true, options.inFolder))
+      ;({ seq } = await this.#writeDocument(path, content, standing ? 'replace' : 'create', options.expect, beforeCommit, options.exclusive === true, options.inFolder, folioOptions))
     } else {
-      ;({ seq } = await this.#writeAtomic(absolute, content, beforeCommit, options.exclusive))
+      ;({ seq } = await this.#writeAtomic(absolute, content, beforeCommit, options.exclusive, folioOptions))
     }
+    finishLineage?.(content)
+    restoringOperation.getStore()?.set(path, content)
     // From here the file holds `content`. A failure below is a failed read, not a failed save.
     try {
       return { ...(options.documentOnly ? await this.#readDocument(path) : await this.readFile(path)), written: content, seq }
@@ -1030,9 +1174,19 @@ export class Workspace {
 
   /** Remove a file only while it still holds `read` exactly, compared in the tick of the unlink (an accept
    *  that takes a file away: R5). Another version there throws ChangedSinceRead and nothing is removed; a
-   *  file already gone is what was asked for. */
-  removeFileOverRead(path: string, read: string): void {
+   *  file already gone is what was asked for.
+   *
+   *  `inFolder` (main-process only): the folder the file must be in, pinned when the caller authorised it. In the
+   *  same tick as the byte check and the unlink, with nothing awaited between, the file's folder must still be that
+   *  pinned folder physically (guarded-document-write.ts `standsAsPinnedFolder`); a folder swapped for a link, or gone,
+   *  throws NotADocumentPathError and nothing is removed. The file is then unlinked through the pinned real folder,
+   *  never through the typed path. Without `inFolder` it behaves as it always has. */
+  removeFileOverRead(path: string, read: string, options: Pick<SaveFileOptions, 'inFolder'> = {}): void {
     this.assertWritable()
+    const absolute = this.absolute(path)
+    const pinned = options.inFolder
+    if (pinned) this.#assertInPinnedFolder(path, absolute, pinned)
+    guardFolioRemoval(this, path)
     try {
       this.commitOnlyOver(path, { kind: 'disk', text: read })()
     } catch (error) {
@@ -1040,8 +1194,26 @@ export class Workspace {
       if (error.diskText === null) return
       throw this.changedSinceRead(error.path, error.diskText)
     }
-    unlinkSync(this.absolute(path))
-    this.#recordOperationWrite(this.absolute(path), read, null)
+    unlinkSync(pinned ? join(pinned.real, basename(absolute)) : absolute)
+    try { this.onDocumentWritten?.(this.relative(absolute)) } catch { /* A notification never refuses a committed removal. */ }
+    invalidateFolioDeclarations(this.root, path)
+    this.#recordOperationWrite(absolute, read, null)
+  }
+
+  /** Throws NotADocumentPathError unless the folder holding `absolute`, named as typed under the Collection's real
+   *  root, is at this instant physically the pinned folder `pinned` (`standsAsPinnedFolder`): a link anywhere on the
+   *  way, or a link standing at the folder's own name, is refused. Synchronous, so the caller makes it in the tick of
+   *  its own commit. */
+  #assertInPinnedFolder(path: string, absolute: string, pinned: FolderIdentity): void {
+    let typed: string | null
+    try {
+      typed = join(realpathSync.native(this.root), dirname(relative(this.root, absolute)))
+    } catch {
+      typed = null
+    }
+    if (typed !== null && standsAsPinnedFolder(typed, pinned)) return
+    const verdict = this.classifyPath(path)
+    throw new NotADocumentPathError(path, verdict === 'document' ? 'outside' : verdict)
   }
 
   /** The editor's save (file:save). The editor holds LF text, so this decides against the file's current
@@ -1063,13 +1235,19 @@ export class Workspace {
     this.assertWritable()
     if (!isSaveBasis(basis)) throw new SaveWithoutBasis(path)
     return this.exclusive(path, async () => {
+      const save = (content: string) => {
+        const guard = this.commitOnlyOver(path, basis)
+        guard()
+        const held = { ...options, ...((options.expect || options.inFolder) ? { documentOnly: true } : {}), ...(basis.kind === 'create' ? { exclusive: true } : {}), beforeCommit: (target?: CommitTarget) => { options.beforeCommit?.(target); guard() } }
+        return this.#saveFileHeld(path, content, held, new EditorFolioAuthority(message => this.announceWriteNotice(message), (path, update) => this.writeAppStoreFile(path, update)))
+      }
       // Asked again inside the turn, before the unchanged-text shortcut too: the save may have waited.
       this.assertWritable()
       const absolute = this.absolute(path)
       const rel = this.relative(absolute)
       if (basis.kind === 'create') {
         if (nameIsTaken(absolute)) throw new NameTaken(rel)
-        return this.saveFileOver(path, text, basis, options)
+        return save(text)
       }
       const read = (): Promise<FileReadResult> => (options.documentOnly ? this.#readDocument(path) : this.readFile(path))
       const disk = options.documentOnly
@@ -1078,9 +1256,15 @@ export class Workspace {
       const next = textForSave(text, disk)
       // The buffer is the document on disk: nothing is replaced, whatever it was based on. What was found
       // is what the buffer is based on now; the second read is compared with it by the renderer.
-      if (disk !== null && next === disk) return { ...(await read()), written: disk }
+      if (disk !== null && next === disk) {
+        // A no-op document save still retries a failed declaration decision and names the Folio in use.
+        const folioOptions = new EditorFolioAuthority(message => this.announceWriteNotice(message), (path, update) => this.writeAppStoreFile(path, update))
+        const folioCommit = await guardFolioWrite(this, path, disk, folioOptions)
+        await finishFolioWrite(this, path, disk, folioOptions, folioCommit)
+        return { ...(await read()), written: disk }
+      }
       if (!basisAllows(basis, disk)) throw new DiskChangedUnderBuffer(rel, disk)
-      return this.saveFileOver(path, next, basis, options)
+      return save(next)
     })
   }
 
@@ -1090,20 +1274,27 @@ export class Workspace {
    * real location is checked, then given its name by a hard link, which cannot replace a file that
    * appeared there meanwhile. Without it the write is exclusive too (final review round 2, finding 1):
    * a file that appears after the check is never replaced; the create is refused with the same sentence.
+   *
+   * `inFolder` (main-process only): the folder the new file must land in, pinned when the caller authorised it. It
+   * makes the create a guarded one (`documentOnly`, said or not), passes the pin to the guarded write (checked when
+   * the folder is resolved and again in the tick of the commit), and never makes a folder: a missing folder is
+   * refused ("The folder for … does not exist.") and nothing is created.
    */
-  async createFile(path: string, content: string, options: Pick<SaveFileOptions, 'documentOnly'> = {}): Promise<FileReadResult> {
+  async createFile(path: string, content: string, options: Pick<SaveFileOptions, 'documentOnly' | 'inFolder'> = {}): Promise<FileReadResult> {
     this.assertWritable()
     const normalised = normaliseMarkdownPath(path)
+    const pinned = options.inFolder
+    const documentOnly = options.documentOnly === true || pinned !== undefined
     return this.exclusive(normalised, async () => {
       this.assertWritable() // asked again inside the turn: it may have waited
       // Before the folder is made, so a refused create leaves no empty folder behind either.
-      if (options.documentOnly) this.assertDocumentPath(normalised)
+      if (documentOnly) this.assertDocumentPath(normalised)
       const absolute = this.absolute(normalised)
       if (existsSync(absolute)) throw new Error(`File already exists: ${this.relative(absolute)}`)
-      await mkdir(dirname(absolute), { recursive: true })
-      if (options.documentOnly) {
+      if (!pinned) await mkdir(dirname(absolute), { recursive: true })
+      if (documentOnly) {
         // Judged again inside the write, on the handle it stages through: making the folder waited.
-        await this.#writeDocument(this.relative(absolute), content, 'create')
+        await this.#writeDocument(this.relative(absolute), content, 'create', undefined, undefined, false, pinned)
         return this.#readDocument(this.relative(absolute))
       }
       try {
@@ -1164,6 +1355,71 @@ export class Workspace {
     }
   }
 
+  /** Preserve an orphan sidecar under its exact hidden name, with both names in operation rollback.
+   * A no-clobber link followed by unlink keeps the original inode and never replaces evidence. */
+  async setAsideBackupRecord(path: string, targetPath: string, options: Pick<SaveFileOptions, 'inFolder'> = {}): Promise<void> {
+    await this.exclusiveAll(async () => {
+      this.assertWritable()
+      if (!path.endsWith(BACKUP_RECORD_SUFFIX)
+        || !/^\.writeflex\/backup-records-set-aside\/[^/]+\.json$/.test(targetPath)) {
+        throw new Error('Invalid backup record set-aside path.')
+      }
+      const absolute = this.absolute(path)
+      if (options.inFolder) this.#assertInPinnedFolder(path, absolute, options.inFolder)
+      const makeFolder = (folder: string): void => {
+        const at = this.absolute(folder)
+        try {
+          mkdirSync(at)
+          const { dev, ino } = lstatSync(at)
+          operationWriteScope.getStore()?.push({ path: folder, before: null, after: null, createdFolder: { dev, ino } })
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+        }
+      }
+      makeFolder('.writeflex')
+      const store = await storeFolder(this.root, targetPath)
+      makeFolder('.writeflex/backup-records-set-aside')
+      const folderPath = join(store.path, 'backup-records-set-aside')
+      const folder = lstatSync(folderPath)
+      if (!folder.isDirectory()) throw new Error('Backup evidence folder is not a plain directory.')
+      const target = this.absolute(targetPath)
+      const info = lstatSync(absolute)
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error('Backup record is not a plain file.')
+      const before = readFileSync(absolute, 'utf8')
+      this.recordOwnWrite(targetPath, fileIdentityOf(lstatSync(absolute, { bigint: true })))
+      try {
+        // Hold both folder identities and check again in the tick that publishes the name.
+        const currentStore = lstatSync(store.path)
+        const currentFolder = lstatSync(folderPath)
+        if (!currentStore.isDirectory() || !sameFile(currentStore, store)
+          || !currentFolder.isDirectory() || !sameFile(currentFolder, folder)) {
+          throw new Error('Backup evidence folder changed before the write.')
+        }
+        if (options.inFolder) this.#assertInPinnedFolder(path, absolute, options.inFolder)
+        linkSync(absolute, target)
+      }
+      catch (error) { this.forgetOwnWrites(targetPath); throw error }
+      this.#recordOperationWrite(target, null, before)
+      const targetWrite = operationWriteScope.getStore()?.at(-1)
+      if (targetWrite) targetWrite.removeAfterRestore = { path: this.relative(absolute), bytes: before }
+      this.recordOwnWrite(path, 'absent')
+      try { unlinkSync(absolute) }
+      catch (error) { this.forgetOwnWrites(path); throw error }
+      this.#recordOperationWrite(absolute, before, null)
+    })
+  }
+
+  /** The own-write record of a move about to be made from `absolute` to `target` (D-WATCH-1): the new name will
+   *  hold what stands at the old one now, and the old name nothing (or, `sameName`, the same file). Looked at
+   *  without following a link, immediately before the move; a look that fails records no state, so the move's
+   *  events are delivered. */
+  #recordMove(absolute: string, target: string, sameName: boolean): void {
+    let moved: FileIdentity | undefined
+    try { moved = fileIdentityOf(lstatSync(absolute, { bigint: true })) } catch { moved = undefined }
+    this.recordOwnWrite(this.relative(absolute), sameName ? moved : 'absent')
+    this.recordOwnWrite(this.relative(target), moved)
+  }
+
   /**
    * Move a document or a folder to the system Trash, through `trash` (Electron's `shell.trashItem`
    * in the app). One turn of the Collection's write turn, and the write gate is asked inside it,
@@ -1175,8 +1431,11 @@ export class Workspace {
     return this.exclusiveAll(async () => {
       this.assertWritable()
       const absolute = this.absolute(path) // containment + symlink guard
-      this.recordOwnWrite(path) // our own trash write must not echo back through the watcher
-      await trash(absolute)
+      guardFolioRemoval(this, path)
+      this.recordOwnWrite(path, 'absent') // our own trash write must not echo back through the watcher
+      // A Trash that fails leaves the file: the record is forgotten, so a later delete by another program is seen.
+      await this.#forgettingOnFailure([path], () => trash(absolute))
+      await finishFolioMove(this, path)
       return { path }
     })
   }
@@ -1187,6 +1446,7 @@ export class Workspace {
     const cleaned = path.split('/').map(sanitiseFileName).filter(Boolean).join('/')
     if (!cleaned) throw new Error('Folder name cannot be empty.')
     const absolute = this.absolute(cleaned)
+    // No state is known before the folder is made, so none is recorded: the watcher delivers its event (D-WATCH-1).
     this.recordOwnWrite(this.relative(absolute))
     await mkdir(absolute, { recursive: true })
     return { path: this.relative(absolute) }
@@ -1210,9 +1470,10 @@ export class Workspace {
         if (target !== absolute) await this.#moveDocument(this.relative(absolute), this.relative(target), 'folder')
         return { path: this.relative(target) }
       }
-      this.recordOwnWrite(this.relative(absolute))
-      this.recordOwnWrite(this.relative(target))
-      await rename(absolute, target)
+      await guardFolioFolderMove(this, this.relative(absolute), this.relative(target))
+      this.#recordMove(absolute, target, false)
+      await this.#forgettingOnFailure([this.relative(absolute)], () => withVersionMove(this.root, this.relative(absolute), this.relative(target), () => rename(absolute, target)))
+      await finishFolioMove(this, this.relative(absolute), this.relative(target))
       return { path: this.relative(target) }
     })
   }
@@ -1251,6 +1512,8 @@ export class Workspace {
       await this.#moveDocument(this.relative(absolute), this.relative(target), 'file')
       return this.#readDocument(this.relative(target))
     }
+    guardFolioRemoval(this, path)
+    if (!carriesSetAsideIndex(this, path, this.relative(target))) await guardFolioWrite(this, this.relative(target), () => readFile(absolute), this.#folioWriteOptions())
     if (existsSync(target)) {
       const [sourceInfo, targetInfo, sourceCanonical, targetCanonical] = await Promise.all([
         stat(absolute), stat(target), realpath(absolute), realpath(target),
@@ -1263,21 +1526,24 @@ export class Workspace {
       const extension = extname(absolute) || '.md'
       const stem = absolute.slice(0, absolute.length - extension.length)
       const intermediate = `${stem}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.rename-tmp${extension}`
-      this.recordOwnWrite(this.relative(absolute))
-      this.recordOwnWrite(this.relative(target))
-      await rename(absolute, intermediate)
-      try {
-        await rename(intermediate, target)
-      } catch (error) {
-        await rename(intermediate, absolute)
-        throw error
-      }
+      // The same file under another letter case: both spellings name it after the move.
+      this.#recordMove(absolute, target, true)
+      await withVersionMove(this.root, this.relative(absolute), this.relative(target), async () => {
+        await rename(absolute, intermediate)
+        try {
+          await rename(intermediate, target)
+        } catch (error) {
+          await rename(intermediate, absolute)
+          throw error
+        }
+      })
+      await finishFolioMove(this, path, this.relative(target))
       return this.readFile(this.relative(target))
     }
     if (!requireExistingDirectory) await mkdir(dirname(target), { recursive: true })
-    this.recordOwnWrite(this.relative(absolute))
-    this.recordOwnWrite(this.relative(target))
-    await rename(absolute, target)
+    this.#recordMove(absolute, target, false)
+    await this.#forgettingOnFailure([this.relative(absolute)], () => withVersionMove(this.root, this.relative(absolute), this.relative(target), () => rename(absolute, target)))
+    await finishFolioMove(this, this.relative(absolute), this.relative(target))
     return this.readFile(this.relative(target))
   }
 
@@ -1356,7 +1622,8 @@ export class Workspace {
       const entry = this.searchIndex.get(file.path)
       if (!entry) continue
       if (matcher.usesTags && !matcher.matchTags(entry.tags)) continue
-      const lines = entry.content.split('\n')
+      // Flag tags are blanked (same length, so positions hold): a search never matches `needs-citation`.
+      const lines = (this.searchIndex.derive(file.path, 'flagBlanked', blankFlagTags) ?? entry.content).split('\n')
       const piece = matcher.usesLines ? matcher.matchPiece(lines) : null
       if (matcher.usesLines && !piece) continue
       const nameMatch = matcher.hasTerms && matcher.matchName(file.name, this.searchIndex.title(file.path) ?? '')
@@ -1376,18 +1643,19 @@ export class Workspace {
       if (!piece || !matcher.hasTerms) {
         const tagHit = locateTagHit(lines, matcher.tagTerms)
         const marks = tagHit.length > 0 ? [{ column: tagHit.column, length: tagHit.length }] : []
-        return { path, ...tagHit, marks, snippet: snippetOf(lines[tagHit.line - 1] ?? '', marks) }
+        return { path, ...tagHit, marks, snippet: cleanSnippet(snippetOf(lines[tagHit.line - 1] ?? '', marks)) }
       }
       const i = piece.index
+      const shownLine = dropBlankedTags(lines[i].slice(0, 200), piece.marks)
       return {
         path,
         line: i + 1,
         column: piece.hit.column,
         length: piece.hit.length,
-        preview: lines[i].slice(0, 200),
-        marks: piece.marks.map((mark) => ({ ...mark })),
+        preview: shownLine.text,
+        marks: shownLine.marks,
         context: lineContext(lines, i),
-        snippet: snippetOf(lines[i], piece.marks),
+        snippet: cleanSnippet(snippetOf(lines[i], piece.marks)),
       }
     })
     const total = shown.length

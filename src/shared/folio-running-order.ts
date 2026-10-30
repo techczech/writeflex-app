@@ -28,7 +28,7 @@ export type PlanOrderResult =
   | { ok: false; stale: boolean; message: string }
 
 export function samePlanParts(a: readonly PlanPartKey[], b: readonly PlanPartKey[]): boolean {
-  return a.length === b.length && a.every((part, index) => part.title === b[index].title && part.path === b[index].path)
+  return a.length === b.length && a.every((part, index) => part.path === b[index].path && (part.path !== null || part.title === b[index].title))
 }
 const ORDER_CHANGED = 'The running order changed.'
 export const STALE_PLAN_MESSAGE = `${ORDER_CHANGED} The Folio outline has been refreshed.`
@@ -46,7 +46,7 @@ export const STALE_PUT_BACK_MESSAGE = 'The files not in the outline changed. Loo
 export type PlanCardKey = PlanPartKey & { gloss: string | null; role: string; tags: string[] }
 
 export function samePlanCard(a: PlanCardKey, b: PlanCardKey): boolean {
-  return a.title === b.title && a.path === b.path && a.gloss === b.gloss && a.role === b.role
+  return a.path === b.path && (a.path !== null || a.title === b.title) && a.gloss === b.gloss && a.role === b.role
     && a.tags.length === b.tags.length && a.tags.every((tag, at) => tag === b.tags[at])
 }
 
@@ -62,12 +62,12 @@ export function planCardRefusal(parts: readonly PlanCardKey[], index: number, ex
 }
 
 /**
- * Whether the "Not in the outline" row at `index` is still the file the owner saw (by file and title). Null
+ * Whether the "Not in the outline" row at `index` is still the file the owner saw (by file). Null
  * when it is; otherwise the refusal to show. Put back's check, run under the Folio's lock (review round 2 P1).
  */
 export function unlistedRowRefusal(unlisted: readonly PlanPartKey[], index: number, expected: PlanPartKey): string | null {
   const row = unlisted[index]
-  if (!row || expected.path === null || row.path !== expected.path || row.title !== expected.title) return STALE_PUT_BACK_MESSAGE
+  if (!row || expected.path === null || row.path !== expected.path) return STALE_PUT_BACK_MESSAGE
   if (unlisted.filter((other) => other.path === expected.path).length > 1) return STALE_PUT_BACK_MESSAGE
   return null
 }
@@ -197,10 +197,16 @@ export const gripName = (title: string): string => `Drag to move ${title} in the
 
 /** One step the Undo flash can take back: the last change only, never a history. */
 export type RunningOrderUndo =
+  | { kind: 'identity'; dir: string; token: string }
   | { kind: 'move'; dir: string; path: string; title: string; before: string | null; after: string[] }
   | { kind: 'add'; dir: string; paths: string[]; titles: string[]; after: string[]; token: string }
-  | { kind: 'plan-reorder'; dir: string; order: number[]; after: PlanPartKey[] }
+  // `room`: a Folio room move (ticket 11); its Undo is a room order write too. `title`: the part moved, for the messages.
+  | { kind: 'plan-reorder'; dir: string; order: number[]; after: PlanPartKey[]; room?: true; title?: string }
+  // The Folio room's New card: its Undo takes the line at `index` out while the running order is `after`.
+  | { kind: 'room-card'; dir: string; index: number; title: string; after: PlanPartKey[] }
   | { kind: 'plan-add'; dir: string; paths: string[]; titles: string[]; after: PlanPartKey[]; token: string }
+  // A removal to the Folio bin from the Folio page (ADR-0049): its Undo is the room's, by main's token (folio-bin.ts).
+  | { kind: 'bin'; dir: string; token: string; title: string }
 
 /**
  * Which Folio an Undo step belongs to: the workspace root and the Folio's folder. The step is kept, offered

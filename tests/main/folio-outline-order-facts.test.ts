@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 /**
  * The Outline read of a Folio's order facts: kept per Folio folder (no Plan load on a tab switch), dropped
  * when the app says something changed and after every Plan write; and "Not in the outline" for a Folio
@@ -217,7 +218,7 @@ test('the Folio outline view\'s Add of a file that shares its title with another
   expect(index).toBeGreaterThanOrEqual(0)
   const added = await adoptPart(ws, DIR, index)
   expect(added.parts.map((part) => part.path)).toEqual([...AB, piece('z')])
-  expect(await read(INDEX)).toContain('- [[./z]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[./z]]', {"./z":"./z.md|Shared"}))
   expect(await read(INDEX)).not.toContain('[[Shared]]')
   // A file with a title of its own is still added by its title.
   const glossary = added.unlisted.findIndex((part) => part.path === piece('glossary'))

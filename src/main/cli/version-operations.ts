@@ -40,6 +40,33 @@ export function compareText(result: VersionCompareResult): string {
 
 export const VERSION_OPERATIONS: Operation[] = [
   {
+    name: 'follow-history', group: 'Review and versions', behaviour: 'direct', writes: true,
+    summary: 'Reattach versions after outside moves using a tab-separated old_path/new_path map. Writes only the version journal.',
+    args: [{ name: 'map', type: 'string', required: true, description: 'Workspace-relative TSV move map.' }],
+    run: async (ctx, args) => {
+      const history = writeAccess(ctx).history
+      if (!history) throw new CliError('History attachment is unavailable.', 'failed')
+      const result = await history({ map: String(args.map) })
+      if (!('attached' in result)) throw new CliError('Unexpected history result.', 'failed')
+      return { data: result, text: [
+        `Reattached history for ${result.attached} file(s).`,
+        ...result.refused.map(row => `Line ${row.line}: ${row.from} -> ${row.to}: ${row.reason}`),
+        ...(result.undo ? [`Undo with: writeflex undo-history ${result.undo}`] : []),
+      ].join('\n') }
+    },
+  },
+  {
+    name: 'undo-history', group: 'Review and versions', behaviour: 'direct', writes: true,
+    summary: 'Undo one explicit history attachment exactly; document files stay where they are.',
+    args: [{ name: 'id', type: 'string', required: true, positional: true, description: 'Undo id returned by follow-history.' }],
+    run: async (ctx, args) => {
+      const history = writeAccess(ctx).history
+      if (!history) throw new CliError('History attachment is unavailable.', 'failed')
+      const result = await history({ undo: String(args.id) })
+      return { data: result, text: 'History attachment undone.' }
+    },
+  },
+  {
     name: 'save-version', group: 'Review and versions', behaviour: 'direct', writes: true,
     summary: 'Save a named version of a document, from the text saved on disk. WriteFlex lists it and can restore it.',
     args: [

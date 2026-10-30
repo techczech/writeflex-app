@@ -12,6 +12,7 @@ import { RestoreIncompleteError, RestoreRefusedError, scriptedSessionFactory } f
 import { WorkspaceAgent, type ScriptedStep } from '../../src/main/agent'
 import { BoardMaterialDesk, type BoardDeskBridle } from '../../src/main/board-material-desk'
 import type { CollectionSnapshots } from '../../src/main/gated-snapshots'
+import { refusalMessage } from '../../src/shared/assistant-turns'
 import { RestoreNotCompletedError, restoreFailure } from '../../src/main/restore-failure'
 import { ScrapStore } from '../../src/main/scraps'
 import { Workspace, type FileReadResult, type SaveFileOptions } from '../../src/main/workspace'
@@ -54,7 +55,7 @@ const BOTH: Array<[string, () => Error, RegExp[]]> = [
 ]
 
 async function bootAgent(script?: Parameters<typeof scriptedSessionFactory>[0]): Promise<WorkspaceAgent> {
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, services: { scraps: new ScrapStore(ws) },
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     ...(script ? { sessionFactory: scriptedSessionFactory(script) } : {}),
@@ -126,7 +127,7 @@ for (const [name, error, says] of BOTH) {
   test(`Folio outline desk: an undo that is ${name}, and a rollback that is, are reported in the result`, async () => {
     const changes: PlanProposalChange[] = [{ op: 'insert', title: 'Tools of reason' }]
     const step: ScriptedStep = { cap: 'plan.propose', input: { dir: DIR, changes } }
-    const turn = (prompt: string) => ({ prompt, rounds: [{ kind: 'tool-calls' as const, calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message' as const, text: 'Proposed.' }] })
+    const turn = (prompt: string) => ({ prompt, rounds: [{ kind: 'tool-calls' as const, calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] }, { kind: 'tool-calls' as const, calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message' as const, text: 'Proposed.' }] })
     const live = await bootAgent([turn('order one'), turn('order two')])
     const propose = async (prompt: string): Promise<string> => (await live.runScriptedTurn(prompt, [step])).suggestions.filter((suggestion) => suggestion.capabilityName === 'plan.propose').at(-1)!.id
     const store = storeOf(live)
@@ -161,19 +162,15 @@ for (const [name, error, says] of BOTH) {
     expect(await read(INDEX)).toBe(COVER)
   })
 
-  test(`undo turn: a restore that is ${name} throws what was and was not put back, and carries the lists`, async () => {
+  test(`undo turn: a restore that is ${name} reports its refusal through the turn seam`, async () => {
     const edit: ScriptedStep = { cap: 'housekeeping.create_file', input: { path: 'schemas/new-note.md', content: '# New\n' } }
-    const live = await bootAgent([{ prompt: 'make a note', rounds: [{ kind: 'tool-calls', calls: [{ name: edit.cap, arguments: edit.input as Record<string, unknown> }] }, { kind: 'message', text: 'Done.' }] }])
+    const live = await bootAgent([{ prompt: 'make a note', rounds: [{ kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [edit.cap] } }] }, { kind: 'tool-calls', calls: [{ name: edit.cap, arguments: edit.input as Record<string, unknown> }] }, { kind: 'message', text: 'Done.' }] }])
     await live.runScriptedTurn('make a note', [edit])
-    storeOf(live).restoreTo = async () => { throw error() }
-
-    const thrown = await live.restoreLastTurn().then(() => null, (caught: unknown) => caught)
-
-    expect(thrown).toBeInstanceOf(RestoreNotCompletedError)
-    const failure = thrown as RestoreNotCompletedError
-    expect(failure.message.startsWith('The last agent turn was not undone. ')).toBe(true)
-    for (const pattern of says) expect(failure.message).toMatch(pattern)
-    expect(failure.failure.kind).toBe(name)
-    expect(failure.failure.restored).toEqual(name === 'incomplete' ? [join(root, INDEX)] : [])
+    const turns = (live as unknown as { bridle: import('@bridle/core').Bridle }).bridle.turns
+    turns.undo = async () => { throw error() }
+    const [turn] = (await live.turnState()).turns
+    const result = await live.undoTurn(turn.turnId)
+    expect(result).toMatchObject({ undone: false, reason: name === 'incomplete' ? 'partially-undone' : 'unrestorable-file', paths: name === 'incomplete' ? [PIECE, SCHANK] : [PIECE] })
+    if (!result.undone) for (const pattern of says) expect(refusalMessage(result)).toMatch(pattern)
   })
 }

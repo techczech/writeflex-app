@@ -420,3 +420,12 @@ test('hydrate preserves error rows from session history', () => {
     const last = s.history[s.history.length - 1]
     expect((last as { error?: boolean }).error).toBe(true)
 })
+
+
+test('discovery policy rows are hidden while real and similarly named tools remain visible', () => {
+  let s = promptedState()
+  for (const capability of ['tools.search', 'tools.enable', 'tools.search_documents', 'files.read', 'housekeeping.create_file']) {
+    s = reduceAgentChat(s, { type: 'trace', event: trace({ title: `${capability}: allow`, metadata: { capability, decision: 'allow' } }) })
+  }
+  expect(lastAgent(s).activity.map(row => row.text)).toEqual(['tools.search_documents: allow', 'Read', 'Created'])
+})

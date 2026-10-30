@@ -1,3 +1,4 @@
+import { createNoticeTimer } from '../../src/renderer/src/app/notice-timer'
 import { test, expect } from 'bun:test'
 import { EditorState } from '@codemirror/state'
 import {
@@ -54,4 +55,24 @@ test('a pure insertion flashes the inserted words; a pure deletion keeps the who
   expect(doc.slice(inserted.from, inserted.to)).toBe('the ')
   const deletion = minimisedAppliedRange('sat on the mat', 'sat on mat', 8)
   expect(deletion).toEqual({ from: 8, to: 8 + 'sat on mat'.length })
+})
+
+
+test('Folio notice expires after eight visible seconds, pauses on hover, and clear or replacement cancels the old deadline', () => {
+  let now = 0, expires = 0
+  const jobs = new Map<number, { at: number; run: () => void }>()
+  let next = 0
+  const timer = createNoticeTimer(() => { expires++ }, { now: () => now, after: (ms, run) => {
+    const id = ++next; jobs.set(id, { at: now + ms, run }); return () => { jobs.delete(id) }
+  } })
+  const advance = (ms: number): void => { now += ms; for (const [id, job] of [...jobs]) if (job.at <= now) { jobs.delete(id); job.run() } }
+  timer.start(); advance(3000); timer.pause(); advance(10000)
+  expect(expires).toBe(0)
+  timer.resume(); advance(4999); expect(expires).toBe(0)
+  advance(1); expect(expires).toBe(1)
+  timer.start(); advance(2000); timer.start(); advance(6000); expect(expires).toBe(1)
+  advance(2000); expect(expires).toBe(2)
+  timer.start(); timer.clear(); advance(9000); expect(expires).toBe(2)
+  timer.start(true); advance(9000); expect(expires).toBe(2)
+  timer.resume(); advance(8000); expect(expires).toBe(3)
 })

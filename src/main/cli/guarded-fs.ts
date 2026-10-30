@@ -20,13 +20,15 @@
  * last check and the link or rename a part of the REAL path could still be replaced. The path used
  * there held no link when it was checked.
  */
+import { withFolioNotices } from '../folio-declaration'
+
 import { lstat, mkdir, realpath, rmdir, stat, unlink } from 'node:fs/promises'
 import { basename, join, relative, sep } from 'node:path'
 import { assertCollectionWritable } from '../collection-write-gate'
 import { type PathKind } from '../document-path'
 import { DocumentReadRefused, readDocumentBytesGuarded } from '../guarded-document-read'
-import { GuardedMoveRefused, moveDocumentGuarded, type PathIdentity } from '../guarded-document-move'
-import { GuardedWriteRefused, carryLeftover, isDocumentFolder, realDocumentParent, writeDocumentGuarded, type GuardedWriteResult, type WriteSeams } from '../guarded-document-write'
+import { GuardedMoveRefused, moveDocumentGuarded, type MoveCommit, type PathIdentity } from '../guarded-document-move'
+import { GuardedWriteRefused, carryLeftover, isDocumentFolder, realDocumentParent, writeDocumentGuarded, type CommitTarget, type GuardedWriteResult, type WriteSeams } from '../guarded-document-write'
 import type { Workspace } from '../workspace'
 import { CliError } from './operation'
 
@@ -90,11 +92,13 @@ export async function readBytes(ws: Workspace, path: string, seams: WriteSeams =
  * Write `content` whole to `path`. `create` refuses a name that is taken; `replace` refuses anything
  * but an existing ordinary file, and keeps its permissions. The folder must exist (makeFolders). With
  * `expect` (a rewrite), the file must still hold the bytes of that fingerprint, or nothing is written.
+ * `beforeCommit` is the guarded write's: run in the tick of the commit, told the staged file's identity.
  */
-export async function writeWhole(ws: Workspace, path: string, content: string | Uint8Array, mode: 'create' | 'replace', seams: WriteSeams = {}, expect?: { fingerprint: string }): Promise<GuardedWriteResult> {
+export async function writeWhole(ws: Workspace, path: string, content: string | Uint8Array, mode: 'create' | 'replace', seams: WriteSeams = {}, expect?: { fingerprint: string }, beforeCommit?: (target: CommitTarget) => void): Promise<GuardedWriteResult> {
   try {
     // Written, but perhaps with `leftover`: the caller says it (write-session.ts), never as a failure.
-    return await writeDocumentGuarded(ws, path, content, mode, { seams, ...(expect ? { expect } : {}) })
+    const { result, notices } = await withFolioNotices(() => writeDocumentGuarded(ws, path, content, mode, { seams, ...(expect ? { expect } : {}), ...(beforeCommit ? { beforeCommit } : {}) }))
+    return notices.length ? { ...result, notices } : result
   } catch (error) {
     // In the command line's words, still naming any temporary file the write could not remove.
     throw carryLeftover(writeRefusal(ws, path, error), error)
@@ -148,11 +152,12 @@ export async function makeFolders(ws: Workspace, path: string): Promise<string[]
  * Move a file or a folder to a free name: the app's guarded move (guarded-document-move.ts), said in
  * the command line's words. The folder to move into must exist. Renaming a file to the same name in
  * another letter case is allowed on a disk that ignores case. With `expect`, what stands at `from`
- * must be that very file or folder (device and inode), or nothing is moved.
+ * must be that very file or folder (device and inode), or nothing is moved. `beforeCommit` is the guarded
+ * move's: run in the tick of the move, told the identity of what is moved.
  */
-export async function movePath(ws: Workspace, from: string, to: string, kind: PathKind, seams: WriteSeams = {}, expect?: PathIdentity): Promise<void> {
+export async function movePath(ws: Workspace, from: string, to: string, kind: PathKind, seams: WriteSeams = {}, expect?: PathIdentity, beforeCommit?: (commit: MoveCommit) => void): Promise<void> {
   try {
-    await moveDocumentGuarded(ws, from, to, kind, { seams, ...(expect ? { expect } : {}) })
+    await moveDocumentGuarded(ws, from, to, kind, { seams, ...(expect ? { expect } : {}), ...(beforeCommit ? { beforeCommit } : {}) })
   } catch (error) {
     if (!(error instanceof GuardedMoveRefused)) throw error
     const { code, path } = error

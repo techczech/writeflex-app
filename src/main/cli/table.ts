@@ -2,7 +2,7 @@ import { TASK_GROUPS } from './groups'
 import { CliError, type Behaviour, type Operation } from './operation'
 import { ERROR_CODES, ERROR_OUTCOME, OUTCOMES, OUTCOME_LINES, OUTCOME_MEANINGS, type Outcome } from './outcome'
 import { EXAMPLES } from './operation-examples'
-import { REQUEST_OPERATIONS } from './request-format'
+import { READ_REQUEST_OPERATIONS, REQUEST_OPERATIONS } from './request-format'
 // Order matters: the app's readers must load before its writers. plan-agent-reads and
 // agent-note-create import each other through the verbs, and loading the note writer first leaves a
 // constant unset when the reader needs it.
@@ -21,7 +21,7 @@ export const BEHAVIOUR_LABELS: Record<Behaviour, string> = { direct: 'direct', '
  * refused. Every operation can be given bad arguments and can meet an unexpected error.
  */
 export function outcomesOf(op: Operation): Outcome[] {
-  const requestable = (REQUEST_OPERATIONS as readonly string[]).includes(op.name)
+  const requestable = (REQUEST_OPERATIONS as readonly string[]).includes(op.name) || (READ_REQUEST_OPERATIONS as readonly string[]).includes(op.name)
   const out: Outcome[] =
     op.behaviour === 'shown-first' ? ['filed', 'refused', 'needs-writer', 'sent-not-confirmed', 'not-verified']
     : op.name === 'save-version' ? ['done', 'refused', 'needs-writer', 'sent-not-confirmed', 'not-verified']

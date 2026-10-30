@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu, powerMonitor, protocol, shell } from 'electron'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeSync } from 'node:fs'
 import { createOutsideChangeFollower } from './sharing-outside-changes'
 import { applyFollowSignal, takeAtStart, watchFollowSignals } from './sharing-follow-signals'
 import { onDocumentsChanged, onDocumentsChangedOutside, onDocumentsMoved, onDocumentsTrashed, onWorkspaceOpened, registerIpc } from './ipc'
@@ -49,11 +49,16 @@ applyWidgetNetworkSwitches(app.commandLine)
 const appVariant = resolveAppVariant(readRunningAppMetadata())
 app.setPath('userData', join(app.getPath('appData'), appVariant.userDataDirectoryName))
 const packagedSmoke = packagedSmokeRequested(process.env)
+// Startup ordering check: bootstrap.ts must finish loading this file before Electron emits 'ready'.
+if (app.isPackaged && packagedSmoke && app.isReady()) {
+  writeSync(2, 'WRITEFLEX_ORDERING_VIOLATION: app was already ready when index.js started\n')
+}
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'wf-asset', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ])
-void app.setAsDefaultProtocolClient('writeflex')
+// Smoke mode must not re-register the protocol handler with the system.
+if (!(app.isPackaged && packagedSmoke)) void app.setAsDefaultProtocolClient('writeflex')
 
 // Playwright already supplies a private Chromium user-data directory. Electron does not derive
 // app.getPath('userData') from that switch, so bind the main-process stores to the same directory
@@ -67,13 +72,15 @@ if (process.env.WRITEFLEX_E2E === '1') {
   // Sharing's secrets go through safeStorage, which on macOS asks the login Keychain: an unpackaged
   // Electron reaching it raises a Keychain prompt on whoever's screen this is. A harness run uses
   // Chromium's mock keychain instead (never in a packaged build).
-  if (!app.isPackaged) app.commandLine.appendSwitch('use-mock-keychain')
+  app.commandLine.appendSwitch('use-mock-keychain')
 }
 
 // The running main-process entry script (argv[1] under `electron <entry> …`). It is the app itself,
 // never a document — excluding it from launch paths keeps a bare launch (no folder/file arg) on the
 // start screen instead of resolving the app's own repo as a Workspace via the .git walk-up.
 const ENTRY_FILE = fileURLToPath(import.meta.url)
+// bootstrap.js is the package entry and sits beside index.js; it is the app's own script too.
+const BOOTSTRAP_FILE = join(dirname(ENTRY_FILE), 'bootstrap.js')
 
 // One instance owns the Snapshot Store per Workspace; a second launch hands its paths to the first.
 if (!app.requestSingleInstanceLock()) {
@@ -112,7 +119,14 @@ if (!app.requestSingleInstanceLock()) {
     configureMainProcessDiagnostics(join(app.getPath('userData'), 'main-process.log'))
     recordMainProcessDiagnostic('app.ready')
     await registerAssetProtocol()
-    readingRoom = await registerReadingRoom()
+    readingRoom = await registerReadingRoom(undefined, {
+      // The plugin watcher sent (or tried to send) what was waiting: every window's indicator updates.
+      onOutboxChanged: (notice) => {
+        for (const window of BrowserWindow.getAllWindows()) {
+          if (!window.isDestroyed()) window.webContents.send('reading-room:outbox-changed', notice)
+        }
+      },
+    })
     // The Example collection (ADR-0043) lives at one fixed path under the Documents directory,
     // which comes from this one function. A run with the e2e flag never sees the real one: it gets
     // WRITEFLEX_E2E_DOCUMENTS (unpackaged only) or nothing at all.
@@ -176,7 +190,7 @@ if (!app.requestSingleInstanceLock()) {
     registerCliInstallIpc(ipcMain, bundleIdentifierFor(readRunningAppMetadata()))
     // Sharing (0.24 ticket 02): the set-up steps and Settings › Sharing. The token and this Mac's key
     // live in the secrets store (Keychain); settings.json keeps only the non-secret record.
-    const sharingSecrets = openSecretsStore(app.getPath('userData'))
+    const sharingSecrets = openSecretsStore(app.getPath('userData'), app.isPackaged && process.env.WRITEFLEX_E2E === '1')
     const sharingSetup = openSharingSetup({
       secrets: sharingSecrets,
       record: { read: () => readySettings.sharingRecord(), write: (record) => readySettings.setSharingRecord(record) },
@@ -409,7 +423,7 @@ function pathsFromArgv(argv: string[]): string[] {
     if (arg.startsWith('-')) continue
     if (/^writeflex:/i.test(arg)) continue
     const candidate = resolve(arg)
-    if (candidate === ENTRY_FILE) continue // the app's own entry script, not a document to open
+    if (candidate === ENTRY_FILE || candidate === BOOTSTRAP_FILE) continue // the app's own entry script, not a document to open
     if (candidate === process.cwd()) continue
     if (!existsSync(candidate)) continue
     out.push(candidate)

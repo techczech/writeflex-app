@@ -1,6 +1,7 @@
 import { StateEffect, StateField, type EditorState, type Extension } from '@codemirror/state'
 import { Decoration, type DecorationSet, EditorView, WidgetType } from '@codemirror/view'
 import { uniqueRange } from './suggestion-anchor'
+import { placeFrontmatterBlock } from '../../../shared/markdown/frontmatter-proposal'
 import type { Change } from '../../../preload'
 
 /**
@@ -77,6 +78,12 @@ export function resolveChangeRange(doc: string, c: Change): { from: number; to: 
     return { from: point, to: point }
   }
   const target = liveText(c)
+  // A change to the metadata only (main frontmatter-change.ts) stands in the frontmatter block and nowhere
+  // else: the whole block while it is exactly as proposed (or, accepted, as it became), never in the writing below.
+  if (c.frontmatter === true) {
+    const placed = placeFrontmatterBlock(doc, { oldText: target, newText: c.newText })
+    return 'miss' in placed ? null : placed
+  }
   // A replacement the store minimised to a pure insertion ("sat on mat" → "sat on the mat" keeps only
   // "the ") is an undecided agent proposal with no original text in the buffer: its zero-width stored
   // anchor is the point the new words will land, exactly as for an editClass 'insert'. Without this it

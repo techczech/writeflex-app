@@ -1,10 +1,14 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { registerPlanIpcHandlers, type PlanIpcHandler } from '../../src/main/plan-ipc'
+import { readPlan } from '../../src/main/plan'
 import { MANIFEST_NAME } from '../../src/main/folio'
 import { Workspace } from '../../src/main/workspace'
+import { roomStateKey } from '../../src/main/folio-room'
+import { mixedFolio } from '../fixtures/folio-room/folio-room-fixtures'
 
 let root: string
 let ws: Workspace
@@ -29,10 +33,12 @@ async function read(rel: string): Promise<string> {
 
 function harness(options: { failCheckpointFor?: (path: string) => boolean; afterCheckpoint?: (path: string) => Promise<void> } = {}) {
   const handlers = new Map<string, PlanIpcHandler>()
+  const appState = new Map<string, unknown>()
   const checkpoints: Array<{ path: string; content: string }> = []
   const collectionChanges: string[][] = []
   const diskChanges: string[][] = []
   registerPlanIpcHandlers({ handle: (channel, handler) => handlers.set(channel, handler) }, {
+    identityStore: { folioRoomState: key => appState.get(key), setFolioRoomState: (key, value) => { appState.set(key, value); return true } },
     stateForSender: () => ({ workspace: ws }),
     requireWorkspace: (state) => state.workspace,
     checkpointFile: async (_state, path) => {
@@ -48,14 +54,14 @@ function harness(options: { failCheckpointFor?: (path: string) => boolean; after
     if (!handler) throw new Error(`Missing handler: ${channel}`)
     return handler({ sender: { id: 7 } }, input)
   }
-  return { handlers, checkpoints, collectionChanges, diskChanges, invoke }
+  return { handlers, checkpoints, collectionChanges, diskChanges, invoke, appState }
 }
 
 test('the Folio outline IPC seam registers every channel', () => {
   const api = harness()
   expect([...api.handlers.keys()]).toEqual([
-    'plan:read', 'plan:adopt-part', 'plan:insert-part', 'plan:move-part', 'plan:remove-part', 'plan:set-part-role',
-    'plan:reorder-parts', 'plan:add-parts', 'plan:remove-added',
+    'plan:read', 'plan:identity-check', 'plan:open', 'plan:adopt-part', 'plan:insert-part', 'plan:move-part', 'plan:remove-part', 'plan:set-part-role',
+    'plan:reorder-parts', 'plan:room-new-card', 'plan:room-remove-card', 'plan:room-map', 'plan:room-authoring', 'plan:export-order', 'plan:align-manifest', 'plan:add-parts', 'plan:remove-added',
     'folio:move-piece', 'folio:add-pieces', 'folio:remove-added', 'plan:materialise-part', 'title:fix-part', 'title:fix-folio', 'title:undo', 'plan:set-heading-mode',
   ])
 })
@@ -69,11 +75,11 @@ test('plan:add-parts, plan:reorder-parts and plan:remove-added run the Folio out
   const added = await api.invoke('plan:add-parts', { dir: 'report', paths: ['report/ch-2.md', 'report/ch-1.md'], expected: seen }) as { ok: boolean; parts: Array<{ title: string; path: string | null }>; undoToken: string }
   expect(added.ok).toBe(true)
   expect(typeof added.undoToken).toBe('string')
-  expect(await read('report/_report_INDEX.md')).toBe(`${index}- [[ch-2]]\n- [[ch-1]]\n`)
+  expect(await read('report/_report_INDEX.md')).toBe(pinnedIndex(`${index}- [[ch-2]]\n- [[ch-1]]\n`, {"ch-2":"./ch-2.md|ch-2","ch-1":"./ch-1.md|ch-1","ch-3":"./ch-3.md|ch-3"}))
   // Unwritten "Idea" keeps position 2; the three files are sorted into positions 1, 3 and 4.
   const sorted = await api.invoke('plan:reorder-parts', { dir: 'report', order: [3, 1, 2, 0], expected: added.parts }) as { ok: boolean; parts: Array<{ title: string; path: string | null }> }
   expect(sorted.ok).toBe(true)
-  expect(await read('report/_report_INDEX.md')).toBe('# Report\n\n## Running order\n\n- [[ch-1]]\n- [[Idea]]\n- [[ch-2]]\n- [[ch-3]]\n')
+  expect(await read('report/_report_INDEX.md')).toBe(pinnedIndex('# Report\n\n## Running order\n\n- [[ch-1]]\n- [[Idea]]\n- [[ch-2]]\n- [[ch-3]]\n', {"ch-2":"./ch-2.md|ch-2","ch-1":"./ch-1.md|ch-1","ch-3":"./ch-3.md|ch-3"}))
   const back = await api.invoke('plan:reorder-parts', { dir: 'report', order: [3, 1, 2, 0], expected: sorted.parts }) as { ok: boolean; parts: unknown }
   expect(back.ok).toBe(true)
   // Sorted and sorted back: the Index Note holds exactly what the Add left, so its Undo is made.
@@ -107,7 +113,7 @@ test('plan:adopt-part executes the real writer', async () => {
   const plan = await harness().invoke('plan:adopt-part', { dir: 'report', unlistedIndex: 0, expected: { title: 'Opening', path: 'report/contents/opening.md' } }) as { parts: Array<{ title: string }> }
 
   expect(plan.parts.map((part) => part.title)).toEqual(['Intro', 'Opening'])
-  expect(await read('report/_report_INDEX.md')).toContain('- [[Intro]]\n- [[Opening]]')
+  expect(await read('report/_report_INDEX.md')).toContain(pinnedIndex('- [[Intro]]\n- [[Opening]]', {"Intro":"./contents/intro.md|Intro","Opening":"./contents/opening.md|Opening"}))
 })
 
 test('plan:move-part executes the real writer', async () => {
@@ -147,9 +153,12 @@ test('plan:set-part-role refuses when the running order was reordered between di
   expect(await read('report/_report_INDEX.md')).toBe(indexBefore)
   expect(await read(`report/${MANIFEST_NAME}`)).toBe(manifestBefore)
   expect(api.checkpoints).toEqual([])
-  // The card as it now stands is accepted.
+  // A matching card still needs the explicit order repair before changing this inconsistent Folio.
+  const { alignManifestWithPlan, readPlan } = await import('../../src/main/plan')
+  const fresh = (await readPlan(ws, 'report'))!
+  await alignManifestWithPlan(ws, 'report', { parts: fresh.parts, manifestExists: true })
   await api.invoke('plan:set-part-role', { dir: 'report', index: 1, role: 'appendix', expected: shown })
-  expect(await read('report/_report_INDEX.md')).toContain('- [[One]] #appendix')
+  expect(await read('report/_report_INDEX.md')).toContain(pinnedIndex('- [[One]] #appendix', {"One":"./One.md|One"}))
 })
 
 test('plan:materialise-part executes the real writer', async () => {
@@ -199,36 +208,21 @@ test('M3: the handler checkpoints the manifest before a Folio outline write chan
   ])
 })
 
-test('materialise publishes the manifest and created file without writing unlisted parts into the Index Note', async () => {
-  const indexPath = 'report/_report_INDEX.md'
-  const before = '# Report\n\n## Running order\n\n- [[Intended]]\n'
-  await write(indexPath, before)
-  await write('report/contents/existing.md', '# Existing\n')
-  await write(`report/${MANIFEST_NAME}`, JSON.stringify({
-    schema_version: 2,
-    report_id: 'ai-2026-strategic-impact-agents-funding',
-    title_matter: { subtitle: 'Offline copy' },
-    vignettes: Array.from({ length: 14 }, (_, index) => `vignettes/${index + 1}.md`),
-    content_root: 'contents',
-    files: [{ id: 'existing', path: 'existing.md', role: 'appendix', annotatable: true, strip_title_matter: true }],
-  }, null, 2))
+test('an unresolved idea beside an unbound manifest section remains startable and never guesses membership', async () => {
+  const source = '## Running order\n- [[Idea]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/existing.md', '# Chapter\n')
+  await write(`report/${MANIFEST_NAME}`, JSON.stringify({ files: [{ path: 'existing.md' }] }))
   const api = harness()
-
+  expect((await api.invoke('plan:read', { dir: 'report' }) as { parts: unknown[] }).parts[0]).toMatchObject({ path: null, title: 'Idea' })
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root })).toBe(false)
+  expect(await api.invoke('plan:open', { dir: 'report', root })).toEqual({ changed: false })
+  expect(await read('report/_report_INDEX.md')).toBe(source)
+  expect(api.checkpoints).toEqual([])
+  expect((await api.invoke('plan:read', { dir: 'report' }) as { parts: unknown[] }).parts[0]).not.toHaveProperty('resolution')
   const result = await api.invoke('plan:materialise-part', { dir: 'report', index: 0 }) as { path: string }
-
-  expect({
-    firstCheckpoint: api.checkpoints[0],
-    checkpointPaths: api.checkpoints.map((checkpoint) => checkpoint.path),
-    diskChanges: api.diskChanges,
-    collectionChanges: api.collectionChanges,
-    indexUnchanged: await read(indexPath) === before,
-  }).toEqual({
-    firstCheckpoint: { path: `report/${MANIFEST_NAME}`, content: expect.any(String) },
-    checkpointPaths: [`report/${MANIFEST_NAME}`, result.path],
-    diskChanges: [[indexPath]],
-    collectionChanges: [[indexPath, result.path, `report/${MANIFEST_NAME}`]],
-    indexUnchanged: true,
-  })
+  expect(result.path).toBe('report/01-idea.md')
+  expect(await read('report/existing.md')).toBe('# Chapter\n')
 })
 
 test('S2: a failed checkpoint after materialisation cannot turn the completed write into a reported failure', async () => {
@@ -417,4 +411,383 @@ test('round 2 P2: a card that reads exactly like another is refused as ambiguous
   await expect(api.invoke('plan:set-part-role', { dir: 'report', index: 0, role: 'appendix', expected: card('Idea', 'Same') })).rejects.toThrow(/read the same/i)
   expect(await read('report/_report_INDEX.md')).toBe(index)
   await expect(api.invoke('plan:set-part-role', { dir: 'report', index: 0, role: 'appendix', expected: { title: 'Idea', path: null } })).rejects.toThrow('Invalid Folio outline role.')
+})
+
+// S-m3 (r1 review): the two Folio room channels refuse malformed and out-of-Folio input before any read or write.
+async function treeOf(dir: string): Promise<string[]> {
+  const { readdir } = await import('node:fs/promises')
+  return (await readdir(join(root, dir), { recursive: true })).map(String).sort()
+}
+function countReads(): { reads: () => number } {
+  let reads = 0
+  const readFile = ws.readFile.bind(ws), listFiles = ws.listFiles.bind(ws)
+  ws.readFile = ((...args: Parameters<typeof ws.readFile>) => { reads++; return readFile(...args) }) as typeof ws.readFile
+  ws.listFiles = ((...args: Parameters<typeof ws.listFiles>) => { reads++; return listFiles(...args) }) as typeof ws.listFiles
+  return { reads: () => reads }
+}
+
+test('plan:room-map refuses malformed and out-of-Folio input before any read or write', async () => {
+  await mixedFolio(root)
+  await write('other/_other_INDEX.md', '# Other\n\n## Running order\n\n- [[One]]\n')
+  const api = harness()
+  const counter = countReads()
+  const before = await treeOf('')
+  const stateKey = roomStateKey(ws, 'mixed')
+  const node = { id: 'n1', type: 'text', text: 'Idea', x: 0, y: 0, width: 200, height: 60 }
+  for (const input of [
+    null, 'mixed', { dir: 'mixed', stateKey, ops: [] },
+    { dir: 'mixed', stateKey, session: '', ops: [{ kind: 'addNode', node }] },
+    { dir: 'mixed', stateKey, session: 'x'.repeat(129), ops: [{ kind: 'addNode', node }] },
+    { dir: 'mixed', stateKey: 'stale', session: 's', ops: [{ kind: 'addNode', node }] },
+    { dir: 'other', stateKey, session: 's', ops: [{ kind: 'addNode', node }] },
+    { dir: '../outside', stateKey, session: 's', ops: [{ kind: 'addNode', node }] },
+    { dir: join(root, 'mixed'), stateKey, session: 's', ops: [{ kind: 'addNode', node }] },
+    { dir: 7, stateKey, session: 's', ops: [{ kind: 'addNode', node }] },
+    { dir: 'mixed', stateKey, session: 's', ops: 'addNode' },
+    { dir: 'mixed', stateKey, session: 's', ops: [{ kind: 'deleteEverything' }] },
+    { dir: 'mixed', stateKey, session: 's', ops: [{ kind: 'addNode', node: { ...node, x: Number.NaN } }] },
+  ]) await expect(api.invoke('plan:room-map', input), JSON.stringify(input)).rejects.toThrow()
+  expect(counter.reads()).toBe(0)
+  expect(api.checkpoints).toEqual([])
+  expect(api.collectionChanges).toEqual([])
+  expect(await treeOf('')).toEqual(before)
+})
+
+test('plan:room-authoring refuses malformed and out-of-Folio input before any read or write', async () => {
+  await mixedFolio(root)
+  await write('plain/note.md', '# Plain\n')
+  const api = harness()
+  const counter = countReads()
+  const before = await treeOf('')
+  const stateKey = roomStateKey(ws, 'mixed')
+  const notes = { kind: 'notes', part: 'Intro', expect: null, value: 'Notes.\n\n' }
+  const card = { title: 'Intro', path: 'mixed/intro.md' }
+  for (const input of [
+    null, { dir: 'mixed' }, { dir: 'mixed', request: null }, { dir: 'mixed', request: 'evidence' }, { dir: 'mixed', request: { op: 'nope' } },
+    { dir: 'mixed', request: { op: 'evidence', stateKey, session: 's', ops: 'notes' } },
+    { dir: 'mixed', request: { op: 'evidence', stateKey, session: 's', ops: [] } },
+    { dir: 'mixed', request: { op: 'evidence', stateKey, session: 's', ops: [{ ...notes, kind: 'rewrite' }] } },
+    { dir: 'mixed', request: { op: 'evidence', stateKey, session: 's', ops: [{ ...notes, value: 7 }] } },
+    { dir: 'mixed', request: { op: 'evidence', stateKey, session: '', ops: [notes] } },
+    { dir: 'mixed', request: { op: 'evidence', stateKey, session: 'x'.repeat(129), ops: [notes] } },
+    { dir: 'mixed', request: { op: 'evidence', stateKey: 7, session: 's', ops: [notes] } },
+    { dir: 'mixed', request: { op: 'attachEvidence', part: 'Intro', stateKey, session: 's', source: { kind: 'file' } } },
+    { dir: 'mixed', request: { op: 'remove', indices: [1], expected: [{ title: 7 }] } },
+    { dir: 'mixed', request: { op: 'labels', basis: 7, change: { op: 'add', name: 'X' } } },
+    { dir: 'mixed', request: { op: 'labels', basis: null, change: { op: 'drop' } } },
+    { dir: 'mixed', request: { op: 'line', index: 1, expected: card, change: { gloss: 'x', path: 'y' } } },
+    { dir: 'mixed', request: { op: 'status', index: 1.5, expected: card, status: 'draft' } },
+    { dir: 'mixed', request: { op: 'clearFlag', index: 1, expected: card, from: 0, fingerprint: 'short' } },
+    { dir: '../outside', request: { op: 'evidence', stateKey, session: 's', ops: [notes] } },
+    { dir: join(root, 'mixed'), request: { op: 'evidence', stateKey, session: 's', ops: [notes] } },
+  ]) await expect(api.invoke('plan:room-authoring', input), JSON.stringify(input)).rejects.toThrow()
+  expect(counter.reads()).toBe(0)
+  // A request for another Folio's room (its state key) is refused by the owner check, before the evidence file is read.
+  expect(await api.invoke('plan:room-authoring', { dir: 'plain', request: { op: 'evidence', stateKey, session: 's', ops: [notes] } })).toMatchObject({ ok: false })
+  expect(counter.reads()).toBe(0)
+  // A plain folder is not a Folio: refused before any write.
+  expect(await api.invoke('plan:room-authoring', { dir: 'plain', request: { op: 'evidence', stateKey: roomStateKey(ws, 'plain'), session: 's', ops: [notes] } })).toMatchObject({ ok: false })
+  expect(api.checkpoints).toEqual([])
+  expect(api.collectionChanges).toEqual([])
+  expect(await treeOf('')).toEqual(before)
+})
+
+
+test('Put back uses the selected file identity when its display title changes after the read', async () => {
+  await write('report/one.md', '# One\n')
+  await write('report/two.md', '# Old title\n')
+  await write('report/_report_INDEX.md', '## Running order\n- [[One]]\n')
+  await write(`report/${MANIFEST_NAME}`, JSON.stringify({ files: [{ path: 'one.md' }] }))
+  await write('report/two.md', '# New title\n\nKeep this text.\n')
+  const result = await harness().invoke('plan:adopt-part', { dir: 'report', unlistedIndex: 0, expected: { title: 'Old title', path: 'report/two.md' } }) as { parts: Array<{ path: string }> }
+  expect(result.parts.map(part => part.path)).toEqual(['report/one.md', 'report/two.md'])
+  expect(await read('report/two.md')).toBe('# New title\n\nKeep this text.\n')
+})
+
+
+test('author open pins proven links in one Index write, preserves every surrounding byte and records Undo', async () => {
+  const index = 'report/_report_INDEX.md'
+  const source = '# Paper\r\n\r\n## Running order\r\n\r\n  7. [[Opening|My alias]] — Words #draft\r\n<!-- keep -->\r\n* [[Same]] #appendix\r\n- [[Idea]]\r\n\r\n## Notes\r\nKeep exactly.\r\n'
+  await write(index, source)
+  await write('report/a.md', '# Opening\n')
+  await write('report/b.md', '# Same\n')
+  await write('report/c.md', '# Same\n')
+  const api = harness()
+  expect(await api.invoke('plan:read', { dir: 'report' })).not.toBeNull()
+  expect(await read(index)).toBe(source)
+  const writes: string[] = []
+  ws.onDocumentWritten = path => writes.push(path)
+  const opened = await api.invoke('plan:open', { dir: 'report', root }) as { changed: boolean; undoToken: string }
+  expect(opened.changed).toBe(true)
+  expect(await read(index)).toBe(source.replace('[[Opening|My alias]]', '[[./a.md|My alias]]'))
+  expect(writes).toEqual([index])
+  expect(api.checkpoints).toEqual([{ path: index, content: source }])
+  expect(api.diskChanges).toContainEqual([index])
+  expect((await api.invoke('plan:open', { dir: 'report', root }) as { changed: boolean }).changed).toBe(false)
+  expect(writes).toEqual([index])
+  expect((await api.invoke('plan:remove-added', { dir: 'report', token: opened.undoToken }) as { ok: boolean }).ok).toBe(true)
+  expect(await read(index)).toBe(source)
+  expect((await api.invoke('plan:read', { dir: 'report' }))).not.toBeNull()
+  expect(await read(index)).toBe(source)
+})
+
+test('author-open pinning refuses stale Index bytes and another workspace without overwriting text', async () => {
+  const index = 'report/_report_INDEX.md'
+  await write(index, '## Running order\n- [[Opening]]\n')
+  await write('report/a.md', '# Opening\n')
+  const api = harness({ afterCheckpoint: async path => { if (path === index) await write(index, '## Running order\n- [[Opening]]\nOwner text.\n') } })
+  await expect(api.invoke('plan:open', { dir: 'report', root: root + '-elsewhere' })).rejects.toThrow('Collection changed')
+  await expect(api.invoke('plan:open', { dir: 'report', root })).rejects.toThrow('changed')
+  expect(await read(index)).toContain('Owner text.')
+  expect(api.diskChanges).toEqual([])
+})
+
+for (const manifest of [false, true]) test(`author-open file identity survives a cold read after external retitling (${manifest ? 'manifest' : 'Index only'})`, async () => {
+  const source = '## Running order\n- [[Opening]] — Keep this. #summary\n- [[Idea]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/a.md', '# Opening\n')
+  if (manifest) await write(`report/${MANIFEST_NAME}`, JSON.stringify({ files: [{ path: 'a.md' }] }))
+  const api = harness()
+  expect(await api.invoke('plan:open', { dir: 'report', root })).toMatchObject({ changed: true })
+  const pinned = await read('report/_report_INDEX.md')
+  expect(pinned).toBe(source.replace('[[Opening]]', '[[./a.md|Opening]]'))
+  await write('report/a.md', '# Changed | # title\n\nAuthor text.\n')
+  const cold = await readPlan(new Workspace(root), 'report')
+  expect(cold!.parts.map(p => p.path)).toEqual(['report/a.md', null])
+  expect(cold!.parts[0].title).toBe('Changed | # title')
+  expect(cold!.parts[1].resolution).toBeUndefined()
+  expect(await read('report/_report_INDEX.md')).toBe(pinned)
+})
+
+test('author open never pins an ambiguous line using an earlier live proof', async () => {
+  const source = '## Running order\n- [[Opening]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/a.md', '# Opening\n')
+  const api = harness()
+  await api.invoke('plan:read', { dir: 'report' })
+  await write('report/b.md', '# Opening\n')
+  expect(await api.invoke('plan:open', { dir: 'report', root })).toEqual({ changed: false })
+  expect(await read('report/_report_INDEX.md')).toBe(source)
+  expect(api.checkpoints).toEqual([])
+})
+
+test('the first manifest-only page move creates the Index Note holding file targets', async () => {
+  await write(`report/${MANIFEST_NAME}`, JSON.stringify({ files: [{ path: 'a.md' }, { path: 'b.md' }] }))
+  await write('report/a.md', '# Alpha\n')
+  await write('report/b.md', '# Beta\n')
+  // This harness reads existing checkpoint bytes; use the writer directly to checkpoint absence.
+  const { movePart } = await import('../../src/main/plan')
+  const checkpoints: string[] = []
+  const moved = await movePart(ws, 'report', 0, 1, { beforeIndexWrite: async path => { checkpoints.push(path) } })
+  expect(moved.parts.map(p => p.path)).toEqual(['report/b.md', 'report/a.md'])
+  expect(checkpoints).toEqual(['report/_report_INDEX.md'])
+  expect(await read('report/_report_INDEX.md')).toContain('[[./b.md|Beta]]')
+})
+
+for (const operation of ['open', 'move'] as const) test(`${operation}: a pinned chapter never captures an idea after a retitle`, async () => {
+  const source = '## Running order\n- [[./a.md|Chapter]]\n- [[Method]]\n- [[Other]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/a.md', '# Method\n')
+  await write('report/b.md', '# Other\n')
+  const api = harness()
+  if (operation === 'open') await api.invoke('plan:open', { dir: 'report', root })
+  else { const { movePart } = await import('../../src/main/plan'); await movePart(ws, 'report', 0, 2) }
+  const text = await read('report/_report_INDEX.md')
+  expect(text).toContain('- [[Method]]')
+  expect((text.match(/\[\[\.\/a.md/g) ?? []).length).toBe(1)
+  const plan = (await readPlan(ws, 'report'))!
+  expect(plan.parts.find(part => part.title === 'Method' && part.path === null)).toBeDefined()
+})
+
+test('all pinning rules: duplicate resolutions, notes, research, outside content root and unsafe filenames remain untouched', async () => {
+  const source = '## Running order\n- [[Same|First]]\n- [[Same|Second]]\n- [[Notes]]\n- [[Study]]\n- [[Unsafe]]\n- [[Good#Sec]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/a.md', '# Same\n')
+  await write('report/notes.md', '# Notes\n')
+  await write('report/research/study.md', '# Study\n')
+  await write('report/x#1.md', '# Unsafe\n')
+  await write('report/good.md', '# Good\n')
+  const api = harness()
+  await api.invoke('plan:open', { dir: 'report', root })
+  expect(await read('report/_report_INDEX.md')).toBe(source.replace('[[Good#Sec]]', '[[./good.md#Sec|Good]]'))
+  expect((await readPlan(ws, 'report'))!.parts.find(part => part.title === 'Notes')!.path).toBe('report/notes.md')
+  // Conventional notes files and support folders stay outside chapter pinning.
+  await write('report/notes/not-a-chapter.md', '# In notes\n')
+  await write('report/_report_INDEX.md', '## Running order\n- [[./notes/not-a-chapter.md|Keep]]\n')
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root, force: true })).toBe(false)
+})
+
+test('opening attempt persists across Undo and a new handler registration; explicit command may rerun', async () => {
+  await write('report/_report_INDEX.md', '## Running order\n- [[Opening]]\n')
+  await write('report/a.md', '# Opening\n')
+  const state = new Map<string, unknown>()
+  const handlers = () => {
+    const registered = new Map<string, PlanIpcHandler>()
+    registerPlanIpcHandlers({ handle: (channel, handler) => registered.set(channel, handler) }, {
+      stateForSender: () => ws, requireWorkspace: ws => ws,
+      identityStore: { folioRoomState: key => state.get(key), setFolioRoomState: (key, value) => { state.set(key, value); return true } },
+      checkpointFile: async () => {}, notifyCollectionChanged: () => {}, notifyChangedOnDisk: () => {},
+    })
+    return (channel: string, input: unknown) => registered.get(channel)!({ sender: { id: 1 } }, input)
+  }
+  const invoke = handlers()
+  expect(await invoke('plan:identity-check', { dir: 'report', root })).toBe(true)
+  const opened = await invoke('plan:open', { dir: 'report', root }) as { undoToken: string }
+  expect((await invoke('plan:remove-added', { dir: 'report', token: opened.undoToken }) as { ok: boolean }).ok).toBe(true)
+  const restarted = handlers()
+  expect(await restarted('plan:identity-check', { dir: 'report', root })).toBe(false)
+  expect(await restarted('plan:open', { dir: 'report', root })).toEqual({ changed: false })
+  expect(await restarted('plan:identity-check', { dir: 'report', root, force: true })).toBe(true)
+  expect(await restarted('plan:open', { dir: 'report', root, force: true })).toMatchObject({ changed: true })
+})
+
+test('N3: an unresolved line beside a missing manifest file reads as before and stays startable', async () => {
+  const source = '## Running order\n- [[Idea]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write(`report/${MANIFEST_NAME}`, JSON.stringify({ files: [{ path: 'gone.md' }] }))
+  const api = harness()
+  expect((await api.invoke('plan:read', { dir: 'report' }) as { parts: unknown[] }).parts[0]).toMatchObject({ path: null, title: 'Idea' })
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root })).toBe(false)
+  expect(await read('report/_report_INDEX.md')).toBe(source)
+  expect((await api.invoke('plan:materialise-part', { dir: 'report', index: 0 }) as { path: string }).path).toBe('report/01-idea.md')
+})
+
+test('N6 accepted limit: an unrecorded retitle can make an idea title resolve before first linking', async () => {
+  const source = '## Running order\n- [[Chapter]]\n- [[Method]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/a.md', '# Method\n')
+  const api = harness()
+  const plan = await api.invoke('plan:read', { dir: 'report' }) as { parts: Array<{ path: string | null }> }
+  expect(plan.parts.map(part => part.path)).toEqual([null, 'report/a.md'])
+  await api.invoke('plan:open', { dir: 'report', root })
+  expect(await read('report/_report_INDEX.md')).toBe(source.replace('[[Method]]', '[[./a.md|Method]]'))
+})
+
+test('automatic linking refuses missing app state instead of falling back to process memory', async () => {
+  const source = '## Running order\n- [[Opening]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/a.md', '# Opening\n')
+  const handlers = new Map<string, PlanIpcHandler>()
+  registerPlanIpcHandlers({ handle: (channel, handler) => handlers.set(channel, handler) }, {
+    stateForSender: () => ws, requireWorkspace: ws => ws,
+    checkpointFile: async () => {}, notifyCollectionChanged: () => {}, notifyChangedOnDisk: () => {},
+  })
+  await expect(handlers.get('plan:open')!({ sender: { id: 1 } }, { dir: 'report', root })).rejects.toThrow('app state is unavailable')
+  expect(await read('report/_report_INDEX.md')).toBe(source)
+})
+
+for (const retitled of [false, true]) test(`N2: opening never pairs a hand-reordered Index with manifest positions (${retitled})`, async () => {
+  const source = '# Paper\r\n## Running order\r\n- [[Beta]] — second file first\r\n- [[Alpha]]\r\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/a.md', retitled ? '# Changed A\n' : '# Alpha\n')
+  await write('report/b.md', retitled ? '# Changed B\n' : '# Beta\n')
+  const manifest = JSON.stringify({ files: [{ path: 'a.md' }, { path: 'b.md' }] })
+  await write(`report/${MANIFEST_NAME}`, manifest)
+  const api = harness()
+  expect((await api.invoke('plan:read', { dir: 'report' }) as { parts: Array<{ path: string | null }> }).parts.map(part => part.path)).toEqual(retitled ? [null, null] : ['report/b.md', 'report/a.md'])
+  await api.invoke('plan:open', { dir: 'report', root })
+  expect(await read('report/_report_INDEX.md')).toBe(retitled ? source : source.replace('[[Beta]]', '[[./b.md|Beta]]').replace('[[Alpha]]', '[[./a.md|Alpha]]'))
+  expect(await read(`report/${MANIFEST_NAME}`)).toBe(manifest)
+})
+
+test('N7: Notes, Sources and Archive chapters retain read membership while pinning skips them', async () => {
+  const source = '## Running order\n- [[Notes]]\n- [[Sources]]\n- [[Archive]]\n'
+  await write('report/_report_INDEX.md', source)
+  for (const name of ['Notes', 'Sources', 'Archive']) await write(`report/${name}.md`, `# ${name}\n`)
+  const api = harness()
+  expect((await api.invoke('plan:read', { dir: 'report' }) as { parts: Array<{ path: string }> }).parts.map(part => part.path)).toEqual(['report/Notes.md', 'report/Sources.md', 'report/Archive.md'])
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root })).toBe(false)
+  expect(await read('report/_report_INDEX.md')).toBe(source)
+})
+
+test('N5: transient linking failure and empty preflight never consume the automatic opportunity', async () => {
+  const source = '## Running order\n- [[Opening]]\n'
+  await write('report/_report_INDEX.md', source)
+  let fail = true
+  const api = harness({ failCheckpointFor: () => fail })
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root })).toBe(false)
+  await write('report/a.md', '# Opening\n')
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root })).toBe(true)
+  await expect(api.invoke('plan:open', { dir: 'report', root })).rejects.toThrow('checkpoint')
+  expect(await read('report/_report_INDEX.md')).toBe(source)
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root })).toBe(true)
+  fail = false
+  expect(await api.invoke('plan:open', { dir: 'report', root })).toMatchObject({ changed: true })
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root })).toBe(false)
+})
+
+test('pinned unaliased links count as linked without an inventory or a new label', async () => {
+  await write('report/a.md', '# Heading\n')
+  const api = harness()
+  let inventories = 0
+  const list = ws.listFiles.bind(ws)
+  ws.listFiles = async () => { inventories++; return list() }
+  for (const link of ['[[./a.md]]', '[[./a.md#Sec]]', '[[./a.md|Alias]]']) {
+    const source = `## Running order\n- ${link}\n`
+    await write('report/_report_INDEX.md', source)
+    expect(await api.invoke('plan:identity-check', { dir: 'report', root, force: true })).toBe(false)
+    expect(await read('report/_report_INDEX.md')).toBe(source)
+  }
+  expect(inventories).toBe(0)
+})
+
+test('N5: Undo Turn back never re-arms a marked Folio', async () => {
+  const source = '## Running order\n- [[Opening]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/a.md', '# Opening\n')
+  await write(`report/${MANIFEST_NAME}`, JSON.stringify({ files: [{ path: 'a.md' }] }))
+  const api = harness()
+  const opened = await api.invoke('plan:open', { dir: 'report', root }) as { undoToken: string }
+  await api.invoke('plan:remove-added', { dir: 'report', token: opened.undoToken })
+  const { turnBackIntoCollection, restoreTurnedBackFolio } = await import('../../src/main/folio-conversion')
+  await turnBackIntoCollection(ws, 'report')
+  expect(await restoreTurnedBackFolio(ws, 'report')).not.toBeNull()
+  expect(await read('report/_report_INDEX.md')).toBe(source)
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root })).toBe(false)
+})
+
+test('unaliased labels stay consistent with the parser while canonical path links keep their exact bytes', async () => {
+  const { parsePlanLine } = await import('../../src/shared/plan-line')
+  const source = '## Running order\n- [[Literal%23]]\n- [[./b.md]]\n'
+  await write('report/_report_INDEX.md', source)
+  await write('report/a.md', '# Literal%23\n')
+  await write('report/b.md', '# Other heading\n')
+  await harness().invoke('plan:open', { dir: 'report', root })
+  const written = await read('report/_report_INDEX.md')
+  expect(parsePlanLine(written.split('\n')[1])!.title).toBe(parsePlanLine(source.split('\n')[1])!.title)
+  expect(written).toContain('- [[./b.md]]\n')
+})
+
+test('N5: an empty preflight records nothing; a completed no-op linking records completion', async () => {
+  await write('report/_report_INDEX.md', '## Running order\n- [[./a.md]]\n')
+  await write('report/a.md', '# A\n')
+  const api = harness()
+  expect(await api.invoke('plan:identity-check', { dir: 'report', root })).toBe(false)
+  expect(api.appState.size).toBe(0)
+  expect(await api.invoke('plan:open', { dir: 'report', root })).toEqual({ changed: false })
+  expect(api.appState.get(roomStateKey(ws, 'report'))).toMatchObject({ identityLinksAttempted: true })
+  expect(api.checkpoints).toEqual([])
+})
+
+
+test('section role IPC notifies the changed part as well as the Index Note', async () => {
+  await write('report/_report_INDEX.md', '# Report\n\n## Running order\n\n- [[Opening]]\n')
+  await write('report/opening.md', '# Opening\n')
+  const plan = (await readPlan(ws, 'report'))!
+  const api = harness()
+  await api.invoke('plan:set-part-role', { dir: 'report', index: 0, role: 'section-page', expected: plan.parts[0] })
+  expect(api.diskChanges.flat()).toContain('report/opening.md')
+  expect(api.diskChanges.flat()).toContain(plan.indexPath)
+})
+
+test('forward section role IPC writes through the pinned Folio workspace', async () => {
+  await write('report/_report_INDEX.md', '# Report\n\n## Running order\n\n- [[Opening]]\n')
+  await write('report/opening.md', '# Opening\n')
+  const plan = (await readPlan(ws, 'report'))!
+  const save = ws.saveFileWithoutReadBack.bind(ws)
+  const pins: unknown[] = []
+  ws.saveFileWithoutReadBack = async (path, text, options) => { if (path === 'report/opening.md') pins.push(options?.inFolder); return save(path, text, options) }
+  await harness().invoke('plan:set-part-role', { dir: 'report', index: 0, role: 'section-page', expected: plan.parts[0] })
+  expect(pins).toHaveLength(1)
+  expect(pins[0]).toMatchObject({ real: join(await import('node:fs/promises').then(fs => fs.realpath(root)), 'report') })
 })

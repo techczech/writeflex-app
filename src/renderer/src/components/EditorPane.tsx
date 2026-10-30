@@ -1,3 +1,5 @@
+import { EVIDENCE_DRAG_MIME } from '../../../shared/folio-evidence-transfer'
+import { FLAG_NOTICE } from '../editor/flag-actions'
 import { setMetadataCollapsed } from '../editor/metadata-view-state'
 import { createPortal } from 'react-dom'
 import { FolioLine } from './FolioLine'
@@ -13,7 +15,7 @@ import { baseExtensions, onEditorUpdate, setSpellcheck } from '../editor/setup'
 import type { ScrapExpansion } from '../editor/scraps'
 import { resolveChangeRange } from '../editor/change-marks'
 import { setInlineChanges, type InlineChange, type InlineAction } from '../editor/inline-changes'
-import { reconcileReplace } from '../editor/reconcile'
+import { reconcileChanges, reconcileReplace } from '../editor/reconcile'
 import { richPasteMarkdown } from '../editor/rich-paste'
 import {
   clearWriterReviewChanges,
@@ -26,6 +28,7 @@ import {
   revisionDecorationsVisible,
   setWriterMode,
   skipWriterReviewTracking,
+  writerReviewRemovedSpans,
   type WriterChangeResolution,
   type WriterPendingChange,
   type WriterReviewMode,
@@ -74,6 +77,9 @@ import { suggestionResolutionHistory, suggestionResolutionSpec, type SuggestionR
 import { openMarkdownLinkAt } from '../editor/markdown-link-open'
 import { activateWikilinkAtCursor, setWikilinkResolutions, type WikilinkRange, type WikilinkResolution } from '../editor/wikilinks'
 import type { WikilinkCompletionPiece } from '../editor/wikilink-autocomplete'
+import { acceptedPlacementEffect, externalReconciliation } from '../scratchpad/scratchpad-editor'
+import type { ScratchPlacementReceipt } from '../../../shared/scratchpad-items'
+import { textChanges } from '../../../shared/text-diff'
 import {
   citationUpgradeField,
   clearTrackedCitation,
@@ -189,7 +195,7 @@ export type EditorHandle = {
   setContent(path: string, content: string, opts?: { silent?: boolean; discardLocal?: boolean }): void
   /** Record an agent accept/reject in the OPEN file's CodeMirror history. Returns false when another
    *  file is open, where the resolution intentionally stays outside this editor's ⌘Z scope. */
-  recordSuggestionResolution(path: string, id: string, action: 'accept' | 'reject', resolvedContent?: string): boolean
+  recordSuggestionResolution(path: string, id: string, action: 'accept' | 'reject', resolvedContent?: string, scratchPlacement?: ScratchPlacementReceipt): boolean
   /** Show a historical snapshot read-only without making it the live buffer that auto-save reads. */
   enterHistorical(path: string, content: string): void
   /** Show one past writer session as read-only Reviewing marks over its as-of content. */
@@ -245,6 +251,11 @@ export type EditorHandle = {
   /** The RAW buffer text for `path` (marks included, no derived-clean pass), or null when not resident —
    *  the save guard compares it against the derived text before letting an empty write reach disk. */
   rawDocFor(path: string): string | null
+  /** The Scratchpad inventory's live buffer for `path`: the RAW editor text (the hidden live state
+   *  while a saved version shows, else the live view or its cached state) plus the raw spans its
+   *  writing content excludes (pending old-role text). Null when this pane holds no state for it.
+   *  One coordinate contract end to end: inventory parses raw-minus-spans and reports raw ranges. */
+  inventoryBufferFor(path: string): { content: string; removedSpans: Array<{ from: number; to: number }> } | null
   /** Reveal the quiet Drafting capture as struck-old/highlighted-new Reviewing marks. */
   revealDraftingSession(path: string): void
   /** Return Reviewing marks to clean Drafting text while preserving their unreviewed capture records. */
@@ -322,8 +333,10 @@ type EditorPaneProps = {
    *  no Workspace is bound (cursor save/restore is then a no-op). */
   workspaceRoot: string | null
   assetBaseUrl: string | null
-  /** ⌘⇧X removed a selection into a scrap (Task 20): App stores it via add(activeFile, text). */
-  onCutToScrap: (text: string) => void
+  /** ⌘⇧X with a selection (Task 20, ADR-0050): App's Scratchpad saves the exact text, then removes it. */
+  onCutToScrap: () => void
+  /** The editor's explicit Scratchpad anchors changed (insert, Undo, Redo, or the text deleted). */
+  onScratchpadAnchors?: (before: EditorState, after: EditorState) => void
   /** A scrap tile was dropped into the document (text already inserted): App removes it. */
   onScrapDropped: (id: string) => void
   /** The live expandable set for `{trigger}`+space expansion (App derives it from the scrap list). */
@@ -382,7 +395,7 @@ type EditorPaneProps = {
  * what makes cursor/undo/scroll survive the round trip.
  */
 export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function EditorPane(
-  { citationForText, onInsertReference, onInsertWidget, onDocChanged, onDocumentTransaction, onDocumentPointerDown, onManualReadAloudScroll, onReadAloudPositionVisibilityChange, onSuggestionResolutionReplay, onSave, hasDocument, folioPlace = null, onOpenFolioPlan, onOpenFolioPiece, hideStrikes, hideInserts, workspaceRoot, assetBaseUrl, onCutToScrap, onScrapDropped, getScrapExpansions, onChangeMarkClick, onInlineAction, onInlineSelect, margin = null, onWikilinkActivate, wikilinkPieces, writerMode, viewMode, focus, lineOverlay, readAloudPosition, readAloudWord, fixedLine, typewriterOn, onFixedLineChange, onFixedLineCommit, readAloudScrollMode, onWriterReviewChanged, compareToActive = false, overlayOpenRef, onStatus, onReadingRoomAreaPrepared, onReadingRoomAreaInserted },
+  { citationForText, onInsertReference, onInsertWidget, onDocChanged, onDocumentTransaction, onDocumentPointerDown, onManualReadAloudScroll, onReadAloudPositionVisibilityChange, onSuggestionResolutionReplay, onSave, hasDocument, folioPlace = null, onOpenFolioPlan, onOpenFolioPiece, hideStrikes, hideInserts, workspaceRoot, assetBaseUrl, onCutToScrap, onScratchpadAnchors, onScrapDropped, getScrapExpansions, onChangeMarkClick, onInlineAction, onInlineSelect, margin = null, onWikilinkActivate, wikilinkPieces, writerMode, viewMode, focus, lineOverlay, readAloudPosition, readAloudWord, fixedLine, typewriterOn, onFixedLineChange, onFixedLineCommit, readAloudScrollMode, onWriterReviewChanged, compareToActive = false, overlayOpenRef, onStatus, onReadingRoomAreaPrepared, onReadingRoomAreaInserted },
   ref,
 ): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -520,6 +533,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   const onSaveRef = useRef(onSave)
   const workspaceRootRef = useRef(workspaceRoot)
   const onCutToScrapRef = useRef(onCutToScrap)
+  const onScratchpadAnchorsRef = useRef(onScratchpadAnchors)
   const onScrapDroppedRef = useRef(onScrapDropped)
   const getScrapExpansionsRef = useRef(getScrapExpansions)
   const onChangeMarkClickRef = useRef(onChangeMarkClick)
@@ -539,6 +553,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   onSaveRef.current = onSave
   workspaceRootRef.current = workspaceRoot
   onCutToScrapRef.current = onCutToScrap
+  onScratchpadAnchorsRef.current = onScratchpadAnchors
   onScrapDroppedRef.current = onScrapDropped
   getScrapExpansionsRef.current = getScrapExpansions
   onChangeMarkClickRef.current = onChangeMarkClick
@@ -617,6 +632,12 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
     })
   }, [reportReadAloudPositionVisibility])
 
+  useEffect(() => {
+    const notice = (event: Event): void => onStatusRef.current(String((event as CustomEvent).detail))
+    window.addEventListener(FLAG_NOTICE, notice)
+    return () => window.removeEventListener(FLAG_NOTICE, notice)
+  }, [])
+
   const buildState = useCallback(
     (content: string, readOnly = false): EditorState =>
       EditorState.create({
@@ -644,7 +665,8 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
             // Scratchpad (Task 20): the ⌘⇧X cut, drag-into-document, and `{trigger}`+space expansion all
             // read the latest App handlers through refs (extensions are built once per EditorState).
             scraps: {
-              onCut: (text) => onCutToScrapRef.current(text),
+              onCut: () => onCutToScrapRef.current(),
+              onAnchors: (before, after) => onScratchpadAnchorsRef.current?.(before, after),
               onDrop: (id) => onScrapDroppedRef.current(id),
               expansions: () => getScrapExpansionsRef.current(),
               readClipboard: () => navigator.clipboard.readText().catch(() => ''),
@@ -1199,6 +1221,14 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
         if (activePathRef.current === path) return viewRef.current?.state.doc.toString() ?? null
         return statesRef.current.get(path)?.doc.toString() ?? null
       },
+      inventoryBufferFor: (path) => {
+        const state = historicalRef.current?.path === path
+          ? historicalRef.current.liveState
+          : activePathRef.current === path
+            ? viewRef.current?.state ?? null
+            : statesRef.current.get(path) ?? null
+        return state ? { content: state.doc.toString(), removedSpans: writerReviewRemovedSpans(state) } : null
+      },
       setInlineChanges: (changes, selectedId, suggestions = []) => {
         const view = viewRef.current
         if (!view) return []
@@ -1344,7 +1374,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
           const preservedScrollTop = view.scrollDOM.scrollTop
           suppressChangeRef.current = opts?.silent === true
           try {
-            // Reconcile with the SMALLEST raw-buffer replacement, so pending writer track-changes
+            // Reconcile with disjoint raw-buffer replacements, so pending writer track-changes
             // outside the changed region survive by position mapping (the old full-doc replace +
             // clearWriterReviewChanges silently folded the writer's tracked edits into plain text —
             // the 2026-07-11 "auto-accepted my sentence" walk report). addToHistory:false keeps disk
@@ -1352,19 +1382,21 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
             const pending = pendingWriterChanges(view.state)
             if (pending.length > 0 && opts?.discardLocal !== true) {
               const clean = documentTextForPersistence(view.state)
-              const spec = reconcileReplace(pending, clean, content)
-              if (spec) {
+              const spec = reconcileChanges(pending, clean, content)
+              if (spec.length) {
                 view.dispatch({
-                  changes: spec,
+                  ...externalReconciliation(view.state, spec),
                   selection: clampSelectionToDocument(preservedSelection, content.length),
                   annotations: [skipWriterReviewTracking.of(true), Transaction.addToHistory.of(false)],
                 })
               }
             } else {
+              // Map the separate outside edits, preserving anchors in the untouched intervals.
+              const spec = externalReconciliation(view.state, textChanges(view.state.doc.toString(), content))
               view.dispatch({
-                changes: { from: 0, to: view.state.doc.length, insert: content },
+                ...spec,
                 selection: clampSelectionToDocument(preservedSelection, content.length),
-                effects: clearWriterReviewChanges.of(),
+                effects: [...spec.effects, clearWriterReviewChanges.of()],
                 annotations: [skipWriterReviewTracking.of(true), Transaction.addToHistory.of(false)],
               })
             }
@@ -1385,15 +1417,24 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
           statesRef.current.delete(path)
         }
       },
-      recordSuggestionResolution: (path, id, action, resolvedContent) => {
+      recordSuggestionResolution: (path, id, action, resolvedContent, scratchPlacement) => {
         const view = viewRef.current
         if (!view || activePathRef.current !== path || historicalRef.current) return false
         const beforeContent = documentTextForPersistence(view.state)
         let changes: ReturnType<typeof reconcileReplace> = null
+        let pendingCount = 0
         if (action === 'accept' && resolvedContent !== undefined) {
           const pending = pendingWriterChanges(view.state)
+          pendingCount = pending.length
           changes = reconcileReplace(pending, documentTextForPersistence(view.state), resolvedContent)
         }
+        // An accepted agent Put back: main's receipt becomes an explicit anchor on THIS
+        // transaction (verified against the very change dispatched), so Undo/Redo carry the
+        // placement with the words and the anchor-sync records/drops the use. No verified
+        // effect, no recorded placement.
+        const placementEffect = action === 'accept' && scratchPlacement && scratchPlacement.path === path && changes
+          ? acceptedPlacementEffect(view.state, changes, scratchPlacement, pendingCount > 0)
+          : null
         suppressChangeRef.current = true
         try {
           preserveViewportPosition(
@@ -1404,6 +1445,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
               action,
               ...(action === 'accept' ? { beforeContent } : {}),
               ...(changes ? { changes } : {}),
+              ...(placementEffect ? { effects: [placementEffect] } : {}),
             })),
             (restore) => {
               if (viewportRestoreFrameRef.current !== null) cancelAnimationFrame(viewportRestoreFrameRef.current)
@@ -1730,7 +1772,12 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   }
 
   return (
-    <div className={classes} ref={paneRef} data-metadata-workspace={workspaceRoot ?? ""}>
+    <div className={classes} ref={paneRef} data-metadata-workspace={workspaceRoot ?? ""} onDragStartCapture={event => {
+      const view = viewRef.current, path = activePathRef.current
+      if (!view || !path || view.state.selection.main.empty || !(event.target as HTMLElement).closest('.cm-content')) return
+      const range = view.state.selection.main
+      event.dataTransfer.setData(EVIDENCE_DRAG_MIME, JSON.stringify({ kind: 'file', path, quote: view.state.doc.sliceString(range.from, range.to) }))
+    }}>
       <div className="editor-host" ref={hostRef} />
       {folioLineHost && folioPlace && onOpenFolioPlan && onOpenFolioPiece && createPortal(
         <FolioLine place={folioPlace} onOpenPlan={onOpenFolioPlan} onOpenPiece={onOpenFolioPiece} />,

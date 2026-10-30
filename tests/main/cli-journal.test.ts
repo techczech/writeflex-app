@@ -54,6 +54,8 @@ test('rename with link repair, then undo, restores every touched file and path b
 })
 
 test('moving a folder repairs links to the documents in it, and undo restores every file and path', async () => {
+  // This journey moves ordinary parts inside the root Folio; it does not move a second Folio.
+  await rm(join(fx.root, 'talks', MANIFEST_NAME))
   await fx.write(MANIFEST_NAME, `${JSON.stringify({ schema_version: 1, content_root: '', files: [{ path: 'talks/york.md', role: 'section' }, { path: 'notes.md', role: 'section' }] }, null, 2)}\n`)
   await fx.write('talks/picture.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 255]))
   const before = await fx.snapshot()

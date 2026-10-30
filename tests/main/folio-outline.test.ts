@@ -115,14 +115,15 @@ test('folio:outline gives the running order, then the folder\'s other files with
   expect(outline?.dir).toBe('paper')
   expect(outline?.pieces.map((p) => [p.path, p.title, p.headings.map((h) => h.text)])).toEqual([
     ['paper/b.md', 'Beta', ['Beta', 'Two']],
+    ['paper/gone.md', 'Gone', []],
     ['paper/a.md', 'Alpha', ['Alpha', 'One', 'One-a']],
   ])
-  expect(outline?.pieces[1].headings[1]).toEqual({ level: 2, text: 'One', line: 3 })
+  expect(outline?.pieces[2].headings[1]).toEqual({ level: 2, text: 'One', line: 3 })
   // This Folio lists a file that is gone and one outside its folder: its order is the Plan's to change, so nothing is addable here.
   expect(outline?.also.map((f) => [f.path, f.addable])).toEqual([['paper/Snippets.md', false], ['paper/sub/deep.md', false]])
   expect(outline?.orderInPlanOnly).toBe(true)
   // A file of "Also in this folder" is in the same Folio; a file outside every Folio is in none.
-  expect((await folioOutline(ws, 'paper/Snippets.md'))?.pieces.length).toBe(2)
+  expect((await folioOutline(ws, 'paper/Snippets.md'))?.pieces.length).toBe(3)
   expect(await folioOutline(ws, 'outside.md')).toBeNull()
 })
 

@@ -1,3 +1,4 @@
+import { isToolDiscovery } from '../../../shared/assistant-turns'
 import type { ChatMessage, Suggestion, TraceEvent, TurnExecution } from '../../../preload'
 
 /**
@@ -127,6 +128,7 @@ function suggestionPath(suggestion: Suggestion): string | undefined {
  * turn's executor traces currently do not, so every phrasing degrades to the capability alone.
  */
 function activityFromTrace(event: TraceEvent, id: string): ActivityRow | null {
+  if (isToolDiscovery(event.metadata?.capability)) return null
   const at = event.timestamp
   if (event.type === 'suggestion.staged') {
     const suggestionId = typeof event.metadata?.suggestionId === 'string' ? event.metadata.suggestionId : undefined

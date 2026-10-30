@@ -30,7 +30,11 @@ import {
 import type { MarkdownFile } from '../../../preload'
 import { NO_CHECKLIST_PROGRESS, type ChecklistProgressMap } from '../hooks/useChecklistProgress'
 import { ChecklistProgressChip } from './ChecklistProgressChip'
-import { buildTree, filterTreeByName, focusTree, isInFocus, vaultSidebarTree, workRowIcon, type TreeFile, type TreeFolder, type TreeNode } from '../sidebar-tree'
+import { buildTree, focusTree, isInFocus, vaultSidebarTree, workRowIcon, type TreeFile, type TreeFolder, type TreeNode } from '../sidebar-tree'
+import { noResultSuggestions } from '../file-prefix-assist'
+import { hasSearchTerms } from '../file-query'
+import { createSidebarSearch, searchResultRows } from '../sidebar-search'
+import { CompletionPop, PrefixHints, useSearchAssist } from './FileSearchAssist'
 import { vaultCountText } from '../vault-sidebar'
 import { useVaultSidebarPrefs } from '../hooks/useVaultSidebarPrefs'
 import { VaultSwitcherMenu, type SwitcherChoice } from './VaultSwitcherMenu'
@@ -271,7 +275,12 @@ function SidebarView({
   const [tip, setTip] = useState<{ text: string; mono: boolean; x: number; y: number } | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
   const [filterVisible, setFilterVisible] = useState(false)
-  const [filterQuery, setFilterQuery] = useState('')
+  const [filterQuery, updateFilterQuery] = useState('')
+  const [searchCollapse, setSearchCollapse] = useState<{ query: string; paths: Set<string> }>({ query: '', paths: new Set() })
+  const setFilterQuery = useCallback((query: string): void => {
+    updateFilterQuery(query)
+    setSearchCollapse({ query, paths: new Set() })
+  }, [])
   const filterInputRef = useRef<HTMLInputElement | null>(null)
   const treeRef = useRef<HTMLDivElement | null>(null)
 
@@ -350,12 +359,27 @@ function SidebarView({
   )
 
   const workspaceName = root.split('/').filter(Boolean).at(-1) ?? 'Workspace'
-  const hasFilter = filterQuery.trim().length > 0
+  const hasFilter = hasSearchTerms(filterQuery)
   const vaultTree = useMemo(
     () => (isVault ? vaultSidebarTree(focusedTree, { writingOnly: prefs.writingOnly, titles: prefs.titles, index: vaultIndex }) : focusedTree),
     [isVault, focusedTree, prefs, vaultIndex],
   )
-  const shownTree = useMemo(() => filterTreeByName(vaultTree, filterQuery), [vaultTree, filterQuery])
+  const searchIndex = useMemo(() => createSidebarSearch(vaultTree, files, vaultIndex), [vaultTree, files, vaultIndex])
+  const searchHits = useMemo(() => searchIndex.search(filterQuery), [searchIndex, filterQuery])
+  const searchCollapsed = useMemo(() => searchCollapse.query === filterQuery ? searchCollapse.paths : new Set<string>(), [searchCollapse, filterQuery])
+  const shownTree = useMemo(() => hasFilter ? searchResultRows(searchHits, searchCollapsed) : vaultTree, [hasFilter, searchHits, searchCollapsed, vaultTree])
+  const assist = useSearchAssist({ query: filterQuery, setQuery: setFilterQuery, searchRef: filterInputRef, folderListing: searchIndex.folders })
+  const folderIsCollapsed = (path: string): boolean => (hasFilter ? searchCollapsed : collapsed).has(path)
+  const changeFolder = (path: string, value?: boolean): void => {
+    if (!hasFilter) { if (value === undefined) toggleFolder(path); else setFolderCollapsed(path, value); return }
+    setSearchCollapse((previous) => {
+      const paths = new Set(previous.query === filterQuery ? previous.paths : [])
+      if (value ?? !paths.has(path)) paths.add(path)
+      else paths.delete(path)
+      return { query: filterQuery, paths }
+    })
+  }
+  const searchSuggestions = useMemo(() => hasFilter && searchHits.length === 0 ? noResultSuggestions(filterQuery, searchIndex.folders) : [], [hasFilter, searchHits, filterQuery, searchIndex])
   const pins = vault?.settings.pins
   const pinKinds = vault?.pinKinds
   const pinSet = useMemo(() => new Set(pins ?? []), [pins])
@@ -409,8 +433,8 @@ function SidebarView({
       for (const n of nodes) {
         if (n.kind === 'folder') {
           out.push({ key: n.path, kind: 'folder' })
-          const isCollapsed = hasFilter || n.path === focusPath ? false : collapsed.has(n.path)
-          if (!isCollapsed) walk(n.children)
+          const isCollapsed = collapsed.has(n.path)
+          if (!hasFilter && !isCollapsed) walk(n.children)
         } else {
           out.push({ key: n.path, kind: 'file' })
         }
@@ -668,6 +692,14 @@ function SidebarView({
   // --- keyboard (the tree container owns the ring; inputs stop propagation themselves) ---
   function onTreeKeyDown(e: ReactKeyboardEvent<HTMLDivElement>): void {
     if (renaming) return
+    if (e.key === 'Escape' && filterQuery) {
+      e.preventDefault()
+      e.stopPropagation()
+      setFilterQuery('')
+      filterInputRef.current?.focus()
+      commandRan('sheet.FileSearch.3')
+      return
+    }
     // Enter / Space on the Folder dashboard button press it; the row's Enter (expand / collapse) is not theirs.
     if ((e.key === 'Enter' || e.key === ' ') && e.target instanceof Element && e.target.closest('.fdash')) return
     const idx = focusKey ? visibleRows.findIndex((r) => r.key === focusKey) : -1
@@ -695,22 +727,21 @@ function SidebarView({
     } else if (e.key === 'ArrowUp') {
       focusRow(visibleRows[Math.max(idx - 1, 0)]?.key ?? null)
     } else if (e.key === 'ArrowRight' && current?.kind === 'folder') {
-      if (!workFolderKeys.has(current.key)) setFolderCollapsed(current.key, false)
+      if (!workFolderKeys.has(current.key)) changeFolder(current.key, false)
     } else if (e.key === 'ArrowLeft' && current) {
-      if (current.kind === 'folder' && !workFolderKeys.has(current.key) && !collapsed.has(current.key)) {
-        setFolderCollapsed(current.key, true)
+      if (current.kind === 'folder' && !workFolderKeys.has(current.key) && !folderIsCollapsed(current.key)) {
+        changeFolder(current.key, true)
       } else {
         const slash = current.key.lastIndexOf('/')
         if (slash !== -1) {
           const parent = current.key.slice(0, slash)
-          setFolderCollapsed(parent, true)
-          focusRow(parent)
+          if (!hasFilter) { setFolderCollapsed(parent, true); focusRow(parent) }
         }
       }
     } else if (e.key === 'Enter' && current?.kind === 'folder' && workFolderKeys.has(current.key)) {
       onOpenCollection(current.key)
     } else if (e.key === 'Enter' && current?.kind === 'folder') {
-      if (hasFilter) setFolderCollapsed(current.key, false)
+      if (hasFilter) onOpenCollection(current.key)
       else toggleFolder(current.key)
     } else if (e.key === 'F2' && current) {
       startRename(current.key, current.kind)
@@ -734,16 +765,29 @@ function SidebarView({
   }
 
   function onFilterKeyDown(event: ReactKeyboardEvent<HTMLInputElement>): void {
+    if (event.nativeEvent.isComposing) return
+    if (event.key !== 'Escape' && assist.onKeyDown(event)) return
+    if (event.key === 'Enter' && hasFilter && shownTree[0]) {
+      event.preventDefault()
+      event.stopPropagation()
+      const first = shownTree[0]
+      if (first.kind === 'file') onOpen(first.path)
+      else onOpenCollection(first.path)
+      commandRan('sheet.FileSearch.2')
+      return
+    }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       event.stopPropagation()
       const target = event.key === 'ArrowDown' ? visibleRows[0] : visibleRows.at(-1)
       focusRow(target?.key ?? null)
     } else if (event.key === 'Escape' && filterQuery) {
+      commandRan('sheet.FileSearch.3')
       event.preventDefault()
       event.stopPropagation()
       setFilterQuery('')
     } else if (event.key === 'Escape') {
+      commandRan('sheet.FileSearch.3')
       event.preventDefault()
       event.stopPropagation()
       setFilterVisible(false)
@@ -813,7 +857,7 @@ function SidebarView({
           onFocusedRowChange({ key: node.path, kind: 'file' })
           openMenuFor(node.path, 'file', { x: e.clientX, y: e.clientY })
         }}
-        onDragStart={() => setDragPath(node.path)}
+        onDragStart={event => { setDragPath(node.path); event.dataTransfer.setData('application/x-writeflex-file', node.path) }}
         onDragEnd={() => {
           setDragPath(null)
           setDropDir(null)
@@ -821,7 +865,7 @@ function SidebarView({
       >
         <span className="gtr" aria-hidden="true" />
         {glyphFor(node)}
-        <span className="flex-name">{node.label ?? node.name}</span>
+        <span className="flex-name">{node.label ?? node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Workspace root'}</span>}</span>
         <ChecklistProgressChip path={node.path} progress={checklistProgress} />
         {(waitingCounts?.[node.path] ?? 0) > 0 && <span className="wait-count" data-waiting-count={waitingCounts![node.path]} title={`${waitingCounts![node.path]} waiting for review`} aria-label={`${waitingCounts![node.path]} waiting for review`}><MessagesSquare className="icon" aria-hidden="true" />{waitingCounts![node.path]}</span>}
         {node.path.split('/').includes('agent-notes') && <Bot className="agent-provenance" aria-label="Agent-authored Piece" />}
@@ -905,7 +949,7 @@ function SidebarView({
       >
         <span className="gtr" aria-hidden="true" />
         {workRowIcon(true, node.work) === 'folio' ? <BookMarked className="icon sm" aria-label="Folio" /> : <Folder className="icon sm" aria-label="Folder piece" />}
-        <span className="flex-name">{node.label ?? node.name}</span>
+        <span className="flex-name">{node.label ?? node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Workspace root'}</span>}</span>
         {pinButton(node.path, node.label ?? node.name, true)}
       </button>
     )
@@ -921,7 +965,7 @@ function SidebarView({
       )
     }
     const focusedRow = node.path === focusPath
-    const isCollapsed = hasFilter || focusedRow ? false : collapsed.has(node.path)
+    const isCollapsed = folderIsCollapsed(node.path)
     const agentFolder = node.name === 'agent-notes'
     const dashShowing = dashboardDir === node.path
     return (
@@ -966,7 +1010,7 @@ function SidebarView({
             tabIndex={-1}
             aria-expanded={!isCollapsed}
             aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} ${node.name}`}
-            onClick={() => { if (!focusedRow) toggleFolder(node.path) }}
+            onClick={() => changeFolder(node.path)}
           >
             <ChevronDown className="icon sm chev" />
             {isCollapsed
@@ -974,7 +1018,7 @@ function SidebarView({
               : <FolderOpen className="icon sm" aria-label={folderPiecePaths.has(node.path) ? 'Folder Piece' : undefined} />}
           </button>
           <button className="fname" tabIndex={-1} title={agentFolder ? 'Agent notes — written by the agent, not by you' : (isVault && !prefs.titles ? (vaultTipFor(node)?.text ?? node.name) : node.name)} onClick={() => onOpenCollection(node.path)}>
-            {node.name}
+            {node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Workspace root'}</span>}
           </button>
           {dashboardButton(node.name, node.path, focusKey === node.path)}
           {pinButton(node.path, node.name)}
@@ -983,7 +1027,7 @@ function SidebarView({
         {/* A collapsed folder's rows are not drawn at all (R6): the ring (visibleRows) already skips them,
             and every path that lands on a row inside one expands its ancestors first. */}
         <div className="children" hidden={isCollapsed}>
-          {isCollapsed ? null : renderNodes(node.children, depth + 1, node.path)}
+          {hasFilter || isCollapsed ? null : renderNodes(node.children, depth + 1, node.path)}
         </div>
       </div>
     )
@@ -1282,25 +1326,31 @@ function SidebarView({
             ref={filterInputRef}
             type="text"
             value={filterQuery}
-            onChange={(event) => setFilterQuery(event.target.value)}
+            onChange={(event) => assist.onChange(event.target.value, event.target.selectionStart)}
+            onFocus={assist.onFocus}
+            onBlur={assist.onBlur}
+            onSelect={(event) => assist.onSelect(event.currentTarget.selectionStart)}
             onKeyDown={onFilterKeyDown}
-            placeholder="Filter tree — ⇧⌘K finds by name"
+            placeholder="Find files — fo: folder · fi: file name"
             aria-label="Filter files by name"
             spellCheck={false}
           />
           {filterQuery && (
-            <button className="filter-clear" aria-label="Clear file filter" title="Clear filter (Esc)" onClick={() => setFilterQuery('')}>
+            <button className="filter-clear" aria-label="Clear file filter" title="Clear filter (Esc)" onClick={() => { setFilterQuery(''); filterInputRef.current?.focus() }}>
               <X className="icon sm" />
             </button>
           )}
         </div>
-        <div className="file-filter-count">{visibleRows.filter((row) => row.kind === 'file').length} of {filesInFocus} · Esc clears</div>
+        {assist.completion
+          ? <CompletionPop completion={assist.completion} active={assist.active} onPick={assist.pick} onHover={assist.setActive} />
+          : assist.hintVisible ? <PrefixHints onPick={assist.pickHint} /> : null}
+        <div className="file-filter-count">{hasFilter ? `${shownTree.length} results` : `${filesInFocus} files`} · Esc clears</div>
       </div>}
 
       <div className="tree-region" ref={treeRef} onKeyDown={onTreeKeyDown}>
       {showPinned && <div className={`tree-pinned${isVault ? ' lv-vault' : ''}`}>{pinnedSection()}</div>}
       <div
-        className={`tree${isVault ? ' lv-vault' : ''}`}
+        className={`tree${hasFilter ? ' file-search-results' : ''}${isVault ? ' lv-vault' : ''}`}
         onDragOver={(e) => {
           if (dragPath) e.preventDefault()
         }}
@@ -1315,10 +1365,11 @@ function SidebarView({
       >
         <>
             {shownTree.length > 0 || renaming?.isNew ? (
-              renderNodes(shownTree, 0, '')
+              hasFilter ? shownTree.map((node) => node.kind === 'folder' ? (node.work ? workFolderRow(node, 0) : folderRow(node, 0)) : fileRow(node, 0)) : renderNodes(shownTree, 0, '')
             ) : hasFilter || !focusPath ? (
               <div className="filter-empty">
                 No names match <span>{filterQuery.trim()}</span>.
+                {searchSuggestions.map((suggestion) => <div key={suggestion.key}><button type="button" className="lv-link" onClick={() => assist.replaceQuery(suggestion.query)}>{suggestion.kind === 'folder' ? `Did you mean ${suggestion.name}?` : suggestion.label}</button></div>)}
               </div>
             ) : null}
 

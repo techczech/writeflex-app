@@ -1,9 +1,13 @@
 import { CollectionWriteTurn } from './collection-write-turn'
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import { posix } from 'node:path'
-import type { Workspace } from './workspace'
+import { SavedButNotReadBack, type Workspace } from './workspace'
 import { assertCollectionWritable } from './collection-write-gate'
+
+/** @internal Test seam: runs inside `removeAtOrigin` after its read, before its guarded write. */
+export const scrapStoreSeams: { afterRemoveAtOriginRead?: () => Promise<void> | void } = {}
 
 /**
  * A cutting the writer set aside (ADR-0008). Lives on disk in a `scraps/` subfolder BESIDE its origin
@@ -337,6 +341,55 @@ export class ScrapStore {
         return removed
       }
       throw new Error(`No scrap with id ${id}.`)
+    })
+  }
+
+  /**
+   * Remove ONE scrap section from the scraps file of ONE named origin — the origin-qualified removal
+   * the Scratchpad's Delete forever uses. Unlike `remove(id)` (the long-standing global-id API, kept
+   * unchanged for its callers), this never looks in another origin's file, so copied legacy files
+   * that share an `s_…` id cannot lose the wrong section. The file is derived from `origin` alone
+   * (`scrapsPathFor`), must stand inside the Workspace as an ordinary file (a link at that name is
+   * refused, never followed or replaced), and is written through the Workspace's guarded writer
+   * ONLY over the exact text read here (`saveFileOverRead`: checked before the write and again in
+   * the rename tick — the writer's documented final-syscall limit). A sibling section or foreign
+   * run changed in the meantime therefore refuses whole, and every other byte stays as it was.
+   * `expectedBodySha256`, when given, is the digest of the section body the caller showed for
+   * confirmation: a body edited since refuses. `expected.beforeCommit`, when given, is the caller's
+   * synchronous dependent-authority check (the Scratchpad's checked index version): it is carried
+   * to the guarded writer's `beforeCommit`, so it runs in the tick of the rename that commits this
+   * removal, after staging, and a refusal there leaves the scraps file untouched. It does not make
+   * the two files one transaction — the writer's final-syscall limit stands. An emptied owned file
+   * is left standing empty rather than unlinked here.
+   */
+  async removeAtOrigin(origin: string, id: string, expected?: { bodySha256: string; beforeCommit?: () => void }): Promise<Scrap> {
+    if (!SCRAP_ID.test(id)) throw new Error(`No scrap with id ${id}.`)
+    const rel = scrapsPathFor(origin)
+    if (!isScrapsPath(rel)) throw new Error(`No scrap with id ${id}.`)
+    return this.#write(async () => {
+      const abs = this.ws.absolute(rel)
+      let entry
+      try { entry = lstatSync(abs) } catch { throw new Error(`No scrap with id ${id}.`) }
+      if (!entry.isFile()) throw new Error(`${rel} is not an ordinary file (a link or something else stands at that name), so nothing was removed.`)
+      const content = await readFile(abs, 'utf8')
+      const blocks = parseScrapsFile(content)
+      const index = blocks.findIndex((b) => b.kind === 'scrap' && b.id === id)
+      if (index === -1) throw new Error(`No scrap with id ${id}.`)
+      const block = blocks[index] as ScrapBlock
+      if (expected && createHash('sha256').update(bodyText(block), 'utf8').digest('hex') !== expected.bodySha256) {
+        throw new Error('That scrap changed since it was shown, so it was kept.')
+      }
+      const removed = toScrap(block, originForScrapsPath(rel))
+      blocks.splice(index, 1)
+      const next = serializeBlocks(blocks)
+      await scrapStoreSeams.afterRemoveAtOriginRead?.()
+      try {
+        await this.ws.saveFileOverRead(rel, next, content, { allowExplicitEmpty: true, ...(expected?.beforeCommit ? { beforeCommit: expected.beforeCommit } : {}) })
+      } catch (error) {
+        // Committed and not read back: removed.
+        if (!(error instanceof SavedButNotReadBack)) throw error
+      }
+      return removed
     })
   }
 

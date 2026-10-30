@@ -6,9 +6,12 @@
  *  - **A genuine refusal** — an insert Zotero's library rejected (the paper is gone, the position is
  *    unreadable), or an edit conflict. A person may want to look at it, so it is counted, listed with
  *    its reason, and can be retried or dismissed.
- *  - **An edit or deletion there is no write path for yet** (ADR-0031 covers the insert only). Nothing
- *    went wrong and nothing can be done about it, so it is not counted and not a warning. It is stored
- *    with the sidecar's own `local_only` flag, which keeps it drawn (ADR-0029) and out of both counts.
+ *  - **A mark kept here on purpose** — a web or EPUB mark, or a refusal the reader dismissed. Nothing
+ *    can be done about it, so it is not counted and not a warning. It is stored with the sidecar's own
+ *    `local_only` flag, which keeps it drawn (ADR-0029) and out of both counts.
+ *
+ * Edits and deletions of PDF marks are written to Zotero since 0.27.0-alpha.2; the rows older releases
+ * kept back are released once by `releaseKeptEdits` (`zotero-outbox-edits.ts`).
  *
  * Nothing in this module deletes a row or rewrites a payload. Every action is a change of
  * classification on a row that stays in the outbox.
@@ -16,12 +19,7 @@
  * Shaping and store calls only — no `electron` import — so a unit test can reach all of it.
  */
 import type { OutboxEntry, OutboxStatus } from '@readflex/sidecar'
-import {
-  isUnsupportedZoteroOperation,
-  UNSUPPORTED_ZOTERO_EDIT_REASON,
-  isUnsupportedZoteroEditReason,
-  type ZoteroAnnotationPayload,
-} from './zotero-annotation-writes'
+import type { ZoteroAnnotationPayload } from './zotero-annotation-writes'
 
 /** The subset of the sidecar this module touches. */
 export type RefusedOutboxStore = {
@@ -41,52 +39,11 @@ function parsedPayload(entry: Pick<OutboxEntry, 'payload'>): ZoteroAnnotationPay
   }
 }
 
-/**
- * True when this row is an edit or deletion the local write has no path for, and is still classified
- * as Zotero work.
- *
- * A row still waiting (`pending`, `retrying`) is recognised by its operation alone: the transport
- * would give it exactly this answer the moment Zotero is closed. A `failed` row has no structured
- * record of WHY it failed, so it must also carry the exact sentence older releases stored — a failed
- * edit with any other reason is left alone and stays a visible refusal.
- */
-export function isLegacyKeptEdit(entry: OutboxEntry): boolean {
-  if (entry.localOnly !== 0) return false
-  if (entry.operation !== 'update' && entry.operation !== 'delete') return false
-  const payload = parsedPayload(entry)
-  // An unreadable payload is a different fault with its own reason; it is not reclassified here.
-  if (!payload || !isUnsupportedZoteroOperation(entry.operation, payload)) return false
-  if (entry.status === 'pending' || entry.status === 'retrying') return true
-  return entry.status === 'failed' && isUnsupportedZoteroEditReason(entry.lastError)
-}
-
-/**
- * Reclassify edits and deletions that older releases left counted as refused. Run once per launch;
- * a second run finds nothing, because a reclassified row is `local_only` and no longer matches.
- * Returns how many rows changed.
- */
-export function reconcileKeptEdits(store: RefusedOutboxStore): number {
-  let changed = 0
-  for (const status of ['pending', 'retrying', 'failed'] as const) {
-    for (const entry of store.outboxByStatus(status)) {
-      if (!isLegacyKeptEdit(entry)) continue
-      store.markOutboxLocalOnly(entry.id, UNSUPPORTED_ZOTERO_EDIT_REASON)
-      changed += 1
-    }
-  }
-  return changed
-}
-
-/** Annotation keys in one document whose latest edit is kept here and has not reached Zotero. */
+/** Annotation keys in one document whose shown state is an edit kept here, not sent to Zotero. */
 export function keptEditKeys(entries: OutboxEntry[]): Set<string> {
   const keys = new Set<string>()
   for (const entry of entries) {
-    if (
-      entry.itemKey
-      && entry.localOnly === 1
-      && entry.operation === 'update'
-      && isUnsupportedZoteroEditReason(entry.lastError)
-    ) keys.add(entry.itemKey)
+    if (entry.itemKey && entry.localOnly === 1 && entry.operation === 'update') keys.add(entry.itemKey)
   }
   return keys
 }
@@ -104,7 +61,7 @@ export type RefusedHighlight = {
   reason: string
   /** ISO-8601: when the row was last touched, which is when it was refused. */
   date: string
-  /** An insert may succeed on another try; an edit has no write path to retry. */
+  /** A refused write (not a conflict) whose payload reads back may succeed on another try. */
   retryable: boolean
   /** Raw Zotero position JSON for a jump, when the payload carries one. */
   position: string | null
@@ -137,8 +94,10 @@ function refusedEntries(store: RefusedOutboxStore): OutboxEntry[] {
     .sort((left, right) => left.id - right.id)
 }
 
+/** Any refused write whose payload reads back can be tried again. A conflict is a decision, not a
+ *  failure, so it is dismissed rather than retried. */
 function isRetryable(entry: OutboxEntry, payload: ZoteroAnnotationPayload | null): boolean {
-  return entry.operation === 'create' && payload !== null
+  return entry.status !== 'conflict' && payload !== null
 }
 
 /** Every refused highlight across all documents, in the order they were made. */
@@ -167,7 +126,7 @@ export function refusedHighlights(
 }
 
 /**
- * Put a refused insert back in the queue. Returns false, and changes nothing, when the row is not a
+ * Put a refused row back in the queue. Returns false, and changes nothing, when the row is not a
  * refused one or is not retryable — the id comes from the renderer and is not trusted.
  */
 export function retryRefused(store: RefusedOutboxStore, id: number): boolean {

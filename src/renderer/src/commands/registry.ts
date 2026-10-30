@@ -137,7 +137,7 @@ const STRIKETHROUGH_COMMAND: CommandDefinition = { id: 'edit.strikethrough', lab
 
 const sheetCommands: CommandDefinition[] = [
   ...sheet('Files', 'Files and versions', 0, [sheetLiteral('Open folder or file', '⌘O'), sheetLiteral('Checkpoint (save is automatic)', '⌘S'), sheetLiteral('New file', '⌘N'), sheetLiteral('New folder', '⌃⌘N'), sheetLiteral('New window', '⌥⌘N'), sheetLiteral('File menu (sidebar row)', '⌘K'), sheetLiteral('Rename file or folder', 'F2'), sheetLiteral('Move to folder', 'M'), sheetLiteral('Duplicate file', '⌘D'), sheetLiteral('Move to Bin', '⌘⌫'), sheetLiteral('Close tab', '⌘W'), sheetCommand('tab.pin', 'Pin to strip / Unpin from strip')]),
-  ...sheet('Navigation', 'Navigation', 0, [sheetCommand('app.quickOpen', 'Quick-open file or folder'), sheetLiteral('Find in file', '⌘F'), sheetLiteral('Filter the Files pane', '⌘F'), sheetLiteral('Next / previous match', ['⌘G', '⇧⌘G']), sheetLiteral('Show replace', '⌥⌘F'), sheetLiteral('Cycle tabs', '⌃⇥'), sheetCommand('navigation.nextTab', 'Next open tab'), sheetCommand('navigation.previousTab', 'Previous open tab'), sheetCommand('navigation.nextFolderFile', 'Next file in folder'), sheetCommand('navigation.previousFolderFile', 'Previous file in folder'), sheetLiteral('Focus editor', '⌘1'), sheetCommand('view.files', 'Open Files pane'), sheetCommand('view.openTabs', 'Open tabs'), sheetLiteral('Back / forward along link trail', ['⌃⌘←', '⌃⌘→']), sheetCommand('view.outline', 'Open Outline tab'), sheetCommand('app.search', 'Open Search tab'), sheetLiteral('Collapse left pane', '⌘['), sheetLiteral('Bookmark here', '⌘F2', 'ship2'), sheetLiteral('Next / previous bookmark', ['F3', '⇧F3'], 'ship2'), sheetLiteral('Jump to last change', '⌘4', 'ship2'), sheetLiteral('Outline row menu (outline row)', '⌘K')]),
+  ...sheet('Navigation', 'Navigation', 0, [sheetCommand('app.quickOpen', 'Quick-open file or folder'), sheetLiteral('Find in file', '⌘F'), sheetLiteral('Filter the Files pane', '⌘F'), sheetLiteral('Next / previous match', ['⌘G', '⇧⌘G']), sheetLiteral('Show replace', '⌥⌘F'), sheetLiteral('Cycle tabs', '⌃⇥'), sheetCommand('navigation.nextTab', 'Next open tab'), sheetCommand('navigation.previousTab', 'Previous open tab'), sheetCommand('navigation.nextFolderFile', 'Next file in folder'), sheetCommand('navigation.previousFolderFile', 'Previous file in folder'), sheetLiteral('Focus editor', '⌘1'), sheetCommand('view.files', 'Open Files pane'), sheetCommand('view.openTabs', 'Open tabs'), sheetLiteral('Back / forward along link trail', ['⌃⌘←', '⌃⌘→']), sheetCommand('view.outline', 'Open Outline tab'), sheetCommand('app.search', 'Open Search tab'), sheetCommand('view.toggleLeftPane', 'Show/hide left sidebar'), sheetLiteral('Bookmark here', '⌘F2', 'ship2'), sheetLiteral('Next / previous bookmark', ['F3', '⇧F3'], 'ship2'), sheetLiteral('Jump to last change', '⌘4', 'ship2'), sheetLiteral('Outline row menu (outline row)', '⌘K')]),
   ...sheet('Editing', 'Writing', 1, [sheetCommand('edit.selectBodyExceptMetadata', 'Select all text (keep metadata)'), sheetCommand('edit.bold', 'Bold'), sheetCommand('edit.italic', 'Italic'), sheetInline(STRIKETHROUGH_COMMAND), sheetCommand('edit.link', 'Link'), sheetLiteral('Move line up / down', ['⌥↑', '⌥↓']), sheetLiteral('Collapse selection', '⌘5', 'ship2'), sheetCommand('edit.toggleComment', 'Toggle comment'), sheetCommand('edit.mark', 'Mark ==text=='), sheetCommand('edit.selectNextOccurrence', 'Select next occurrence'), sheetCommand('block.duplicate', 'Duplicate block'), sheetCommand('edit.joinLines', 'Join lines'), sheetLiteral('Drafting / Reviewing mode', '⌥⌘M'), sheetLiteral('Insert object', '⌘K'), sheetLiteral('Edit block / done', ['↵', '⌘↵']), sheetLiteral('Browse table cells', 'Esc'), sheetLiteral('Move table row / column', '⇧⌘arrows'), sheetLiteral('Next / previous block', ['⌃⌘↓', '⌃⌘↑'])]),
   // Skills took ⌥⌘1/2/3 on 2026-07-19 (OPEN-QUESTIONS #2; usability review confirm pending).
   // Round A focus modes ship UNASSIGNED : default chords arrive in the pre-v1
@@ -154,7 +154,7 @@ const sheetCommands: CommandDefinition[] = [
     sheetLiteral('Undo agent turn', '⌘⇧Z'),
     inSheetGroup('Reviewing', sheetCommand('review.focusMargin', 'Focus the review margin')),
     inSheetGroupAt('Files and versions', 0, sheetCommand('app.versions', 'Open Versions tab')),
-    sheetLiteral('Collapse right pane', '⌘]'),
+    sheetCommand('view.toggleRightPane', 'Show/hide right pane'),
     inSheetGroup('Reviewing', sheetCommand('view.hideStrikes', 'Hide strikes')),
     inSheetGroup('Reviewing', sheetCommand('view.hideInserts', 'Hide inserts')),
     inSheetGroupAt('Files and versions', 0, sheetCommand('file.nameVersion', 'Save version')),
@@ -176,6 +176,7 @@ const sheetCommands: CommandDefinition[] = [
     inSheetGroup('Reviewing', sheetLiteral('Pick a card for a bulk action (margin card focused)', 'Space')),
     inSheetGroup('Reviewing', sheetLiteral('Close popover, composer, card, then Settled today / My edits', 'Esc')),
   ]),
+  ...sheet('History recovery', 'Files and versions', 0, [sheetLiteral('Attach waiting history here (button focused)', '↵')]),
   ...sheet('View', 'View', 2, [sheetLiteral('Prose size', ['⌘+', '⌘−']), sheetLiteral('Column width', ['⌥⌘+', '⌥⌘−']), sheetLiteral('Reset zoom', '⌥⌘0'), sheetLiteral('Open mode drawer', '⌥⌘R')]),
   ...sheet('App', 'App', 2, [sheetCommand('app.settings', 'Settings'), sheetLiteral('Open Library', '⇧⌘L', 'ship2')]),
 ]
@@ -202,7 +203,7 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'agent.manageAccounts', label: 'Manage assistant accounts', group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   { id: 'skills.manage', label: 'Manage skills…', group: 'Skills', surfaces: ['sheet'], sheetColumn: 2 },
   ...editorCommands.map((command) => {
-    const isFoldCommand = command.id.startsWith('fold.')
+    const isFoldCommand = command.id.startsWith('fold.') || command.id === 'edit.flagSelection' || command.id === 'edit.clearFlag'
     return {
       ...command,
       group: 'Writing' as const,
@@ -234,6 +235,10 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'view.focusFolder', label: 'Focus on the open file’s Collection', keywords: ['focus', 'folder', 'folio', 'collection', 'narrow', 'scope', 'project', 'tree'], group: 'Navigation', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'view.clearFolderFocus', label: 'Clear folder focus', keywords: ['focus', 'folder', 'whole archive', 'everywhere', 'unfocus'], group: 'Navigation', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'files.filter', label: 'Filter files…', group: 'Navigation', surfaces: ['palette'] },
+  { id: 'sheet.FileSearch.0', label: 'Move through file search suggestions', keys: ['↑', '↓'], group: 'Navigation', surfaces: ['sheet'], claimsChord: false, sheetSource: { kind: 'literal' } },
+  { id: 'sheet.FileSearch.1', label: 'Complete a file search prefix or folder', keys: ['↵', '⇥'], group: 'Navigation', surfaces: ['sheet'], claimsChord: false, sheetSource: { kind: 'literal' } },
+  { id: 'sheet.FileSearch.2', label: 'Open the first file search result', keys: '↵', group: 'Navigation', surfaces: ['sheet'], claimsChord: false, sheetSource: { kind: 'literal' } },
+  { id: 'sheet.FileSearch.3', label: 'Clear file search / close the empty search box', keys: 'Esc', group: 'Navigation', surfaces: ['sheet'], claimsChord: false, sheetSource: { kind: 'literal' } },
   { id: 'writer.newSession', label: 'Start a new review session', group: 'Reviewing', surfaces: ['palette'] },
   // Diary Session Starter (0.18): one free default outside the estate-reserved map; End and target
   // adjustment are live-gated by App while an explicit session runs.
@@ -277,10 +282,12 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'review.myEdits', label: 'My edits', hint: 'Your recorded edits in this piece', leadsFor: ['review'], group: 'Reviewing', surfaces: ['palette'], keywords: ['review', 'mine', 'yours', 'recorded', 'accept session'] },
   { id: 'review.showQuietFixes', label: 'Show quiet fixes', hint: 'Small fixes applied without a card', leadsFor: ['review'], group: 'Reviewing', surfaces: ['palette'], keywords: ['review', 'quiet', 'typo', 'copy', 'fixes', 'hide'] },
   { id: 'review.acceptAndNext', label: 'Accept and next', keys: '⌥⌘↵', group: 'Reviewing', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
+  { id: 'view.toggleLeftPane', label: 'Show/hide left sidebar', keys: '⌘[', group: 'View', surfaces: ['palette'] },
+  { id: 'view.toggleRightPane', label: 'Show/hide right pane', keys: '⌘]', group: 'View', surfaces: ['palette'] },
   { id: 'view.distractionFree', label: 'View: Distraction-free', keys: '⌥⌘D', group: 'Writing', surfaces: ['palette'] },
   // The action bar (ADR-0040). The bar's ONE way back in is the toolbar's panel-top toggle plus
   // this command — no fold chevron on the bar itself. Keyless by the pre-v1 ruling and by the
-  // drawing, which shows the toggle carrying no chord glyph where its siblings show ⌘0 and ⌘J;
+  // drawing, which shows the toggle carrying no chord glyph where its siblings show ⌘[ and ⌘];
   // the app-wide sweep assigns a default before release, and it is assignable today.
   { id: 'view.actionBar', label: 'Show/Hide the action bar', group: 'View', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   // Configuring the bar is HALF the feature, not a nice-to-have (ADR-0040), so it is a command in
@@ -422,6 +429,7 @@ const commandDefinitions: CommandDefinition[] = [
   // folder's). Keyless on purpose: ⌥⌘] and ⌥⌘[ keep their folder-order meaning.
   // Open Folio (ticket C): the Folio page's big button. ⌘↵ is the page's own key (a full overlay over the editor, where
   // ⌘↵ toggles a checkbox / accepts a change), so it documents the chord on the sheet without claiming it.
+  { id: 'folio.linkFiles', label: "Link this Folio's chapters to their files", keywords: ['folio', 'chapter', 'file', 'identity', 'links'], group: 'Collections', surfaces: ['palette'] },
   { id: 'folio.open', label: 'Open Folio', keys: '⌘↵', keywords: ['folio', 'outline', 'open at', 'first part'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0, claimsChord: false },
   // ⇧⌘↵ on the Folio's page opens the Open at… menu (FolioOpenButton.tsx); the page owns the chord, so it only documents it here.
   { id: 'folio.openAt', label: 'Open Folio at another part', keys: '⇧⌘↵', keywords: ['folio', 'open at', 'part', 'menu'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
@@ -433,6 +441,27 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'folio.addToRunningOrder', label: 'Add to the running order', group: 'Collections', surfaces: ['palette'] },
   { id: 'folio.addAllToRunningOrder', label: 'Add all to the running order', group: 'Collections', surfaces: ['palette'] },
   { id: 'folio.undoLastChange', label: 'Undo last running-order or section move', group: 'Collections', surfaces: ['palette'] },
+  // The Folio room's view switch (ticket 09). ⌥1 is free in the registry and the universal keymap (ADR-0011 reserves only ⌘⇧P, ⌘⇧K, ⌘K, ⌘P, ⌘F, ⌘⇧F, ⌘, and ⌘/). ⌥2 to ⌥5 are held for Outline, Map, Flags and Text when those views are built.
+  // Ticket 10: Outline, Text and the Split toggle. ⌥2 and ⌥5 are the drawn placeholders, free in the registry and in ADR-0011's reserved set; ⌥3 and ⌥4 stay held for Map and Flags. Split had no key in the drawing: ⌥S is free (chords go by physical key, so it does not type ß).
+  // The Folio workspace's tabs (ADR-0049, layout 1A), in tab order: ⌥1 Outline … ⌥7 Files, Outline the default. ⌥1-⌥7 were the room's
+  // six view keys in another order (Cards ⌥1, Outline ⌥2, Map ⌥3, Flags ⌥4, Text ⌥5, Evidence ⌥6): the ids stay, the keys follow the tabs.
+  // ADR-0011 (universal keymap) reserves only ⌘-chords, so ⌥1-⌥7 and ⌥⌘I clash with nothing in it; the one clash is Electron's own
+  // View > Toggle Developer Tools (⌥⌘I), which main/menu.ts moves to ⇧⌥⌘I so the inspector key reaches the renderer.
+  { id: 'folio.room.outline', label: 'Folio workspace: Outline', keys: '⌥1', keywords: ['folio', 'workspace', 'room', 'view', 'tab', 'outline', 'headings', 'table', 'rows'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.text', label: 'Folio workspace: Text', keys: '⌥2', keywords: ['folio', 'workspace', 'room', 'view', 'tab', 'text', 'part', 'editor'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.cards', label: 'Folio workspace: Cards', keys: '⌥3', keywords: ['folio', 'workspace', 'room', 'view', 'tab', 'cards', 'board', 'status'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.map', label: 'Folio workspace: Map', keys: '⌥4', keywords: ['folio', 'workspace', 'tab', 'map', 'canvas', 'path'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.flags', label: 'Folio workspace: Flags', keys: '⌥5', keywords: ['folio', 'workspace', 'tab', 'flags', 'citation', 'rewrite'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.evidence', label: 'Folio workspace: Evidence', keys: '⌥6', keywords: ['folio', 'workspace', 'tab', 'evidence', 'sources'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.files', label: 'Folio workspace: Files', keys: '⌥7', keywords: ['folio', 'workspace', 'tab', 'files', 'folder', 'collection', 'list'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.split', label: 'Folio workspace: Text beside the cards', keys: '⌥S', keywords: ['folio', 'room', 'split', 'text', 'beside', 'cards'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.inspector', label: 'Folio workspace: Show or hide the inspector', keys: '⌥⌘I', keywords: ['folio', 'workspace', 'inspector', 'sidebar', 'binder', 'details'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.toggleHeadings', label: 'Expand or collapse a part’s headings (disclosure focused)', keys: ['↵', 'Space'], keywords: ['folio', 'outline', 'headings'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.openHeading', label: 'Open a focused Outline heading in the Text tab', keys: '↵', keywords: ['folio', 'outline', 'heading', 'text'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.openSelected', label: 'Open the selected part in the Text tab', keys: '⇧↵', keywords: ['folio', 'workspace', 'open', 'text', 'part'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.laneLeft', label: 'Move the card to the lane on the left', keys: '⌥←', keywords: ['folio', 'workspace', 'board', 'lane', 'status', 'card'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.laneRight', label: 'Move the card to the lane on the right', keys: '⌥→', keywords: ['folio', 'workspace', 'board', 'lane', 'status', 'card'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.removeKey', label: 'Move the selected part to the Folio bin', keys: 'Delete', keywords: ['folio', 'workspace', 'delete', 'remove', 'bin', 'part'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
   { id: 'plan.addPart', label: 'Add a Folio outline part', keys: 'N', group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'plan.adoptPart', label: 'Add existing part to Folio outline', keys: 'A', group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'plan.adoptAsFrontMatter', label: 'Add existing part to Folio outline as front matter', keys: 'F', keywords: ['title page', 'cover', 'front matter'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
@@ -517,15 +546,35 @@ const commandDefinitions: CommandDefinition[] = [
   // Actions here ticket 03: quotes what is here into the composer, unsent. Keyless; App supplies the run (the app.agent pattern).
   { id: 'agent.askHere', label: 'Ask the agent about this…', keywords: ['ask', 'agent', 'question', 'quote', 'explain'], group: 'Agent', surfaces: ['palette'] },
   { id: 'agent.switchModel', label: 'Switch the model for this chat', group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
+  { id: 'agent.setMode', label: 'Set assistant mode', keywords: ['suggest', 'work', 'read only', 'permissions'], group: 'Agent', surfaces: ['palette'] },
   { id: 'agent.setThinking', label: 'Set the reasoning level for this chat', group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   // Fix 04 (2026-10-06): palette-only, keyless; App supplies the run via model-refresh-command.ts.
   { id: REFRESH_MODELS_COMMAND.id, label: REFRESH_MODELS_COMMAND.label, keywords: [...REFRESH_MODELS_COMMAND.keywords], group: 'Agent', surfaces: ['palette'] },
   { id: 'app.scratchpad', label: 'Open Scratchpad', keys: '⇧⌘J', group: 'Agent', surfaces: ['palette'] },
+  // Floating Scratchpad (ADR-0050): keyless palette entries; App supplies the runs. ⌘⇧X stays the editor
+  // binding listed in the sheet, so Cut to Scratchpad carries no second chord here.
+  { id: 'scratchpad.sendCopy', label: 'Send a copy to Scratchpad', keywords: ['scrap', 'keep', 'set aside', 'copy', 'section'], group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
+  { id: 'scratchpad.cut', label: 'Cut to Scratchpad', keywords: ['scrap', 'cut', 'set aside', 'move'], group: 'Agent', surfaces: ['palette'] },
+  { id: 'scratchpad.insertCopy', label: 'Insert a copy from the Scratchpad', keywords: ['scrap', 'reuse', 'paste', 'insert'], group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
+  // Ticket 04: the rest of the panel's own actions, keyless like their siblings (palette-listed and
+  // rebindable; the pre-v1 sweep assigns chords). The four content verbs are also in the cheat sheet;
+  // preview, mark done and search are palette-only like other keyless panel grammar (Enter opens a
+  // preview, ⌫ rejects): seven more sheet rows would tower the sheet's third column past its guard.
+  // Each opens the Scratchpad first and acts on its selection or ticks; a refusal is said, never silent.
+  { id: 'scratchpad.putBack', label: 'Put back the selected Scratchpad item', keywords: ['scrap', 'cutting', 'return', 'move', 'insert'], group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
+  { id: 'scratchpad.compare', label: 'Compare the ticked Scratchpad items side by side', keywords: ['compare', 'side by side', 'candidates', 'versions'], group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
+  { id: 'scratchpad.preview', label: 'Open the big preview of the selected Scratchpad item', keywords: ['preview', 'read', 'big', 'open'], group: 'Agent', surfaces: ['palette'] },
+  { id: 'scratchpad.reject', label: 'Reject the selected Scratchpad items', keywords: ['reject', 'set aside', 'remove', 'triage'], group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
+  { id: 'scratchpad.moveBack', label: 'Move the selected Scratchpad items back to Candidates', keywords: ['move back', 'restore', 'recover', 'rejected'], group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
+  { id: 'scratchpad.markDone', label: 'Mark the selected Scratchpad item done or not done', keywords: ['done', 'mark', 'tick off'], group: 'Agent', surfaces: ['palette'] },
+  { id: 'scratchpad.focusSearch', label: 'Search the Scratchpad', keywords: ['search', 'find', 'filter', 'scrap'], group: 'Agent', surfaces: ['palette'] },
   // ⇧⌘C focuses the review margin head (0.23); the Review tab is gone.
   { id: 'review.focusMargin', label: 'Focus the review margin', keys: '⇧⌘C', group: 'Reviewing', surfaces: ['palette'] },
   { id: 'review.acceptAll', label: 'Accept all shown, or the selected', keys: '⇧⌘A', group: 'Reviewing', surfaces: ['palette'], keywords: ['accept', 'all', 'selected', 'filter', 'margin'] },
   { id: 'review.declineAll', label: 'Decline all shown, or the selected', keys: '⇧⌘⌫', group: 'Reviewing', surfaces: ['palette'], keywords: ['decline', 'reject', 'discard', 'all', 'selected', 'filter', 'margin'] },
   { id: 'review.sendBack', label: 'Send the review back to the agent', keys: '⇧⌘R', group: 'Reviewing', surfaces: ['palette'], keywords: ['send', 'back', 'agent', 'notes', 'revise'] },
+  { id: 'review.acceptAllFromSource', label: 'Accept all from one agent…', group: 'Reviewing', surfaces: ['palette'], keywords: ['accept', 'all', 'outside', 'agent', 'source', 'claude', 'codex', 'collection'] },
+  { id: 'review.declineAllFromSource', label: 'Decline all from one agent…', group: 'Reviewing', surfaces: ['palette'], keywords: ['decline', 'reject', 'all', 'outside', 'agent', 'source', 'claude', 'codex', 'collection'] },
   { id: 'app.versions', label: 'Open Versions', keys: '⌘3', group: 'Files and versions', surfaces: ['palette'] },
   { id: 'app.settings', label: 'Open Settings…', keys: '⌘,', group: 'App', surfaces: ['palette'] },
   { id: 'app.about', label: 'About WriteFlex', group: 'App', surfaces: ['palette'] },

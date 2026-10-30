@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // The Shares list (sharing ticket 10; spec section 4.6; frame `shares-list`), at its seams: the IPC
 // (src/main/sharing-piece-ipc.ts `sharing:open-list`, `sharing:opened`) over the real publisher and the
 // real sharing service in memory, and the list's pure model (src/shared/sharing-shares-list.ts).
@@ -531,3 +532,6 @@ test('ticket 11, review 10 P3-2 model: the opened counts are asked again on a li
   expect(openedKey([link('a', { publishedAt: 2_000, on: false }), link('b')])).not.toBe(key)
   expect(openedKey([link('a', { publishedAt: 2_000 })])).not.toBe(key)
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

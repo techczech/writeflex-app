@@ -102,7 +102,7 @@ test('a buffer read from another file is ignored: the open piece shows its disk 
   expect(html).toContain('Other')
   expect(html).not.toContain('Unsaved heading')
   // The open row's title is B's own, not the first heading of A's buffer.
-  expect(html).toMatch(/data-fokey="piece:1:p\/b.md"[^>]*title="Beta"/)
+  expect(html).toMatch(/data-fokey="piece:1:p\/b.md"[^>]*title="Beta — b.md"/)
   // Its heading rows are built from disk data (a line, no editor offset), so a click goes to the line of that file.
   // (No DOM here: the e2e tab-switch test clicks one.)
   expect(html).toContain('data-heading-level="2"')

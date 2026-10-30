@@ -120,9 +120,9 @@ test('the in-app agent\'s staging reads the same way: a frontmatter proposal ove
   const workspace = new Workspace(fx.root)
   const changes = new ChangeStore(workspace)
   const step: ScriptedStep = { cap: 'frontmatter.set', input: { path: 'talks/york.md', set: { audience: 'teachers' }, summary: 'Add audience' } }
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace, appDataDir: appData, changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
-    sessionFactory: scriptedSessionFactory([{ prompt: 'Set it', rounds: [{ kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message', text: 'Done.' }] }]),
+    sessionFactory: scriptedSessionFactory([{ prompt: 'Set it', rounds: [{ kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] }, { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message', text: 'Done.' }] }]),
   })
   try {
     // The swap happens inside the staging read, after the document-only view has judged the path.

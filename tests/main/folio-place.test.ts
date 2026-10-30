@@ -194,12 +194,12 @@ test('a Folio outline folder reached through a symlink is no Folio, as in the wh
   expect(await folioPlace(ws, 'alias-home/talk/01-start.md')).toBeNull()
 })
 
-test('a manifest Folio reached through a symlink lists no pieces', async () => {
+test('a manifest Folio reached through a symlink is refused by the shared folder rule', async () => {
   await write(`paper/${MANIFEST_NAME}`, manifest(['a.md', 'b.md']))
   await write('paper/a.md', '# Alpha\n')
   await write('paper/b.md', '# Bravo\n')
   await symlink(join(root, 'paper'), join(root, 'mirror'))
-  expect(await folioPlace(ws, 'mirror/a.md')).toMatchObject({ dir: 'mirror', kind: 'unlisted', total: 0, previous: null, next: null })
+  expect(await folioPlace(ws, 'mirror/a.md')).toBeNull()
 })
 
 test('a refused question clears the controls like a null answer and is not left unhandled', async () => {

@@ -222,6 +222,7 @@ const LEFT_OUT_REASONS: Record<ExportLeftOut['reason'], string> = {
   'not-found': 'file not found',
   'outside-folio': 'outside this Folio’s folder',
   'agent-instructions': 'agent instructions are never part of the Folio',
+  'room-support': 'the Folio room’s evidence, notes and map files are never exported',
 }
 
 /** The line above the left-out list, and one row per entry: its path as the manifest wrote it, and why. */

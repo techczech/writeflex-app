@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { scriptedSessionFactory } from '@bridle/core'
+import { scriptedSessionFactory, type Bridle } from '@bridle/core'
 import { APPLIED_NOT_DISCARDED, WorkspaceAgent, type ResolveChangeResult, type ScriptedStep } from '../../src/main/agent'
 import { BoardMaterialDesk } from '../../src/main/board-material-desk'
 import { ChangeStore, closedReasonOf, type Change } from '../../src/main/changes'
@@ -85,10 +85,10 @@ afterEach(async () => {
 })
 
 const read = (rel: string): Promise<string> => readFile(join(root, rel), 'utf8')
-const turnOf = (prompt: string, step: ScriptedStep) => ({ prompt, rounds: [{ kind: 'tool-calls' as const, calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message' as const, text: 'Done.' }] })
+const turnOf = (prompt: string, step: ScriptedStep) => ({ prompt, rounds: [{ kind: 'tool-calls' as const, calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] }, { kind: 'tool-calls' as const, calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message' as const, text: 'Done.' }] })
 
 async function boot(script?: Parameters<typeof scriptedSessionFactory>[0]): Promise<WorkspaceAgent> {
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace, appDataDir: appData, changes, services: { scraps },
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     ...(script ? { sessionFactory: scriptedSessionFactory(script) } : {}),
@@ -319,6 +319,13 @@ async function restoreAskedDuringAccept(live: WorkspaceAgent, start: () => Promi
   const inserted = `Inserted for restore ${restoresAsked += 1}.`
   const id = await propose('insert', { text: inserted })
   const log: string[] = []
+  const turns = (live as unknown as { bridle: Bridle }).bridle.turns
+  const undoTurn = turns.undo
+  turns.undo = async (...args) => {
+    restoring = true
+    log.push(`restore runs; the accept ${(await read(DOC)).includes(inserted) ? 'has committed' : 'HAS NOT COMMITTED'}`)
+    return undoTurn(...args)
+  }
   const restoreTo = store.restoreTo
   let restoring = false
   store.restoreTo = async (point, opts) => {
@@ -348,6 +355,7 @@ async function restoreAskedDuringAccept(live: WorkspaceAgent, start: () => Promi
   expect(await live.resolveChange(id, 'accept')).toMatchObject({ applied: true })
   await restore
   store.restoreTo = restoreTo
+  turns.undo = undoTurn
   workspace.outsideCallRecords = outsideCallRecords
   return log
 }

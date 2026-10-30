@@ -42,8 +42,8 @@
  * compares against the identity from the caller's own read and repeats the identity check after the
  * byte comparison, so the window is one `lstat` wide.
  */
-import { constants, type BigIntStats } from 'node:fs'
-import { link, lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises'
+import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, statSync, type BigIntStats } from 'node:fs'
+import { link, lstat, mkdir, open, realpath, rename, stat, unlink } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { join, posix } from 'node:path'
 import { sameFile, storeFolder, StoreAppendRefused } from './checked-store-append'
@@ -161,25 +161,87 @@ export type StoreFileRead =
  * without creating anything. No `.writeflex` or no file: `absent`. A `.writeflex` or file that is a
  * link, or not an ordinary file: `refused`. `present` carries the stamp a later `expect` is held to.
  */
-export async function readStoreFile(root: string, rel: string): Promise<StoreFileRead> {
+export function readStoreFile(root: string, rel: string, options: { sync: true }): StoreFileRead
+export function readStoreFile(root: string, rel: string): Promise<StoreFileRead>
+export function readStoreFile(root: string, rel: string, options?: { sync: true }): StoreFileRead | Promise<StoreFileRead> {
+  return options?.sync ? readStoreFileSync(root, rel) : readStoreFileAsync(root, rel)
+}
+
+type ReadStep = { kind: 'realpath' | 'lstat' | 'stat' | 'open'; path: string } | { kind: 'fstat' | 'read' | 'close'; handle: any }
+/** One security boundary, driven with either synchronous or asynchronous filesystem primitives. */
+function* storeRead(root: string, rel: string): Generator<ReadStep, StoreFileRead, any> {
   const name = storeName(rel)
-  const realRoot = await realpath(root)
-  const folderEntry = await lstat(join(realRoot, STORE_FOLDER)).catch(() => null)
-  if (!folderEntry) return { state: 'absent' }
-  let folder
+  let where: 'folder' | 'file' = 'folder'
   try {
-    folder = await folderOf(root, rel)
+    const realRoot = yield { kind: 'realpath', path: root }
+    const folderPath = join(realRoot, STORE_FOLDER)
+    const folder = yield { kind: 'lstat', path: folderPath }
+    if (!folder) return { state: 'absent' }
+    const named = yield { kind: 'stat', path: join(root, STORE_FOLDER) }
+    if (!folder.isDirectory() || !sameFile(folder, named)) throw new StoreWriteRefused(rel, NOT_IN_STORE)
+    where = 'file'
+    const path = join(folderPath, name)
+    const entry = yield { kind: 'lstat', path }
+    if (!entry) return { state: 'absent' }
+    if (!entry.isFile()) throw new StoreWriteRefused(rel, NOT_ORDINARY)
+    if (entry.nlink !== 1) throw new StoreWriteRefused(rel, TWO_NAMES)
+    const handle = yield { kind: 'open', path }
+    try {
+      const opened = yield { kind: 'fstat', handle }
+      if (!opened.isFile() || opened.nlink !== 1n || Number(opened.dev) !== entry.dev || Number(opened.ino) !== entry.ino) throw new StoreWriteRefused(rel, NOT_ORDINARY)
+      const bytes = yield { kind: 'read', handle }
+      const after = yield { kind: 'lstat', path: folderPath }
+      if (!after?.isDirectory() || !sameFile(folder, after)) throw new StoreWriteRefused(rel, NOT_IN_STORE)
+      return { state: 'present', bytes, stamp: stampOf(opened) }
+    } finally { yield { kind: 'close', handle } }
   } catch (error) {
-    if (error instanceof StoreWriteRefused) return { state: 'refused', where: 'folder', message: error.message }
+    if (where === 'file' && code(error) === 'ENOENT') return { state: 'absent' }
+    if (error instanceof StoreWriteRefused || NOT_A_FILE.has(code(error) ?? '')) return { state: 'refused', where, message: error instanceof Error ? error.message : String(error) }
     throw error
   }
-  try {
-    const read = await readNoFollow(join(folder.path, name), rel)
-    return read === null ? { state: 'absent' } : { state: 'present', bytes: read.bytes, stamp: read.stamp }
-  } catch (error) {
-    if (error instanceof StoreWriteRefused) return { state: 'refused', where: 'file', message: error.message }
-    throw error
+}
+const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+function readStoreFileSync(root: string, rel: string): StoreFileRead {
+  const rule = storeRead(root, rel)
+  let step = rule.next()
+  while (!step.done) {
+    const request = step.value
+    try {
+      let value
+      switch (request.kind) {
+        case 'realpath': value = realpathSync(request.path); break
+        case 'lstat': value = lstatSync(request.path, { throwIfNoEntry: false }); break
+        case 'stat': value = statSync(request.path); break
+        case 'open': value = openSync(request.path, READ_FLAGS); break
+        case 'fstat': value = fstatSync(request.handle, { bigint: true }); break
+        case 'read': value = readFileSync(request.handle); break
+        case 'close': closeSync(request.handle); break
+      }
+      step = rule.next(value)
+    } catch (error) { step = rule.throw(error) }
   }
+  return step.value
+}
+async function readStoreFileAsync(root: string, rel: string): Promise<StoreFileRead> {
+  const rule = storeRead(root, rel)
+  let step = rule.next()
+  while (!step.done) {
+    const request = step.value
+    try {
+      let value
+      switch (request.kind) {
+        case 'realpath': value = await realpath(request.path); break
+        case 'lstat': value = await lstat(request.path).catch(error => { if (code(error) === 'ENOENT') return undefined; throw error }); break
+        case 'stat': value = await stat(request.path); break
+        case 'open': value = await open(request.path, READ_FLAGS); break
+        case 'fstat': value = await request.handle.stat({ bigint: true }); break
+        case 'read': value = await request.handle.readFile(); break
+        case 'close': await request.handle.close(); break
+      }
+      step = rule.next(value)
+    } catch (error) { step = rule.throw(error) }
+  }
+  return step.value
 }
 
 export type StoreWriteOptions = {
@@ -189,6 +251,9 @@ export type StoreWriteOptions = {
   /** What the target must still be just before promotion: the version the caller read (bytes and
    *  stamp, from `readStoreFile`), or null for "absent". */
   expect?: StoreFileVersion | null
+  /** Read-only dependent authority check, just before the final replacement checks. A refusal
+   * leaves the target alone. This does not make a multi-file transaction atomic. */
+  validate?: () => Promise<void>
 }
 
 /**
@@ -333,6 +398,7 @@ export async function writeStoreFile(root: string, rel: string, content: string,
       if (options.expect !== undefined) await assertExpected(target, options.expect, rel)
       else await judgeTarget(target, rel)
       await seams.afterContentCheck?.(target)
+      await options.validate?.()
       // The last look: the temporary file's bytes read back, one lstat each, then the rename.
       await assertTempBytes(temp, ours, bytes, rel)
       await assertInPlace(folder, temp, ours, rel)
@@ -343,6 +409,27 @@ export async function writeStoreFile(root: string, rel: string, content: string,
   } finally {
     if (!promoted) await removeIfOurs(temp, ours)
   }
+  await syncFolder(folder.path)
+}
+
+/**
+ * Remove `<root>/<rel>` by the same rule this file writes by: the folder must still be the real
+ * `.writeflex` that was judged, the name must still hold exactly the version the caller read
+ * (`expect`: bytes and stamp through a no-follow read, then one last `lstat` of folder and target
+ * together), and only then is it unlinked. A link, a second name, a changed stamp or changed bytes
+ * refuse and nothing is removed. Node has no compare-and-swap unlink, so the window is the same one
+ * `writeStoreFile` documents: one `lstat` wide. There is deliberately no "remove whatever is there"
+ * form: a caller deletes only a version it read and checked.
+ */
+export async function removeStoreFile(root: string, rel: string, expect: StoreFileVersion): Promise<void> {
+  const name = storeName(rel)
+  const folder = await folderOf(root, rel)
+  const target = join(folder.path, name)
+  await assertExpected(target, expect, rel)
+  const now = await lstat(folder.path).catch(() => null)
+  if (!now || !now.isDirectory() || !sameFile(now, folder)) throw new StoreWriteRefused(rel, NOT_IN_STORE)
+  await assertStampStill(target, expect, rel)
+  await unlink(target)
   await syncFolder(folder.path)
 }
 

@@ -64,7 +64,7 @@ export type GroupProgress = {
   state: "idle" | "adopting" | "complete" | "stopped" | "error";
   adopted: string[];
   outcomes: AdoptGroupResult["outcomes"];
-  stopped?: { id: string; reason: "stale" | "error" };
+  stopped?: AdoptGroupResult["stopped"];
 };
 
 export function useProposals(bridle: Bridle, filter?: ProposalFilter) {

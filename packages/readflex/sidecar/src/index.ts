@@ -142,6 +142,18 @@ export interface OutboxEntry extends NewOutboxEntry {
   conflictPayload: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The payload's revision: bumped every time the payload is replaced. A drain records the revision it
+   * sent, and a confirmation for any other revision leaves the row waiting.
+   */
+  revision?: number;
+  /** Set (to the revision being sent) while a drain is writing this row; null otherwise. */
+  sendingRevision?: number | null;
+  /**
+   * 1 when a send was cut off (the app stopped while writing) and the row was put back in the queue.
+   * Its next write must expect that Zotero may already hold it.
+   */
+  sendInterrupted?: 0 | 1;
 }
 
 interface OutboxRow {
@@ -158,6 +170,9 @@ interface OutboxRow {
   conflictPayload: string | null;
   createdAt: string;
   updatedAt: string;
+  revision: number;
+  sendingRevision: number | null;
+  sendInterrupted: 0 | 1;
 }
 
 /**
@@ -425,6 +440,19 @@ function createSchemaTables(database: SqliteDatabase): void {
     CREATE INDEX IF NOT EXISTS outbox_by_status
     ON outbox (status, created_at)
   `);
+  // A create whose key Zotero's library could not take was written under another key. The reader
+  // still names the mark by its own key, so later edits and deletions resolve through this record at
+  // write time instead of being rewritten when the create is confirmed. Append-only, additive table.
+  database.run(`
+    CREATE TABLE IF NOT EXISTS outbox_key_replacements (
+      library_id INTEGER NOT NULL,
+      parent_item_key TEXT NOT NULL,
+      reader_key TEXT NOT NULL,
+      zotero_key TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (library_id, parent_item_key, reader_key)
+    )
+  `);
   createShelfWorkspaceTables(database);
 }
 
@@ -492,6 +520,40 @@ function migrateOutboxLocalOnly(
   }
 }
 
+/**
+ * Additive columns for claiming a row while it is written (no schema version change: a database
+ * without them simply gains them, and an older reader ignores them).
+ *
+ * The `status` CHECK of an existing table cannot be widened without rebuilding it, so "being sent" is
+ * its own column rather than a sixth status: `sending_revision` is the payload revision a drain is
+ * writing, NULL when no drain holds the row.
+ */
+function migrateOutboxSending(database: SqliteDatabase): void {
+  const columns = new Set((database.all("PRAGMA table_info(outbox)") as { name: string }[])
+    .map((column) => column.name));
+  const additions = [
+    ["revision", "INTEGER NOT NULL DEFAULT 0"],
+    ["sending_revision", "INTEGER"],
+    ["send_interrupted", "INTEGER NOT NULL DEFAULT 0"],
+    // 1 on a confirmed row until an authoritative read of Zotero started after its confirmation
+    // (WriteFlex): until then the row is painted from here, so a confirmed mark never vanishes.
+    ["shown_until_read", "INTEGER NOT NULL DEFAULT 0"],
+    // When the row was confirmed (milliseconds since the epoch, this computer's clock); NULL for rows
+    // confirmed before the column existed.
+    ["confirmed_at", "INTEGER"],
+  ] as const;
+  for (const [name, definition] of additions) {
+    if (!columns.has(name)) database.run(`ALTER TABLE outbox ADD COLUMN ${name} ${definition}`);
+  }
+  // The reader session (WriteFlex: one open reader instance) whose create was re-keyed. Only that
+  // session's later changes mean the re-keyed mark by the old key; NULL for records made before.
+  const replacementColumns = new Set((database.all("PRAGMA table_info(outbox_key_replacements)") as { name: string }[])
+    .map((column) => column.name));
+  if (!replacementColumns.has("reader_session")) {
+    database.run("ALTER TABLE outbox_key_replacements ADD COLUMN reader_session TEXT");
+  }
+}
+
 function migrateShellLayout(database: SqliteDatabase): void {
   const columns = new Set((database.all("PRAGMA table_info(layout)") as { name: string }[])
     .map((column) => column.name));
@@ -523,6 +585,7 @@ function initialiseSchema(database: SqliteDatabase): void {
   const seededRecents = migrateSingletonLastDocument(database);
   createSchemaTables(database);
   migrateOutboxLocalOnly(database, installedVersion);
+  migrateOutboxSending(database);
   migrateShellLayout(database);
   for (const recent of seededRecents) {
     insertRecentDocument(database, recent);
@@ -1157,6 +1220,9 @@ export class SidecarStore {
       operation: entry.operation,
       parentItemKey: entry.parentItemKey,
       payload: entry.payload,
+      revision: 0,
+      sendInterrupted: 0,
+      sendingRevision: null,
       status: "pending",
       updatedAt: now,
     };
@@ -1176,7 +1242,10 @@ export class SidecarStore {
         last_error AS lastError,
         conflict_payload AS conflictPayload,
         created_at AS createdAt,
-        updated_at AS updatedAt
+        updated_at AS updatedAt,
+        revision,
+        sending_revision AS sendingRevision,
+        send_interrupted AS sendInterrupted
       FROM outbox
       ${where}
       ORDER BY created_at, id`;
@@ -1187,7 +1256,7 @@ export class SidecarStore {
     return this.#database
       .prepare(
         this.#outboxQuery(
-          "WHERE status IN ('pending', 'retrying') AND local_only = 0",
+          "WHERE status IN ('pending', 'retrying') AND local_only = 0 AND sending_revision IS NULL",
         ) + " LIMIT ?",
       )
       .all(limit) as OutboxRow[];
@@ -1257,18 +1326,275 @@ export class SidecarStore {
     return row.rejected;
   }
 
-  /** The server took it. `itemKey` records the key it assigned to a create. */
-  markOutboxConfirmed(id: number, itemKey?: string): void {
+  /**
+   * Zotero took it. `itemKey` records the key a create was actually written under.
+   *
+   * When that key differs from the queued one, the replacement is RECORDED, not applied to later
+   * rows: the reader still names the mark by its own key, and whether that key now means this mark
+   * or another annotation that holds it in Zotero can only be decided inside the write transaction.
+   * Every later edit or deletion resolves through `outboxKeyReplacement` when it is written.
+   */
+  markOutboxConfirmed(id: number, itemKey?: string, sentRevision?: number): boolean {
+    const now = new Date().toISOString();
+    return this.#database.transaction(() => {
+      const previous = this.#database
+        .prepare(
+          `SELECT item_key AS itemKey, library_id AS libraryId, parent_item_key AS parentItemKey,
+                  operation, revision
+           FROM outbox WHERE id = ?`,
+        )
+        .get(id) as
+        | {
+            itemKey: string | null;
+            libraryId: number;
+            parentItemKey: string;
+            operation: OutboxOperation;
+            revision: number;
+          }
+        | undefined
+        | null;
+      // What was sent is not what is stored: the confirmation is for an older intent. The row stays
+      // waiting with its current payload. (No store method changes a claimed row's payload, so this
+      // is a guard, not a path.)
+      const current = sentRevision === undefined || previous?.revision === sentRevision;
+      if (current) {
+        this.#database
+          .prepare(
+            `UPDATE outbox
+             SET status = 'confirmed',
+                 item_key = COALESCE(?, item_key),
+                 last_error = NULL,
+                 sending_revision = NULL,
+                 send_interrupted = 0,
+                 shown_until_read = 1,
+                 confirmed_at = ?,
+                 updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(itemKey ?? null, Date.now(), now, id);
+      } else {
+        this.#database
+          .prepare(
+            `UPDATE outbox SET sending_revision = NULL, send_interrupted = 1, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(now, id);
+      }
+      if (
+        previous?.operation === "create" &&
+        previous.itemKey &&
+        itemKey &&
+        itemKey !== previous.itemKey
+      ) {
+        // A record already naming this key (WriteFlex records its own re-key, with the reader session,
+        // before sending) is kept as it is; only a different key replaces it.
+        this.#database
+          .prepare(
+            `INSERT INTO outbox_key_replacements (
+               library_id, parent_item_key, reader_key, zotero_key, created_at
+             ) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (library_id, parent_item_key, reader_key) DO UPDATE SET
+               zotero_key = excluded.zotero_key,
+               reader_session = NULL,
+               created_at = excluded.created_at
+             WHERE outbox_key_replacements.zotero_key <> excluded.zotero_key`,
+          )
+          .run(previous.libraryId, previous.parentItemKey, previous.itemKey, itemKey, now);
+      }
+      return current;
+    })();
+  }
+
+  /**
+   * Claim a row for writing: in one transaction, mark it as being sent at its current payload
+   * revision. Returns the row as claimed, or null when it is not due (already confirmed, refused,
+   * kept here, removed) or another drain holds it. A claimed row is never folded into or cancelled.
+   */
+  claimOutboxForSending(id: number): OutboxEntry | null {
+    return this.#database.transaction(() => {
+      const claimed = this.#database
+        .prepare(
+          `UPDATE outbox SET sending_revision = revision
+           WHERE id = ?
+             AND status IN ('pending', 'retrying')
+             AND local_only = 0
+             AND sending_revision IS NULL`,
+        )
+        .run(id);
+      if (claimed.changes !== 1) return null;
+      return this.outboxEntry(id);
+    })();
+  }
+
+  /**
+   * Put back every row a drain was writing when the app stopped. Each becomes due again, marked as
+   * interrupted: Zotero may already hold the write, and the next attempt must expect that.
+   * Run once when the app starts, before any drain. Returns how many rows were put back.
+   */
+  recoverInterruptedSends(): number {
+    const result = this.#database
+      .prepare(
+        `UPDATE outbox
+         SET sending_revision = NULL, send_interrupted = 1, updated_at = ?
+         WHERE sending_revision IS NOT NULL`,
+      )
+      .run(new Date().toISOString());
+    return result.changes;
+  }
+
+  /**
+   * Record that the create the reader names `readerKey` is to be written under `zoteroKey` (WriteFlex
+   * chose a fresh key because Zotero already holds `readerKey`). Later edits and deletions resolve
+   * through it, as for a key recorded on confirmation. Replaces an earlier record for the same mark.
+   * `readerSession` names the reader instance that made the create (WriteFlex); only its changes
+   * resolve through the record when a session is asked for.
+   */
+  recordOutboxKeyReplacement(
+    libraryId: number,
+    parentItemKey: string,
+    readerKey: string,
+    zoteroKey: string,
+    readerSession: string | null = null,
+  ): void {
+    this.#database
+      .prepare(
+        `INSERT OR REPLACE INTO outbox_key_replacements (
+           library_id, parent_item_key, reader_key, zotero_key, created_at, reader_session
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(libraryId, parentItemKey, readerKey, zoteroKey, new Date().toISOString(), readerSession);
+  }
+
+  /**
+   * The key a create under `readerKey` was written as, when Zotero's library could not take it. With
+   * `readerSession` given (a string or null), only a record made for that same session counts.
+   */
+  outboxKeyReplacement(
+    libraryId: number,
+    parentItemKey: string,
+    readerKey: string,
+    readerSession?: string | null,
+  ): string | null {
+    const row = this.#database
+      .prepare(
+        `SELECT zotero_key AS zoteroKey, reader_session AS readerSession FROM outbox_key_replacements
+         WHERE library_id = ? AND parent_item_key = ? AND reader_key = ?`,
+      )
+      .get(libraryId, parentItemKey, readerKey) as { zoteroKey: string; readerSession: string | null } | undefined | null;
+    if (!row) return null;
+    if (readerSession !== undefined && (row.readerSession ?? null) !== readerSession) return null;
+    return row.zoteroKey;
+  }
+
+  /** One row as it is now — what a drain re-reads before each write, never a stale batch copy. */
+  outboxEntry(id: number): OutboxEntry | null {
+    const row = this.#database
+      .prepare(this.#outboxQuery("WHERE id = ?"))
+      .get(id) as OutboxRow | undefined | null;
+    return row ?? null;
+  }
+
+  /** Run several outbox changes as one sidecar transaction: all of them happen, or none. */
+  runInTransaction<T>(work: () => T): T {
+    return this.#database.transaction(work)();
+  }
+
+  /**
+   * Every unconfirmed row for one document, oldest first, with no limit. The painted union reads
+   * this so a long log elsewhere can never push this document's rows out of a window.
+   */
+  outboxUnconfirmedFor(libraryId: number, parentItemKey: string): OutboxEntry[] {
+    return this.#database
+      .prepare(
+        this.#outboxQuery(
+          "WHERE status <> 'confirmed' AND library_id = ? AND parent_item_key = ?",
+        ),
+      )
+      .all(libraryId, parentItemKey) as OutboxRow[];
+  }
+
+  /**
+   * Confirmed rows of one document still painted from here, oldest first, each with when it was
+   * confirmed. WriteFlex retires a row at the first authoritative read of Zotero that started after
+   * that moment: the read holds the write, or a later Zotero change that supersedes it.
+   */
+  outboxConfirmedUnreadFor(libraryId: number, parentItemKey: string): Array<OutboxEntry & { confirmedAt: number | null }> {
+    const rows = this.#database
+      .prepare(this.#outboxQuery(
+        "WHERE status = 'confirmed' AND shown_until_read = 1 AND library_id = ? AND parent_item_key = ?",
+      ))
+      .all(libraryId, parentItemKey) as OutboxRow[];
+    const confirmedAt = this.#database.prepare("SELECT confirmed_at AS confirmedAt FROM outbox WHERE id = ?");
+    return rows.map((row) => ({
+      ...row,
+      confirmedAt: (confirmedAt.get(row.id) as { confirmedAt: number | null } | undefined)?.confirmedAt ?? null,
+    }));
+  }
+
+  /** An authoritative read of Zotero has made these confirmed rows moot: stop painting them from here. */
+  markOutboxRead(ids: readonly number[]): void {
+    const mark = this.#database.prepare(
+      "UPDATE outbox SET shown_until_read = 0 WHERE id = ? AND status = 'confirmed'",
+    );
+    for (const id of ids) mark.run(id);
+  }
+
+  /** Every row, any status, for one annotation key in one document — what a collapse decides on. */
+  outboxRowsForKey(
+    libraryId: number,
+    parentItemKey: string,
+    itemKey: string,
+  ): OutboxEntry[] {
+    return this.#database
+      .prepare(
+        this.#outboxQuery(
+          "WHERE library_id = ? AND parent_item_key = ? AND item_key = ?",
+        ),
+      )
+      .all(libraryId, parentItemKey, itemKey) as OutboxRow[];
+  }
+
+  /**
+   * Replace a not-yet-confirmed row's payload with a newer intent for the same annotation — how an
+   * edit folds into a create (or an earlier edit) that has not reached Zotero. Status, attempts,
+   * order and classification are untouched; a confirmed row is never rewritten, and neither is a row
+   * being sent or one whose last send was cut off (Zotero may already hold what it said).
+   */
+  replaceOutboxPayload(id: number, payload: string): boolean {
+    const result = this.#database
+      .prepare(
+        `UPDATE outbox SET payload = ?, revision = revision + 1, updated_at = ?
+         WHERE id = ? AND status <> 'confirmed' AND sending_revision IS NULL AND send_interrupted = 0`,
+      )
+      .run(payload, new Date().toISOString(), id);
+    return result.changes === 1;
+  }
+
+  /**
+   * Remove unconfirmed rows. Used ONLY when the reader deleted a mark that never reached Zotero: the
+   * create and everything queued after it cancel out, because there is nothing left to tell Zotero.
+   * A confirmed row is never removed, nor one being sent or whose last send was cut off: Zotero may
+   * already hold it.
+   */
+  cancelOutboxEntries(ids: readonly number[]): void {
+    const remove = this.#database.prepare(
+      "DELETE FROM outbox WHERE id = ? AND status <> 'confirmed' AND sending_revision IS NULL AND send_interrupted = 0",
+    );
+    for (const id of ids) remove.run(id);
+  }
+
+  /**
+   * Put a row that was kept local-only back into the queue, keeping its place in the order. For rows
+   * an older release kept only because no write path existed for them yet.
+   */
+  releaseOutboxLocalOnly(id: number): void {
     this.#database
       .prepare(
         `UPDATE outbox
-         SET status = 'confirmed',
-             item_key = COALESCE(?, item_key),
-             last_error = NULL,
-             updated_at = ?
-         WHERE id = ?`,
+         SET status = 'pending', local_only = 0, last_error = NULL, updated_at = ?
+         WHERE id = ? AND status <> 'confirmed'`,
       )
-      .run(itemKey ?? null, new Date().toISOString(), id);
+      .run(new Date().toISOString(), id);
   }
 
   /**
@@ -1282,6 +1608,7 @@ export class SidecarStore {
          SET status = ?,
              attempt_count = attempt_count + 1,
              last_error = ?,
+             sending_revision = NULL,
              updated_at = ?
          WHERE id = ?`,
       )
@@ -1293,6 +1620,27 @@ export class SidecarStore {
       );
   }
 
+  /**
+   * A write whose outcome is unknown: the request left, and no answer came back (a timeout, a dropped
+   * connection). The row waits again with its reason and is marked as interrupted, exactly as
+   * `recoverInterruptedSends` marks a row cut off by a quit, so the next attempt is sent as a resend
+   * and Zotero can recognise a change it already holds instead of making it twice.
+   */
+  markOutboxSendUncertain(id: number, reason: string): void {
+    this.#database
+      .prepare(
+        `UPDATE outbox
+         SET status = 'retrying',
+             attempt_count = attempt_count + 1,
+             last_error = ?,
+             sending_revision = NULL,
+             send_interrupted = 1,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(reason, new Date().toISOString(), id);
+  }
+
   /** Keep a structurally unsupported mark painted here without presenting it as Zotero work. */
   markOutboxLocalOnly(id: number, reason: string): void {
     this.#database
@@ -1302,6 +1650,7 @@ export class SidecarStore {
              attempt_count = attempt_count + 1,
              local_only = 1,
              last_error = ?,
+             sending_revision = NULL,
              updated_at = ?
          WHERE id = ?`,
       )
@@ -1313,13 +1662,16 @@ export class SidecarStore {
    * so nothing a reader wrote can vanish because someone else edited the same annotation.
    */
   markOutboxConflict(id: number, losingPayload: string, reason: string): void {
+    // A conflict always needs a person, so it is never local-only residue: it counts and is listed.
     this.#database
       .prepare(
         `UPDATE outbox
          SET status = 'conflict',
+             local_only = 0,
              attempt_count = attempt_count + 1,
              conflict_payload = ?,
              last_error = ?,
+             sending_revision = NULL,
              updated_at = ?
          WHERE id = ?`,
       )

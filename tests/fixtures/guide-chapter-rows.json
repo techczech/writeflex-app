@@ -4,6 +4,8 @@
       "subgroup": "Format text",
       "rows": [
         "Strikethrough",
+        "Flag the selection…",
+        "Clear flag at cursor",
         "Bold",
         "Italic",
         "Link",
@@ -216,7 +218,9 @@
         "Focus the review margin",
         "Accept all shown, or the selected",
         "Decline all shown, or the selected",
-        "Send the review back to the agent"
+        "Send the review back to the agent",
+        "Accept all from one agent…",
+        "Decline all from one agent…"
       ]
     },
     {
@@ -319,6 +323,7 @@
         "Start a Folio outline",
         "Turn back into a collection",
         "Open Folio outline",
+        "Link this Folio's chapters to their files",
         "Open Folio",
         "Open Folio at another part",
         "Previous piece in Folio",
@@ -328,6 +333,21 @@
         "Add to the running order",
         "Add all to the running order",
         "Undo last running-order or section move",
+        "Folio workspace: Outline",
+        "Folio workspace: Text",
+        "Folio workspace: Cards",
+        "Folio workspace: Map",
+        "Folio workspace: Flags",
+        "Folio workspace: Evidence",
+        "Folio workspace: Files",
+        "Folio workspace: Text beside the cards",
+        "Folio workspace: Show or hide the inspector",
+        "Expand or collapse a part’s headings (disclosure focused)",
+        "Open a focused Outline heading in the Text tab",
+        "Open the selected part in the Text tab",
+        "Move the card to the lane on the left",
+        "Move the card to the lane on the right",
+        "Move the selected part to the Folio bin",
         "Add a Folio outline part",
         "Add existing part to Folio outline",
         "Add existing part to Folio outline as front matter",
@@ -415,6 +435,7 @@
         "Open Agent",
         "Ask the agent about this…",
         "Switch the model for this chat",
+        "Set assistant mode",
         "Set the reasoning level for this chat",
         "Refresh models"
       ]
@@ -422,7 +443,17 @@
     {
       "subgroup": "Scratchpad",
       "rows": [
-        "Open Scratchpad"
+        "Open Scratchpad",
+        "Send a copy to Scratchpad",
+        "Cut to Scratchpad",
+        "Insert a copy from the Scratchpad",
+        "Put back the selected Scratchpad item",
+        "Compare the ticked Scratchpad items side by side",
+        "Open the big preview of the selected Scratchpad item",
+        "Reject the selected Scratchpad items",
+        "Move the selected Scratchpad items back to Candidates",
+        "Mark the selected Scratchpad item done or not done",
+        "Search the Scratchpad"
       ]
     }
   ],
@@ -460,6 +491,17 @@
   ],
   "Set up WriteFlex": [
     {
+      "subgroup": "View and text size",
+      "rows": [
+        "Show/hide left sidebar",
+        "Show/hide right pane",
+        "Show status details",
+        "View: Clean",
+        "View: Show markup",
+        "View: Show raw"
+      ]
+    },
+    {
       "subgroup": "Action bar",
       "rows": [
         "Show/Hide the action bar",
@@ -472,15 +514,6 @@
         "Toggle typing sounds",
         "Toggle ambient sound",
         "Use dark / light theme [variants: appearance.darkTheme, appearance.lightTheme]"
-      ]
-    },
-    {
-      "subgroup": "View and text size",
-      "rows": [
-        "Show status details",
-        "View: Clean",
-        "View: Show markup",
-        "View: Show raw"
       ]
     },
     {

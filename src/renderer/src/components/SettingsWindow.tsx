@@ -42,6 +42,7 @@ import {
   type LucideIcon,
   Compass,
   Scan,
+  NotebookPen,
 } from 'lucide-react'
 import { useIpcAuthFlow } from '@bridle/electron/renderer'
 import type {
@@ -115,6 +116,7 @@ import { ModelRefreshControl } from './ModelRefreshControl'
 import type { ModelsChecked } from '../../../shared/model-refresh'
 import { AboutPanel } from './settings/AboutPanel'
 import { SharingSettingsPanel } from './settings/SharingSettingsPanel'
+import { ScratchpadSettingsPanel } from './settings/ScratchpadSettingsPanel'
 import changelogSource from '../../../../CHANGELOG.md?raw'
 
 export type SettingsWindowProps = {
@@ -129,6 +131,8 @@ export type SettingsWindowProps = {
   typewriterOn: boolean
   /** The opened folder's name, for the Library section row. */
   workspaceName: string
+  /** The opened folder itself, for the Scratchpad section's rooted source-status calls. */
+  workspaceRoot?: string | null
   /** Installed platform voices; the voice choice exists only in the Read aloud section. */
   voices: SpeechVoiceInfo[]
   /** null means the operating system chooses its current default voice. */
@@ -171,6 +175,7 @@ const SECTIONS: Array<{ id: string; title: string; icon: LucideIcon }> = [
   { id: 'sec-appearance', title: 'Appearance', icon: SunMedium },
   { id: 'sec-action-bar', title: 'Action bar', icon: PanelTop },
   { id: 'sec-editor', title: 'Editor', icon: Type },
+  { id: 'sec-scratchpad', title: 'Scratchpad', icon: NotebookPen },
   { id: 'sec-reading-room', title: 'Reading Room', icon: BookOpen },
   { id: 'sec-read-aloud', title: 'Read aloud', icon: AudioLines },
   { id: 'sec-sounds', title: 'Sounds', icon: Volume2 },
@@ -254,6 +259,9 @@ const DEFAULT_DISPLAY: Record<string, string> = {
   'workspace.watchExternalChanges': 'On',
   [SHOW_PLACE_KEY]: 'On',
   'diary.folder': 'Not designated',
+  'scratchpad.talkweaver': 'Off',
+  'scratchpad.slidewell': 'Off',
+  'scratchpad.talkweaverVaults': 'None chosen',
   'diary.tick': 'On',
   'agent.thinkingLevel': 'medium',
 }
@@ -509,6 +517,7 @@ export function SettingsWindow({
   onRefresh,
   typewriterOn,
   workspaceName,
+  workspaceRoot = null,
   voices,
   selectedVoiceURI,
   initialSection,
@@ -820,6 +829,7 @@ export function SettingsWindow({
         ...bindableCommands.map((command) => `${command.label} ${command.task}`),
       ],
       'sec-sharing': [SHARING_SEARCH],
+      'sec-scratchpad': ['scratchpad browse talkweaver vaults search slidewell pictures connections vaults to browse check again'],
       'sec-about': [
         'about WriteFlex version release notes',
         ...(changelogSource.match(/^##\s+\[[^\]]+\].*$/gm) ?? []),
@@ -1997,6 +2007,8 @@ export function SettingsWindow({
                 })}
               </div>
             </div>
+
+            {sectionHasRow['sec-scratchpad'] && <ScratchpadSettingsPanel values={values} onSet={onSet} onFlash={onFlash} workspaceRoot={workspaceRoot} />}
 
             {sectionHasRow['sec-sharing'] && <SharingSettingsPanel onFlash={onFlash} onOpenSetup={onOpenSharingSetup} />}
 

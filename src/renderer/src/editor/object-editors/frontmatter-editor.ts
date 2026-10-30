@@ -89,6 +89,7 @@ export function mountFrontmatterEditor(source: string, options: MetadataPanelOpt
     const renderField = (field: MetadataEntry): HTMLElement => {
       const row = rows.find(r => r.key === field.key), value = row?.value ?? ''
       const box = node('div', `metadata-field${field.key === 'title' || field.key === 'standfirst' || field.list ? ' metadata-wide' : ''}`)
+      box.dataset.metadataKey = field.key
       const label = node('label', '', field.label); label.htmlFor = `${id}-${field.key}`
       const help = node('span', 'metadata-help', 'ⓘ'); help.tabIndex = 0; help.setAttribute('role', 'note'); help.title = field.explanation; help.setAttribute('aria-label', field.explanation)
       const explanation = node('span', 'sr-only', field.explanation); explanation.id = `${id}-${field.key}-help`

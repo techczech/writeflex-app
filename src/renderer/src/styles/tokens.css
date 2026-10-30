@@ -19,6 +19,8 @@
   --s-edit:#1f8a76; --s-edit-bg:rgba(31,138,118,.13);
   --s-ready:#2e9e5b; --s-ready-bg:rgba(46,158,91,.13);
   --s-pub:#8a8a90; --s-pub-bg:rgba(0,0,0,.05);
+  /* The Folio room's fixed eight-colour label palette (spec D-LBL-2), by list position. The first six are the locked mockup's. */
+  --folio-label-1:#4a78d6; --folio-label-2:#1f8a76; --folio-label-3:#2e9e5b; --folio-label-4:#c48a12; --folio-label-5:#8c6bd1; --folio-label-6:#a8a8ad; --folio-label-7:#c4432e; --folio-label-8:#b4387a;
   --collection-agent:#7a5af0; --collection-agent-bg:rgba(122,90,240,.10);
   --ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;
   --prose:"Source Serif 4",Georgia,"Times New Roman",serif;
@@ -67,6 +69,7 @@
   --s-edit:#55b6a2; --s-edit-bg:rgba(85,182,162,.17);
   --s-ready:#65c88c; --s-ready-bg:rgba(101,200,140,.16);
   --s-pub:#a2a2aa; --s-pub-bg:rgba(255,255,255,.08);
+  --folio-label-1:#7396e6; --folio-label-2:#55b6a2; --folio-label-3:#65c88c; --folio-label-4:#dcae48; --folio-label-5:#ab92e6; --folio-label-6:#8e8e96; --folio-label-7:#e27a69; --folio-label-8:#dc7ab2;
   --collection-agent:#a58cf5; --collection-agent-bg:rgba(165,140,245,.17);
   --bg-elev:#242428;
   --prose-ink:#d9d9de;

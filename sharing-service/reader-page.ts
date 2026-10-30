@@ -17,6 +17,7 @@
 //     page's secret address;
 //   - nothing is cached, so a turned-off link stops at once;
 //   - search engines are asked not to index or follow.
+import { LAYOUT_STYLES } from './reader-page-layout-styles.ts'
 import { NOTES_STYLES } from './reader-page-notes-styles.ts'
 import { READER_PAGE_RUNTIME, readerPageCsp } from './reader-runtime.ts'
 import type { PublishBody, PublishedPart } from './share-protocol.ts'
@@ -135,12 +136,13 @@ function readerBar(body: PublishBody): string {
   if (body.sharedBy) items.push(`<span class="it">${icon('link')}<span class="by">Shared by ${escapeHtml(body.sharedBy)}</span></span>`)
   const iso = new Date(body.savedAt).toISOString()
   items.push(`<span class="it">${icon('clock')}<span>Updated <time datetime="${iso}">${escapeHtml(formatUpdated(body.savedAt, body.timeZone))}</time></span></span>`)
-  if (!body.comments) items.push(`<span class="it">${icon('message-square-off')}<span>Comments are off for this link.</span></span>`)
-  return `<header class="rbar">${items.join('')}</header>`
+  const commentsOff = !body.comments ? `<span class="it comments-off">${icon('message-square-off')}<span>Comments are off for this link.</span></span>` : ''
+  const position = body.kind === 'folio' ? `<button class="contents-button" aria-controls="folio-contents" aria-expanded="false">Contents</button><span class="crumb"><b>${escapeHtml(body.title)}</b><span class="sep">/</span><span class="current-section">Cover</span></span>` : ''
+  return `<header class="rbar">${position}<div class="bar-meta">${items.join('')}</div>${commentsOff}</header>`
 }
 
 function masthead(body: PublishBody): string {
-  const chips = body.chips.map((chip) => `<span class="chip"><strong>${escapeHtml(chip.label)}</strong> · ${escapeHtml(chip.value)}</span>`).join('')
+  const chips = body.chips.filter(chip => chip.label.trim().toLowerCase() !== 'parts').map((chip) => `<span class="chip"><strong>${escapeHtml(chip.label)}</strong> · ${escapeHtml(chip.value)}</span>`).join('')
   return `<header class="hero wf-masthead"><h1>${escapeHtml(body.title)}</h1>${chips ? `<div class="meta-row">${chips}</div>` : ''}</header>`
 }
 
@@ -148,21 +150,44 @@ function madeWith(): string {
   return `<footer class="made-with"><a href="${MADE_WITH_URL}" rel="noopener noreferrer" referrerpolicy="no-referrer">Made with WriteFlex</a></footer>`
 }
 
-function folioSection(part: PublishedPart, index: number): string {
+/** `coverShown`: the part is the first shown and its title is the Folio's title, which the cover hero already
+ *  shows as its h1, so the section does not repeat it. The section keeps its `id="part-N"` anchor. */
+function folioSection(part: PublishedPart, index: number, coverShown: boolean): string {
   const number = index + 1
   const text = part.html === null ? '<p class="part-missing">This part is not available.</p>' : part.html
-  return `<section class="wf-bundle-section" id="part-${number}" aria-labelledby="part-${number}-title"><p class="plabel">Part ${number}</p>`
+  if (coverShown) return `<section class="wf-bundle-section" id="part-${number}">${text}</section>`
+  return `<section class="wf-bundle-section" id="part-${number}" aria-labelledby="part-${number}-title">`
     + `<h1 class="wf-bundle-section-title" id="part-${number}-title">${escapeHtml(part.title)}</h1>${text}</section>`
 }
 
-function folioContents(body: PublishBody): string {
-  const links = body.parts.map((part, index) => {
-    const head = `<a class="nav-link piece-link" href="#part-${index + 1}">${index + 1}. ${escapeHtml(part.title)}</a>`
-    const subs = part.headings.map((heading) => `<a class="nav-link level-3" href="#${escapeHtml(heading.id)}">${escapeHtml(heading.text)}</a>`).join('')
-    return head + subs
+/** Hide legacy empty cover parts without changing any remaining published part anchors. */
+function visibleParts(body: PublishBody): { part: PublishedPart; index: number }[] {
+  return body.parts.flatMap((part, index) => {
+    const empty = part.html !== null && !part.html.replace(/^\s*<h[1-6]\b[^>]*>[\s\S]*?<\/h[1-6]>/i, '')
+      .replace(/<\/?(?:p|div|br)\b[^>]*>/gi, '').replace(/&nbsp;|&#160;|&#x0*a0;/gi, ' ').trim()
+    return body.parts.length > 1 && empty && part.title.trim().toLowerCase() === body.title.trim().toLowerCase() ? [] : [{ part, index }]
+  })
+}
+
+/** HTML supplies levels; published heading ids and texts remain the source of navigation anchors. */
+function folioContents(body: PublishBody, parts: ReturnType<typeof visibleParts>): string {
+  const links = parts.map(({ part, index }, at) => {
+    const levels = new Map([... (part.html ?? '').matchAll(/<h([1-6])\b[^>]*\bid=["']([^"']+)["'][^>]*>/gi)].map(m => [m[2], Number(m[1])]))
+    let sections = '', subs = '', section = ''
+    const flush = () => { if (section) sections += `<div class="nav-section">${section}<div class="nav-subsections">${subs}</div></div>`; else sections += subs; subs = ''; section = '' }
+    for (const heading of part.headings) {
+      const level = levels.get(heading.id)
+      if (level !== 2 && level !== 3 && level !== 4) continue
+      const link = `<a class="nav-link level-${level}" href="#${escapeHtml(heading.id)}">${escapeHtml(heading.text)}</a>`
+      if (level === 2 || level === 3) { flush(); section = link } else subs += link
+    }
+    flush()
+    return `<details class="nav-part"${at === 0 ? ' open' : ''}><summary><a class="nav-link piece-link" href="#part-${index + 1}">${escapeHtml(part.title)}</a></summary><div class="nav-sections">${sections}</div></details>`
   }).join('')
-  return `<aside class="sidebar" aria-label="Contents"><div class="sidebar-inner"><h2 class="sidebar-title">${escapeHtml(body.title)}</h2>`
-    + `<p class="toc-label">Contents</p><nav>${links}</nav></div></aside>`
+  const author = body.chips.find(chip => chip.label.toLowerCase() === 'author')?.value
+  return `<aside class="sidebar" aria-label="Contents" id="folio-contents"><div class="sidebar-inner"><button class="close-contents">Close contents</button><h2 class="sidebar-title">${escapeHtml(body.title)}</h2>`
+    + `${author ? `<p class="sidebar-author">${escapeHtml(author)}</p>` : ''}<p class="toc-label">Contents</p><nav>${links}</nav>`
+    + `<div class="sidebar-meta">${body.sharedBy ? `<div>Shared by ${escapeHtml(body.sharedBy)}</div>` : ''}<div>Updated ${escapeHtml(formatUpdated(body.savedAt, body.timeZone))}</div></div></div></aside>`
 }
 
 const BODY_END = '</body></html>'
@@ -181,22 +206,25 @@ function documentShell(lang: string, title: string, inner: string, styles = STYL
  */
 function root(body: PublishBody, folio: boolean): string {
   const kind = folio ? ' folio' : ''
-  if (!body.comments) return `<div class="rp readonly${kind}">`
+  const layout = folio ? ' data-layout="folio"' : ''
+  if (!body.comments) return `<div class="rp readonly${kind}"${layout}>`
   const author = body.sharedBy ? ` data-author="${escapeHtml(body.sharedBy)}"` : ''
-  return `<div class="rp notes${kind}" data-view="margin" data-comments="on" data-revision="${body.revision}"${author}>`
+  return `<div class="rp notes${kind}"${layout} data-view="margin" data-comments="on" data-revision="${body.revision}"${author}>`
 }
 
 const NOTES_COLUMN = '<aside class="notes-col" aria-label="Comments"></aside>'
 
 /** The whole reader page for a published share, rendered once at publish time. */
 export function renderReaderPage(body: PublishBody): string {
-  const styles = body.comments ? `${STYLES}\n${NOTES_STYLES}` : STYLES
+  const styles = `${STYLES}\n${body.comments ? NOTES_STYLES : ''}\n${LAYOUT_STYLES}`
   const notes = body.comments ? NOTES_COLUMN : ''
   if (body.kind === 'folio') {
-    const sections = body.parts.map(folioSection).join('')
+    const parts = visibleParts(body)
+    const sections = parts.map(({ part, index }, at) => folioSection(part, index,
+      at === 0 && part.title.trim().toLowerCase() === body.title.trim().toLowerCase())).join('')
     return documentShell(body.lang, body.title,
-      `${root(body, true)}${readerBar(body)}<div class="rbody">${folioContents(body)}`
-      + `<article class="content">${masthead(body)}${sections}${madeWith()}</article>${notes}</div></div>`, styles)
+      `${root(body, true)}${readerBar(body)}<div class="rbody">${folioContents(body, parts)}${masthead(body)}`
+      + `<article class="content">${sections}${madeWith()}</article>${notes}</div><button class="contents-scrim" aria-label="Close contents"></button></div>`, styles)
   }
   return documentShell(body.lang, body.title,
     `${root(body, false)}${readerBar(body)}<div class="rbody">`

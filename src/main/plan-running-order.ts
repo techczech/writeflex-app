@@ -23,7 +23,7 @@ import { indexNoteExists } from './folio-manifest-order'
 import { addFolioPieces, reorderFolioPieces, type RunningOrderOutcome } from './folio-running-order'
 import { recordingAdd, undoRecordedAdd } from './folio-add-undo'
 import { folioPieces } from './folio'
-import { adoptParts, PlanWrittenButNotReRead, UNNAMEABLE_REFUSAL, readPlan, reorderParts, type Plan, type PlanWriteOptions } from './plan'
+import { adoptParts, createOrderManifest, IndexNoteChangedBeforeManifest, NO_INDEX_NOTE_FOR_OUTLINE, PlanWrittenButNotReRead, UNNAMEABLE_REFUSAL, readPlan, reorderParts, type Plan, type PlanWriteOptions } from './plan'
 import { withPlanLock } from './plan-lock'
 import { assertRelativeWorkspacePath, type Workspace } from './workspace'
 import { withoutAbsolutePaths } from '../shared/plain-error-text'
@@ -80,10 +80,14 @@ async function seenPlan(ws: Workspace, dir: string, expected: readonly PlanPartK
 }
 const isOutcome = (value: Plan | PlanOrderOutcome): value is PlanOrderOutcome => 'result' in value
 
-/** The check a Plan write makes against its own read: still exactly the running order the caller saw, and whatever else the request depends on. */
-function verifier(expected: readonly PlanPartKey[], alsoHolds: (fresh: Plan) => boolean = () => true): PlanWriteOptions['verifyPlan'] {
-  return (fresh: Plan): void => {
+/**
+ * The check a Plan write makes against its own read: still exactly the running order the caller saw, and whatever else
+ * the request depends on. `then` (a caller's own `verifyPlan`, the Folio room's) runs after it on the same read.
+ */
+function verifier(expected: readonly PlanPartKey[], alsoHolds: (fresh: Plan) => boolean = () => true, then?: PlanWriteOptions['verifyPlan']): PlanWriteOptions['verifyPlan'] {
+  return async (fresh, loaded): Promise<void> => {
     if (!samePlanParts(planPartKeys(fresh), expected) || !alsoHolds(fresh)) throw new StaleOrder()
+    await then?.(fresh, loaded)
   }
 }
 
@@ -128,16 +132,36 @@ export async function reorderPlanParts(ws: Workspace, dir: string, input: Omit<P
       if (!paths) return stale(STALE_PLAN_MESSAGE)
       return fromManifestOnly(await reorderFolioPieces(ws, dir, { order: order.map((index) => paths[index]), expected: paths }, options), expected)
     }
+    // A real move is checked against `expected` on the write's own read (`verifier`), so it reads the Plan once (spec
+    // folio-workspace § 5); only the same order, which writes nothing or the manifest alone, reads it first.
+    if (!order.every((from, to) => from === to)) {
+      try {
+        return done(await reorderParts(ws, dir, [...order], { ...options, verifyPlan: verifier(expected, undefined, options.verifyPlan) }))
+      } catch (error) {
+        if (error instanceof PlanWrittenButNotReRead) return madeUnread(error, target)
+        if (error instanceof StaleOrder) return stale(STALE_PLAN_MESSAGE)
+        if (error instanceof Error && error.message === NO_INDEX_NOTE_FOR_OUTLINE) return refused(NO_PLAN)
+        return refused(plain(ws, error))
+      }
+    }
     const seen = await seenPlan(ws, dir, expected, STALE_PLAN_MESSAGE)
     if (isOutcome(seen)) return seen
-    if (order.every((from, to) => from === to)) return { result: { ok: true, changed: false, parts: [...expected] }, plan: null }
-    try {
-      return done(await reorderParts(ws, dir, [...order], { ...options, verifyPlan: verifier(expected) }))
-    } catch (error) {
-      if (error instanceof PlanWrittenButNotReRead) return madeUnread(error, target)
-      if (error instanceof StaleOrder) return stale(STALE_PLAN_MESSAGE)
-      return refused(plain(ws, error))
+    // The same order: nothing to move. With `createManifest` on a Folio with no manifest the manifest is still created
+    // from this order (spec D-ORD-2), the manifest alone, and the Index Note is not written.
+    if (order.every((from, to) => from === to)) {
+      const unchanged: PlanOrderOutcome = { result: { ok: true, changed: false, parts: [...expected] }, plan: null }
+      if (options.createManifest !== true) return unchanged
+      try {
+        const written = await createOrderManifest(ws, dir, { ...options, verifyPlan: verifier(expected, undefined, options.verifyPlan) })
+        if (!written) return unchanged
+        return { result: { ok: true, changed: true, parts: planPartKeys(written) }, plan: null, manifestOnly: true }
+      } catch (error) {
+        if (error instanceof PlanWrittenButNotReRead) return { result: { ok: true, changed: true, parts: [...expected] }, plan: null, manifestOnly: true }
+        if (error instanceof StaleOrder || error instanceof IndexNoteChangedBeforeManifest) return stale(STALE_PLAN_MESSAGE)
+        return refused(plain(ws, error))
+      }
     }
+    return { result: { ok: true, changed: false, parts: [...expected] }, plan: null }
   })
 }
 

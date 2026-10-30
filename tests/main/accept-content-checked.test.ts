@@ -29,12 +29,13 @@ let agent: WorkspaceAgent
 let ledgerChanged: () => void = () => {}
 
 async function makeAgent(script?: { text: string; steps: ScriptedStep[] }): Promise<WorkspaceAgent> {
-  return WorkspaceAgent.create({
+  return WorkspaceAgent.create({ mode: 'work',
     workspace, appDataDir: appData, changes,
     onChangesChanged: () => ledgerChanged(), onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     ...(script ? { sessionFactory: scriptedSessionFactory([{
       prompt: script.text,
       rounds: [
+        { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: script.steps.map((step) => step.cap) } }] },
         { kind: 'tool-calls', calls: script.steps.map((step) => ({ name: step.cap, arguments: step.input as Record<string, unknown> })) },
         { kind: 'message', text: 'Scripted turn complete.' },
       ],
@@ -193,25 +194,27 @@ test('restoring a version is applied only to exactly the document it was propose
   expect(await read('talk.md')).toBe(original)
 })
 
-test('every whole-document operation is marked whole; a passage operation is not; accepting one closes a whole-document Change it made stale as superseded', async () => {
+test('a metadata request is a change to the frontmatter block, not the whole document; a passage edit leaves it placeable; a second one to the same block waits', async () => {
+  // Was (until 2026-10-27): metadata requests were whole-document Changes, closed as superseded by any accept in the same
+  // document. Now they are the whole old and new frontmatter blocks (frontmatter-change.ts): placed only while the block
+  // is exactly as proposed, never touching the body, and never closed when it is not: they wait.
   agent = await makeAgent()
   await write('a.md', `---\ntitle: Draft\n---\n\n${DOC}`)
-  const [frontmatter, normalise, replace] = await file(
+  const [frontmatter, audience, replace] = await file(
     ['set-frontmatter', { path: 'a.md', key: 'status', value: 'draft' }],
     ['set-frontmatter', { path: 'a.md', key: 'audience', value: 'editors' }],
     ['replace', { path: 'a.md', target: 'The second sentence is wordy and long.', with: 'The second sentence is short.' }],
   )
-  expect([frontmatter, normalise, replace].map(isWholeDocumentChange)).toEqual([true, true, false])
+  expect([frontmatter, audience, replace].map(isWholeDocumentChange)).toEqual([false, false, false])
+  expect([frontmatter, audience, replace].map((change) => (change as { frontmatter?: true }).frontmatter === true)).toEqual([true, true, false])
 
   expect(await agent.resolveChange(replace.id, 'accept')).toMatchObject({ applied: true })
-
-  for (const change of [frontmatter, normalise]) {
-    const closed = (await changes.get(change.id))!
-    expect(closed.status).toBe('rejected')
-    expect(closedReasonOf(closed)).toContain('Another change to a.md was accepted first')
-    expect(closedReasonOf(closed)).toContain('has changed since this change was proposed')
-    expect(closedCodeOf(closed)).toBe('superseded')
-  }
+  for (const change of [frontmatter, audience]) expect((await changes.get(change.id))!.status).toBe('pending')
+  expect(await agent.resolveChange(frontmatter.id, 'accept')).toMatchObject({ applied: true })
+  expect((await changes.get(audience.id))!.status).toBe('pending')
+  expect(await agent.resolveChange(audience.id, 'accept')).toMatchObject({ applied: false })
+  expect((await changes.get(audience.id))!.status).toBe('pending')
+  expect(await read('a.md')).toBe(`---\ntitle: Draft\nstatus: draft\n---\n\n${DOC.replace('The second sentence is wordy and long.', 'The second sentence is short.')}`)
 })
 
 test('accepting an already accepted Change writes nothing: an insertion accepted twice is in the document once', async () => {

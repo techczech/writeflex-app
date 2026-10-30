@@ -31,6 +31,7 @@
  * Pure: no React, no IPC of its own.
  */
 import type { FileReadResult, WriteFlexApi } from '../../../preload'
+import type { ScratchPlacementReceipt } from '../../../shared/scratchpad-items'
 import type { SuggestionResolutionEffect } from '../editor/suggestion-resolution-history'
 import { editorTextOf, isTextChange } from '../../../shared/line-endings'
 import { minimalReplace } from '../editor/reconcile'
@@ -63,7 +64,7 @@ export type AcceptRedoPorts = {
 const NOT_REPLAYED = 'Could not replay that suggestion resolution.'
 
 /** What main answers an accept (preload `resolveChange`, in the shape read here). */
-export type AcceptAnswer = { applied: boolean; file?: FileReadResult; written?: string; message?: string; changedOnDisk?: { path: string; diskText: string | null } }
+export type AcceptAnswer = { applied: boolean; file?: FileReadResult; written?: string; message?: string; changedOnDisk?: { path: string; diskText: string | null }; scratchPlacement?: ScratchPlacementReceipt }
 
 /** Main refused the write because the file changed after main read it (`changedOnDisk`): the owner reads
  *  the disk and the writer is asked with the changed-on-disk notice (Reload or Keep mine), whether or not
@@ -85,7 +86,7 @@ export type AcceptPorts = {
   /** The editor takes `resolvedContent` as an undoable edit of the document (the smallest replacement
    *  from the text it holds now); false when it did not (the document is not the live one, or the live
    *  one is a historical view). */
-  recordInEditor(path: string, id: string, resolvedContent: string | undefined): boolean
+  recordInEditor(path: string, id: string, resolvedContent: string | undefined, scratchPlacement?: ScratchPlacementReceipt): boolean
   /** Typing arrived while main applied the change and the change cannot be applied onto it as the range
    *  it changed: the buffer is kept, on its old baseline, and `diskText` (main's version) is asked about
    *  with the changed-on-disk banner. */
@@ -160,7 +161,7 @@ export async function acceptThroughOwner<A extends AcceptAnswer>(ports: AcceptPo
       }
       resolvedContent = merged
     }
-    const recorded = ports.recordInEditor(path, id, resolvedContent)
+    const recorded = ports.recordInEditor(path, id, resolvedContent, result.scratchPlacement?.path === path ? result.scratchPlacement : undefined)
     // A document this window never read (not open here) has no baseline to set: nothing to reconcile.
     if (!recorded && ports.owner.baselineDiskOf(path) === undefined) return { result, recorded }
     // Review F3: every outcome reaches the owner with its receipt. Taken by the editor as an edit of its

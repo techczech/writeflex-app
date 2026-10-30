@@ -1,3 +1,4 @@
+import { withFolioTitleIdentity } from '../folio-title-write'
 /**
  * What an operation that writes is given, and the conditions under which it gets it:
  *
@@ -31,6 +32,9 @@
  * the app's history stores through their own code (`saveVersion`; history-store.ts), under the same
  * lock, confirmed again before each store is written.
  */
+import { withFolioNotices } from '../folio-declaration'
+import { settleVersionMoves } from '../version-moves'
+import { reattachVersionHistory, type HistoryRequest, type HistoryResult } from '../version-history-reattach'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { standardRecordsPlace, type RecordsPlace, type VariantFolder } from '../collection-records'
@@ -87,6 +91,7 @@ export function recordsPlace(env: WriteEnv): RecordsPlace {
 }
 
 export type WriteAccess = {
+  history?: (request: HistoryRequest) => Promise<HistoryResult>
   /** Reads are guarded and every save goes through `session` (write-session.ts). */
   workspace: Workspace
   session: WriteSession
@@ -208,6 +213,7 @@ export type AccessParts = {
   trash: TrashMover
   now: () => Date
   saveVersion: WriteAccess['saveVersion']
+  history?: WriteAccess['history']
   followLedger?: WriteAccess['followLedger']
   byApp?: boolean
   sharing?: SharingFollow
@@ -225,8 +231,14 @@ export type AccessParts = {
  */
 export async function runWithAccess<T>(parts: AccessParts, work: (access: WriteAccess) => Promise<T>): Promise<T> {
   const { root, operation, session, journal, intent } = parts
+  const titleNotices: string[] = []
+  const titleWorkspace = withFolioTitleIdentity(parts.workspace, {
+    onWarning: message => { titleNotices.push(message); if (parts.byApp) parts.workspace.announceWriteNotice(message) },
+    onLinked: () => { const message = "WriteFlex now links this Folio's chapters to their files"; titleNotices.push(message); if (parts.byApp) parts.workspace.announceWriteNotice(message) },
+  })
   const access: WriteAccess = {
-    workspace: parts.workspace, session, journal, trash: parts.trash, now: parts.now, saveVersion: parts.saveVersion,
+    ...(parts.history ? { history: parts.history } : {}),
+    workspace: titleWorkspace, session, journal, trash: parts.trash, now: parts.now, saveVersion: parts.saveVersion,
     ...(parts.followLedger ? { followLedger: parts.followLedger } : {}), ...(parts.byApp ? { byApp: true } : {}),
     ...(parts.sharing ? { sharing: parts.sharing } : {}),
     commit: async (summary) => {
@@ -237,7 +249,14 @@ export async function runWithAccess<T>(parts: AccessParts, work: (access: WriteA
     },
   }
   try {
-    const result = await work(access)
+    let { result, notices } = await withFolioNotices(() => work(access))
+    notices = [...notices, ...titleNotices]
+    if (notices.length && result && typeof result === 'object') {
+      result = { ...result, notices,
+        ...('text' in result && typeof result.text === 'string' ? { text: `${result.text}\n${notices.join('\n')}` } : {}),
+        ...('data' in result && result.data && typeof result.data === 'object' ? { data: { ...result.data, notices } } : {}),
+      }
+    }
     // An operation that changed existing files and did not say so is still recorded, never left as interrupted.
     if (intent?.started && session.changedExisting) await access.commit(operation)
     return result
@@ -295,6 +314,7 @@ export async function withWriteAccess<T>(found: CollectionRoot, env: WriteEnv, o
   const { root } = found
   try {
     return await withOwnerLock(root, { ...env.lockEnv, kind: 'command-line', waitMs: OTHER_COMMAND_WAIT_MS }, async (lock) => {
+      settleVersionMoves(root, true)
       // What an earlier write left when it was killed between writing a temporary file and renaming it.
       await removeStaleTemporaryFiles(root, { now: env.now })
       const journal = new Journal(root, recordsPlace(env), { now: env.now, maxEntryBytes: env.maxJournalEntryBytes, ...(env.journalSeams ? { seams: env.journalSeams } : {}) })
@@ -315,6 +335,7 @@ export async function withWriteAccess<T>(found: CollectionRoot, env: WriteEnv, o
           await env.seams?.beforeWrite?.(input.path)
           return saveVersionFromCommandLine(guarded, confirmOwner, input, { afterCheck: env.seams?.betweenCheckAndWrite })
         },
+        history: (request) => reattachVersionHistory(guarded, request, confirmOwner),
         followLedger: (moves) => followRenamesInLedger(guarded, confirmOwner, moves),
         sharing: commandLineSharingFollow(root, env),
       }, work)

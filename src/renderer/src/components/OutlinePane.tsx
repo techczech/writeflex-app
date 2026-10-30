@@ -11,7 +11,7 @@ import {
   type RefObject,
 } from 'react'
 import { commandRan } from '../commands/command-ran'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, ChevronDown, Columns3, ListOrdered, MessageSquareDashed, Search, SquareCheck, SquareMinus, SquarePlus } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, ChevronDown, MessageSquareDashed, Search, SquareCheck, SquareMinus, SquarePlus } from 'lucide-react'
 import { EditorView } from '@codemirror/view'
 import { EditorSelection } from '@codemirror/state'
 import type { EditorHandle } from './EditorPane'
@@ -51,6 +51,9 @@ export type OutlineRequest = {
 }
 
 type OutlinePaneProps = {
+  /** The Folio whose workspace owns this outline, including when no part is open. */
+  workspaceDir?: string
+
   /** The window's editor handle — the panel resolves jump offsets off the live doc and jumps through it. */
   editorRef: RefObject<EditorHandle | null>
   /** The shared debounced editor snapshot (App's useEditorSnapshot): the doc text this pane scans for
@@ -59,7 +62,7 @@ type OutlinePaneProps = {
   /** The path currently in the editor; a change resets this pane's collapse + focus state. */
   activePath: string | null
   /** Folder scope: land the caret on a line of a (possibly other) file — opens it first if needed. */
-  onJumpToFile: (file: string, line: number) => void
+  onJumpToFile: (file: string, line: number, isPart?: boolean) => void
   /** Bumped by App each time a save completes. Folder scope is disk-backed, so it must re-scan when a
    *  save lands a new `//@`/`//`/task on disk — otherwise the view ignores the save the user just made. */
   savedTick: number
@@ -77,10 +80,9 @@ type OutlinePaneProps = {
   /** Files listed under the open file's folder (sub-folders included), for the Folder part's foot. */
   folderFileCount: number
   /** Open a file (a piece, or one of "Also in this folder"). */
-  onOpenFile: (path: string) => void
-  /** The Folio part's Plan and Board buttons. */
+  onOpenFile: (path: string, isPart?: boolean) => void
+  /** Open Manage Folio for an order that must be changed there. */
   onOpenPlan: () => void
-  onOpenBoard: () => void
   onStatus: (message: string) => void
   /** The Folio part's running-order changes: moves, Add, Undo, and what they announce. */
   runningOrder: FolioRunningOrder
@@ -282,12 +284,13 @@ function sameSet(a: ReadonlySet<number>, list: readonly number[]): boolean {
  * rows drag up/down to move a section and sideways to change its level; ⌘/⇧-click picks several; the
  * header bar, Levels drop-down and right-click menu run the structure commands; rows can show word counts.
  */
-export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, onJumpToFile, savedTick, focusTick, shortcutFor, request, folioPlace, folderFileCount, onOpenFile, onOpenPlan, onOpenBoard, onStatus, runningOrder, folioRefreshTick }: OutlinePaneProps): JSX.Element {
-  const [chosenPart, setScope] = useState<Scope>('file')
+export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot, activePath, onJumpToFile, savedTick, focusTick, shortcutFor, request, folioPlace, folderFileCount, onOpenFile, onOpenPlan, onStatus, runningOrder, folioRefreshTick }: OutlinePaneProps): JSX.Element {
+  const [chosenPart, setScope] = useState<Scope>(workspaceDir !== undefined || request?.action === 'showFolio' ? 'folder' : 'file')
   // With no file open there is no folder to list: the Document part shows, whatever was chosen.
-  const scope: Scope = activePath == null ? 'file' : chosenPart
-  const folioPart = scope === 'folder' && folioPlace !== null
-  const second = outlineSwitch(activePath != null, folioPlace)
+  const scope: Scope = activePath == null && workspaceDir === undefined ? 'file' : chosenPart
+  const folioPart = scope === 'folder' && (workspaceDir !== undefined || folioPlace !== null)
+  const second = outlineSwitch(activePath != null || workspaceDir !== undefined, workspaceDir === undefined ? folioPlace : { dir: workspaceDir })
+  useEffect(() => { if (workspaceDir !== undefined) setScope('folder') }, [workspaceDir])
   // The Folio part (read-only): the Folio's pieces and the folder's other files with their headings, from main.
   const [folioOutline, setFolioOutline] = useState<FolioOutline | null>(null)
   const [folioExpanded, setFolioExpanded] = useState<ReadonlyMap<string, boolean>>(() => new Map())
@@ -503,14 +506,14 @@ export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, o
 // The Folio part asks main when it is shown, and again when the open file, a save, or the collection
   // changes. Main lists the folder and re-reads only files that changed, so this is cheap on a tab switch.
   useEffect(() => {
-    if (!folioPart || activePath == null) return
+    if (!folioPart || (activePath == null && workspaceDir === undefined)) return
     let cancelled = false
     void window.writeflex
-      .readFolioOutline(activePath)
+      .readFolioOutline(workspaceDir !== undefined ? `${workspaceDir ? `${workspaceDir}/` : ''}_report-structure.json` : activePath!)
       .then((next) => { if (!cancelled) setFolioOutline((current) => (JSON.stringify(current) === JSON.stringify(next) ? current : next)) })
       .catch(() => { if (!cancelled) setFolioOutline(null) })
     return () => { cancelled = true }
-  }, [folioPart, activePath, savedTick, folioChanged, folioRefreshTick])
+  }, [folioPart, activePath, workspaceDir, folioPlace?.dir, savedTick, folioChanged, folioRefreshTick])
   useEffect(() => {
     if (!folioPart) return
     const bump = (): void => setFolioChanged((n) => n + 1)
@@ -519,13 +522,14 @@ export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, o
     return () => { offCollection(); offDisk() }
   }, [folioPart])
   // A different Folio starts again from "the open piece expanded, the others collapsed".
-  const folioDir = folioPlace?.dir ?? null
+  const folioDir = workspaceDir ?? folioPlace?.dir ?? null
   useEffect(() => { setFolioExpanded(new Map()) }, [folioDir])
   const folioShown = folioOutline !== null && folioOutline.dir === folioDir ? folioOutline : null
   const setFolioOpen = useCallback((key: string, open: boolean) => {
     setFolioExpanded((current) => new Map(current).set(key, open))
   }, [])
   const makeFolio = useCallback(() => {
+    window.dispatchEvent(new Event('writeflex:make-folio'))
     void window.writeflex
       .makeFolio(folderSubpath ?? '')
       .catch((error: Error) => onStatus(error?.message ?? 'Could not make this folder a Folio.'))
@@ -1022,7 +1026,7 @@ export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, o
       {/* Document ⟷ Folder, or Document ⟷ Folio when the open file's folder is a Folio (PRD S18). */}
       <span className="scope-seg" role="group" aria-label="Outline part">
         <button type="button" data-scope="file" aria-pressed={scope === 'file'} title="Headings of the open piece" onClick={() => selectScope('file')}>
-          Document
+          Document outline
         </button>
         <button
           type="button"
@@ -1032,15 +1036,10 @@ export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, o
           title={second.second === 'Folio' ? 'The Folio of this folder: its pieces in running order, with their headings' : 'Every file in this folder, with its headings'}
           onClick={() => selectScope('folder')}
         >
-          {second.second}
+          {second.second === 'Folio' ? 'Folio outline' : second.second}
         </button>
       </span>
-      {folioPart && (
-        <div className="fo-actions">
-          <button type="button" data-action="openPlan" title={`Open the Folio outline for ${folioPlace?.name ?? 'this Folio'}`} onClick={onOpenPlan}><ListOrdered className="icon sm" aria-hidden="true" />Folio outline</button>
-          <button type="button" data-action="openBoard" title={`Open the Board for ${folioPlace?.name ?? 'this Folio'}`} onClick={onOpenBoard}><Columns3 className="icon sm" aria-hidden="true" />Board</button>
-        </div>
-      )}
+      <div className={folioPart ? "ol-controls folio-controls" : "ol-controls"}>
       <div className="ol-bar" role="toolbar" aria-label="Outline actions">
         {/* A Folio the Outline cannot change shows no Move arrows: they would refuse every time. */}
         {!(folioPart && folioShown?.orderInPlanOnly) && (<>
@@ -1088,10 +1087,11 @@ export function OutlinePane({ editorRef, snapshot: sharedSnapshot, activePath, o
           </button>
         ))}
       </div>
+      </div>
       {folioPart ? (
         folioShown ? (
           <FolioOutlinePart
-            outline={folioShown}
+            outline={workspaceDir === undefined ? folioShown : { ...folioShown, binder: undefined }}
             openPath={activePath}
             bufferHeadings={headings}
             bufferPath={snapshot ? snapshot.path : null}

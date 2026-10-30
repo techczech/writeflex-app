@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // Your own address (src/main/sharing-own-address.ts through src/main/sharing-setup.ts; sharing ticket
 // 05, spec 4.1, 6.1 rows "No domain attached" to "Domain removed or lapsed", 8 "Own address"), against
 // the recorded stand-in for Cloudflare's API (tests/helpers/fake-cloudflare.ts). No real Cloudflare call.
@@ -870,3 +871,6 @@ test('round 3: linksAddressUntil is the confirmation plus a day while links use 
   expect(linksAddressUntil({ address: CLOUDFLARE, ownAddress: { ...own, lapsed: true } }, at + 1000)).toBeNull()
   expect(linksAddressUntil({ address: CLOUDFLARE, ownAddress: null }, at + 1000)).toBeNull()
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

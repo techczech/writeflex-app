@@ -12,6 +12,7 @@
  */
 
 import { partChildHeadings, type PartHeadingMode } from './folio-part-title'
+import { sectionMembership } from './folio-sections'
 import type { FolioOutline } from './folio-outline'
 
 export type FlowPartInput<T extends { level: number; text: string }> = {
@@ -22,6 +23,7 @@ export type FlowPartInput<T extends { level: number; text: string }> = {
   mode: PartHeadingMode
   /** Every ATX heading of the part, in order. */
   headings: readonly T[]
+  sectionPage?: boolean
   frontMatter?: boolean
 }
 
@@ -31,7 +33,7 @@ export type FlowPart<T extends { level: number; text: string }> = {
   path: string
   title: string
   /** `front`: before the contents. `chapter`: a chapter row. `continues`: opens deeper than the chapter level, so it nests under the part before it. */
-  role: 'front' | 'chapter' | 'continues'
+  role: 'front' | 'chapter' | 'continues' | 'section'
   /** Contents parts only: the 1-based number of the chapter this part is (chapter) or sits under (continues). */
   chapterNumber: number | null
   /** The input index of that chapter's part. */
@@ -52,6 +54,8 @@ export type FlowRow<T extends { level: number; text: string }> =
 export type HeadingFlow<T extends { level: number; text: string }> = {
   /** The chapter level (1 when no contents part has a heading). */
   chapterLevel: number
+  /** Present only when section pages exist; input indexes, in order. */
+  sections?: number[]
   chapters: number
   /** Input indexes of the front-matter parts, in order. */
   front: number[]
@@ -74,6 +78,7 @@ function commonLevel(levels: readonly number[]): number {
 }
 
 export function folioHeadingFlow<T extends { level: number; text: string }>(inputs: readonly FlowPartInput<T>[]): HeadingFlow<T> {
+  if (inputs.some(part => part.sectionPage && !part.frontMatter)) return sectionHeadingFlow(inputs)
   const firstLevelOf = (part: FlowPartInput<T>): number | null => (part.mode === 'none' ? null : part.headings[0]?.level ?? null)
   const counted = inputs.flatMap((part) => (part.frontMatter === true ? [] : [firstLevelOf(part)])).filter((level): level is number => level !== null)
   const chapterLevel = counted.length === 0 ? 1 : commonLevel(counted)
@@ -119,6 +124,7 @@ export function folioOutlineFlow(outline: FolioOutline): HeadingFlow<{ level: nu
     title: file.title,
     mode: file.heading ?? 'own',
     frontMatter: file.frontMatter === true,
+    sectionPage: file.sectionPage === true,
     headings: file.headings.map((heading) => ({ level: heading.level, text: heading.text })),
   })))
 }
@@ -128,4 +134,43 @@ export function continuesChip<T extends { level: number; text: string }>(flow: H
   const part = flow.parts[index]
   if (!part || part.role !== 'continues' || part.chapterNumber === null || part.chapterIndex === null) return null
   return `continues ${part.chapterNumber} \u00b7 ${flow.parts[part.chapterIndex].title}`
+}
+
+/** The existing chapter/continues rule runs independently within each section (and the unsectioned prefix).
+ * Section membership is running order alone; heading levels never create or end a section. No sections:
+ * the original function above returns exactly its old shape, including property order.
+ */
+function sectionHeadingFlow<T extends { level: number; text: string }>(inputs: readonly FlowPartInput<T>[]): HeadingFlow<T> {
+  const owners = sectionMembership(inputs)
+  const sections = inputs.flatMap((part, i) => part.sectionPage && !part.frontMatter ? [i] : [])
+  const parts = new Array<FlowPart<T>>(inputs.length)
+  let chapters = 0
+  for (const owner of [null, ...sections]) {
+    const indexes = inputs.flatMap((part, i) => !part.frontMatter && !part.sectionPage && owners[i] === owner ? [i] : [])
+    const group = folioHeadingFlow(indexes.map(i => ({ ...inputs[i], sectionPage: false })))
+    for (const part of group.parts) {
+      const offset = owner === null ? 0 : 1
+      parts[indexes[part.index]] = { ...part, index: indexes[part.index], chapterNumber: part.chapterNumber === null ? null : chapters + part.chapterNumber,
+        chapterIndex: part.chapterIndex === null ? null : indexes[part.chapterIndex], depth: part.depth + offset,
+        children: part.children.map(heading => ({ ...heading, depth: heading.depth + offset })) }
+    }
+    chapters += group.chapters
+  }
+  const front: number[] = []
+  inputs.forEach((part, index) => {
+    if (part.frontMatter) {
+      front.push(index)
+      parts[index] = { ...folioHeadingFlow([{ ...part, sectionPage: false }]).parts[0], index }
+    } else if (part.sectionPage) {
+      parts[index] = { ...folioHeadingFlow([{ ...part, sectionPage: false }]).parts[0], index, role: 'section', chapterNumber: null, chapterIndex: null }
+    }
+  })
+  const rows: Array<FlowRow<T>> = []
+  for (const part of parts) {
+    if (part.role === 'front') continue
+    rows.push({ kind: 'mark', partIndex: part.index, path: part.path })
+    rows.push({ kind: 'part', partIndex: part.index, path: part.path, text: part.title, depth: part.depth, continues: part.role === 'continues' })
+    for (const heading of part.children) rows.push({ kind: 'heading', partIndex: part.index, path: part.path, text: heading.text, depth: heading.depth, heading })
+  }
+  return { chapterLevel: 1, chapters, front, parts, rows, sections }
 }

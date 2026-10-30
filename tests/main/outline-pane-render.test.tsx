@@ -33,7 +33,6 @@ test('document outline derives a compact H1 through H5 indent and caps deeper le
       folderFileCount={0}
       onOpenFile={() => {}}
       onOpenPlan={() => {}}
-      onOpenBoard={() => {}}
       onStatus={() => {}}
     />,
   )
@@ -61,7 +60,6 @@ test('the header bar reads ↑ ↓ ← → | collapse-all expand-all, then a Lev
       folderFileCount={0}
       onOpenFile={() => {}}
       onOpenPlan={() => {}}
-      onOpenBoard={() => {}}
       onStatus={() => {}}
     />,
   )
@@ -90,14 +88,13 @@ const SWITCH_PROPS = {
   folderFileCount: 0,
   onOpenFile: () => {},
   onOpenPlan: () => {},
-  onOpenBoard: () => {},
   onStatus: () => {},
 }
 
-test('the switch reads Document | Folio for a Folio file, Document | Folder otherwise, and Folder is disabled with no file open', () => {
+test('the switch reads Document outline | Folio outline for a Folio file, Document outline | Folder otherwise, and Folder is disabled with no file open', () => {
   const inFolio = renderToStaticMarkup(<OutlinePane {...SWITCH_PROPS} activePath="paper/a.md" folioPlace={{ dir: 'paper', name: 'paper', kind: 'piece', position: 1, total: 1, previous: null, next: null }} />)
   expect(inFolio).toMatch(/data-scope="file"[^>]*>\s*Document/)
-  expect(inFolio).toMatch(/data-scope="folio"[^>]*>Folio</)
+  expect(inFolio).toMatch(/data-scope="folio"[^>]*>Folio outline</)
   expect(inFolio).not.toContain('Make a Folio')
   const plain = renderToStaticMarkup(<OutlinePane {...SWITCH_PROPS} activePath="notes/a.md" folioPlace={null} />)
   expect(plain).toMatch(/data-scope="folder"[^>]*>Folder</)
@@ -130,7 +127,6 @@ const paneHtml = (snapshotPath: string, outline: Array<{ level: number; from: nu
     folderFileCount={0}
     onOpenFile={() => {}}
     onOpenPlan={() => {}}
-    onOpenBoard={() => {}}
     onStatus={() => {}}
   />,
 )

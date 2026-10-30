@@ -152,7 +152,7 @@ function pieceSources(dir: string, fact: MaterialFact, resolve: Resolver, titles
  * origin. Sources are the frontmatter `sources:` list in its order, then research notes the text
  * wikilinks to in text order, each counted once (by resolved file, else by the entry's name).
  */
-export function collectionMaterial(dir: string, facts: MaterialFact[]): Map<string, PieceMaterial> {
+export function collectionMaterial(dir: string, facts: MaterialFact[], loose: readonly LooseScrap[] = []): Map<string, PieceMaterial> {
   const resolve = resolverFor(dir, facts)
   const titles = new Map(facts.map((fact) => [fact.path, fact.title]))
   const scrapsByOrigin = new Map<string, Array<{ id: string; text: string }>>()
@@ -161,6 +161,8 @@ export function collectionMaterial(dir: string, facts: MaterialFact[]): Map<stri
     const origin = originForScrapsPath(fact.path)
     scrapsByOrigin.set(origin, [...(scrapsByOrigin.get(origin) ?? []), ...fact.scraps])
   }
+  // The floating Scratchpad's waiting items count for the piece they were cut from, after its scraps file's.
+  for (const scrap of loose) scrapsByOrigin.set(scrap.origin, [...(scrapsByOrigin.get(scrap.origin) ?? []), { id: scrap.id, text: scrap.text }])
 
   const material = new Map<string, PieceMaterial>()
   for (const fact of facts) {
@@ -182,7 +184,14 @@ export function collectionMaterial(dir: string, facts: MaterialFact[]): Map<stri
  * Collection, with the piece it was cut from and the day it was cut. `scrapsPath` is the scraps file
  * that holds it; `suggestedName` prefills the name field when it becomes an idea (frame 2).
  */
+/** A floating Scratchpad item waiting to be used (scrap-listing.ts): material of its origin piece, with
+ *  no scraps file. `text` is its exact Markdown. */
+export type LooseScrap = { id: string; origin: string; text: string; done: boolean; createdAt: string | null }
+
 export type Offcut = {
+  /** `lossless`: kept in the floating Scratchpad (`scrapsPath` is empty); Board promote and append
+   *  take it through the Scratchpad store's Board seam (ticket 04), never a scraps file. */
+  source?: 'lossless'
   id: string
   text: string
   firstWords: string
@@ -249,6 +258,21 @@ export function collectionOffcuts(facts: MaterialFact[], now = Date.now()): Map<
     })))
   }
   return offcuts
+}
+
+/** The floating Scratchpad's waiting items as offcuts, keyed by the origin piece they belong to. */
+export function looseOffcuts(facts: MaterialFact[], loose: readonly LooseScrap[]): Map<string, Offcut[]> {
+  const titles = new Map(facts.map((fact) => [fact.path, fact.title]))
+  const out = new Map<string, Offcut[]>()
+  for (const scrap of loose) {
+    const day = scrap.createdAt && !Number.isNaN(Date.parse(scrap.createdAt)) ? scrap.createdAt.slice(0, 10) : null
+    out.set(scrap.origin, [...(out.get(scrap.origin) ?? []), {
+      source: 'lossless', id: scrap.id, text: scrap.text, firstWords: firstWords(scrap.text), suggestedName: ideaNameFrom(scrap.text),
+      done: scrap.done, scrapsPath: '', origin: scrap.origin,
+      originTitle: titles.get(scrap.origin) ?? posix.basename(scrap.origin).replace(MARKDOWN_EXTENSION, ''), cutOn: day,
+    }])
+  }
+  return out
 }
 
 /** A piece as the Sources rail names it under a source that uses it. */

@@ -20,6 +20,8 @@ import { open, stat } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { folioOrderFacts } from './folio-order-facts'
 import { folioContaining } from './folio-place'
+import { folioBinder } from './folio-room'
+import { declaresSectionPage } from '../shared/folio-sections'
 import { partTitle, titleFromFileName } from '../shared/folio-part-title'
 import { scanText } from './jumps'
 import { fingerprintOf } from './guarded-document-read'
@@ -45,7 +47,7 @@ const MAX_CACHED_FILES = 2000
 const READ_BATCH = 12
 
 /** `frontMatterTitle`: the title the file has if it is front matter (shared/folio-front-matter.ts); `fileOf` picks. */
-type Parsed = Pick<FolioOutlineFile, 'title' | 'headings' | 'tooLarge' | 'heading' | 'titleMismatch' | 'titleConflict'> & { frontMatterTitle?: string }
+type Parsed = Pick<FolioOutlineFile, 'sectionPage' | 'title' | 'headings' | 'tooLarge' | 'heading' | 'titleMismatch' | 'titleConflict'> & { frontMatterTitle?: string }
 type Entry = { stamp: string; parsed: Promise<Parsed | null> }
 const cache = new Map<string, Map<string, Entry>>()
 
@@ -108,11 +110,7 @@ async function readParsed(fs: OutlineFs, ws: Workspace, path: string): Promise<P
     handle = await fs.open(ws.absolute(path))
     const content = await readBounded(handle)
     if (content === null) return { title: titleFromFileName(path).slice(0, MAX_HEADING_CHARS), headings: [], tooLarge: true }
-    const headings: Parsed['headings'] = []
-    for (const entry of scanText(content, { headings: true, headingLimit: MAX_HEADINGS_PER_FILE })) {
-      if (entry.kind !== 'heading') continue
-      headings.push({ level: entry.level, text: entry.text.slice(0, MAX_HEADING_CHARS), line: entry.line })
-    }
+    const headings = outlineHeadings(content)
     const named = partTitle(content, path)
     const conflict = named.mismatch ? titleConflict(content, path, { part: true }) : null
     return {
@@ -120,6 +118,7 @@ async function readParsed(fs: OutlineFs, ws: Workspace, path: string): Promise<P
       frontMatterTitle: asFrontMatterTitle(named, path).title.slice(0, MAX_HEADING_CHARS),
       headings,
       heading: named.mode,
+      ...(declaresSectionPage(content) ? { sectionPage: true as const } : {}),
       ...(named.mismatch ? { titleMismatch: true as const } : {}),
       ...(conflict ? { titleConflict: { ...conflict, fingerprint: fingerprintOf(content) } } : {}),
     }
@@ -178,6 +177,13 @@ export async function folioOutline(ws: Workspace, path: string, fs: OutlineFs = 
   // a manifest entry the running order lacks is then "Not in the outline". No Index Note: the manifest order stands.
   const pieces = facts.order ?? folio.pieces
   const also = groupAlsoInFolder(listed, pieces, dir, new Set(facts.changeable ? facts.addable : []), facts.root, facts.deep)
+  // A manifest-listed fallback outside content_root remains a known part even when the Index Note omits it.
+  const known = new Set([...pieces, ...also.map(file => file.path)])
+  for (const path of facts.unlisted) {
+    if (!facts.deep || known.has(path) || !byPath.has(path)) continue
+    also.push({ path, addable: facts.changeable && facts.addable.includes(path) })
+    known.add(path)
+  }
   const wanted = [...new Set([...pieces, ...also.map((file) => file.path)])].filter((p) => byPath.has(p))
   const parsed = new Map<string, Parsed>()
   for (let at = 0; at < wanted.length; at += READ_BATCH) {
@@ -194,6 +200,7 @@ export async function folioOutline(ws: Workspace, path: string, fs: OutlineFs = 
       ...(addable !== undefined && subFolderOf(dir, p) ? { under: subFolderOf(dir, p) as string } : {}),
       title: (isFront ? parsed.get(p)?.frontMatterTitle : undefined) ?? parsed.get(p)?.title ?? titleFromFileName(p).slice(0, MAX_HEADING_CHARS),
       headings: parsed.get(p)?.headings ?? [],
+      ...(!isFront && parsed.get(p)?.sectionPage ? { sectionPage: true as const } : {}),
       ...(parsed.get(p)?.heading ? { heading: parsed.get(p)!.heading } : {}),
       ...(!isFront && parsed.get(p)?.titleMismatch ? { titleMismatch: true as const } : {}),
       ...(!isFront && parsed.get(p)?.titleConflict ? { titleConflict: parsed.get(p)!.titleConflict } : {}),
@@ -202,11 +209,21 @@ export async function folioOutline(ws: Workspace, path: string, fs: OutlineFs = 
       ...(addable === undefined && isFront ? { frontMatter: true as const } : {}),
     }
   }
+  const binder = await folioBinder(ws, dir).catch(() => null)
+  const hasBinder = binder !== null && (binder.research.length > 0 || binder.notes.length > 0 || binder.ideas.length > 0)
   return {
     dir,
     name: dir === '' ? posix.basename(ws.root) : posix.basename(dir),
-    pieces: pieces.filter((p) => byPath.has(p)).map((p) => fileOf(p)),
+    pieces: pieces.map((p) => ({ ...fileOf(p), ...(!byPath.has(p) ? { missing: true as const } : {}) })),
     also: also.map((file) => fileOf(file.path, file.addable)),
     ...(facts.changeable ? {} : { orderInPlanOnly: true as const }),
+    ...(hasBinder ? { binder } : {}),
   }
+}
+
+/** Shared by the room loader and folioOutline: identical bounds, scanner and line numbers. */
+export function outlineHeadings(content: string): FolioOutlineFile['headings'] {
+  if (Buffer.byteLength(content) > MAX_OUTLINE_FILE_BYTES) return []
+  return scanText(content, { headings: true, headingLimit: MAX_HEADINGS_PER_FILE })
+    .flatMap(entry => entry.kind === 'heading' ? [{ level: entry.level, text: entry.text.slice(0, MAX_HEADING_CHARS), line: entry.line }] : [])
 }

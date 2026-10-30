@@ -59,12 +59,13 @@ async function proposeMany(inputs: Record<string, unknown>[], options: { isCapab
   const workspace = options.workspace ?? ws
   const changes = options.changes ?? new ChangeStore(workspace)
   const turns = inputs.map((input, index) => ({ prompt: `Add widget ${index + 1}`, step: { cap: 'widgets.create', input } as ScriptedStep }))
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace, appDataDir: appData, changes, ...(options.isCapabilityEnabled ? { isCapabilityEnabled: options.isCapabilityEnabled } : {}),
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory(turns.map(({ prompt, step }) => ({
       prompt,
       rounds: [
+        { kind: 'tool-calls' as const, calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
         { kind: 'tool-calls' as const, calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
         { kind: 'message' as const, text: 'Proposed.' },
       ],
@@ -176,10 +177,10 @@ for (const key of ['permissions.createFiles', 'permissions.proseEdits']) {
 test('with a switch off, the agent cannot even propose a widget', async () => {
   const changes = new ChangeStore(ws)
   const off = (name: string): boolean => capabilityEnabled(name, (k) => k === 'permissions.proseEdits' ? false : undefined)
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes, isCapabilityEnabled: off,
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
-    sessionFactory: scriptedSessionFactory([{ prompt: 'p', rounds: [{ kind: 'tool-calls', calls: [{ name: 'widgets.create', arguments: INPUT }] }, { kind: 'message', text: 'x' }] }]),
+    sessionFactory: scriptedSessionFactory([{ prompt: 'p', rounds: [{ kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: ['widgets.create'] } }] }, { kind: 'tool-calls', calls: [{ name: 'widgets.create', arguments: INPUT }] }, { kind: 'message', text: 'x' }] }]),
   })
   await agent.runScriptedTurn('p', [{ cap: 'widgets.create', input: INPUT }]).catch(() => undefined)
   expect(await agent.suggestions()).toEqual([])
@@ -387,7 +388,7 @@ test('a widget proposal whose record lost its file part is still a widget propos
   // Restart: a new agent over the same workspace and app data. Nothing frozen in memory, no live link.
   live.dispose()
   const changes = new ChangeStore(ws)
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes,
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),
@@ -406,7 +407,7 @@ test('a widget proposal whose record lost its file part is still a widget propos
 test('an intact widget proposal is refused plainly after a restart, by either door', async () => {
   const { change, agent: live } = await propose()
   live.dispose()
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes: new ChangeStore(ws),
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),
@@ -420,12 +421,12 @@ test('notes.create through the agent still refreshes the notes pane and records 
   // review finding round 3, finding 3: the two manifest-service assignments were dropped from WorkspaceAgent.create.
   const notified: string[] = []
   const step: ScriptedStep = { cap: 'notes.create', input: { sourceDocument: 'essays/doc.md', kind: 'review', body: 'One point.' } }
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes: new ChangeStore(ws),
     onAgentNotesChanged: (path) => { notified.push(path) },
     composition: { activeSkill: { name: 'review', description: 'Review a piece', tools: ['notes.create', 'files.read'], input: 'document', instructions: 'Review it.', source: join(root, 'review.md') } as never },
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
-    sessionFactory: scriptedSessionFactory([{ prompt: 'Review this', rounds: [{ kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message', text: 'Done.' }] }]),
+    sessionFactory: scriptedSessionFactory([{ prompt: 'Review this', rounds: [{ kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] }, { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message', text: 'Done.' }] }]),
   })
   await agent.runScriptedTurn('Review this', [step])
   const note = 'essays/agent-notes/doc.review.md'

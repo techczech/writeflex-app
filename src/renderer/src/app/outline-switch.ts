@@ -14,6 +14,14 @@ export type OpenSource = 'files' | 'search' | 'other'
 
 export const OUTLINE_SWITCH_IDLE: OutlineSwitchState = { armedPath: null }
 
+type SidebarLayout = { tab: LeftPaneTab; collapsed: boolean }
+
+/** Borrow the sidebar for either Folio surface, then restore it exactly once when that Folio is left. */
+export function folioSidebarLayout(saved: SidebarLayout | null, dir: string | null, current: SidebarLayout): { saved: SidebarLayout | null; layout: SidebarLayout | null } {
+  if (dir !== null) return saved === null ? { saved: current, layout: { tab: 'outline', collapsed: false } } : { saved, layout: null }
+  return { saved: null, layout: saved }
+}
+
 export function noteFileOpened(_state: OutlineSwitchState, path: string, source: OpenSource): OutlineSwitchState {
   return { armedPath: source === 'files' || source === 'search' ? path : null }
 }

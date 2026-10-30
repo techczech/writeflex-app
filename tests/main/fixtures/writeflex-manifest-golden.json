@@ -52,28 +52,28 @@
         "preview": "[function]",
         "touchedPaths": "[function]",
         "name": "folio.create_manifest",
-        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. When .folio-backup.json exists, restore it: drop entries whose files no longer exist, append new files at the end as sections, and keep everything else byte-for-byte. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
+        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. When .folio-turn-back.json exists, restore unchanged originals exactly; otherwise draft a manifest and report where the parked bytes are kept. For an older .folio-backup.json without that receipt, restore it: drop missing entries, append new files as sections, and retain the other bytes. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
         "execute": "[function]"
       },
       {
-        "description": "Turn a Folio back into a collection. Keep its manifest as .folio-backup.json inside the folder; the backup does not make the folder a Folio. Make a Folio restores that backup, drops entries whose files no longer exist, appends new files at the end as sections, and keeps everything else byte-for-byte. Remove WriteFlex’s Folio instruction block. Remove its generated CLAUDE.md only while it matches the recorded content hash; keep edited CLAUDE.md unchanged. Keep edited instructions without their markers, all documents, the Index Note and your own instructions.",
-        "execute": "[function]",
         "label": "Turn back into a collection",
-        "name": "folio.turn_back",
+        "risk": "write",
         "parameters": {
+          "type": "object",
+          "required": [
+            "dir"
+          ],
           "properties": {
             "dir": {
               "type": "string"
             }
-          },
-          "required": [
-            "dir"
-          ],
-          "type": "object"
+          }
         },
         "preview": "[function]",
-        "risk": "write",
-        "touchedPaths": "[function]"
+        "touchedPaths": "[function]",
+        "name": "folio.turn_back",
+        "description": "Turn a Folio back into a collection. Save its manifest as .folio-backup.json and park exact originals in .folio-turn-back.json inside the folder. Remove the Running order sections from the Index Note, keeping their exact text in the backup and every other line untouched. Park generated instructions and remove only the maintained block from authored instructions. Undo restores the original manifest, Index Note and instructions exactly, or refuses if they have changed. Make Folio restores unchanged originals; otherwise it drafts a manifest and keeps the parked bytes in the backup.",
+        "execute": "[function]"
       },
       {
         "label": "normalise frontmatter",
@@ -139,6 +139,46 @@
         "touchedPaths": "[function]",
         "name": "frontmatter.set",
         "description": "Set or add document metadata (frontmatter) keys; lists as arrays. Example: { path: \"draft.md\", set: { status: \"draft\", tags: [\"essay\", \"review\"] } }. STAGED for review.",
+        "execute": "[function]"
+      },
+      {
+        "asks": true,
+        "label": "reattach version history",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "map"
+          ],
+          "properties": {
+            "map": {
+              "type": "string"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "history.follow",
+        "description": "Explicitly reattach version history after outside moves. Read a workspace-relative TSV map (old_path, tab, new_path); report refused rows and an undo id. Writes only .writeflex/versions.jsonl.",
+        "execute": "[function]"
+      },
+      {
+        "label": "undo history attachment",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "undo"
+          ],
+          "properties": {
+            "undo": {
+              "type": "string"
+            }
+          }
+        },
+        "touchedPaths": "[function]",
+        "name": "history.undo_follow",
+        "description": "Undo an explicit version history attachment by its undo id; refuses if any attached version has moved again.",
         "execute": "[function]"
       },
       {
@@ -486,7 +526,7 @@
           }
         },
         "name": "plan.read",
-        "description": "Read a report folder's plan: its running order (each part's title, gloss, role, workspace-relative file or null for an unwritten part, word count, and whether the file exists), the Markdown files under the Folio's content_root that are NOT in the running order (strays), and whether the folder has an Index Note. Reads only; start any work on a report as a whole here.",
+        "description": "Read a report folder's plan: its running order (each part's title, gloss, role, workspace-relative file or null for an unwritten part, word count, whether the file exists, synopsis, label, priority, status and open flags), the Markdown files under the Folio's content_root that are NOT in the running order (strays), and whether the folder has an Index Note. Reads only; start any work on a report as a whole here.",
         "execute": "[function]"
       },
       {
@@ -739,6 +779,560 @@
         "preview": "[function]",
         "name": "research.capture",
         "description": "File ONE reusable unit — a table, a visualisation, a piece of evidence, a snippet, a search result or a widget description — as its own Markdown file in the research/ folder beside a Piece (or in its Folio's research/ folder), with its sources, and index it for search. Nothing existing is changed: it only ever makes a new file, and the writer can delete it. Give the Piece's path (or a folder) as `project`. Put the unit itself in `body`; list where it came from in `sources` (a scout passage id as `scout:<id>`, a URL, or `file:<path>`); never retype a search hit without its passage id.",
+        "execute": "[function]"
+      },
+      {
+        "label": "attach a source as evidence",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The collected Reference/Evidence item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "The destination part's workspace-relative path"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.attach_evidence",
+        "description": "Attach a collected Reference/Evidence item's canonical source to the Folio part that owns `path`, through the existing evidence operation (expectation-guarded, with its own Undo token). The part's text is untouched. Direct, as the panel's Attach to part is.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose citing a reference",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The collected Reference/Evidence item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination part"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows; an empty string appends a quote at the end (cite/link need an anchor)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.cite",
+        "description": "Propose ONE citation chip for a collected Reference, inline after `insertAfter`. The chip is prepared from the canonical source when the proposal is staged and the writer reviews exactly it as a Change; if the source changes before they accept, the accept refuses rather than cite different words. The item stays in the Scratchpad; nothing is written until the writer accepts.",
+        "execute": "[function]"
+      },
+      {
+        "label": "collect a source to the Scratchpad",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "sourceId"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "A part of the Folio the source belongs to, workspace-relative"
+            },
+            "sourceId": {
+              "type": "string",
+              "description": "The source id, as scratchpad.sources gives it"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.collect",
+        "description": "Keep a pointer to one canonical Folio source (from scratchpad.sources) as a Reference or Evidence candidate in the Scratchpad. Pointer and preview only: the source record is unchanged and nothing is copied. References join the References group.",
+        "execute": "[function]"
+      },
+      {
+        "asks": true,
+        "risk": "destructive",
+        "label": "delete a rejected Scratchpad item forever",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The rejected item's id, as scratchpad.list gives it"
+            },
+            "version": {
+              "type": "string",
+              "description": "The item version scratchpad.list/get showed; when given, it must still match at approval and at execution"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.delete",
+        "description": "Delete ONE rejected Scratchpad item forever, only with the writer's approval of the exact item shown. Refuses an item that is not rejected, unknown, or changed since it was shown. Removes only the candidate itself (its record and saved text, or its section in its own origin's scraps file); the documents and sources it came from are never touched. This cannot be undone.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "collect a connected-source result to the Scratchpad",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "resultId",
+            "origin"
+          ],
+          "properties": {
+            "resultId": {
+              "type": "string",
+              "description": "The result id scratchpad.external_search returned"
+            },
+            "origin": {
+              "type": "string",
+              "description": "Workspace-relative Markdown document this candidate belongs to (must exist in this workspace)"
+            },
+            "group": {
+              "type": "string",
+              "description": "Group name to file it under; created if it does not exist"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.external_collect",
+        "description": "Keep one result of scratchpad.external_search (by its result id) as a Scratchpad candidate belonging to the named document: a pointer to the source asset plus a small preview, with its provenance and the shown version's digest recorded. NOTHING is copied into the workspace by collecting, and no source file is written; the file is copied into the document's assets only when the candidate is inserted (scratchpad.insert proposes that, and accepting performs the copy). A result whose source bytes changed since the search, or whose connection was turned off since, is refused. Returns the new item id.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "search a connected Scratchpad source",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "source",
+            "query"
+          ],
+          "properties": {
+            "source": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "talkweaver"
+                },
+                {
+                  "type": "string",
+                  "const": "slidewell"
+                }
+              ],
+              "description": "Which connected source to search"
+            },
+            "query": {
+              "type": "string",
+              "description": "Words to match (empty browses newest first)"
+            },
+            "vault": {
+              "type": "string",
+              "description": "TalkWeaver only: one chosen vault id, or \"all\" (default)"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "words"
+                },
+                {
+                  "type": "string",
+                  "const": "meaning"
+                }
+              ],
+              "description": "SlideWell only: catalogue word search (default) or its running semantic picture service"
+            }
+          }
+        },
+        "name": "scratchpad.external_search",
+        "description": "Search one connected optional source for pictures and widgets: source \"talkweaver\" browses the vaults the writer chose in Settings (optionally one `vault` id from a previous status, or \"all\"); source \"slidewell\" word-searches SlideWell's readable catalogue, or with mode \"meaning\" asks its running local picture service. Both connections are OFF unless the writer enabled them in Settings › Scratchpad; while off this is refused and nothing is searched. An empty query browses newest first. Returns result titles, provenance and opaque result ids for scratchpad.external_collect — never file contents or paths. No writes.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "read Scratchpad content",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          }
+        },
+        "name": "scratchpad.get",
+        "description": "Read one retained Scratchpad item with its exact Markdown payload and source path. Private withdrawn copies are unavailable. No writes.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "manage Scratchpad groups",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "create"
+                },
+                {
+                  "type": "string",
+                  "const": "rename"
+                },
+                {
+                  "type": "string",
+                  "const": "move"
+                }
+              ]
+            },
+            "name": {
+              "type": "string",
+              "description": "The group name to create, or the new name for a rename"
+            },
+            "group": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A group id (g_…), or null with op \"move\" to take items out of their group"
+            },
+            "ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Item ids to move (op \"move\")"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.group",
+        "description": "Manage Scratchpad groups: op \"create\" makes a group from `name` (or returns the existing one of that name); op \"rename\" renames the group named by `group` (its id, from scratchpad.list) to `name`; op \"move\" files every item in `ids` under `group` (a group id, or null to ungroup). Metadata only: no document and no item payload is ever rewritten. Reports the actual outcome per item.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose inserting a Scratchpad item",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The Scratchpad item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination document"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows as a block; an empty string appends at the end"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.insert",
+        "description": "Propose inserting a COPY of one retained Scratchpad item (text, picture, SVG, a whole table or a compatible widget) into a document, as a block after `insertAfter` (empty: at the end). The exact Markdown is prepared once — relative links are rewritten for the destination folder or the proposal is refused — and the writer reviews exactly those bytes as a Change; nothing is written until they accept, and accepting writes nothing else. The item stays in the Scratchpad for reuse. A reference is cited or linked (scratchpad.cite / scratchpad.link) and quoted evidence goes in only as scratchpad.insert_quote; this verb refuses both kinds.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose a quote with citation",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The collected Reference/Evidence item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination part"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows; an empty string appends a quote at the end (cite/link need an anchor)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.insert_quote",
+        "description": "Propose inserting a collected Evidence item's quoted words as a blockquote with its citation chip, as a block after `insertAfter` (empty: at the end). The quoted words are taken from the canonical evidence record when the proposal is staged and reviewed exactly; if the record changes before Accept, the accept refuses rather than quote different words.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "read document inventory",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "part"
+                },
+                {
+                  "type": "string",
+                  "const": "folio"
+                }
+              ]
+            }
+          }
+        },
+        "name": "scratchpad.inventory",
+        "description": "Read pictures, SVG, tables, widgets and cited references at exact source positions. A cited reference carries its canonical citation id, how many times it is cited and every citation's range. Live owners take precedence over disk. Every span says live or disk; without the running app only disk is available. No writes or saves.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose linking a reference",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The collected Reference/Evidence item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination part"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows; an empty string appends a quote at the end (cite/link need an anchor)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.link",
+        "description": "Propose ONE ordinary link (or wikilink for a note) to a collected Reference or Evidence source, inline after `insertAfter`. No content is inserted. The link is prepared and reviewed exactly as scratchpad.cite prepares its chip.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "list Scratchpad items",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "document"
+                },
+                {
+                  "type": "string",
+                  "const": "folio"
+                },
+                {
+                  "type": "string",
+                  "const": "workspace"
+                }
+              ]
+            },
+            "query": {
+              "type": "string"
+            }
+          }
+        },
+        "name": "scratchpad.list",
+        "description": "Read typed Scratchpad item ids, kinds, titles, sources, groups and status. Bodies are available through scratchpad.get. No writes.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose putting a cutting back",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The Scratchpad item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination document"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows as a block; an empty string appends at the end"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.put_back",
+        "description": "Propose putting ONE genuine Scratchpad cutting (text recorded as cut from a document, not a copy and not anything else) back into a document, as a block after `insertAfter` (empty: at the end). Proposed and reviewed exactly like scratchpad.insert; accepting additionally needs the destination open in WriteFlex, so the returned place is held by that editor — without a live editor the accept refuses and writes nothing. For anything that is not a recorded cutting, use scratchpad.insert.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "reject Scratchpad items",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "ids"
+          ],
+          "properties": {
+            "ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.reject",
+        "description": "Move Scratchpad items to Rejected (triage: rejecting deletes nothing, and scratchpad.restore brings an item back). Only a rejected item can later be deleted, and only through the approval-bound scratchpad.delete. Reports the actual outcome per item.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "restore Scratchpad items to Candidates",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "ids"
+          ],
+          "properties": {
+            "ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.restore",
+        "description": "Move rejected Scratchpad items back to Candidates, through the same guarded status writer the panel calls. Reports the actual outcome per item.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "send text to the Scratchpad",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "origin",
+            "markdown"
+          ],
+          "properties": {
+            "origin": {
+              "type": "string",
+              "description": "Workspace-relative Markdown document this text belongs to (its origin; must exist in this workspace)"
+            },
+            "markdown": {
+              "type": "string",
+              "description": "The exact Markdown to keep, byte for byte"
+            },
+            "heading": {
+              "type": "string",
+              "description": "The heading the text sits under in its origin, when known"
+            },
+            "group": {
+              "type": "string",
+              "description": "Group name to file it under; created if it does not exist"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.send_text",
+        "description": "File exact Markdown in the floating Scratchpad as a new candidate that came from the named document. The text is kept byte for byte (headings, fences, blank lines and line endings survive), labelled as suggested by the agent, and nothing in any document changes. Optionally file it under a group name (created if new). Returns the new item id.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "list Folio sources for the Scratchpad",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "A part of the Folio, workspace-relative"
+            }
+          }
+        },
+        "name": "scratchpad.sources",
+        "description": "Read the Folio's canonical sources and quoted highlights (its evidence records, part sources and citations, including Zotero and archive items) as collectable Reference/Evidence cards with their typed identity and provenance. No writes; the records are projected, never copied.",
         "execute": "[function]"
       },
       {
@@ -1039,28 +1633,28 @@
         "preview": "[function]",
         "touchedPaths": "[function]",
         "name": "folio.create_manifest",
-        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. When .folio-backup.json exists, restore it: drop entries whose files no longer exist, append new files at the end as sections, and keep everything else byte-for-byte. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
+        "description": "Declare a folder a Folio: create its _report-structure.json from the folder's numbered parts — ONLY when none exists. When .folio-turn-back.json exists, restore unchanged originals exactly; otherwise draft a manifest and report where the parked bytes are kept. For an older .folio-backup.json without that receipt, restore it: drop missing entries, append new files as sections, and retain the other bytes. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.",
         "execute": "[function]"
       },
       {
-        "description": "Turn a Folio back into a collection. Keep its manifest as .folio-backup.json inside the folder; the backup does not make the folder a Folio. Make a Folio restores that backup, drops entries whose files no longer exist, appends new files at the end as sections, and keeps everything else byte-for-byte. Remove WriteFlex’s Folio instruction block. Remove its generated CLAUDE.md only while it matches the recorded content hash; keep edited CLAUDE.md unchanged. Keep edited instructions without their markers, all documents, the Index Note and your own instructions.",
-        "execute": "[function]",
         "label": "Turn back into a collection",
-        "name": "folio.turn_back",
+        "risk": "write",
         "parameters": {
+          "type": "object",
+          "required": [
+            "dir"
+          ],
           "properties": {
             "dir": {
               "type": "string"
             }
-          },
-          "required": [
-            "dir"
-          ],
-          "type": "object"
+          }
         },
         "preview": "[function]",
-        "risk": "write",
-        "touchedPaths": "[function]"
+        "touchedPaths": "[function]",
+        "name": "folio.turn_back",
+        "description": "Turn a Folio back into a collection. Save its manifest as .folio-backup.json and park exact originals in .folio-turn-back.json inside the folder. Remove the Running order sections from the Index Note, keeping their exact text in the backup and every other line untouched. Park generated instructions and remove only the maintained block from authored instructions. Undo restores the original manifest, Index Note and instructions exactly, or refuses if they have changed. Make Folio restores unchanged originals; otherwise it drafts a manifest and keeps the parked bytes in the backup.",
+        "execute": "[function]"
       },
       {
         "label": "normalise frontmatter",
@@ -1126,6 +1720,46 @@
         "touchedPaths": "[function]",
         "name": "frontmatter.set",
         "description": "Set or add document metadata (frontmatter) keys; lists as arrays. Example: { path: \"draft.md\", set: { status: \"draft\", tags: [\"essay\", \"review\"] } }. STAGED for review.",
+        "execute": "[function]"
+      },
+      {
+        "asks": true,
+        "label": "reattach version history",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "map"
+          ],
+          "properties": {
+            "map": {
+              "type": "string"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "history.follow",
+        "description": "Explicitly reattach version history after outside moves. Read a workspace-relative TSV map (old_path, tab, new_path); report refused rows and an undo id. Writes only .writeflex/versions.jsonl.",
+        "execute": "[function]"
+      },
+      {
+        "label": "undo history attachment",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "undo"
+          ],
+          "properties": {
+            "undo": {
+              "type": "string"
+            }
+          }
+        },
+        "touchedPaths": "[function]",
+        "name": "history.undo_follow",
+        "description": "Undo an explicit version history attachment by its undo id; refuses if any attached version has moved again.",
         "execute": "[function]"
       },
       {
@@ -1473,7 +2107,7 @@
           }
         },
         "name": "plan.read",
-        "description": "Read a report folder's plan: its running order (each part's title, gloss, role, workspace-relative file or null for an unwritten part, word count, and whether the file exists), the Markdown files under the Folio's content_root that are NOT in the running order (strays), and whether the folder has an Index Note. Reads only; start any work on a report as a whole here.",
+        "description": "Read a report folder's plan: its running order (each part's title, gloss, role, workspace-relative file or null for an unwritten part, word count, whether the file exists, synopsis, label, priority, status and open flags), the Markdown files under the Folio's content_root that are NOT in the running order (strays), and whether the folder has an Index Note. Reads only; start any work on a report as a whole here.",
         "execute": "[function]"
       },
       {
@@ -1804,7 +2438,561 @@
         "validateStage": "[function]",
         "touchedPaths": "[function]",
         "name": "scraps.promote",
-        "description": "Propose turning ONE scrap (an offcut, from scraps.list) into an idea for a collection. Nothing is written when you call this: the writer sees the proposal and accepts or discards it. Accepting adds one wikilink line, `- [[<name as a file name>]]`, under `## Ideas` in the collection's tracker note (its Index Note, `_<folder>_INDEX.md`, created if absent) with the scrap's text quoted beneath it, and removes the scrap from its scraps file. Name the idea as the piece it could become.",
+        "description": "Propose turning ONE scrap (an offcut, from scraps.list) into an idea for a collection. Nothing is written when you call this: the writer sees the proposal and accepts or discards it. Accepting adds one wikilink line, `- [[<name as a file name>]]`, under `## Ideas` in the collection's tracker note (its Index Note, `_<folder>_INDEX.md`, created if absent) with the scrap's text quoted beneath it, and takes the scrap out of circulation: a legacy scrap leaves its scraps file, a lossless Scratchpad text item (`p_…`, source `lossless`) is COPIED and stays in the Scratchpad as a reusable candidate, with the copy recorded on it as a historical use. Name the idea as the piece it could become.",
+        "execute": "[function]"
+      },
+      {
+        "label": "attach a source as evidence",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The collected Reference/Evidence item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "The destination part's workspace-relative path"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.attach_evidence",
+        "description": "Attach a collected Reference/Evidence item's canonical source to the Folio part that owns `path`, through the existing evidence operation (expectation-guarded, with its own Undo token). The part's text is untouched. Direct, as the panel's Attach to part is.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose citing a reference",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The collected Reference/Evidence item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination part"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows; an empty string appends a quote at the end (cite/link need an anchor)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.cite",
+        "description": "Propose ONE citation chip for a collected Reference, inline after `insertAfter`. The chip is prepared from the canonical source when the proposal is staged and the writer reviews exactly it as a Change; if the source changes before they accept, the accept refuses rather than cite different words. The item stays in the Scratchpad; nothing is written until the writer accepts.",
+        "execute": "[function]"
+      },
+      {
+        "label": "collect a source to the Scratchpad",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "sourceId"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "A part of the Folio the source belongs to, workspace-relative"
+            },
+            "sourceId": {
+              "type": "string",
+              "description": "The source id, as scratchpad.sources gives it"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.collect",
+        "description": "Keep a pointer to one canonical Folio source (from scratchpad.sources) as a Reference or Evidence candidate in the Scratchpad. Pointer and preview only: the source record is unchanged and nothing is copied. References join the References group.",
+        "execute": "[function]"
+      },
+      {
+        "asks": true,
+        "risk": "destructive",
+        "label": "delete a rejected Scratchpad item forever",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The rejected item's id, as scratchpad.list gives it"
+            },
+            "version": {
+              "type": "string",
+              "description": "The item version scratchpad.list/get showed; when given, it must still match at approval and at execution"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.delete",
+        "description": "Delete ONE rejected Scratchpad item forever, only with the writer's approval of the exact item shown. Refuses an item that is not rejected, unknown, or changed since it was shown. Removes only the candidate itself (its record and saved text, or its section in its own origin's scraps file); the documents and sources it came from are never touched. This cannot be undone.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "collect a connected-source result to the Scratchpad",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "resultId",
+            "origin"
+          ],
+          "properties": {
+            "resultId": {
+              "type": "string",
+              "description": "The result id scratchpad.external_search returned"
+            },
+            "origin": {
+              "type": "string",
+              "description": "Workspace-relative Markdown document this candidate belongs to (must exist in this workspace)"
+            },
+            "group": {
+              "type": "string",
+              "description": "Group name to file it under; created if it does not exist"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.external_collect",
+        "description": "Keep one result of scratchpad.external_search (by its result id) as a Scratchpad candidate belonging to the named document: a pointer to the source asset plus a small preview, with its provenance and the shown version's digest recorded. NOTHING is copied into the workspace by collecting, and no source file is written; the file is copied into the document's assets only when the candidate is inserted (scratchpad.insert proposes that, and accepting performs the copy). A result whose source bytes changed since the search, or whose connection was turned off since, is refused. Returns the new item id.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "search a connected Scratchpad source",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "source",
+            "query"
+          ],
+          "properties": {
+            "source": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "talkweaver"
+                },
+                {
+                  "type": "string",
+                  "const": "slidewell"
+                }
+              ],
+              "description": "Which connected source to search"
+            },
+            "query": {
+              "type": "string",
+              "description": "Words to match (empty browses newest first)"
+            },
+            "vault": {
+              "type": "string",
+              "description": "TalkWeaver only: one chosen vault id, or \"all\" (default)"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "words"
+                },
+                {
+                  "type": "string",
+                  "const": "meaning"
+                }
+              ],
+              "description": "SlideWell only: catalogue word search (default) or its running semantic picture service"
+            }
+          }
+        },
+        "name": "scratchpad.external_search",
+        "description": "Search one connected optional source for pictures and widgets: source \"talkweaver\" browses the vaults the writer chose in Settings (optionally one `vault` id from a previous status, or \"all\"); source \"slidewell\" word-searches SlideWell's readable catalogue, or with mode \"meaning\" asks its running local picture service. Both connections are OFF unless the writer enabled them in Settings › Scratchpad; while off this is refused and nothing is searched. An empty query browses newest first. Returns result titles, provenance and opaque result ids for scratchpad.external_collect — never file contents or paths. No writes.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "read Scratchpad content",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          }
+        },
+        "name": "scratchpad.get",
+        "description": "Read one retained Scratchpad item with its exact Markdown payload and source path. Private withdrawn copies are unavailable. No writes.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "manage Scratchpad groups",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "create"
+                },
+                {
+                  "type": "string",
+                  "const": "rename"
+                },
+                {
+                  "type": "string",
+                  "const": "move"
+                }
+              ]
+            },
+            "name": {
+              "type": "string",
+              "description": "The group name to create, or the new name for a rename"
+            },
+            "group": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A group id (g_…), or null with op \"move\" to take items out of their group"
+            },
+            "ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Item ids to move (op \"move\")"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.group",
+        "description": "Manage Scratchpad groups: op \"create\" makes a group from `name` (or returns the existing one of that name); op \"rename\" renames the group named by `group` (its id, from scratchpad.list) to `name`; op \"move\" files every item in `ids` under `group` (a group id, or null to ungroup). Metadata only: no document and no item payload is ever rewritten. Reports the actual outcome per item.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose inserting a Scratchpad item",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The Scratchpad item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination document"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows as a block; an empty string appends at the end"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.insert",
+        "description": "Propose inserting a COPY of one retained Scratchpad item (text, picture, SVG, a whole table or a compatible widget) into a document, as a block after `insertAfter` (empty: at the end). The exact Markdown is prepared once — relative links are rewritten for the destination folder or the proposal is refused — and the writer reviews exactly those bytes as a Change; nothing is written until they accept, and accepting writes nothing else. The item stays in the Scratchpad for reuse. A reference is cited or linked (scratchpad.cite / scratchpad.link) and quoted evidence goes in only as scratchpad.insert_quote; this verb refuses both kinds.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose a quote with citation",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The collected Reference/Evidence item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination part"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows; an empty string appends a quote at the end (cite/link need an anchor)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.insert_quote",
+        "description": "Propose inserting a collected Evidence item's quoted words as a blockquote with its citation chip, as a block after `insertAfter` (empty: at the end). The quoted words are taken from the canonical evidence record when the proposal is staged and reviewed exactly; if the record changes before Accept, the accept refuses rather than quote different words.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "read document inventory",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "part"
+                },
+                {
+                  "type": "string",
+                  "const": "folio"
+                }
+              ]
+            }
+          }
+        },
+        "name": "scratchpad.inventory",
+        "description": "Read pictures, SVG, tables, widgets and cited references at exact source positions. A cited reference carries its canonical citation id, how many times it is cited and every citation's range. Live owners take precedence over disk. Every span says live or disk; without the running app only disk is available. No writes or saves.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose linking a reference",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The collected Reference/Evidence item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination part"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows; an empty string appends a quote at the end (cite/link need an anchor)"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.link",
+        "description": "Propose ONE ordinary link (or wikilink for a note) to a collected Reference or Evidence source, inline after `insertAfter`. No content is inserted. The link is prepared and reviewed exactly as scratchpad.cite prepares its chip.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "list Scratchpad items",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "document"
+                },
+                {
+                  "type": "string",
+                  "const": "folio"
+                },
+                {
+                  "type": "string",
+                  "const": "workspace"
+                }
+              ]
+            },
+            "query": {
+              "type": "string"
+            }
+          }
+        },
+        "name": "scratchpad.list",
+        "description": "Read typed Scratchpad item ids, kinds, titles, sources, groups and status. Bodies are available through scratchpad.get. No writes.",
+        "execute": "[function]"
+      },
+      {
+        "label": "propose putting a cutting back",
+        "risk": "write",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "insertAfter"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The Scratchpad item id, as scratchpad.list gives it"
+            },
+            "path": {
+              "type": "string",
+              "description": "Relative Markdown file path of the destination document"
+            },
+            "insertAfter": {
+              "type": "string",
+              "description": "Exact unique existing text the insertion follows as a block; an empty string appends at the end"
+            }
+          }
+        },
+        "preview": "[function]",
+        "validateStage": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.put_back",
+        "description": "Propose putting ONE genuine Scratchpad cutting (text recorded as cut from a document, not a copy and not anything else) back into a document, as a block after `insertAfter` (empty: at the end). Proposed and reviewed exactly like scratchpad.insert; accepting additionally needs the destination open in WriteFlex, so the returned place is held by that editor — without a live editor the accept refuses and writes nothing. For anything that is not a recorded cutting, use scratchpad.insert.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "reject Scratchpad items",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "ids"
+          ],
+          "properties": {
+            "ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.reject",
+        "description": "Move Scratchpad items to Rejected (triage: rejecting deletes nothing, and scratchpad.restore brings an item back). Only a rejected item can later be deleted, and only through the approval-bound scratchpad.delete. Reports the actual outcome per item.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "restore Scratchpad items to Candidates",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "ids"
+          ],
+          "properties": {
+            "ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.restore",
+        "description": "Move rejected Scratchpad items back to Candidates, through the same guarded status writer the panel calls. Reports the actual outcome per item.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "write",
+        "label": "send text to the Scratchpad",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "origin",
+            "markdown"
+          ],
+          "properties": {
+            "origin": {
+              "type": "string",
+              "description": "Workspace-relative Markdown document this text belongs to (its origin; must exist in this workspace)"
+            },
+            "markdown": {
+              "type": "string",
+              "description": "The exact Markdown to keep, byte for byte"
+            },
+            "heading": {
+              "type": "string",
+              "description": "The heading the text sits under in its origin, when known"
+            },
+            "group": {
+              "type": "string",
+              "description": "Group name to file it under; created if it does not exist"
+            }
+          }
+        },
+        "preview": "[function]",
+        "touchedPaths": "[function]",
+        "name": "scratchpad.send_text",
+        "description": "File exact Markdown in the floating Scratchpad as a new candidate that came from the named document. The text is kept byte for byte (headings, fences, blank lines and line endings survive), labelled as suggested by the agent, and nothing in any document changes. Optionally file it under a group name (created if new). Returns the new item id.",
+        "execute": "[function]"
+      },
+      {
+        "risk": "read",
+        "label": "list Folio sources for the Scratchpad",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "A part of the Folio, workspace-relative"
+            }
+          }
+        },
+        "name": "scratchpad.sources",
+        "description": "Read the Folio's canonical sources and quoted highlights (its evidence records, part sources and citations, including Zotero and archive items) as collectable Reference/Evidence cards with their typed identity and provenance. No writes; the records are projected, never copied.",
         "execute": "[function]"
       },
       {

@@ -11,6 +11,8 @@ import {
 } from "./restore-plan.ts";
 import { MESSAGE_SHOWN_LIMIT, PATH_SHOWN_LIMIT, shown } from "./shown-text.ts";
 import type { UndoAction } from "./types.ts";
+import { affectedIntentTurns, isSnapshotUndoIntent, type SnapshotUndoIntent } from "./turn-undo-intent.ts";
+export type { SnapshotUndoIntent } from "./turn-undo-intent.ts";
 
 export { SnapshotStoreError, openLastName, snapshotPlatform };
 export type { RestoreOperationReport };
@@ -30,7 +32,9 @@ type RestorePointDiscardTombstone = {
   restorePointId: string;
 };
 
-type SnapshotJournalRecord = JournalEntry | RestorePointDiscardTombstone;
+type UndoIntentRecord = { kind: "turn-undo-intent"; id: string; ts: number; intent: SnapshotUndoIntent }
+  | { kind: "turn-undo-settled"; id: string; ts: number; requestedTurnId: string; outcome: "completed" | "abandoned" | "abandoned-corrupt"; turnIds?: string[] };
+type SnapshotJournalRecord = JournalEntry | RestorePointDiscardTombstone | UndoIntentRecord;
 
 /** Journal hash marker meaning the file did not exist when snapshotted (restore deletes it). Note: the hash field stays typed string — a union with "ABSENT" would collapse to string anyway. */
 export const ABSENT_HASH = "ABSENT";
@@ -83,28 +87,34 @@ export class SnapshotObjectError extends Error {
   }
 }
 
-/** A Restore Point names something the store will not write, move or delete, or
- *  cannot plan without doubt. The whole restore is refused before anything is
- *  changed. `refusals[].path` is the journal's path in its shown form (at most
+/** A restore was refused, or was rolled back after failure. `changesRemain`
+ *  flags rollback leftovers; otherwise none of its writes remain.
+ *  `refusals[].path` is the journal's path in its shown form (at most
  *  1024 characters, control characters replaced); the message lists the first
  *  five, each cut to 200 characters. */
 export class RestoreRefusedError extends Error {
-  /** Nothing was changed. */
+  /** The requested earlier state was not completely restored. */
   readonly restoredCompletely = false as const;
   readonly refusals: { path: string; reason: string }[];
   constructor(
     readonly restorePointId: string,
     refusals: { path: unknown; reason: string }[],
+    options?: { cause?: unknown; reason?: string; changesRemain?: boolean },
   ) {
     const safe = refusals.map((refusal) => ({ path: shown(refusal.path, PATH_SHOWN_LIMIT), reason: refusal.reason }));
     super(
-      `Restore point ${shown(restorePointId)} was refused and nothing was changed: `
+      `Restore point ${shown(restorePointId)} was refused${options?.changesRemain ? "; some restore changes remain" : " and nothing was changed"}: `
       + safe.slice(0, 5).map((refusal) => `${shown(refusal.path)} (${refusal.reason})`).join("; ")
-      + (safe.length > 5 ? `; and ${safe.length - 5} more` : ""),
+      + (safe.length > 5 ? `; and ${safe.length - 5} more` : safe.length ? "" : options?.reason ?? "undo-unavailable"),
+      options,
     );
     this.name = "RestoreRefusedError";
     this.refusals = safe;
+    this.reason = options?.reason ?? safe[0]?.reason;
+    this.changesRemain = options?.changesRemain === true;
   }
+  readonly reason?: string;
+  readonly changesRemain: boolean;
 }
 
 /** A restore passed every check and then stopped part-way. `restored` holds the
@@ -166,17 +176,105 @@ export class RestoreNotRecordedError extends Error {
 /** The only form a journal hash may take before it is joined to a path. */
 const OBJECT_HASH = /^[0-9a-f]{64}$/;
 
+type DamagedJournalLine = { line: number; couldAffectRestore: boolean };
+type JournalRead = { records: SnapshotJournalRecord[]; damagedLines: DamagedJournalLine[] };
+
+/** Read only enough of a torn object to identify its top-level kind. Nested
+ * kinds are payload; duplicate or incomplete kind keys remain ambiguous. */
+function isTornBookkeeping(line: string): boolean {
+  const prefix = /^\s*\{/.exec(line);
+  if (!prefix) return false;
+  let depth = 1;
+  let expectingKey = true;
+  let expectingKind = false;
+  let sawKind = false;
+  let kind: unknown;
+  for (let index = prefix[0].length; index < line.length; index++) {
+    const char = line[index];
+    if (char === '"') {
+      const start = index;
+      let closed = false;
+      while (++index < line.length) {
+        if (line[index] === "\\") index++;
+        else if (line[index] === '"') { closed = true; break; }
+      }
+      if (!closed) {
+        const fragment = line.slice(start + 1);
+        if (depth === 1 && (expectingKind || (expectingKey && ("kind".startsWith(fragment) || fragment.includes("\\"))))) return false;
+        break;
+      }
+      if (depth !== 1 || (!expectingKey && !expectingKind)) continue;
+      let value: unknown;
+      try { value = JSON.parse(line.slice(start, index + 1)); }
+      catch { return false; }
+      if (expectingKey) {
+        if (value === "kind") {
+          if (sawKind) return false;
+          sawKind = true;
+          expectingKind = true;
+        }
+        expectingKey = false;
+      } else {
+        kind = value;
+        expectingKind = false;
+      }
+    } else if (depth === 1 && char === ",") {
+      if (expectingKind) return false;
+      expectingKey = true;
+    } else if (char === "{" || char === "[") {
+      if (expectingKind && depth === 1) return false;
+      depth++;
+    } else if (char === "}" || char === "]") {
+      depth--;
+      if (depth === 0) {
+        if (line.slice(index + 1).trim()) return false;
+        break;
+      }
+    } else if (expectingKind && char !== ":" && !/\s/.test(char ?? "")) return false;
+  }
+  return !expectingKind && (kind === "turn-undo-intent" || kind === "turn-undo-settled"
+    || kind === "restore-point" || kind === "discard-restore-point");
+}
+
 const defaultSessionIds = new WeakMap<SnapshotStore, string>();
 const discardUnappliedRestorePoint = Symbol("discardUnappliedRestorePoint");
 
 const planRestoreOf = Symbol("planRestore");
+const journalDamageOf = Symbol("journalDamage");
+const undoIntentRecords = Symbol("undoIntentRecords");
+const appendUndoIntent = Symbol("appendUndoIntent");
+
+/** Internal seams: the checked journal owns fsynced recovery records, even with recording off. */
+export async function snapshotJournalDamaged(store: SnapshotStore, restorePointId: string): Promise<boolean> {
+  return store[journalDamageOf](restorePointId);
+}
+export async function snapshotUndoIntents(store: SnapshotStore): Promise<{ intents: SnapshotUndoIntent[]; corruptTurnIds: string[] }> {
+  return store[undoIntentRecords]();
+}
+export async function persistSnapshotUndoIntent(store: SnapshotStore, intent: SnapshotUndoIntent): Promise<void> {
+  await store[appendUndoIntent]({ kind: "turn-undo-intent", id: randomUUID(), ts: Date.now(), intent });
+}
+export async function settleSnapshotUndoIntent(store: SnapshotStore, requestedTurnId: string, outcome: "completed" | "abandoned" | "abandoned-corrupt" = "completed", turnIds?: string[]): Promise<void> {
+  await store[appendUndoIntent]({ kind: "turn-undo-settled", id: randomUUID(), ts: Date.now(), requestedTurnId, outcome, ...(turnIds ? { turnIds } : {}) });
+}
+export type SnapshotRecoveryWarning = { code: "torn-final-line" | "invalid-line" | "corrupt-intent"; line: number };
+export async function snapshotRestorePointPath(store: SnapshotStore, restorePointId?: string): Promise<string | undefined> {
+  if (!restorePointId) return undefined;
+  const entries = await store.entries();
+  const pointIndex = entries.findIndex((entry) => entry.kind === "restore-point" && entry.id === restorePointId);
+  if (pointIndex < 0) return undefined;
+  const write = entries.slice(pointIndex + 1).find((entry) => entry.kind === "snapshot" || entry.kind === "undo-action");
+  if (write?.kind === "snapshot") return write.file;
+  if (write?.kind === "undo-action") return write.action.do === "remove" ? write.action.path : write.action.from;
+  return undefined;
+}
 
 /** Internal seam, absent from the package barrel: the plan `restoreTo` would
  *  execute for a Restore Point, or its refusal. Reads only. */
 export async function planSnapshotRestore(
   store: SnapshotStore,
   restorePointId: string,
-  opts?: { origin?: "turn" | "host" },
+  opts?: { origin?: "turn" | "host"; entryIds?: readonly string[] },
 ): Promise<RestorePlan | RestoreRefusal> {
   return store[planRestoreOf](restorePointId, opts);
 }
@@ -221,7 +319,10 @@ export class SnapshotStore {
     private dirIdentity: FileIdentity,
     private objectsIdentity: FileIdentity,
     private onRestore?: (event: SnapshotRestoreEvent) => void | Promise<void>,
+    private onRecovery?: (warning: SnapshotRecoveryWarning) => void | Promise<void>,
   ) {}
+  private readonly reportedLines = new Set<number>();
+  private readonly recordLines = new WeakMap<object, number>();
 
   /**
    * Open the store at `dir`, creating its folder and `objects` inside it when they
@@ -239,6 +340,7 @@ export class SnapshotStore {
      *  store placed elsewhere must name it, or every restore is refused. */
     root?: string;
     onRestore?: (event: SnapshotRestoreEvent) => void | Promise<void>;
+    onRecovery?: (warning: SnapshotRecoveryWarning) => void | Promise<void>;
   }): Promise<SnapshotStore> {
     const asGiven = resolve(opts.dir);
     // The nearest folder above the store that exists, as it really is. Folders
@@ -273,7 +375,7 @@ export class SnapshotStore {
     objectsIdentity ??= await makeRealFolder(objectsDir, "its objects folder");
     const root = resolve(opts.root ?? dirname(asGiven));
     return new SnapshotStore(
-      dir, join(dir, "journal.jsonl"), objectsDir, root, dirIdentity, objectsIdentity, opts.onRestore,
+      dir, join(dir, "journal.jsonl"), objectsDir, root, dirIdentity, objectsIdentity, opts.onRestore, opts.onRecovery,
     );
   }
 
@@ -411,40 +513,124 @@ export class SnapshotStore {
   }
 
   /** The append itself. Only ever called from inside `inStoreOrder`. */
-  private async appendNow(entry: SnapshotJournalRecord): Promise<void> {
-    const handle = (await this.openJournal("append"))!;
+  private async appendNow(entry: SnapshotJournalRecord, durable = false): Promise<void> {
+    // Separate a torn tail from future records without rewriting the evidence.
+    const previous = await this.openJournal("read");
+    let separator = "";
+    if (previous) {
+      try {
+        const size = (await previous.stat()).size;
+        if (size) {
+          const last = Buffer.alloc(1);
+          await previous.read(last, 0, 1, size - 1);
+          if (last[0] !== 10) separator = "\n";
+        }
+      } finally { await previous.close(); }
+    }
+    const handle = await this.openJournal("append");
+    if (!handle) throw new SnapshotStoreError("The snapshot journal could not be opened for append.");
     try {
-      await handle.appendFile(`${JSON.stringify(entry)}\n`, "utf8");
+      await handle.appendFile(`${separator}${JSON.stringify(entry)}\n`, "utf8");
+      if (durable) await handle.sync();
     } finally {
       await handle.close();
     }
   }
 
-  private async journalRecords(): Promise<SnapshotJournalRecord[]> {
+  private async journalRecords(): Promise<JournalRead> {
+    const damagedLines: DamagedJournalLine[] = [];
     const handle = await this.openJournal("read");
-    if (handle === null) return [];
+    if (handle === null) return { records: [], damagedLines };
     let raw: string;
     try {
       raw = await handle.readFile("utf8");
     } finally {
       await handle.close();
     }
-    return raw.split("\n").filter(Boolean).map(
-      (line) => JSON.parse(line) as SnapshotJournalRecord,
-    );
+    const records: SnapshotJournalRecord[] = [];
+    const lines = raw.split("\n");
+    const last = lines.findLastIndex((line) => line.trim().length > 0);
+    for (const [index, line] of lines.entries()) {
+      if (!line.trim()) continue;
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); }
+      catch {
+        damagedLines.push({ line: index + 1, couldAffectRestore: !isTornBookkeeping(line) });
+        await this.reportRecovery({ code: index === last ? "torn-final-line" : "invalid-line", line: index + 1 });
+        continue;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        damagedLines.push({ line: index + 1, couldAffectRestore: true });
+        await this.reportRecovery({ code: "invalid-line", line: index + 1 });
+        continue;
+      }
+      this.recordLines.set(parsed, index + 1);
+      records.push(parsed as SnapshotJournalRecord);
+    }
+    return { records, damagedLines };
+  }
+
+  private async reportRecovery(warning: SnapshotRecoveryWarning): Promise<void> {
+    if (this.reportedLines.has(warning.line)) return;
+    this.reportedLines.add(warning.line);
+    try {
+      if (this.onRecovery) await this.onRecovery(warning);
+      else console.warn(`Bridle snapshots: skipped ${warning.code} at line ${warning.line}.`);
+    } catch { console.warn(`Bridle snapshots: recovery observer failed at line ${warning.line}; continuing.`); }
   }
 
   async entries(): Promise<JournalEntry[]> {
-    const records = await this.journalRecords();
+    return this.publicEntries((await this.journalRecords()).records);
+  }
+
+  private publicEntries(records: SnapshotJournalRecord[]): JournalEntry[] {
     const discarded = new Set(
       records.flatMap((entry) =>
         entry.kind === "discard-restore-point" ? [entry.restorePointId] : []),
     );
     return records.flatMap((entry) => {
-      if (entry.kind === "discard-restore-point") return [];
+      if (entry.kind === "discard-restore-point" || entry.kind === "turn-undo-intent" || entry.kind === "turn-undo-settled") return [];
       if (entry.kind === "restore-point" && discarded.has(entry.id)) return [];
       return [entry];
     });
+  }
+
+  async [appendUndoIntent](record: UndoIntentRecord): Promise<void> {
+    await inStoreOrder(this.dir, () => this.appendNow(record, true));
+  }
+
+  async [undoIntentRecords](): Promise<{ intents: SnapshotUndoIntent[]; corruptTurnIds: string[] }> {
+    const pending = new Map<string, { record: UndoIntentRecord; turnIds: string[]; intent?: SnapshotUndoIntent }>();
+    const corruptTurnIds = new Set<string>();
+    for (const record of (await this.journalRecords()).records) {
+      if (record.kind === "turn-undo-intent") {
+        const turnIds = affectedIntentTurns(record);
+        const intent = isSnapshotUndoIntent(record.intent) ? record.intent : undefined;
+        const recordKey = typeof record.id === "string" && record.id ? record.id : `corrupt-line-${this.recordLines.get(record)}`;
+        const key = intent?.requestedTurnId ?? turnIds[0] ?? recordKey;
+        pending.set(key, { record, turnIds, intent });
+      }
+      if (record.kind === "turn-undo-settled") {
+        for (const [key, entry] of pending) {
+          if (key === record.requestedTurnId || entry.turnIds.includes(record.requestedTurnId)) pending.delete(key);
+        }
+        if (record.outcome === "abandoned-corrupt" && Array.isArray(record.turnIds)) {
+          for (const id of record.turnIds) {
+            if (typeof id === "string" && id) corruptTurnIds.add(id);
+          }
+        }
+      }
+    }
+    const intents: SnapshotUndoIntent[] = [];
+    for (const [key, entry] of pending) {
+      if (entry.intent) intents.push(entry.intent);
+      else {
+        entry.turnIds.forEach((id) => corruptTurnIds.add(id));
+        await this.reportRecovery({ code: "corrupt-intent", line: this.recordLines.get(entry.record) ?? 0 });
+        await settleSnapshotUndoIntent(this, key, "abandoned-corrupt", entry.turnIds);
+      }
+    }
+    return { intents, corruptTurnIds: [...corruptTurnIds] };
   }
 
   async snapshotEntry(entryId: string): Promise<JournalEntry | null> {
@@ -462,7 +648,7 @@ export class SnapshotStore {
 
   /** Hide an unused Restore Point by appending a tombstone; journal bytes are never rewritten. */
   async discardRestorePoint(id: string): Promise<void> {
-    const records = await this.journalRecords();
+    const { records } = await this.journalRecords();
     if (
       records.some(
         (entry) =>
@@ -498,7 +684,7 @@ export class SnapshotStore {
    * inert evidence, not undo data for an applied write, so
    * RestorePointNotEmptyError's completed-write protection does not apply. */
   async [discardUnappliedRestorePoint](id: string): Promise<void> {
-    const records = await this.journalRecords();
+    const { records } = await this.journalRecords();
     if (records.some((entry) => entry.kind === "discard-restore-point" && entry.restorePointId === id)) return;
     if (!records.some((entry) => entry.kind === "restore-point" && entry.id === id)) {
       throw new Error(`Unknown restore point: ${id}`);
@@ -562,12 +748,35 @@ export class SnapshotStore {
     }
   }
 
+  private hasRestoreDamage(read: JournalRead, restorePointId: string): boolean {
+    const point = this.publicEntries(read.records).find((entry) => entry.kind === "restore-point" && entry.id === restorePointId);
+    const pointLine = point ? this.recordLines.get(point) : undefined;
+    if (pointLine === undefined) return read.damagedLines.length > 0;
+    return read.damagedLines.some((damage) => damage.couldAffectRestore && damage.line > pointLine);
+  }
+
+  async [journalDamageOf](restorePointId: string): Promise<boolean> {
+    return this.hasRestoreDamage(await this.journalRecords(), restorePointId);
+  }
+
   /** Plan the restore of a Restore Point without changing anything (reads only). */
-  async [planRestoreOf](restorePointId: string, opts?: { origin?: "turn" | "host" }): Promise<RestorePlan | RestoreRefusal> {
+  async [planRestoreOf](restorePointId: string, opts?: { origin?: "turn" | "host"; entryIds?: readonly string[] }): Promise<RestorePlan | RestoreRefusal> {
+    const selected = opts?.entryIds ? new Set(opts.entryIds) : undefined;
+    const read = await this.journalRecords();
+    const entries = this.publicEntries(read.records);
+    // Bookkeeping damage cannot hide a write. Unknown kinds must refuse, using
+    // this read's own evidence even if another journal read runs concurrently.
+    if (this.hasRestoreDamage(read, restorePointId)) {
+      return { kind: "refusal", restorePointId, unknownRestorePoint: false,
+        refusals: [{ path: this.journalPath, reason: "journal-damaged" }] };
+    }
+    if (selected && [...selected].some((id) => !entries.some((entry) => entry.id === id))) {
+      return { kind: "refusal", restorePointId, unknownRestorePoint: false, refusals: [{ path: "", reason: "A recorded turn snapshot is missing from the journal." }] };
+    }
     return planRestore({
       root: this.root,
       storeDir: this.dir,
-      entries: () => this.entries(),
+      entries: async () => entries.filter((entry) => !selected || entry.id === restorePointId || selected.has(entry.id)),
       readObject: async (hash) => {
         try {
           return await this.readObject(hash as string);
@@ -601,9 +810,9 @@ export class SnapshotStore {
    */
   async restoreTo(
     restorePointId: string,
-    opts?: { origin?: "turn" | "host"; sessionId?: string; proposalId?: string },
+    opts?: { origin?: "turn" | "host"; sessionId?: string; proposalId?: string; entryIds?: readonly string[] },
   ): Promise<string[]> {
-    const plan = await this[planRestoreOf](restorePointId, opts?.origin ? { origin: opts.origin } : undefined);
+    const plan = await this[planRestoreOf](restorePointId, opts);
     if (plan.kind === "refusal") {
       if (plan.unknownRestorePoint) throw new Error(`Unknown restore point: ${shown(restorePointId, MESSAGE_SHOWN_LIMIT)}`);
       throw new RestoreRefusedError(restorePointId, plan.refusals);

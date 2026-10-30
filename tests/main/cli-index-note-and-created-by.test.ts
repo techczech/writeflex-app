@@ -167,7 +167,7 @@ test('a folder renamed only in letter case renames its Index Note in letter case
 /** The Collection opened as the app opens it: its stores and a real agent over Bridle, to list and restore versions with. */
 async function openedByTheApp(): Promise<{ workspace: Workspace; versions: VersionStore; agent: WorkspaceAgent }> {
   const workspace = new Workspace(fx.root)
-  const agent = await WorkspaceAgent.create({ workspace, appDataDir: appData, changes: new ChangeStore(workspace), onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
+  const agent = await WorkspaceAgent.create({ mode: 'work', workspace, appDataDir: appData, changes: new ChangeStore(workspace), onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
   agents.push(agent)
   return { workspace, versions: new VersionStore(workspace), agent }
 }

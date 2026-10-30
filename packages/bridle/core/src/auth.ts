@@ -443,6 +443,12 @@ class AuthStorage implements CredentialStore {
     this.#persist(providerId, undefined);
   }
 
+  getAuthLane(providerId: string): import("./events.ts").TurnAuthLane {
+    if (this.#runtimeOverrides.has(providerId)) return "apikey";
+    const status = this.getAuthStatus(providerId);
+    return status.configured ? status.label === "OAuth" ? "oauth" : "apikey" : "none";
+  }
+
   getAuthStatus(providerId: string): { configured: boolean; label?: string } {
     const credential = this.get(providerId);
     if (credential) return { configured: true, label: credential.type === "oauth" ? "OAuth" : "API key" };
@@ -714,6 +720,14 @@ export class BridleAuth {
     this.storage.set(providerId, credentials);
     await prepareAuthProvider(this, providerId);
     this.#notifyChange();
+  }
+
+  /** Uses stored status and Pi's already-cached availability; never resolves credentials. */
+  authLane(providerId: string, availability?: { configured: boolean; source?: string }): import("./events.ts").TurnAuthLane {
+    const stored = this.storage.getAuthLane(providerId);
+    if (stored !== "none") return stored;
+    if (!availability?.configured) return "none";
+    return availability.source === "environment" ? "env" : "apikey";
   }
 
   status(providerId: string): { configured: boolean; label?: string } {

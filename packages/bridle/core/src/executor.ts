@@ -1,19 +1,30 @@
+import { callAsks } from "./capability-asks.ts";
 import type { ApprovalBroker } from "./approval.ts";
 import type { SnapshotStore } from "./snapshots.ts";
 import { randomUUID } from "node:crypto";
-import { contentHashOf } from "./hashing.ts";
+import { baselineHash, baselineNeedsFolderConsent, captureBaseline, contentHashOf, FolderTooLargeError, metadataBaselineNotice, APPROVAL_LISTING_MAX_ENTRIES } from "./hashing.ts";
+import { lstatSync } from "node:fs";
+import { physicalWorkspacePath } from "./workspace-containment.ts";
+import { modeApprovalDecision } from "./policy.ts";
+import { captureTurnPaths } from "./turn-paths.ts";
 import type { ProposalStoreController } from "./proposals/store.ts";
-import { UNPREVIEWED_TOUCHED_PATH_REASON, type CoreProposalSettlementReason } from "./proposals/types.ts";
+import { UNPREVIEWED_TOUCHED_PATH_REASON, type CoreProposalSettlementReason, type ProposalBaseline } from "./proposals/types.ts";
 import { unknownExecutionResult, type ExecutionClassification, type ExecutionJournal, type ExecutionOutcomeDisposition } from "./execution-journal/index.ts";
 import type {
   AgentTrigger, ApprovalDecision, ApprovalDenialReason, ApprovalPolicy, AuditEvent, AuditLog,
-  BridleLane, Capability, CapabilityResult, StageValidationResult, TraceEvent,
+  BridleLane, BridleMode, Capability, CapabilityResult, StageValidationResult, TraceEvent,
 } from "./types.ts";
 
 const DEFAULT_STAGE_VALIDATION_TIMEOUT_MS = 5_000;
+export { APPROVAL_LISTING_MAX_ENTRIES } from "./hashing.ts";
 
 export type ExecutorDeps = {
   lane: BridleLane;
+  mode?: () => BridleMode;
+  workspaceRoot?: string;
+  activity?: (cap: Capability, input: unknown, ctx: ExecutorCallContext, paths: readonly string[], before: Map<string, string>, snapshotIds: string[], succeeded: boolean) => Promise<void>;
+  activeTurn?: () => { turnId: string; signal: AbortSignal } | undefined;
+  onExecution?: (event: { turnId?: string; toolCallId?: string; capability: string; risk: Capability["risk"]; paths: readonly string[]; afterStop: boolean; phase: "start" | "end"; succeeded?: boolean }) => void;
   policy: ApprovalPolicy;
   broker: ApprovalBroker;
   proposals?: ProposalStoreController;
@@ -27,6 +38,7 @@ export type ExecutorDeps = {
       capability: string;
       toolCallId?: string;
       sessionId: string;
+      turnId?: string;
       attemptId?: string;
     }): Promise<{ id: string }>;
   };
@@ -51,13 +63,23 @@ export type ExecutorCallContext = {
   toolCallIdentity?: "verified-unique" | "untrusted";
   adoption?: true;
   proposalId?: string;
-  proposalBaseline?: { path: string; hash: string }[];
+  proposalBaseline?: ProposalBaseline[];
+  /** Fresh consent baseline, also checked after checkpoint/snapshot preparation. */
+  approvalBaseline?: ProposalBaseline[];
   /** Runtime relay pre-resolution for this tool call; avoids rediscovering paths during staging. */
   touchedPathsResolution?: readonly string[] | Promise<readonly string[]>;
 };
 
 export function freezeTouchedPaths(paths: readonly string[]): readonly string[] {
   return Object.freeze([...paths]);
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return lstatSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false;
+  } catch {
+    return false;
+  }
 }
 
 function ensureFrozenTouchedPaths(paths: readonly string[]): readonly string[] {
@@ -123,9 +145,9 @@ async function validateStagedCall(
   }
 }
 
-async function baselineFor(paths: readonly string[] | undefined): Promise<{ path: string; hash: string }[] | undefined> {
+async function baselineFor(paths: readonly string[] | undefined): Promise<ProposalBaseline[] | undefined> {
   if (!paths?.length) return undefined;
-  return Promise.all(paths.map(async (path) => ({ path, hash: await contentHashOf(path) })));
+  return Promise.all(paths.map((path) => captureBaseline(path)));
 }
 
 async function snapshotTouched(
@@ -154,9 +176,9 @@ async function snapshotTouched(
   }
 }
 
-async function baselineIsCurrent(baseline: { path: string; hash: string }[]): Promise<boolean> {
+async function baselineIsCurrent(baseline: ProposalBaseline[]): Promise<boolean> {
   for (const entry of baseline) {
-    if (await contentHashOf(entry.path) !== entry.hash) return false;
+    if (entry.directory?.baseline === "too-large" || await baselineHash(entry) !== entry.hash) return false;
   }
   return true;
 }
@@ -225,6 +247,20 @@ async function settleUnexpectedExit(
   return { result, relay: "denied", denied: true, aborted: true };
 }
 
+/** Shared fail-closed result for cancellation and reason-bearing policy refusal. */
+function refuseCall(cap: Capability, ctx: ExecutorCallContext, deps: ExecutorDeps, execution?: JournalExecution, opts: { force?: boolean; denialReason?: ApprovalDenialReason } = {}) {
+  if (!opts.force && !opts.denialReason && !ctx.signal?.aborted) return undefined;
+  return (async () => {
+    const aborted = opts.denialReason === undefined;
+    const reason = opts.denialReason ?? { code: "aborted", message: "The turn was stopped." };
+    const result: CapabilityResult = { text: aborted ? `Call to ${cap.name} was cancelled.` : reason.message, isError: true, denialReason: reason };
+    const classification = { relay: "denied" as const, denied: true, ...(aborted ? { aborted: true } : {}) };
+    await journalOutcome(execution, "refused", result, classification);
+    if (aborted) await deps.audit.record({ type: "capability.cancelled", timestamp: Date.now(), sessionId: ctx.sessionId, turnId: ctx.turnId, capability: cap.name, metadata: { reason } });
+    return { result, ...classification, stale: false };
+  })();
+}
+
 async function runExecute(
   cap: Capability,
   input: unknown,
@@ -243,21 +279,25 @@ async function runExecute(
   // Reject already-stale Adoption before checkpointing or snapshotting. The
   // second check below remains load-bearing: it closes the interval in which
   // the filesystem can drift while pre-write snapshots are being captured.
-  if (ctx.adoption && ctx.proposalBaseline?.length && !await baselineIsCurrent(ctx.proposalBaseline)) {
+  const staleResult = async () => {
     const result = { text: `Proposal ${ctx.proposalId ?? cap.name} became stale before execution; nothing was applied.`, isError: true };
     await journalOutcome(journalExecution, "stale", result, { relay: "error", denied: false, stale: true });
-    return {
-      result,
-      relay: "error",
-      stale: true,
-    };
+    return { result, relay: "error" as const, stale: true };
+  };
+  const consentBaseline = [
+    ...(ctx.adoption ? ctx.proposalBaseline ?? [] : []).filter((entry) =>
+      !(ctx.approvalBaseline && entry.directory?.baseline === "too-large")),
+    ...(ctx.approvalBaseline ?? []),
+  ];
+  if (consentBaseline?.length && !await baselineIsCurrent(consentBaseline)) {
+    return staleResult();
   }
   let touchedPaths: readonly string[] | undefined =
     cap.risk === "write" || cap.risk === "destructive" ? freezeTouchedPaths([]) : undefined;
   // Discovery is execution evidence as well as snapshot input. Structural
   // writes therefore resolve it too; renderUndo gates only the snapshot write.
-  // Snapshotless direct-executor consumers retain the pre-0.13 no-discovery
-  // carve-out and receive an explicit empty evidence set.
+  // Snapshotless direct-executor consumers still receive empty path evidence;
+  // the pre-approval safety check separately discovers paths to refuse folders.
   if (deps.snapshots) {
     try {
       const discovered = discoverTouchedPaths();
@@ -274,6 +314,7 @@ async function runExecute(
         type: "capability.failed",
         timestamp: Date.now(),
         sessionId: ctx.sessionId,
+        turnId: ctx.turnId,
         capability: cap.name,
         risk: cap.risk,
         message,
@@ -302,6 +343,7 @@ async function runExecute(
         origin: "pre-write",
         capability: cap.name,
         sessionId: ctx.sessionId,
+        turnId: ctx.turnId,
         ...(journalExecution ? { attemptId: journalExecution.attemptId } : {}),
         ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
       });
@@ -333,6 +375,8 @@ async function runExecute(
       };
     }
   }
+  const priorSnapshotIds = deps.activity && deps.snapshots ? new Set((await deps.snapshots.entries()).map((entry) => entry.id)) : undefined;
+  const before = deps.activity ? await captureTurnPaths(touchedPaths ?? []) : new Map<string, string>();
   try {
     await snapshotTouched(cap, touchedPaths, ctx, deps, journalExecution?.attemptId);
   } catch (error) {
@@ -360,18 +404,8 @@ async function runExecute(
         ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
       }),
   };
-  if (ctx.adoption) {
-    await deps.beforeAdoptionExecute?.();
-    if (ctx.proposalBaseline?.length && !await baselineIsCurrent(ctx.proposalBaseline)) {
-      const result = { text: `Proposal ${ctx.proposalId ?? cap.name} became stale before execution; nothing was applied.`, isError: true };
-      await journalOutcome(journalExecution, "stale", result, { relay: "error", denied: false, stale: true });
-      return {
-        result,
-        relay: "error",
-        stale: true,
-      };
-    }
-  }
+  if (ctx.adoption) await deps.beforeAdoptionExecute?.();
+  if (consentBaseline.length && !await baselineIsCurrent(consentBaseline)) return staleResult();
   if (journalExecution) {
     try {
       await journalExecution.journal.recordIntent(journalExecution.attemptId, {
@@ -384,10 +418,22 @@ async function runExecute(
     }
     journalExecution.intentRecorded = true;
   }
+  const cancelled = refuseCall(cap, ctx, deps, journalExecution);
+  if (cancelled) return cancelled;
+  const executionEvent = { turnId: ctx.turnId, toolCallId: ctx.toolCallId, capability: cap.name, risk: cap.risk, paths: touchedPaths ?? [] };
+  deps.onExecution?.({ ...executionEvent, afterStop: false, phase: "start" });
+  const completed = (succeeded: boolean) => deps.onExecution?.({ ...executionEvent, phase: "end", succeeded, afterStop: ctx.signal?.aborted === true });
   let result: CapabilityResult;
+  const recordActivity = async (succeeded: boolean) => {
+    const ids = priorSnapshotIds && deps.snapshots ? (await deps.snapshots.entries()).filter((entry) => !priorSnapshotIds.has(entry.id) && (entry.kind === "snapshot" || entry.kind === "undo-action") && (entry.origin ?? "turn") === "turn").map((entry) => entry.id) : [];
+    await deps.activity?.(cap, input, ctx, touchedPaths ?? [], before, ids, succeeded);
+  };
   try {
     result = await cap.execute(input, capabilityContext);
+    completed(!result.isError);
   } catch (error) {
+    completed(false);
+    await recordActivity(false);
     const message = error instanceof Error ? error.message : String(error);
     const result = { text: `Tool ${cap.name} failed: ${message}`, isError: true };
     await journalOutcome(journalExecution, "threw", result, { relay: "error", denied: false });
@@ -416,6 +462,7 @@ async function runExecute(
       });
     }
   }
+  await recordActivity(!result.isError);
   await journalOutcome(
     journalExecution,
     result.remoteOutcome?.state === "unknown" ? "unknown" : "returned",
@@ -451,6 +498,12 @@ export async function executeCapabilityDetailed(
   aborted?: boolean;
   touchedPaths?: readonly string[];
 }> {
+  const turn = deps.activeTurn?.();
+  if (turn && (!ctx.turnId || ctx.turnId === turn.turnId)) {
+    ctx = { ...ctx, turnId: ctx.turnId ?? turn.turnId, signal: ctx.signal ? AbortSignal.any([ctx.signal, turn.signal]) : turn.signal };
+  }
+  const audit = deps.audit;
+  deps = { ...deps, audit: { record: (event) => audit.record({ ...event, ...(ctx.turnId ? { turnId: ctx.turnId } : {}) }) } };
   let journalExecution: JournalExecution | undefined;
   if (deps.executionJournal && !ctx.adoption) {
     const originKey = ctx.executionKey
@@ -535,6 +588,11 @@ export async function executeCapabilityDetailed(
     return touchedPathsResolution;
   };
   const failTouchedPaths = async (error: unknown) => {
+    if (error instanceof FolderTooLargeError) {
+      return finishBeforeExecution({ text: error.message, isError: true,
+        denialReason: { code: error.code, message: error.message },
+      }, "refused", { denied: true });
+    }
     const message = error instanceof Error ? error.message : String(error);
     const result = {
       text: `Tool ${cap.name} did not run because touched-path discovery failed: ${message}`,
@@ -559,7 +617,16 @@ export async function executeCapabilityDetailed(
   try {
   let decision: ApprovalDecision;
   try {
-    decision = await deps.policy({ capability: { name: cap.name, risk: cap.risk }, input, trigger: ctx.trigger });
+    if (deps.mode) {
+      let outside = false;
+      if (cap.risk !== "read" && deps.workspaceRoot && deps.mode() !== "read-only" && ctx.trigger.trust !== "background") {
+        let paths: readonly string[] | undefined;
+        try { paths = await discoverTouchedPaths(); }
+        catch (error) { return failTouchedPaths(error); }
+        outside = (paths ?? []).some((path) => physicalWorkspacePath(deps.workspaceRoot!, path) === undefined);
+      }
+      decision = await modeApprovalDecision(deps.mode(), cap, input, ctx.trigger, deps.policy, outside);
+    } else decision = await deps.policy({ capability: { name: cap.name, risk: cap.risk }, input, trigger: ctx.trigger });
   } catch (error) {
     if (!journalExecution) throw error;
     const message = error instanceof Error ? error.message : String(error);
@@ -568,6 +635,10 @@ export async function executeCapabilityDetailed(
       "precondition-failed",
       { denied: true, aborted: true },
     );
+  }
+  const alwaysAsks = ["allow", "stage", "ask"].includes(decisionKind(decision) ?? "") && await callAsks(cap, input);
+  if (alwaysAsks) {
+    decision = "ask";
   }
   const policyDecision = decisionKind(decision);
   const policyDenialReason = denialReason(decision);
@@ -588,9 +659,34 @@ export async function executeCapabilityDetailed(
     } : {}),
   });
 
-  const effectiveDecision = ctx.adoption && (policyDecision === "ask" || policyDecision === "stage")
-    ? "allow"
+  const cancelled = refuseCall(cap, ctx, deps, journalExecution);
+  if (cancelled) return cancelled;
+  const needsFolderConsent = ctx.adoption && (await Promise.all(
+    (ctx.proposalBaseline ?? []).map(baselineNeedsFolderConsent),
+  )).some(Boolean);
+  // Adoption normally supplies consent for policy ask/stage. A too-large or
+  // legacy directory-only baseline never did: even policy allow must request
+  // fresh folder consent. Policy deny (and invalid decisions) still wins.
+  const effectiveDecision = ctx.adoption && !alwaysAsks && (policyDecision === "ask" || policyDecision === "stage" || policyDecision === "allow")
+    ? (needsFolderConsent ? "ask" : "allow")
     : policyDecision;
+
+  // Folder writes require structural undo and a store that can retain it. Check
+  // before staging or asking, including direct callers without snapshot storage.
+  if (["allow", "ask", "stage"].includes(effectiveDecision ?? "")
+    && (cap.risk === "write" || cap.risk === "destructive")
+    && (!cap.renderUndo || !deps.snapshots)) {
+    try {
+      const paths = await discoverTouchedPaths();
+      if ((paths ?? []).some(isDirectory)) {
+        const reason: ApprovalDenialReason = {
+          code: "folder-not-undoable",
+          message: "This folder cannot be changed without a stored restore point and structural undo; nothing was applied.",
+        };
+        return finishBeforeExecution({ text: reason.message, isError: true, denialReason: reason }, "refused", { denied: true });
+      }
+    } catch (error) { return failTouchedPaths(error); }
+  }
 
   if (effectiveDecision === "stage") {
     if (cap.validateStage) {
@@ -645,7 +741,9 @@ export async function executeCapabilityDetailed(
       } catch (error) {
         return failTouchedPaths(error);
       }
-      const baseline = await baselineFor(paths);
+      let baseline: ProposalBaseline[] | undefined;
+      try { baseline = await baselineFor(paths); }
+      catch (error) { return failTouchedPaths(error); }
       if (cap.proposalKind === "change" && !baseline?.length) {
         return finishBeforeExecution(
           { text: `Change Proposal ${cap.name} requires at least one touched path for its baseline guard.`, isError: true },
@@ -653,6 +751,8 @@ export async function executeCapabilityDetailed(
           { denied: true },
         );
       }
+      const cancelled = refuseCall(cap, ctx, deps, journalExecution);
+      if (cancelled) return cancelled;
       const proposal = await deps.proposals.create({
         id: randomUUID(),
         lane: deps.lane,
@@ -684,15 +784,55 @@ export async function executeCapabilityDetailed(
   }
 
   if (effectiveDecision === "ask") {
-    const preview = await renderPreview(cap, input);
+    let preview = await renderPreview(cap, input);
+    let approvalBaseline: ProposalBaseline[] | undefined;
+    if (cap.risk === "destructive" || cap.risk === "write" || needsFolderConsent) {
+      try {
+        const paths = await discoverTouchedPaths();
+        // Fresh consent uses the same bounded content/metadata tiers as staging;
+        // folders beyond the metadata limit are refused before opening a card.
+        const consentPaths = new Set([...(paths ?? []), ...(needsFolderConsent ? ctx.proposalBaseline?.map((entry) => entry.path) ?? [] : [])]);
+        // File-only approval needs no folder listing or content read. Keep
+        // this preflight synchronous so a missing output adds no disk-I/O wait
+        // before the broker can settle the approval requirement.
+        const hasFolder = [...consentPaths].some(isDirectory);
+        const current = hasFolder ? await Promise.all([...consentPaths].map((path) => captureBaseline(path))) : [];
+        if (current.some((entry) => entry.directory)) {
+          approvalBaseline = current;
+          const listings = current.filter((entry) => entry.directory).map((entry) => {
+            const directory = entry.directory!;
+            const header = `Folder contents ${JSON.stringify(entry.path)}:`;
+            if (directory.baseline === "too-large") {
+              // Only old stored records may carry this marker. Fresh captures
+              // refuse instead; fail closed if that contract ever regresses.
+              throw new FolderTooLargeError();
+            }
+            const shown = directory.tier === "metadata"
+              ? directory.entries.slice(0, APPROVAL_LISTING_MAX_ENTRIES).map((child) =>
+                `${child.kind} ${JSON.stringify(child.path)} ${child.size} bytes, mtime ${child.mtimeMs}, mode ${child.mode.toString(8)}`).join("\n")
+              : directory.entries.slice(0, APPROVAL_LISTING_MAX_ENTRIES).map((child) =>
+                `${child.kind} ${JSON.stringify(child.path)} ${child.hash}`).join("\n");
+            const more = (directory.entryCount ?? directory.entries.length) - Math.min(directory.entries.length, APPROVAL_LISTING_MAX_ENTRIES);
+            const notice = directory.tier === "metadata" ? `\n${metadataBaselineNotice(directory.entryCount)}` : "";
+            return `${header}${notice}\n${shown}${more > 0 ? `\nand ${more} more` : ""}`;
+          });
+          preview = [preview, ...listings].filter(Boolean).join("\n\n");
+        } else if (needsFolderConsent) {
+          return finishBeforeExecution({ text: "The proposed folder changed before approval; nothing was applied.", isError: true }, "stale", { denied: false, stale: true });
+        }
+      } catch (error) { return failTouchedPaths(error); }
+    }
     deps.trace({ type: "approval.requested", title: `Approval requested: ${cap.name}` });
-    const outcome = await deps.broker.request({ capabilityName: cap.name, risk: cap.risk, input, preview });
+    const outcome = await deps.broker.request({ capabilityName: cap.name, risk: cap.risk, input, preview, turnId: ctx.turnId, signal: ctx.signal });
     deps.trace({ type: "approval.settled", title: `${cap.name}: ${outcome}` });
     await deps.audit.record({
       type: "approval.settled", timestamp: Date.now(), sessionId: ctx.sessionId,
       capability: cap.name, risk: cap.risk, message: outcome,
       ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
     });
+    if (outcome === "cancelled") {
+      return (await refuseCall(cap, ctx, deps, journalExecution, { force: true }))!;
+    }
     if (outcome === "denied") {
       return finishBeforeExecution(
         { text: `The user declined the ${cap.name} call.`, isError: true },
@@ -700,8 +840,8 @@ export async function executeCapabilityDetailed(
         { denied: true },
       );
     }
-    const execution = await runExecute(cap, input, discoverTouchedPaths, ctx, deps, journalExecution);
-    return { ...execution, denied: false };
+    const execution = await runExecute(cap, input, discoverTouchedPaths, { ...ctx, ...(approvalBaseline ? { approvalBaseline } : {}) }, deps, journalExecution);
+    return { ...execution, denied: execution.aborted === true && execution.relay === "denied" };
   }
 
   // Fail closed: execute ONLY on the exact "allow" decision (or an approved "ask",
@@ -718,11 +858,7 @@ export async function executeCapabilityDetailed(
       ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
     });
     if (policyDenialReason) {
-      return finishBeforeExecution(
-        { text: policyDenialReason.message, isError: true, denialReason: policyDenialReason },
-        "refused",
-        { denied: true },
-      );
+      return (await refuseCall(cap, ctx, deps, journalExecution, { denialReason: policyDenialReason }))!;
     }
     return finishBeforeExecution({
       text: `Call to ${cap.name} was denied by the app's policy${policyDecision === "deny" ? "" : ` (unrecognized policy decision: ${JSON.stringify(decision)})`}.`,
@@ -731,7 +867,7 @@ export async function executeCapabilityDetailed(
   }
 
   const execution = await runExecute(cap, input, discoverTouchedPaths, ctx, deps, journalExecution);
-  return { ...execution, denied: false };
+  return { ...execution, denied: execution.aborted === true && execution.relay === "denied" };
   } catch (error) {
     // Restores the ownership and Outcome Honesty invariants across every exit:
     // pre-intent failures settle as non-execution, while any post-intent hole is

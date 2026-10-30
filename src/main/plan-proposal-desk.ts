@@ -15,6 +15,7 @@ import { readFile, rm } from 'node:fs/promises'
 import { posix } from 'node:path'
 import type { Proposal, ProposalSettlementResult, HostProposalSettlement, JournalEntry } from '@bridle/core'
 import { MANIFEST_NAME } from './folio'
+import { folioDeclaration } from './folio-declaration'
 import { planBackupPaths, readPlan } from './plan'
 import { withPlanLock } from './plan-lock'
 import type { OperationWrite, Workspace } from './workspace'
@@ -238,7 +239,7 @@ export class PlanProposalDesk {
       parts: finalParts.map((part) => ({ title: part.title, path: part.path })),
       outside: basisNow.strays.filter((stray) => !inOrder.has(stray.path)).map((stray) => ({ title: stray.title, path: stray.path })),
       createdIndexNote: prepared.proposed.createsIndexNote,
-      manifest: existsSync(this.workspace.absolute(dir ? posix.join(dir, MANIFEST_NAME) : MANIFEST_NAME)),
+      manifest: folioDeclaration(this.workspace, dir).manifest,
       undoable: true,
     }
     const referenced = finalParts.flatMap((part) => (part.path && !prepared.writes.includes(part.path) ? [part.path] : []))

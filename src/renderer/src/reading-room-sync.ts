@@ -88,3 +88,22 @@ export function createOutboxSyncRunner<Result>(options: {
     },
   }
 }
+
+/**
+ * What to flash when a drain answers (ADR-0036, second amendment), or nothing. Success is announced
+ * only for rows actually written; a queue that emptied because its last rows were refused says that
+ * instead, because an emptied queue is not the same as a written one.
+ */
+export function outboxResultAnnouncement(
+  wasWaiting: number,
+  result: { waiting: number; written?: number; refusedNow?: number; keptLocal?: { created: boolean } },
+): string | null {
+  if (wasWaiting <= 0 || result.waiting !== 0 || result.keptLocal?.created) return null
+  const refused = result.refusedNow ?? 0
+  if (refused > 0) {
+    return refused === 1
+      ? '1 change could not be written to Zotero. It is kept here with the reason.'
+      : `${refused} changes could not be written to Zotero. They are kept here with the reason.`
+  }
+  return (result.written ?? 0) > 0 ? 'New highlights synced to Zotero.' : null
+}

@@ -1,3 +1,10 @@
+import { withFolioTitleIdentity } from './folio-title-write'
+import { announcesFolioDocumentWrite } from '../shared/folio-write-preparation'
+import { clearFolioDeclarations, activateFolioDeclaration, folioDeclaration } from './folio-declaration'
+import { restoredFolioMessage, prepareMakeFolio, restoreTurnedBackFolio, writeRestoredFolioInstructions } from './folio-conversion'
+import { previewVersionMap, waitingVersionHistory, pendingHistoryAttachment, followVersionMap, undoVersionMap } from './version-moves'
+import { suggestHistoryAttachments } from './version-history-reattach'
+import { ASSISTANT_MODE_KEY } from '../shared/assistant-turns'
 import { gatedSnapshots } from './gated-snapshots'
 import { CollectionChangeBatches } from './collection-change-batch'
 import { workspaceMetadataValues } from './metadata-vocabulary'
@@ -14,7 +21,7 @@ import { allStates, notifyWindowReleased, onWindowReleased, stateForSender, setQ
 import { basisAllows, isSaveBasis } from '../shared/save-basis'
 import { e2eWriteHooksAllowed } from '../shared/e2e-write-hooks'
 import { preserveVersion } from './preserve-version'
-import { assertRelativeWorkspacePath, DiskChangedUnderBuffer, EmptyWriteRefusal, NameTaken, sanitiseFileName, SaveWithoutBasis, Workspace, type MarkdownFile } from './workspace'
+import { assertRelativeWorkspacePath, DiskChangedUnderBuffer, isRescuedEmptyWriteRefusal, NameTaken, type RescuedEmptyWriteRefusal, sanitiseFileName, SaveWithoutBasis, Workspace, type MarkdownFile } from './workspace'
 import { listingEntryOf, type CollectionChanged } from '../shared/listing-patch'
 import { RestoreNotCompletedError } from './restore-failure'
 import { toggleAgentNoteTask } from './tasks'
@@ -39,9 +46,10 @@ import { folioOutline, invalidateFolioOutlineFile, invalidateFolioOutlines } fro
 import { resolveTabGroups, tabGroupPaths } from './tab-groups'
 import { applyFolderFocus, describeFolderFocus, isFocusableFolder, restoreFolderFocus } from './folder-focus'
 import { folioConfirmSummaryFromDraft } from '../shared/folio-confirm-summary'
-import { MANIFEST_NAME, assertManifestAbsent, draftManifest, folioPieces, orderEntriesByFolio, readManifest } from './folio'
+import { MANIFEST_NAME, indexNotePath, assertManifestAbsent, folioPieces, orderEntriesByFolio, readManifest } from './folio'
 import { registerPlanIpcHandlers } from './plan-ipc'
 import { registerFolioDetailsIpc } from './folio-details-ipc'
+import { registerFolioRoomIpc } from './folio-room-ipc'
 import { registerFolioAgentInstructionsIpc } from './folio-agent-instructions-ipc'
 import { writeFolioAgentInstructions } from './folio-agent-instructions'
 import { registerScoutIpcHandlers } from './scout-ipc'
@@ -59,6 +67,12 @@ import { BoardMaterialDesk } from './board-material-desk'
 import { applyRenameRepair, failedRenameRepairResult, planRenameRepair, type RenameRepairResult } from './rename-repair'
 import { applyFolderRenameRepair, planFolderRenameRepair } from './folder-rename-repair'
 import { ScrapStore } from './scraps'
+import { ScratchpadStore } from './scratchpad-store'
+import { registerScratchLiveReads } from './scratchpad-live'
+import { registerScratchpadIpc } from './scratchpad-ipc'
+import { bindScratchpadExternalSettings } from './scratchpad-external'
+import { configureScratchpadHolders, scratchpadHolder } from './scratchpad-holders'
+import { isLosslessScrapId, listScrapsWithScratchpad } from './scrap-listing'
 import { ChangeStore, isChangeJournalPath } from './changes'
 import type { Change, ChangeScope, ChangeStatus, EditClass, NewChange } from './changes'
 import { humanAuthorForWorkspace, VersionStore, WRITEFLEX_SELF_AUTHOR } from './versions'
@@ -99,7 +113,8 @@ import { repliesNeedServiceUpdate, startReaderNotesCollection } from './sharing-
 import { outsideSummary, readerNoteOf } from './outside-change-fields'
 import { readerReplyFor } from './sharing-reader-replies'
 import { MAX_UNDECIDED_OUTSIDE_CHANGES, MAX_UNDECIDED_PER_SOURCE } from './cli/review-format'
-import { OUTSIDE_SOURCES, type OutsideLook, type OutsideSummary } from '../shared/outside-source'
+import { OUTSIDE_SOURCES, type OutsideBulkAccept, type OutsideLook, type OutsideSource, type OutsideSummary } from '../shared/outside-source'
+import { asFrontmatterForWindow } from './frontmatter-change'
 import { REPLY_KEY_FOLDER, readReplyKey } from './reply-key'
 import { watchRequestInbox } from './request-inbox-watch'
 import { queueThenTurn, readyBeforeTurn, REQUEST_READINESS_WAIT_MS } from './collection-write-order'
@@ -266,6 +281,16 @@ function tellDocumentsTrashed(root: string, paths: string[]): void {
     try { listener(root, paths) } catch { /* a listener never breaks a Trash */ }
   }
 }
+/** Every window on `state`'s folder re-lists its Scratchpad (and the scraps views that read it). */
+function announceScratchpad(state: WindowState): void {
+  const root = state.workspace?.root
+  if (!root) return
+  for (const other of allStates()) {
+    if (other.workspace?.root !== root) continue
+    sendSafe(other, 'scratchpad:changed', null)
+    sendSafe(other, 'scraps:changed', null)
+  }
+}
 function notifyDocumentMoved(state: WindowState, from: string, to: string): void {
   if (state.workspace) tellDocumentMoved(state.workspace.root, from, to)
 }
@@ -293,11 +318,20 @@ function prepareFolioInstructions(state: WindowState, dir: string): Promise<void
   })
 }
 
-export function agentFileServices(state: WindowState): { prepareFolioInstructions: (dir: string) => Promise<void>; trashFile: (absolute: string) => Promise<void>; onFileRenamed: (from: string, to: string) => Promise<void>; notifyFilesChangedOnDisk: (paths: string[]) => void } {
+export function agentFileServices(state: WindowState): { prepareFolioInstructions: (dir: string) => Promise<void>; trashFile: (absolute: string) => Promise<void>; onFileRenamed: (from: string, to: string) => Promise<void>; onVersionHistoryChanged: () => void; notifyFilesChangedOnDisk: (paths: string[]) => void } {
   return {
+    onVersionHistoryChanged: () => sendSafe(state, 'versions:changed', null),
     prepareFolioInstructions: (dir) => prepareFolioInstructions(state, dir),
     trashFile: (absolute) => shell.trashItem(absolute),
-    onFileRenamed: async (from, to) => { notifyDocumentMoved(state, from, to) },
+    onFileRenamed: async (from, to) => {
+      notifyDocumentMoved(state, from, to)
+      // The agent's rename moves the Scratchpad's items with the document, as the app's own rename does.
+      try {
+        if (state.scratchpad && (await state.scratchpad.followRename(from, to)) > 0) announceScratchpad(state)
+      } catch (error) {
+        void recordMainProcessDiagnostic('scratchpad.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
+      }
+    },
     notifyFilesChangedOnDisk: (paths) => {
       notifyCollectionChanged(state, paths)
       sendSafe(state, 'file:changed-on-disk', paths)
@@ -349,6 +383,10 @@ function scheduleVaultIndexRecompute(state: WindowState, paths: string[]): void 
       }))
   }, VAULT_INDEX_SETTLE_MS))
 }
+
+/** The app's answer for a refused document save (the renderer's own, App.tsx bulk route): the status route says it
+ *  when the file changed under its plan (D-STA-1). */
+export const STATUS_SAVE_REFUSED = 'Could not save this document. Try again.'
 
 /**
  * `ownSave` is the one case the renderer may answer without re-listing the folder: the editor saved a
@@ -462,6 +500,11 @@ export function registerIpc(
 ): { evictWindow: (webContentsId: number) => void; dispose: () => void } {
   // bindWorkspace is a separate export the WindowManager calls; these app-wide services reach it
   // through the module seam rather than a widened signature (registerIpc always runs first at boot).
+  const unsubscribeFolioIdentityMoves = onDocumentsMoved((root, from, to) => {
+    if (!settings.followFolioIdentityMove(root, from, to)) {
+      for (const state of allStates()) if (state.workspace?.root === root) sendSafe(state, 'window:status', 'The folder moved, but its completed chapter-linking state could not be saved.')
+    }
+  })
   const authFilePath = resolve(join(app.getPath('userData'), 'auth.json'))
   const vaultIndexDir = join(app.getPath('userData'), 'vault-index')
   vaultIndexService = new VaultIndexService({ cacheDir: vaultIndexDir })
@@ -510,7 +553,11 @@ export function registerIpc(
     await modelServiceReady
     return summariseModelRefresh(await modelService.refreshModels({ force: true }))
   })
-  const resolvedDefaults = () => resolveModelDefaults(settings.modelDefaults())
+  const resolvedDefaults = () => {
+    const explicit = settings.modelDefaults()
+    const defaults = resolveModelDefaults(explicit)
+    return explicit.modelId ? defaults : { ...defaults, model: { ...defaults.model, id: modelService.recommendedModel(defaults.model.provider) ?? defaults.model.id } }
+  }
   shared = {
     skills,
     threadIndex: new ThreadIndex(join(app.getPath('userData'), 'threads', 'index.json')),
@@ -1358,8 +1405,12 @@ export function registerIpc(
   // pushes `scraps:changed` so the pane re-lists and the file tree refreshes (scraps/ appears on the
   // first cut). The renderer supplies `origin` from the active file's workspace-relative path; the
   // store reduces it to a basename stem, so no path escapes the Workspace.
-  ipcMain.handle('scraps:list', async (event, scope?: { origin?: string }) =>
-    requireScraps(stateForSender(event.sender.id)).list(scope))
+  // The list also carries the floating Scratchpad's waiting lossless items (scrap-listing.ts), so a new
+  // cut appears in the Agent panel's embedded scraps too; their done/colour go to the Scratchpad's store.
+  ipcMain.handle('scraps:list', async (event, scope?: { origin?: string }) => {
+    const state = stateForSender(event.sender.id)
+    return listScrapsWithScratchpad(requireWorkspace(state), requireScraps(state), scope)
+  })
   ipcMain.handle('scraps:add', async (event, input: { origin: string; text: string }) => {
     const state = stateForSender(event.sender.id)
     const scrap = await requireScraps(state).add(input.origin, input.text)
@@ -1368,16 +1419,28 @@ export function registerIpc(
   })
   ipcMain.handle('scraps:toggle-done', async (event, id: string) => {
     const state = stateForSender(event.sender.id)
+    if (isLosslessScrapId(id) && state.scratchpad) {
+      await state.scratchpad.toggleDone(id)
+      announceScratchpad(state)
+      return
+    }
     await requireScraps(state).toggleDone(id)
     sendSafe(state, 'scraps:changed', null)
   })
   ipcMain.handle('scraps:set-colour', async (event, input: { id: string; colour: string | null }) => {
     const state = stateForSender(event.sender.id)
+    if (isLosslessScrapId(input.id) && state.scratchpad) {
+      await state.scratchpad.setColour(input.id, input.colour)
+      announceScratchpad(state)
+      return
+    }
     await requireScraps(state).setColour(input.id, input.colour)
     sendSafe(state, 'scraps:changed', null)
   })
   ipcMain.handle('scraps:remove', async (event, id: string) => {
     const state = stateForSender(event.sender.id)
+    // A lossless item has no scraps file to be removed from; the Scratchpad rejects or keeps it.
+    if (isLosslessScrapId(id)) throw new Error('This item is kept in the floating Scratchpad; reject it there instead.')
     const removed = await requireScraps(state).remove(id)
     sendSafe(state, 'scraps:changed', null)
     return removed
@@ -1391,8 +1454,10 @@ export function registerIpc(
   // through the same store in-process, so it also lands as a pending Change the dock can review.
   // Ticket 08: a reader's record on a link whose service is too old to confirm replies is marked so for
   // the card (`readerRepliesWait`), as the window reads it; never stored.
+  // A whole-document record of an older build that changes only the frontmatter is read as the
+  // frontmatter lines it changes (frontmatter-change.ts `asFrontmatterForWindow`); the ledger keeps it as filed.
   ipcMain.handle('changes:list', async (event, scope?: ChangeScope) =>
-    (await requireChanges(stateForSender(event.sender.id)).list(scope)).map((change) => {
+    (await requireChanges(stateForSender(event.sender.id)).list(scope)).map(asFrontmatterForWindow).map((change) => {
       const note = readerNoteOf(change)
       return note && repliesNeedServiceUpdate(note.shareId) ? { ...change, readerRepliesWait: true } as Change : change
     }))
@@ -1466,12 +1531,26 @@ export function registerIpc(
     if (rejected.length > 0) sendSafe(state, 'changes:changed', null)
     return { rejected: rejected.length }
   })
-  ipcMain.handle('changes:resolve', async (event, input: { id: string; action: 'accept' | 'reject' }) => {
+  // Accept all from one source: each undecided Change of that source by the single Accept, in order
+  // (agent.ts `acceptOutsideFromSource`). `open` names the documents the window has open: their Changes
+  // come back in `open`, for the window to accept through its own route. A reader's are never accepted in bulk.
+  ipcMain.handle('changes:accept-outside', async (event, input: { source?: unknown; open?: unknown }): Promise<OutsideBulkAccept> => {
+    const state = stateForSender(event.sender.id)
+    const source = input?.source
+    if (typeof source !== 'string' || !(OUTSIDE_SOURCES as readonly string[]).includes(source) || source === 'reader') throw new Error('Name one source to accept from.')
+    const open = Array.isArray(input?.open) ? input.open.filter((path): path is string => typeof path === 'string').slice(0, 1000) : []
+    const outcome = await (await requireAgent(state)).acceptOutsideFromSource(source as OutsideSource, open)
+    if (outcome.files.length > 0) notifyCollectionChanged(state, outcome.files)
+    sendSafe(state, 'changes:changed', null)
+    return outcome
+  })
+  ipcMain.handle('changes:resolve', async (event, input: { id: string; action: 'accept' | 'reject'; sweep?: unknown }) => {
     const state = stateForSender(event.sender.id)
     // What the accept wrote is the renderer's next baseline, never the file read back after it (Muse M2,
     // round 2): another program may write between the two, and that version was not seen. It is the
     // receipt of the accept's own write call (Sol r3 M1, Muse r3 S1), absent when the accept wrote nothing.
-    const { receipt, ...result } = await (await requireAgent(state)).resolveChange(input.id, input.action)
+    // `sweep: false` only from Accept all from one source (the window's own route for an open document).
+    const { receipt, ...result } = await (await requireAgent(state)).resolveChange(input.id, input.action, input.sweep === false ? { sweep: false } : {})
     const change = await requireChanges(state).get(input.id)
     if (change) hearBackSoon(state, change)
     if (!result.applied || input.action !== 'accept') return result
@@ -1507,6 +1586,49 @@ export function registerIpc(
     sendSafe(state, 'changes:changed', null)
     sendSafe(state, 'versions:changed', null)
     return result
+  })
+  ipcMain.handle('versions:attachment-suggestions', async (event, path: string) =>
+    suggestHistoryAttachments(requireWorkspace(stateForSender(event.sender.id)), path))
+  ipcMain.handle('versions:waiting', async (event) =>
+    waitingVersionHistory(requireWorkspace(stateForSender(event.sender.id)).root))
+  ipcMain.handle('versions:attachment-undo', async (event, path: string) =>
+    pendingHistoryAttachment(requireWorkspace(stateForSender(event.sender.id)).root, path))
+  ipcMain.handle('versions:attach', async (event, input: { from: string; to: string }) => {
+    const state = stateForSender(event.sender.id)
+    const ws = requireWorkspace(state)
+    if (/[\t\r\n]/.test(input.from) || /[\t\r\n]/.test(input.to)) throw new Error('History paths cannot contain tabs or newlines.')
+    const text = `${input.from}\t${input.to}\n`
+    const heldBackOnly = waitingVersionHistory(ws.root).some(row => row.from === input.from)
+    const validate = async () => {
+      const suggestions = await suggestHistoryAttachments(ws, input.to)
+      const waiting = waitingVersionHistory(ws.root)
+      if (!waiting.some(row => row.from === input.from) && !suggestions.some(row => row.from === input.from)) throw new Error('This history attachment is no longer suggested.')
+      const plan = previewVersionMap(ws.root, text, heldBackOnly)
+      if (plan.refused.length || !plan.assignments.length) throw new Error(plan.refused[0]?.reason ?? 'No history is waiting to be attached.')
+      return plan
+    }
+    const plan = await validate()
+    const count = plan.assignments.length
+    const confirmed = process.env.WRITEFLEX_E2E === '1'
+      ? process.env.WRITEFLEX_E2E_ATTACH_HISTORY !== 'cancel'
+      : (await dialog.showMessageBox(state.window, {
+        type: 'question', message: 'Attach history here?', detail: `Move ${count} ${count === 1 ? 'version' : 'versions'} from ${input.from} to ${input.to}. You can undo this attachment.`,
+        buttons: ['Cancel', 'Attach history'], defaultId: 0, cancelId: 0,
+      })).response === 1
+    if (!confirmed) return null
+    const result = await ws.exclusiveAll(async () => {
+      const current = await validate()
+      if (JSON.stringify(current) !== JSON.stringify(plan)) throw new Error('History attachment changed since confirmation. Try again. Nothing was written.')
+      return followVersionMap(ws.root, text, JSON.stringify(plan), heldBackOnly)
+    })
+    sendSafe(state, 'versions:changed', null)
+    return result.undo
+  })
+  ipcMain.handle('versions:undo-attachment', async (event, id: string) => {
+    const state = stateForSender(event.sender.id)
+    const ws = requireWorkspace(state)
+    await ws.exclusiveAll(async () => undoVersionMap(ws.root, id))
+    sendSafe(state, 'versions:changed', null)
   })
   ipcMain.handle('versions:list', async (event, scope?: VersionScope) =>
     requireVersions(stateForSender(event.sender.id)).list(scope))
@@ -1584,10 +1706,11 @@ export function registerIpc(
     if (dir !== '') assertRelativeWorkspacePath(dir)
     return dir
   }
-  ipcMain.handle('menu:collection-active', (event, input: { active: boolean; folio?: boolean }) => {
+  ipcMain.handle('menu:collection-active', (event, input: { active: boolean; folio?: boolean; canStart?: boolean }) => {
     const state = stateForSender(event.sender.id)
     state.collectionPageActive = input?.active === true
     state.collectionPageFolio = state.collectionPageActive && input?.folio === true
+    state.collectionPageCanStartFolio = state.collectionPageActive && input?.canStart !== false
     router.refreshMenu?.()
   })
   ipcMain.handle('collection:begin-batch', event => {
@@ -1652,7 +1775,15 @@ export function registerIpc(
     const dir = collectionDir(input)
     const status = normaliseCollectionStatus(input.status)
     await checkpointCollectionFile(state, input.path)
-    const saved = await setCollectionPieceStatus(workspace, dir, input.path, status)
+    let saved
+    try {
+      saved = await setCollectionPieceStatus(workspace, dir, input.path, status)
+    } catch (error) {
+      // D-STA-1: the file changed (or went) between the read the status was planned from and the commit, so
+      // nothing was written; the caller gets the app's existing answer for a refused save.
+      if (error instanceof DiskChangedUnderBuffer) throw new Error(STATUS_SAVE_REFUSED)
+      throw error
+    }
     notifyCollectionChanged(state, [saved.file.path])
     return saved
   })
@@ -1745,6 +1876,17 @@ export function registerIpc(
   // "Make Folio" — it drafts a manifest from the folder's numbered parts and, after a native confirm
   // showing that draft, writes it (only when absent). The AGENT's equivalent is folio.create_manifest,
   // staged/allowed through the capability pipeline; this direct path is the writer's own act.
+  ipcMain.handle('folio:declaration', (event, input: { dir?: string }) => folioDeclaration(requireWorkspace(stateForSender(event.sender.id)), collectionDir(input)))
+  ipcMain.handle('folio:undo-turn-back', async (event, input: { dir?: string }) => {
+    const state = stateForSender(event.sender.id)
+    const dir = collectionDir(input)
+    await prepareFolioInstructions(state, dir)
+    const paths = await restoreTurnedBackFolio(requireWorkspace(state), dir)
+    if (!paths) return false
+    notifyCollectionChanged(state, paths)
+    sendSafe(state, 'file:changed-on-disk', paths)
+    return true
+  })
   ipcMain.handle('folio:read', async (event, input: { dir?: string }) =>
     readManifest(requireWorkspace(stateForSender(event.sender.id)), collectionDir(input)))
   // The same manifest, resolved: the pieces an export will write, in order, and the listed entries it
@@ -1800,11 +1942,12 @@ export function registerIpc(
     notifyCollectionChanged(state, [dir])
     return dir
   })
-  ipcMain.handle('folio:turn-back', async (event, input: { dir?: string }) => {
+  ipcMain.handle('folio:turn-back', async (event, input: { dir?: string; requestId?: number }) => {
     const state = stateForSender(event.sender.id)
     const dir = collectionDir(input)
     const ws = requireWorkspace(state)
-    if (!await readManifest(ws, dir)) throw new Error('This folder is not a Folio.')
+    const declaration = folioDeclaration(ws, dir)
+    if (!declaration.isFolio && !declaration.repairNeeded) throw new Error('This folder is not a Folio.')
     const confirmed = process.env.WRITEFLEX_E2E === '1'
       ? process.env.WRITEFLEX_E2E_FOLIO !== 'cancel'
       : (await dialog.showMessageBox(state.window, {
@@ -1813,37 +1956,64 @@ export function registerIpc(
         buttons: ['Turn back into a collection', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
       })).response === 0
     if (!confirmed) return false
-    const paths = await turnBackIntoCollection(ws, dir, (absolute) => shell.trashItem(absolute))
+    await prepareFolioInstructions(state, dir)
+    const paths = await turnBackIntoCollection(ws, dir)
     notifyCollectionChanged(state, paths)
     sendSafe(state, 'file:changed-on-disk', paths)
-    return true
+    sendSafe(state, 'folio:turn-back-finished', input.requestId)
+    const retired = paths.find(path => path.includes('.folio-turn-back-retired-'))
+    return retired ? `Turned back into a collection. Earlier parked bytes are kept in ${retired}. Undo restores the current Folio.` : true
   })
   ipcMain.handle('folio:create', async (event, input: { dir?: string }): Promise<string | null> => {
     const state = stateForSender(event.sender.id)
     const ws = requireWorkspace(state)
     const dir = collectionDir(input)
-    await assertManifestAbsent(ws, dir)
-    let warning: string | undefined
-    const draft = await draftManifest(ws, dir, message => { warning = message })
+    await assertManifestAbsent(ws, dir, message => sendSafe(state, 'window:status', message))
+    await prepareFolioInstructions(state, dir)
+    let { draft, warning, receiptSource } = await prepareMakeFolio(ws, dir)
     const confirmed = await confirmMakeFolio(state, dir, draft, warning)
     if (!confirmed) return null
     // Re-check after the (blocking) confirm: the writer may have sat on the dialog while the agent
     // declared the same folder a Folio. Never clobber a manifest that appeared in the meantime.
-    await assertManifestAbsent(ws, dir)
-    const saved = await ws.saveFile(dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME, draft)
+    await assertManifestAbsent(ws, dir, message => sendSafe(state, 'window:status', message))
+    await prepareFolioInstructions(state, dir)
+    const restored = receiptSource === undefined ? null : await restoreTurnedBackFolio(ws, dir, { expectedSource: receiptSource, fallback: true })
+    if (restored && !folioDeclaration(ws, dir).repairNeeded) {
+      await activateFolioDeclaration(ws, dir)
+      const added = await writeRestoredFolioInstructions(ws, dir, async (path) => {
+        if (state.agentReady) await (await requireAgent(state)).checkpointFile(path)
+      })
+      restored.push(...added)
+      notifyCollectionChanged(state, restored)
+      sendSafe(state, 'file:changed-on-disk', restored)
+      sendSafe(state, 'window:status', restoredFolioMessage(added))
+      return folioDeclaration(ws, dir).manifest ? (dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME) : indexNotePath(ws, dir)
+    }
+    if (!restored && receiptSource !== undefined) {
+      ({ draft, warning } = await prepareMakeFolio(ws, dir))
+      if (!await confirmMakeFolio(state, dir, draft, warning)) return null
+      await assertManifestAbsent(ws, dir, message => sendSafe(state, 'window:status', message))
+      await prepareFolioInstructions(state, dir)
+    }
+    const saved = await ws.exclusiveAll(async () => {
+      const saved = await ws.saveFile(dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME, draft)
+      await activateFolioDeclaration(ws, dir)
+      return saved
+    })
     // The Folio's agent instructions (ticket 0.23-08). The manifest is the Folio; a failure here leaves
     // it made, and the Agent instructions row offers to write what is missing.
     let instructions: string[] = []
     try {
-      instructions = await writeFolioAgentInstructions(ws, dir, async (path) => {
+      if (!restored) instructions = await writeFolioAgentInstructions(ws, dir, async (path) => {
         if (state.agentReady) await (await requireAgent(state)).checkpointFile(path)
       })
       await recordFolioInstructionOwnership(ws, dir, instructions)
     } catch (error) {
       recordMainProcessDiagnostic('folio.agent-instructions.failed', { dir, message: error instanceof Error ? error.message : String(error) })
     }
-    notifyCollectionChanged(state, [saved.file.path, ...instructions]) // the Folio badge + ordering pick it up
-    if (instructions.length) sendSafe(state, 'file:changed-on-disk', instructions)
+    notifyCollectionChanged(state, [saved.file.path, ...(restored ?? []), ...instructions]) // the Folio badge + ordering pick it up
+    if (instructions.length || restored?.length) sendSafe(state, 'file:changed-on-disk', [...(restored ?? []), ...instructions])
+    if (warning) sendSafe(state, 'window:status', warning)
     await proposeTitlesFor(state, dir) // parts without a heading get a pending change (ticket 0.23-09)
     return saved.file.path
   })
@@ -1871,6 +2041,31 @@ export function registerIpc(
     openFile: (state, filePath, line) => router.openFile(state, filePath, line),
   })
 
+  // The floating Scratchpad (ADR-0050): answered for the calling window's bound folder only; see scratchpad-ipc.ts.
+  registerScratchLiveReads(ipcMain, () => allStates().flatMap(state => state.workspace ? [{
+    sender: state.window.webContents.id, root: state.workspace.root,
+    send: (request) => sendSafe(state, 'scratchpad:read-buffers', request),
+  }] : []))
+  registerScratchpadIpc(ipcMain, {
+    // The optional-source service reads the two Settings switches live from this store; its
+    // onChange subscription kills outstanding result handles the moment a switch moves.
+    external: bindScratchpadExternalSettings(settings),
+    stateForSender,
+    checkpointFile: async (sender, path) => {
+      const state = stateForSender(sender)
+      if (!state.agentReady) return
+      await (await requireAgent(state)).checkpointFile(path)
+    },
+    announce: (root) => {
+      // Legacy done/colour edits change SCRAPS.md files too, so the scraps listeners re-list as well.
+      for (const other of allStates()) {
+        if (other.workspace?.root !== root) continue
+        sendSafe(other, 'scratchpad:changed', null)
+        sendSafe(other, 'scraps:changed', null)
+      }
+    },
+  })
+
   // Capture to research: the sheet's call into the one verb that spawns `scout capture`; see research-capture-ipc.ts.
   registerResearchCaptureIpc(ipcMain, {
     stateForSender,
@@ -1882,6 +2077,7 @@ export function registerIpc(
   // Plan handlers live behind a narrow executable seam so their write ordering, validation,
   // checkpoint and invalidation behaviour can be exercised without booting all Electron IPC.
   registerPlanIpcHandlers(ipcMain, {
+    identityStore: settings,
     stateForSender,
     requireWorkspace,
     proposePartTitles: proposeTitlesFor,
@@ -1891,6 +2087,13 @@ export function registerIpc(
     },
     notifyCollectionChanged,
     notifyChangedOnDisk: (state, paths) => sendSafe(state, 'file:changed-on-disk', paths),
+    // Show bin in Finder (the Folio bin, folio-bin.ts): opens the pinned bin folder; the app never deletes a binned file.
+    // A harness run opens nothing on screen.
+    revealFolder: async (absolute) => {
+      if (process.env.WRITEFLEX_E2E === '1') return
+      const failure = await shell.openPath(absolute)
+      if (failure) throw new Error(failure)
+    },
   })
   // The Folio outline's Details card (0.26 ticket 4): one write for its seven fields, into the Folio's Index Note,
   // with the same checkpoint and the same buffer and collection notices as the Plan writes above.
@@ -1905,6 +2108,9 @@ export function registerIpc(
     notifyChangedOnDisk: (state, paths) => sendSafe(state, 'file:changed-on-disk', paths),
     writerName: async (_state, workspace) => (await humanAuthorForWorkspace(workspace.root)).name,
   })
+
+  // The Folio room (ADR-0048): a read-only model of the Folio, and its UI state kept in app state, never in the Folio.
+  registerFolioRoomIpc(ipcMain, { stateForSender, requireWorkspace, store: settings })
 
   // Widgets (interactive-widgets-in-documents, ticket 02): the HTML of an embed line's file, resolved
   // inside this window's workspace and read here; the renderer runs it in a sealed frame.
@@ -2143,7 +2349,7 @@ export function registerIpc(
         return { refused: 'disk-changed' as const, path: error.path, diskText: error.diskText, message: error.message }
       }
       if (error instanceof NameTaken) return { refused: 'name-taken' as const, path: error.path, message: error.message }
-      if (!(error instanceof EmptyWriteRefusal)) throw error
+      if (!isRescuedEmptyWriteRefusal(error)) throw error
       return {
         refused: true as const,
         path: error.path,
@@ -2162,7 +2368,7 @@ export function registerIpc(
     assertRelativeWorkspacePath(input.path)
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
-    let refusal: EmptyWriteRefusal | undefined
+    let refusal: RescuedEmptyWriteRefusal | undefined
     // A file found with no text is emptied without asking, but only over the text found (saveFile checks it
     // in the rename tick). Text written there meanwhile refuses that write; the next try finds the text and
     // takes the guarded path below (rescue, then the confirmation). Final review round 1, finding 2.
@@ -2174,7 +2380,7 @@ export function registerIpc(
         return { file: alreadyEmpty, rescueDirectory: null }
       } catch (error) {
         if (error instanceof DiskChangedUnderBuffer) { changedMeanwhile = error; continue }
-        if (!(error instanceof EmptyWriteRefusal)) throw error
+        if (!isRescuedEmptyWriteRefusal(error)) throw error
         refusal = error
       }
     }
@@ -2299,6 +2505,14 @@ export function registerIpc(
       void recordMainProcessDiagnostic('outside-changes.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
     }
   }
+  /** The floating Scratchpad's items follow their document (spec §7.7); never fails a rename either. */
+  const followRenameInScratchpad = async (state: WindowState, from: string, to: string): Promise<void> => {
+    try {
+      if (state.scratchpad && (await state.scratchpad.followRename(from, to)) > 0) announceScratchpad(state)
+    } catch (error) {
+      void recordMainProcessDiagnostic('scratchpad.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
+    }
+  }
   const renameWithRepair = async (state: WindowState, path: string, newPath: string, collection?: string) => {
     const workspace = requireWorkspace(state)
     let discovered: Promise<ReadonlySet<string>> | undefined
@@ -2316,6 +2530,7 @@ export function registerIpc(
       if (collection !== undefined) await assertCollectionMove(workspace, collection, path, newPath, folderPieces)
       const moved = await workspace.renameFile(path, newPath, { requireExistingDirectory: collection !== undefined })
       await followRenameInLedger(state, path, moved.file.path)
+      await followRenameInScratchpad(state, path, moved.file.path)
       // Sharing (ticket 04): the share follows in the same turn, before any save signal names either path.
       notifyDocumentMoved(state, path, moved.file.path)
       return moved
@@ -2411,6 +2626,7 @@ export function registerIpc(
       }
       const moved = await workspace.renameFolder(input.path, input.newName)
       await followRenameInLedger(state, input.path, moved.path)
+      await followRenameInScratchpad(state, from, moved.path)
       notifyDocumentMoved(state, input.path, moved.path)
       const repaired = moved.path === predicted
         ? await applyFolderRenameRepair(planned, workspace, checkpoint)
@@ -2523,7 +2739,7 @@ export function registerIpc(
       e2eScripts.delete(event.sender.id)
       // Late binding (see agent:stub): the pending script joins THIS prompt's thread queue now.
       const activeId = state.threads?.activeThreadId()
-      if (state.e2eScriptQueues && activeId) queueForThread(state.e2eScriptQueues, activeId).push(buildE2EScriptedTurn(scripted.steps, scripted.reply))
+      if (state.e2eScriptQueues && activeId) queueForThread(state.e2eScriptQueues, activeId).push(agent.scriptedTurn(scripted.steps, scripted.reply))
       return agent.runScriptedTurn(input.text, scripted.steps, input.activeFile, activeCollectionDir)
     }
     return state.threads ? state.threads.sendGuarded(agent, state.threads.activeThreadId(), send) : send()
@@ -2588,6 +2804,20 @@ export function registerIpc(
     if (!(['minimal', 'low', 'medium', 'high'] as const).includes(level)) throw new Error(`Unknown reasoning level: ${String(level)}`)
     settings.setModelDefaults({ thinkingLevel: level })
     return true
+  })
+  ipcMain.handle('agent:turns:list', async (event) => (await requireAgent(stateForSender(event.sender.id))).turnState())
+  ipcMain.handle('agent:turns:get', async (event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Invalid turn.')
+    return (await requireAgent(stateForSender(event.sender.id))).getTurn(id)
+  })
+  ipcMain.handle('agent:turns:undo', async (event, input: { id?: unknown; includingLater?: unknown }) => {
+    if (typeof input?.id !== 'string' || (input.includingLater !== undefined && typeof input.includingLater !== 'boolean')) throw new Error('Invalid turn undo.')
+    const state = stateForSender(event.sender.id)
+    const result = await (await requireAgent(state)).undoTurn(input.id, input.includingLater === true)
+    // A refused, partially completed restore can still have changed files.
+    if (result.undone) notifyCollectionChanged(state, result.paths)
+    else if (result.reason === 'partially-undone') notifyCollectionChanged(state)
+    return result
   })
   ipcMain.handle('agent:restore-last-turn', async (event) => {
     const state = stateForSender(event.sender.id)
@@ -2727,6 +2957,7 @@ export function registerIpc(
   return {
     evictWindow: (webContentsId: number) => { e2eScripts.delete(webContentsId); widgetWatches.disposeWindow(webContentsId) },
     dispose: () => {
+      unsubscribeFolioIdentityMoves()
       unsubscribeModels()
       unsubscribeVault()
       unsubscribeVaultIndex()
@@ -2798,8 +3029,26 @@ export async function bindWorkspace(
   invalidateFolioPlaces(root)
   invalidateFolioOrderFacts(root)
   invalidateFolioOutlines(root)
-  state.workspace = new Workspace(root)
+  if (previousWorkspace) clearFolioDeclarations(previousWorkspace.root)
+  state.workspace = withFolioTitleIdentity(new Workspace(root), {
+    beforeIndexWrite: async path => { if (state.agent) await state.agent.checkpointFile(path) },
+    onLinked: result => {
+      // A title write links only its own file; it does not complete the whole-Folio opening migration.
+      for (const open of allStates().filter(candidate => candidate.workspace?.root === root)) {
+        notifyCollectionChanged(open, [result.indexPath])
+        sendSafe(open, 'file:changed-on-disk', [result.indexPath])
+        sendSafe(open, 'plan:identity-linked', result)
+      }
+    },
+    onWarning: message => sendSafe(state, 'window:status', message),
+  })
   const workspace = state.workspace
+  // Storage announces commits; it never imports or rewrites Folio content. This covers commands, restores,
+  // agents and Undo too, including partial structural commits whose handler ultimately throws.
+  workspace.onDocumentWritten = path => {
+    if (state.workspace !== workspace || !announcesFolioDocumentWrite(path)) return
+    sendSafe(state, 'file:changed-on-disk', [path])
+  }
   // A write that succeeded with a note (a temporary file left as a second name for a document): logged here and
   // shown in this window's status line, as other notices from the main process are.
   workspace.onWriteNotice = (message) => {
@@ -2817,6 +3066,10 @@ export async function bindWorkspace(
   // The Scraps store shares the Workspace guard; scraps/ is created on the first cut (ADR-0008).
   state.scraps = new ScrapStore(state.workspace)
   const scraps = state.scraps
+  // The floating Scratchpad reads those scraps files unchanged and keeps new text as exact payloads (ADR-0050).
+  // A put-back is confirmed by its editor's anchor; uses recorded by a window that is gone are unverified.
+  configureScratchpadHolders((root) => allStates().filter((other) => other.workspace?.root === root && !other.window.isDestroyed()).map((other) => other.window.webContents.id))
+  state.scratchpad = new ScratchpadStore(state.workspace, scraps)
   // Temporary files a killed command-line write left beside documents (older than ten minutes, its own names only).
   void removeStaleTemporaryFiles(workspace.root).then((removed) => {
     if (removed.length) void recordMainProcessDiagnostic('command-line.stale-temporary-files-removed', { root: workspace.root, removed })
@@ -2869,6 +3122,7 @@ export async function bindWorkspace(
     },
     // A requested version save, bound to this Collection (requested-version-save.ts): the stores
     // made for it just above, never "the window's current" ones looked up when the save runs.
+    onVersionHistoryChanged: () => { if (stillBound()) sendSafe(state, 'versions:changed', null) },
     saveVersion: requestedVersionSave({
       workspace, versions, changes, live: stillBound,
       // The active thread's agent; it boots in the background after a bind, so a request that
@@ -2927,6 +3181,7 @@ export async function bindWorkspace(
     },
     // Preferences resolve after the startup discovery, never against the pre-discovery bundled list.
     modelsReady: () => deps.modelServiceReady,
+    modelService: deps.modelService,
     // Bridle's list decides which models a chat may start on; unlisted ones fall back (fix 04).
     listedModels: () => {
       const { all, available } = registryModels(deps.modelService)
@@ -2965,6 +3220,8 @@ export async function bindWorkspace(
       const created = await WorkspaceAgent.create({
         workspace,
         appDataDir,
+        getMode: () => settings.get(ASSISTANT_MODE_KEY),
+        subscribeMode: (update) => settings.onChange((key) => { if (key === ASSISTANT_MODE_KEY) update() }),
         // Per-thread data dirs would each grow their own auth.json; pin the ONE app-wide broker file.
         auth: deps.auth,
         modelService: deps.modelService,
@@ -2975,6 +3232,8 @@ export async function bindWorkspace(
         // writes serialise through the same mutex; a scrap add pushes scraps:changed so the pane re-lists.
         services: {
           scraps,
+          // This window's own editor-session holder, for an accepted Scratchpad put-back's use record.
+          scratchpadHolder: () => scratchpadHolder(state.window.webContents.id),
           onScrapsChanged: () => sendSafe(state, 'scraps:changed', null),
           checkpointFile: (path) => checkpointCreated(path),
           // Sharing ticket 04 (R-H): the agent's rename tells the publisher before any save signal.
@@ -2991,6 +3250,7 @@ export async function bindWorkspace(
         getCollectionRevision: (dir) => collectionDigestRevision(root, dir),
         onTurnComplete: (paths, activeCollectionDir) => notifyCollectionChanged(state, [...paths, activeCollectionDir]),
         onTurnRecorded: async (execution): Promise<void> => manager.recordTurn(threadId, execution),
+        onTurnActivity: (activity) => { if (isActiveThread()) sendSafe(state, 'agent:turn-activity', activity) },
         onTrace: (e) => { if (isActiveThread()) sendSafe(state, 'agent:trace', e) },
         onApprovalRequest: (req) => {
           // Record ownership BEFORE the push: approvals always forward (a background run waiting on

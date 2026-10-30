@@ -31,7 +31,7 @@ beforeEach(async () => {
   workspace = new Workspace(root)
   changes = new ChangeStore(workspace)
   notified = 0
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace, appDataDir: appData, changes,
     onChangesChanged: () => { notified += 1 }, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
   })
@@ -228,7 +228,7 @@ test('a rename made by the in-app agent\'s own rename capability carries an unde
   const step: ScriptedStep = { cap: 'housekeeping.rename_file', input: { path: 'talks/a.md', newPath: 'talks/a-2026.md' } }
   const before = notified
   const ownData = await mkdtemp(join(appData, 'rename-'))
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace, appDataDir: ownData, changes,
     onChangesChanged: () => { notified += 1 }, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([buildE2EScriptedTurn([step])]),

@@ -1,5 +1,7 @@
+import { EditorState, ChangeSet } from '@codemirror/state'
+import { scratchpadEditing, insertWithAnchor, insertionPoint, liveAnchors, externalReconciliation } from '../../src/renderer/src/scratchpad/scratchpad-editor'
 import { expect, test } from 'bun:test'
-import { closeRefusalMessage, diskNoticeRefusalMessage, externalContentReconcileAction, mayWriteUnderDiskNotice, keepMineWrites, minimalReplace, noticeAfterRefusal, noticeForRefusedSave, reconcileReplace, sameDiskNotice, saveBasisFor, type ExternalDiskNotice } from '../../src/renderer/src/editor/reconcile'
+import { closeRefusalMessage, diskNoticeRefusalMessage, externalContentReconcileAction, mayWriteUnderDiskNotice, keepMineWrites, minimalReplace, noticeAfterRefusal, noticeForRefusedSave, reconcileChanges, reconcileReplace, sameDiskNotice, saveBasisFor, type ExternalDiskNotice } from '../../src/renderer/src/editor/reconcile'
 import { deriveCleanWriterDocument, type WriterPendingChange } from '../../src/renderer/src/editor/writer-review'
 
 test('minimalReplace trims the common prefix and suffix', () => {
@@ -213,4 +215,35 @@ test('Keep mine writes whatever the dirty dot says; only a clean notice over a s
   expect(keepMineWrites(changedOverClean, true)).toBe(true)
   expect(keepMineWrites(changedOverClean, false)).toBe(false)
   expect(keepMineWrites(undefined, true)).toBe(false)
+})
+
+
+test('disjoint reloads preserve pending writer review and the explicit insertion between outside edits', () => {
+  let state = EditorState.create({ doc: 'Before.\n\nOldnew review.\n\nAfter.\n', extensions: scratchpadEditing() })
+  const port = { get state() { return state }, dispatch(spec: any) { state = state.update(spec).state } }
+  insertWithAnchor(port, insertionPoint(state), 'Anchored words.', { itemId: 'p_item0001', useId: 'u_pending1', mode: 'put-back' })
+  const raw = state.doc.toString(), start = raw.indexOf('Oldnew')
+  const pending = [change(start, start + 6, 'Old', 'new')]
+  const clean = deriveCleanWriterDocument(raw, pending)
+  const next = clean.replace('Before.', 'Longer before.').replace('After.', 'Edited after.')
+  const edits = reconcileChanges(pending, clean, next)
+  expect(edits).toHaveLength(2)
+  const mapping = ChangeSet.of(edits, raw.length)
+  port.dispatch(externalReconciliation(state, edits))
+  const mapped = pending.map((p) => ({ ...p, anchor: { from: mapping.mapPos(p.anchor.from, 1), to: mapping.mapPos(p.anchor.to, -1) } }))
+  expect(deriveCleanWriterDocument(state.doc.toString(), mapped)).toBe(next)
+  expect(state.doc.toString()).toContain('Oldnew review.')
+  expect(liveAnchors(state).map((a) => state.sliceDoc(a.from, a.to))).toEqual(['Anchored words.'])
+})
+
+test('separate edits within one pending review span expand to one nonoverlapping raw replacement', () => {
+  const raw = 'Before.\n\nold entire span\n\nAfter.'
+  const start = raw.indexOf('old')
+  const pending = [change(start, start + 'old entire span'.length, 'old entire span', 'One.\nMiddle.\nLast.')]
+  const clean = deriveCleanWriterDocument(raw, pending)
+  const next = clean.replace('One.', 'First.').replace('Last.', 'End.')
+  const edits = reconcileChanges(pending, clean, next)
+  expect(edits).toHaveLength(1)
+  const state = EditorState.create({ doc: raw })
+  expect(state.update({ changes: edits }).state.doc.toString()).toBe(next)
 })

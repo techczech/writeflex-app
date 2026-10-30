@@ -3,6 +3,7 @@ import { Download, FileCode2, FileText } from 'lucide-react'
 import type { ExportFormat, HtmlExportOptions } from '../../../preload'
 import { ExportOptionControls } from './ExportOptionControls'
 import { ExportPresetControls } from './ExportPresetControls'
+import { ExportOrderNotice, useExportOrderCheck } from './ExportOrderNotice'
 import {
   DEFAULT_EXPORT_SHEET_OPTIONS,
   exportDisclosure,
@@ -87,8 +88,9 @@ export type ExportSheetProps = {
   words: number
   /** The Collection this piece sits in, or null — which is what decides whether scope rows exist.
    *  `pieces` is what Word writes and `htmlPieces` what HTML writes: for a Folio both are its listed pieces
-   *  that exist inside its folder; `leftOut` names the listed Folio entries neither format will write. */
-  collection: { name: string; pieces: number; htmlPieces?: number; leftOut?: ExportLeftOut[] } | null
+   *  that exist inside its folder; `leftOut` names the listed Folio entries neither format will write.
+   *  `dir` (a Folio's folder): the sheet reads whether its export follows the running order, and offers the repair. */
+  collection: { name: string; pieces: number; htmlPieces?: number; leftOut?: ExportLeftOut[]; dir?: string } | null
   onExport: (choice: { scope: ExportScope; format: ExportFormat; html?: HtmlExportOptions; keepTocDepth?: true }) => Promise<ExportSheetOutcome>
   onReveal: () => void
   onClose: () => void
@@ -160,6 +162,8 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
   const [done, setDone] = useState<{ target: string; missingImages: string[]; unreadableImages: string[]; pieces: number; listed: number; bundled: boolean; tocDepthNote?: string } | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   const running = useRef(false)
+  // The out-of-step line (spec D-ORD-3), for a Folio's whole-collection export. Read once as the sheet opens; writes nothing.
+  const order = useExportOrderCheck(collection?.dir ?? null)
 
   useEffect(() => {
     let cancelled = false
@@ -216,7 +220,8 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
   }, [workspaceRoot])
 
   const format = presetState?.choice.format ?? 'html'
-  const collectionPieces = collection ? (format === 'html' ? collection.htmlPieces ?? collection.pieces : collection.pieces) : 0
+  // After Make export follow the running order, the count is the one main reports for the repaired manifest.
+  const collectionPieces = collection ? order.pieces ?? (format === 'html' ? collection.htmlPieces ?? collection.pieces : collection.pieces) : 0
   // Only HTML follows a Folio's manifest, so only HTML can leave a listed entry out.
   const leftOut = collection ? exportLeftOutLines(collection.leftOut ?? []) : null
   const home = homes[scope === 'collection' && collection ? 'collection' : 'piece']
@@ -319,7 +324,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
         aria-modal="true"
         aria-labelledby="export-sheet-title"
         onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={(event) => { event.preventDefault(); if (done) onClose(); else if (!busy) run() }}
+        onSubmit={(event) => { event.preventDefault(); if (done) onClose(); else if (!busy && !order.busy) run() }}
         onKeyDown={keys}
       >
         <div className="vm-head">
@@ -395,6 +400,10 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
                       {leftOut.rows.map((row, index) => <div key={index}>{row}</div>)}
                     </div>
                   )}
+                  {/* The out-of-step line (spec D-ORD-3) qualifies the whole-collection row, so it sits under it, in the scrolling fields. */}
+                  {scope === 'collection' && (
+                    <ExportOrderNotice state={order} disabled={busy} onExportAnyway={() => { order.dismiss(); run() }} />
+                  )}
                 </div>
               )}
               <div className="export-field">
@@ -456,7 +465,8 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
           {done === null && presetState?.mode === 'sheet' && (
             <>
               <button className="btn ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button>
-              <button className="btn primary" type="submit" disabled={busy} autoFocus>
+              {/* Off while Make export follow the running order runs: the export would read a manifest being rewritten. */}
+              <button className="btn primary" type="submit" disabled={busy || order.busy} autoFocus>
                 <Download className="icon" aria-hidden="true" />
                 Choose where…
               </button>

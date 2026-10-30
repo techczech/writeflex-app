@@ -16,6 +16,8 @@ const probe = String.raw`
   const models = { all: [choice], available: [choice] }
   const service = {
     list: () => models,
+    recommendedModel: () => choice.id,
+    resolveSavedModel: (_provider, id) => ({ modelId: id === choice.id ? id : choice.id }),
     refresh: async () => models,
     lastDiscovery: () => last,
     refreshWithOutcome: () => { throw new Error('picker opens go through refreshModels') },
@@ -40,7 +42,7 @@ const probe = String.raw`
     const { WorkspaceAgent } = await import('./src/main/agent.ts')
     const { Workspace } = await import('./src/main/workspace.ts')
     const auth = core.BridleAuth.inMemory()
-    await WorkspaceAgent.create({ workspace: new Workspace(root), appDataDir: root, auth, modelService: service,
+    await WorkspaceAgent.create({ mode: 'work', workspace: new Workspace(root), appDataDir: root, auth, modelService: service,
       onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     }).catch(error => { expect(error.message).toBe('captured options') })
     expect(forwarded.modelService).toBe(service)

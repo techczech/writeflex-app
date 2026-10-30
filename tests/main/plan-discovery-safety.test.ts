@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 // Ticket A, review round 1 (Sol): discovering unlisted files must never change what the running order names,
 // Put back must write a manifest that names exactly the chosen file, and the role menu changes the role in
 // both documents. Each test is one of the reviewer's scenarios, reproduced before the fix.
@@ -154,7 +155,7 @@ test('P3: choosing Appendix changes the role in the Index Note line and the mani
   await setPartRole(ws, 'report', 0, 'appendix')
   await setPartRole(ws, 'report', 1, 'appendix')
   await setPartRole(ws, 'report', 2, 'summary')
-  expect(await read(INDEX)).toBe('# Report\n\n## Running order\n\n- [[Alpha]] #appendix\n- [[Beta]] #appendix\n- [[Gamma]] #summary\n')
+  expect(await read(INDEX)).toBe(pinnedIndex('# Report\n\n## Running order\n\n- [[Alpha]] #appendix\n- [[Beta]] #appendix\n- [[Gamma]] #summary\n', {"Alpha":"./a.md|Alpha","Beta":"./b.md|Beta","Gamma":"./c.md|Gamma"}))
   expect(await read(MANIFEST)).toBe('{\n  "schema_version": 1,\n  "content_root": "",\n  "files": [\n    { "path": "a.md", "role": "appendix", "toc": true },\n    {\n      "path": "b.md",\n      "role": "appendix"\n    },\n    {"path":"c.md","role":"summary"}\n  ],\n  "output": "out.docx"\n}\n')
   const plan = (await readPlan(ws, 'report'))!
   expect(plan.parts.map((part) => part.role)).toEqual(['appendix', 'appendix', 'summary'])
@@ -311,5 +312,5 @@ test('round 3 P2: Put back builds its line from the file as it is now, not from 
   await write('report/b.md', '---\ndescription: New\nrole: summary\n---\n# Beta\n')
   await utimes(join(root, 'report/b.md'), before.atime, before.mtime)
   await adoptPart(ws, 'report', 0)
-  expect(await read(INDEX)).toBe('# Report\n\n## Running order\n\n- [[Alpha]]\n- [[Beta]] — New #summary\n')
+  expect(await read(INDEX)).toBe(pinnedIndex('# Report\n\n## Running order\n\n- [[Alpha]]\n- [[Beta]] — New #summary\n', {"Alpha":"./a.md|Alpha","Beta":"./b.md|Beta"}))
 })

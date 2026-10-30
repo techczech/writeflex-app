@@ -48,6 +48,7 @@ export type FolioFrontMatterSlotProps = {
   onMenuOpen: (open: boolean) => void
   onSelect: (index: number) => void
   onChoose: (offer: FrontMatterOffer) => void
+  takeOutDescription?: string
   onTakeOut: (index: number) => void
 }
 
@@ -55,7 +56,7 @@ export type FolioFrontMatterSlotProps = {
  * Front matter in the side rail (element 3, option B): "None yet" with Choose a file while empty; once filled,
  * one line per front-matter part with Take out (the title page is also the Cover band above the chapters).
  */
-export function FolioFrontMatterSlot({ rows, selected, offers, busy, menuOpen, onMenuOpen, onSelect, onChoose, onTakeOut }: FolioFrontMatterSlotProps): JSX.Element {
+export function FolioFrontMatterSlot({ rows, selected, offers, busy, menuOpen, onMenuOpen, onSelect, onChoose, onTakeOut, takeOutDescription = "Take this out of the Folio outline; the file stays where it is" }: FolioFrontMatterSlotProps): JSX.Element {
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!menuOpen) return
@@ -107,7 +108,7 @@ export function FolioFrontMatterSlot({ rows, selected, offers, busy, menuOpen, o
               <div key={row.path ?? row.title} className={`rail-slot filled${selected === index ? ' sel' : ''}`} data-plan-front-slot={row.path ?? undefined}>
                 <BookOpen className="icon sm" aria-hidden="true" />
                 <button type="button" className="rail-slot-text rail-slot-pick" onClick={() => onSelect(index)}><strong>{row.title}</strong><span>{[row.path, row.titlePage ? 'the export’s cover' : roleLabel(row.role)].filter(Boolean).join(' · ')}</span></button>
-                <button type="button" className="rail-btn" data-plan-take-out-front={row.path ?? undefined} disabled={busy} title="Take this out of the Folio outline; the file stays where it is" aria-label={`Take out ${row.title}`} onClick={() => onTakeOut(index)}>Take out</button>
+                <button type="button" className="rail-btn" data-plan-take-out-front={row.path ?? undefined} disabled={busy} title={takeOutDescription} aria-label={`Take out ${row.title}`} onClick={() => onTakeOut(index)}>Take out</button>
               </div>
             )
           })}

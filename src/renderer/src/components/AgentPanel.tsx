@@ -1,3 +1,4 @@
+import { ModeChip, TurnStrip, TurnSelection } from './AssistantTurns'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Markdown } from '@bridle/react'
 import { useIpcAuthFlow } from '@bridle/electron/renderer'
@@ -49,7 +50,7 @@ export { unavailableModelTitle } from './AgentModelOptions'
  *  A tick bump focuses the input post-commit — the panel may be un-hiding in the same render, and
  *  a display:none input cannot take focus until the commit lands. */
 export type ComposerRequest = { tick: number; text?: string }
-export type AgentConfigurationRequest = { tick: number; focus: 'model' | 'thinking' }
+export type AgentConfigurationRequest = { tick: number; focus: 'model' | 'thinking' | 'mode' }
 export type AgentActionRequest = { tick: number; action: 'new-conversation' | 'show-conversations' | 'close-current-conversation' }
 
 /** The Scratchpad tab's data + actions (Task 20). `request.tick` lands the tab (⇧⌘J) and focuses filter. */
@@ -285,6 +286,8 @@ export function AgentPanel({
   const [draft, setDraft] = useState('')
   const [threadsOpen, setThreadsOpen] = useState(false)
   const [configurationOpen, setConfigurationOpen] = useState(false)
+  const [modeOpen, setModeOpen] = useState(false)
+  const closeMode = useCallback(() => setModeOpen(false), [])
   const refreshModels = () => { void window.writeflex.modelPickerOpened().catch(() => {}) }
   useEffect(() => {
     if (configurationOpen) refreshModels()
@@ -435,6 +438,7 @@ export function AgentPanel({
   useEffect(() => {
     if (!configurationRequest?.tick) return
     setTab('agent')
+    if (configurationRequest.focus === 'mode') { setModeOpen(true); return }
     setConfigurationOpen(true)
     window.requestAnimationFrame(() => {
       const target = configurationRequest.focus === 'model' ? modelSelectRef.current : thinkingSelectRef.current
@@ -647,6 +651,10 @@ export function AgentPanel({
               />
             )}
           </div>
+          <TurnStrip turns={agent.assistantTurns.turns} selected={agent.assistantTurns.selected} onSelect={(id) => void agent.assistantTurns.select(id)} />
+          {agent.assistantTurns.turns.map((turn, index) => turn.turnId === agent.assistantTurns.selected && <TurnSelection key={turn.turnId} turn={turn} number={index + 1} busy={agent.running || agent.assistantTurns.busy} refusal={agent.assistantTurns.refusal} onUndo={(later) => void agent.assistantTurns.undo(turn.turnId, later)} onOpen={onOpenDigestPiece} />)}
+          {(agent.assistantTurns.notice || agent.assistantTurns.error) && <div className="thread-inline-error" role="status">{agent.assistantTurns.notice ?? agent.assistantTurns.error}</div>}
+          {agent.modelNotice && <div className="thread-inline-error" role="status">{agent.modelNotice}</div>}
           {threadError && <div className="thread-inline-error" role="status">{threadError}</div>}
           {activeSkill && (
             <SkillThreadBanner
@@ -762,6 +770,7 @@ export function AgentPanel({
                 <span>{currentModelName} · {agent.thinking}</span>
                 <ChevronDown className="icon sm" aria-hidden="true" />
               </button>
+              <ModeChip mode={agent.assistantTurns.mode} open={modeOpen} onToggle={() => setModeOpen((open) => !open)} onClose={closeMode} onChoose={(mode) => { void agent.assistantTurns.chooseMode(mode); setModeOpen(false) }} />
               {configurationOpen && (
                 <div className="agent-configuration-popover" role="group" aria-label="Model and reasoning for this chat">
                   <label>

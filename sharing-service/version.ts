@@ -7,7 +7,7 @@
 // a newer WriteFlex on another Mac is never "updated" back down.
 //
 // No imports: the service's tsconfig and the app's both read this file as is.
-export const SHARING_SERVICE_BUILD = 10
+export const SHARING_SERVICE_BUILD = 13
 
 /** What `GET /version` names the program as, so the app can tell it from any other Worker. */
 export const SHARING_SERVICE_NAME = 'writeflex-sharing'

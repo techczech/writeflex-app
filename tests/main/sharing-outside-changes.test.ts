@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // Publishing follows the piece through changes made outside WriteFlex (sharing ticket 04;
 // sharing-outside-changes.ts O1-O6; orchestrator ruling round 1, R-A to R-C). The real publisher against
 // the real sharing service in memory (tests/helpers/sharing-publish-world.ts); the watcher's batches are
@@ -355,3 +356,6 @@ describe('a freed inode is not the piece (Sol round 2 P1-1: device, inode and bi
     expect(record()).toMatchObject({ path: to, lost: null })
   })
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

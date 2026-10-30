@@ -73,11 +73,11 @@ test('a part or source a document names in a hidden folder, directly or through 
       expect(withName(run.out, part, 'gone/x.md'), `${operation} with ${part}`).toBe(withName(missing[operation].out, part, 'gone/x.md'))
     }
   }
-  // What "could not be read" looks like: the running-order line stays, as an unwritten part.
+  // An unresolved line stays as it did before linking; no document facts are exposed.
   const plan = missing['running-order'].result as { parts: Array<Record<string, unknown>> }
   expect(plan.parts).toEqual([
-    { title: 'Introduction', gloss: null, role: 'section', path: 'report/00_intro.md', words: expect.any(Number), exists: true },
-    { title: HIDDEN_TITLE, gloss: null, role: 'section', path: null, words: null, exists: false },
+    { title: 'Introduction', gloss: null, role: 'section', path: 'report/00_intro.md', words: expect.any(Number), exists: true, synopsis: null, label: null, priority: null, status: 'draft', openFlags: [], evidenceCount: 3 },
+    { title: HIDDEN_TITLE, gloss: null, role: 'section', path: null, words: null, exists: false, synopsis: null, label: null, priority: null, status: 'idea', openFlags: [], evidenceCount: 0 },
   ])
   const sources = missing.sources.result as { entries: Array<{ title: string; path: string | null }> }
   expect(sources.entries.find((entry) => entry.title.includes('gone'))?.path ?? null).toBeNull()

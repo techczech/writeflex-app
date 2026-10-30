@@ -3,6 +3,7 @@ import type { EditorState } from '@codemirror/state'
 import type { Tree } from '@lezer/common'
 import { parseMarkdown } from '../../../shared/markdown/dialect'
 import { frontmatterBlock } from '../../../shared/markdown/frontmatter'
+import { stripFlags, stripFlagsInLine } from '../../../shared/markdown/flags'
 
 export type OutlineHeading = { level: number; text: string; from: number }
 
@@ -47,9 +48,10 @@ function outlineOfTree(tree: Tree, doc: string): OutlineHeading[] {
       if (!atx && !setext) return
       const level = Number((atx ?? setext)![1])
       const raw = doc.slice(node.from, node.to)
+      // Flags come off before a Setext heading is cut to its first line: a flag may span the line break.
       const text = atx
-        ? raw.replace(/^#{1,6}\s+/, '').replace(/\s+#+\s*$/, '').trim()
-        : raw.split('\n')[0].trim()
+        ? stripFlagsInLine(raw.replace(/^#{1,6}\s+/, '').replace(/\s+#+\s*$/, '').trim())
+        : stripFlags(raw).split('\n')[0].trim()
       headings.push({ level, text, from: node.from })
       return false
     },

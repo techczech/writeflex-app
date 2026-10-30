@@ -2,6 +2,8 @@
 
 This file is a short passage to look at while you change how WriteFlex looks and sounds. Nothing here alters the text. Where a command has no key, its name is in bold: press <kbd>⇧⌘P</kbd>, type the name and press <kbd>↵</kbd>.
 
+> **View and text size.** <kbd>⌘[</kbd> shows or hides the left sidebar, and <kbd>⌘]</kbd> shows or hides the right pane. **View: Clean** hides the Markdown marks, such as the # in front of a heading. **View: Show markup** shows them in grey, and **View: Show raw** shows the file exactly as it is stored. <kbd>⌘+</kbd> and <kbd>⌘−</kbd> make the text larger and smaller, <kbd>⌥⌘+</kbd> and <kbd>⌥⌘−</kbd> make the column of text wider and narrower, and <kbd>⌥⌘0</kbd> puts both back. <kbd>⌃⌘I</kbd> shows more detail in the bar at the bottom of the window.
+
 > **Action bar.** The action bar is the row of buttons above the text. **Show/Hide the action bar** takes it away and brings it back. **Configure the action bar…** lets you choose which buttons it holds and in what order.
 
 ## The mill
@@ -9,8 +11,6 @@ This file is a short passage to look at while you change how WriteFlex looks and
 The path comes back into the village by the mill. It has not ground anything since before the war, but the race still runs under the road, and in a wet week you can hear it from the bridge.
 
 > **Themes and sounds.** **Use dark theme** turns the window dark and **Use light theme** turns it light again. **Toggle typing sounds** gives each key a quiet click as you type; type a sentence under **The mill** to hear it. **Toggle ambient sound** plays a steady background sound while you write. Choose either again to turn it off.
-
-> **View and text size.** **View: Clean** hides the Markdown marks, such as the # in front of a heading. **View: Show markup** shows them in grey, and **View: Show raw** shows the file exactly as it is stored. <kbd>⌘+</kbd> and <kbd>⌘−</kbd> make the text larger and smaller, <kbd>⌥⌘+</kbd> and <kbd>⌥⌘−</kbd> make the column of text wider and narrower, and <kbd>⌥⌘0</kbd> puts both back. <kbd>⌃⌘I</kbd> shows more detail in the bar at the bottom of the window.
 
 ## The bridge
 

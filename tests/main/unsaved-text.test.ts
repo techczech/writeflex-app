@@ -1,3 +1,4 @@
+import { registerRoomPending } from '../../src/renderer/src/folio-room-pending'
 // The page's record of unsaved text and its one close gate (src/renderer/src/app/unsaved-text.ts; rules
 // R-A and R-B of docs/plans/quit-does-not-stall/quit-and-window-close-spec.md): what a window whose app
 // has broken still knows, and that no route lets the window go while text is unsaved or being written.
@@ -634,4 +635,16 @@ describe('documents detached for a close main then calls off (S2)', () => {
     page.abandon()
     expect(reopened).toBe(1)
   })
+})
+
+it('the final close gate refuses notes typed after the room flush and refuses a no-tabs shortcut', async () => {
+ const page = fakePage(); setEditorPresent(true)
+ let dirty = false
+ const off = registerRoomPending({path:'paper/evidence.md',dirty:()=>dirty,flush:async()=>{dirty=false;return true}})
+ try {
+  const result = await closeWithEditor({flush:async()=>{dirty=true;return {flushed:[],failed:0}},checkpoint:()=>[]})
+  expect(result.outcome).toBe('still-unsaved');expect(page.calls).toEqual([])
+  expect(closeWindowIfClean()).toBe(false)
+  dirty=false;expect(closeWindowIfClean()).toBe(true)
+ } finally {dirty=false;off()}
 })

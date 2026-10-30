@@ -1,8 +1,15 @@
+import { createContentTools } from "./content-tools.ts";
+import { createToolDiscovery } from "./tool-discovery.ts";
 import { isAbsolute } from "node:path";
-import type { Capability, Manifest, ManifestDefinition } from "./types.ts";
+import type { Capability, Manifest, ManifestDefinition, ToolRisk } from "./types.ts";
 import type { Skill } from "./skills/types.ts";
 
 const NAME_PATTERN = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
+
+/** Internal runtime counterpart of ToolRisk, shared with registry generation. */
+export function isToolRisk(value: unknown): value is ToolRisk {
+  return typeof value === "string" && ["read", "write", "sync", "destructive"].includes(value);
+}
 
 export class BridleManifestError extends Error {
   issues: string[];
@@ -23,11 +30,16 @@ export function createManifest(def: ManifestDefinition): Manifest {
   if (def.workspaceRoot !== undefined && !isAbsolute(def.workspaceRoot)) {
     issues.push(`workspaceRoot must be an absolute path: ${def.workspaceRoot}`);
   }
+  if (def.contentTools) {
+    if (!def.workspaceRoot) throw new BridleManifestError(["Content tools require workspaceRoot."]);
+    def = { ...def, capabilities: [...def.capabilities, ...createContentTools({ ...def.contentTools, workspaceRoot: def.workspaceRoot })] };
+  }
   const seen = new Set<string>();
   for (const cap of def.capabilities) {
     if (!NAME_PATTERN.test(cap.name)) issues.push(`Capability name invalid: "${cap.name}" (lower-case dotted identifiers only).`);
     if (seen.has(cap.name)) issues.push(`Duplicate capability name: "${cap.name}".`);
     seen.add(cap.name);
+    if (!isToolRisk(cap.risk)) issues.push(`Capability "${cap.name}" has invalid risk; expected read, write, sync or destructive.`);
     if ((cap.risk === "write" || cap.risk === "destructive") && typeof cap.touchedPaths !== "function") {
       issues.push(`Capability "${cap.name}" is ${cap.risk} but declares no touchedPaths — snapshots (ADR-0003/0008) require it.`);
     }
@@ -111,9 +123,17 @@ export function scopedCapabilities(manifest: Manifest, skill: Skill): Capability
   return [...new Set(skill.tools)].map((name) => byName.get(name)!);
 }
 
+/** Internal shared catalogue seam: skill scope is applied before discovery. */
+export function discoverManifestTools(manifest: Manifest, composition: PromptComposition = {}) {
+  const scoped = composition.activeSkill ? scopedCapabilities(manifest, composition.activeSkill) : manifest.capabilities;
+  return createToolDiscovery(scoped, composition.activeSkill
+    ? { ...manifest.toolSearch, startingTools: manifest.toolSearch?.startingTools?.filter((name) => scoped.some((cap) => cap.name === name)) }
+    : manifest.toolSearch);
+}
+
 export function buildSystemPrompt(manifest: Manifest, composition: PromptComposition = {}): string {
   const { customInstructions, skills, activeSkill } = composition;
-  const capabilities = activeSkill ? scopedCapabilities(manifest, activeSkill) : manifest.capabilities;
+  const capabilities = discoverManifestTools(manifest, composition).visible();
 
   const lines: string[] = [];
   if (manifest.systemPromptPreamble) lines.push(manifest.systemPromptPreamble.trim(), "");

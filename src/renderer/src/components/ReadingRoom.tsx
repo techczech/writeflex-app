@@ -1,3 +1,4 @@
+import { EVIDENCE_DRAG_MIME, type EvidenceTransfer } from '../../../shared/folio-evidence-transfer'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronLeft,
@@ -56,6 +57,7 @@ import {
   type ReadingRoomMarkState,
 } from '../reading-room-marks'
 import { restoreReadingBookmark } from '../reading-room-bookmarks'
+import { createHeldMarks } from '../reading-room-held-marks'
 
 export type ReadingRoomProps = {
   onClose: () => void
@@ -84,11 +86,15 @@ export type ReadingRoomProps = {
   onSyncHighlightsAutomatically: () => void
   /**
    * The refusal sentence to show while something is still owed to Zotero, or null when nothing is —
-   * *"Close Zotero and this highlight will be saved to your library."*, in the main process's own
+   * *"Zotero is not open. Your highlights are saved here and are sent when Zotero is open."*, in the main process's own
    * words rather than any the renderer invents. Shown as a quiet notice, never a modal: highlighting is
    * a flow, and interrupting it to explain a delay would be worse than the silence it replaces.
    */
   outboxRefusal: string | null
+  /** Which refusal `outboxRefusal` is: a wait (Zotero closed or busy), a missing plugin, or a failure. */
+  outboxRefusalCode: string | null
+  /** Highlights, edits and deletions still owed to Zotero — the notice's count. */
+  outboxWaiting: number
   /** Text just copied or dragged OUT of the reader, so a paste into the draft can arrive as a quote
    *  with its reference. Null clears it. */
   onReaderSelection: (selection: ReaderSelection | null) => void
@@ -155,6 +161,8 @@ export function ReadingRoom({
   onSyncHighlightsAutomatically,
   onWriteResult,
   outboxRefusal,
+  outboxRefusalCode,
+  outboxWaiting,
   shelfRequest,
   shelfShortcut,
   side,
@@ -168,6 +176,7 @@ export function ReadingRoom({
   const [frames, setFrames] = useState<[FrameSlot, FrameSlot]>([null, null])
   const [activeIndex, setActiveIndex] = useState(-1)
   const [document, setDocument] = useState<ReadingRoomDocument | null>(null)
+  const [evidenceBase, setEvidenceBase] = useState('')
   const [roomWidth, setRoomWidth] = useState(448)
   const roomWidthRef = useRef(448)
   const dockRef = useRef<HTMLDivElement | null>(null)
@@ -483,13 +492,16 @@ export function ReadingRoom({
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
 
-    const writer = createViewStatePersistence((viewState) =>
-      window.writeflex.readingRoom.saveViewState({
+    const writer = createViewStatePersistence(async (viewState) => {
+      await window.writeflex.readingRoom.saveViewState({
         attachmentKey: load.document.attachmentKey,
         libraryId: load.document.libraryId,
         viewState,
-      }),
-    )
+      })
+    })
+    // What THIS reader shows for each mark: the before-state its edits and deletions carry (ADR-0031).
+    // A list refresh never changes it; only what this reader was given and what it did itself.
+    const held = createHeldMarks()
     const embed = new ReaderEmbed({
       readFile: (path) => window.writeflex.readingRoom.readDocument(path),
       hostCallbacks: {
@@ -517,6 +529,12 @@ export function ReadingRoom({
             onReaderSelection(null)
             return
           }
+          const transfer = dataTransfer as { setData?: (type: string, value: string) => void }
+          const itemTarget = load.citationBaseLink.replace('zotero://open-pdf/', 'zotero://select/').replace(/\/items\/[^/?]+(?:\?.*)?$/, `/items/${load.document.itemKey}`)
+          const candidate = typeof rawArea?.id === 'string' && /^[A-Z\d]{8}$/.test(rawArea.id) ? rawArea.id : null
+          const source: EvidenceTransfer = { kind: 'zotero', itemTarget, label: load.document.authorYear, pending: true,
+            ...(candidate ? { annotation: { target: `${load.citationBaseLink}?annotation=${candidate}`, label: load.document.authorYear } } : {}) }
+          transfer.setData?.(EVIDENCE_DRAG_MIME, JSON.stringify(source))
           let selection: ReaderSelectionAnnotation | null = null
           try {
             selection = embed.getSelectionAnnotation()
@@ -561,7 +579,10 @@ export function ReadingRoom({
             pageLabel: matchedSelection
               ? matchedSelection.pageLabel
               : typeof first?.pageLabel === 'string' ? first.pageLabel : null,
-            paint: (annotation) => embed.upsertAnnotations([annotation]),
+            paint: (annotation) => {
+              held.hold(annotation)
+              embed.upsertAnnotations([annotation])
+            },
             shortTitle: load.document.shortTitle,
             text,
           })
@@ -594,14 +615,22 @@ export function ReadingRoom({
         setMarkState(next)
         setColourPopoverOpen(false)
       }
+      held.created(annotation)
       return window.writeflex.readingRoom
-        .saveAnnotations({ annotations: [annotation], operation: 'create' })
+        .saveAnnotations({ annotations: [annotation], operation: 'create', readerSession: held.session })
         .then((result) => { onWriteResult(result) })
         .catch((error: unknown) => onError(readingRoomError(error)))
     })
     embed.on('annotation-updated', (annotation) =>
       window.writeflex.readingRoom
-        .saveAnnotations({ annotations: [annotation], operation: 'update' })
+        .saveAnnotations({ annotations: [annotation], before: [held.edit(annotation)], operation: 'update', readerSession: held.session })
+        .then((result) => { onWriteResult(result) })
+        .catch((error: unknown) => onError(readingRoomError(error))))
+    // A deletion takes the same path as an edit: queued (or cancelling a mark Zotero never got), drawn
+    // as gone, and written into Zotero when it is closed.
+    embed.on('annotation-deleted', (annotation) =>
+      window.writeflex.readingRoom
+        .saveAnnotations({ annotations: [annotation], before: [held.remove(annotation)], operation: 'delete', readerSession: held.session })
         .then((result) => { onWriteResult(result) })
         .catch((error: unknown) => onError(readingRoomError(error))))
     embed.on('view-state-changed', (viewState) => {
@@ -626,6 +655,7 @@ export function ReadingRoom({
       .readHighlights()
       .then((result) => (result.error ? [] : result.forReader))
       .catch(() => [])
+    held.load(painted)
     onOutboxChanged()
     if (!mounted.current || pending.current?.token !== token) return
 
@@ -643,6 +673,7 @@ export function ReadingRoom({
         activeIndexRef.current = index
         setActiveIndex(index)
         setDocument(load.document)
+        setEvidenceBase(load.citationBaseLink)
         void window.writeflex.readingRoom
           .listBookmarks()
           .then((rows) => {
@@ -885,12 +916,13 @@ export function ReadingRoom({
               painted, which ADR-0029 guarantees. It goes away when Zotero has taken the marks. The lead
               is reason-agnostic — a refusal can also be schema drift or a missing library — and the
               sentence that follows is the main process's own, never one the renderer invents. */}
-          {outboxRefusal && (
-            <ReadingRoomNotice
-              refusal={outboxRefusal}
-              onSync={onSyncHighlights}
-            />
-          )}
+          <ReadingRoomNotice
+            waiting={outboxWaiting}
+            refusal={outboxRefusal}
+            refusalCode={outboxRefusalCode}
+            onSync={onSyncHighlights}
+            onShowPlugin={() => { void window.writeflex.readingRoom.showZoteroPlugin() }}
+          />
           {roomView === 'shelf' && (
             <ReadingRoomShelf
               focusToken={shelfFocus}
@@ -904,6 +936,7 @@ export function ReadingRoom({
           {roomView === 'highlights' && (
             <ReadingRoomHighlights
               authorYear={document?.authorYear ?? ''}
+              evidenceSource={document && evidenceBase ? { label: document.authorYear, itemTarget: evidenceBase.replace('zotero://open-pdf/', 'zotero://select/').replace(/\/items\/[^/?]+(?:\?.*)?$/, `/items/${document.itemKey}`), baseLink: evidenceBase } : undefined}
               banner={(
                 <ReadingRoomRefused
                   focusToken={highlightsFocus}

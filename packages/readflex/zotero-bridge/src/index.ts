@@ -406,7 +406,6 @@ export function buildShelfIndex(
   databaseDriver: SqliteDriver,
   options: ShelfIndexOptions = {},
 ): ShelfIndex {
-  const discovery = discoverZoteroDataDirectory();
   const zoteroDataDirectory: ShelfIndex["zoteroDataDirectory"] =
     options.zoteroDatabasePath
       ? {
@@ -414,7 +413,7 @@ export function buildShelfIndex(
           source: "explicit",
           warnings: [],
         }
-      : discovery;
+      : discoverZoteroDataDirectory();
   const zoteroDatabasePath =
     options.zoteroDatabasePath ??
     join(zoteroDataDirectory.path, "zotero.sqlite");
@@ -654,6 +653,115 @@ function attachmentFilename(
     return basename(new URL(url).pathname) || null;
   } catch {
     return null;
+  }
+}
+
+export interface ZoteroCollection {
+  libraryId: number;
+  key: string;
+  name: string;
+  /** Key of the parent collection in the same library, or null at the top. */
+  parentKey: string | null;
+}
+
+export interface ZoteroCollections {
+  collections: ZoteroCollection[];
+  /**
+   * Collection keys per item, keyed `${libraryId}:${itemKey}`. Holds regular
+   * items and standalone attachments alike; a paper belongs to a collection
+   * when its parent item (or, standalone, the attachment itself) is listed.
+   */
+  itemCollections: Record<string, string[]>;
+}
+
+/**
+ * Reads the collection tree and item membership from zotero.sqlite through the
+ * same read-only open as the rest of the bridge. Collections listed in
+ * deletedCollections and items listed in deletedItems are skipped. Databases
+ * without collection tables yield an empty result.
+ */
+export function readCollections(
+  databaseDriver: SqliteDriver,
+  databasePath: string,
+  options: ZoteroReadOnlyOptions = {},
+): ZoteroCollections {
+  const database = openZoteroReadOnly(databaseDriver, databasePath, options);
+  try {
+    const tables = new Set(
+      (database
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all() as { name: string }[]).map((row) => row.name),
+    );
+    if (!tables.has("collections") || !tables.has("collectionItems")) {
+      return { collections: [], itemCollections: {} };
+    }
+    const hasDeletedCollections = tables.has("deletedCollections");
+    const hasDeletedItems = tables.has("deletedItems");
+    const rows = database
+      .prepare(
+        `SELECT
+           collection.collectionID AS collectionId,
+           collection.libraryID AS libraryId,
+           collection.key AS key,
+           collection.collectionName AS name,
+           parent.key AS parentKey
+         FROM collections AS collection
+         LEFT JOIN collections AS parent
+           ON parent.collectionID = collection.parentCollectionID
+         ${hasDeletedCollections
+           ? `LEFT JOIN deletedCollections AS deleted
+                ON deleted.collectionID = collection.collectionID
+              WHERE deleted.collectionID IS NULL`
+           : ""}
+         ORDER BY collection.libraryID, collection.collectionID`,
+      )
+      .all() as {
+        collectionId: number;
+        libraryId: number;
+        key: string;
+        name: string;
+        parentKey: string | null;
+      }[];
+    const memberRows = database
+      .prepare(
+        `SELECT
+           collection.key AS collectionKey,
+           item.libraryID AS libraryId,
+           item.key AS itemKey
+         FROM collectionItems AS member
+         JOIN collections AS collection
+           ON collection.collectionID = member.collectionID
+         JOIN items AS item
+           ON item.itemID = member.itemID
+         ${hasDeletedItems
+           ? "LEFT JOIN deletedItems AS deletedItem ON deletedItem.itemID = item.itemID"
+           : ""}
+         ${hasDeletedCollections
+           ? "LEFT JOIN deletedCollections AS deleted ON deleted.collectionID = collection.collectionID"
+           : ""}
+         WHERE 1 = 1
+           ${hasDeletedItems ? "AND deletedItem.itemID IS NULL" : ""}
+           ${hasDeletedCollections ? "AND deleted.collectionID IS NULL" : ""}
+         ORDER BY collection.collectionID, item.itemID`,
+      )
+      .all() as { collectionKey: string; libraryId: number; itemKey: string }[];
+    const itemCollections: Record<string, string[]> = {};
+    for (const row of memberRows) {
+      (itemCollections[`${row.libraryId}:${row.itemKey}`] ??= []).push(
+        row.collectionKey,
+      );
+    }
+    return {
+      collections: rows.map((row) => ({
+        key: row.key,
+        libraryId: row.libraryId,
+        name: row.name,
+        parentKey: row.parentKey,
+      })),
+      itemCollections,
+    };
+  } finally {
+    database.close();
   }
 }
 

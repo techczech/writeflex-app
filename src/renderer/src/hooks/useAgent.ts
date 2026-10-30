@@ -1,11 +1,13 @@
+import { useAssistantTurns } from './useAssistantTurns'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { AgentState, ModelChoice, Suggestion, ThinkingLevel } from '../../../preload'
 import { applyArmsUndo, emptyAgentChat, reduceAgentChat, type ChatTurn } from './agent-chat'
-import { latestUndoableCard, liveCardIds, reducePlanCards, type PlanCards } from './plan-proposal-cards'
+import { liveCardIds, latestUndoTarget, reducePlanCards, type PlanCards } from './plan-proposal-cards'
 import { editsFromEntries, staleMessage } from '../../../shared/plan-proposal'
 import type { PlanProposalCardActions } from '../components/PlanProposalCard'
 
 export type UseAgent = {
+  assistantTurns: ReturnType<typeof useAssistantTurns>
   /** False until a Workspace agent exists (the shell only mounts the panel with one bound). */
   available: boolean
   /** Session history that predates this window's conversation — the "Earlier today" collapse. */
@@ -64,9 +66,8 @@ export function useAgent(opts: { onWorkspaceChanged?: () => void; onNoteCreated?
   const [planCards, dispatchPlan] = useReducer(reducePlanCards, {})
   const planCardsRef = useRef(planCards)
   planCardsRef.current = planCards
-  const turnsRef = useRef(state.turns)
-  turnsRef.current = state.turns
   const [thread, setThread] = useState<AgentState['thread']>(null)
+  const assistantTurns = useAssistantTurns(thread?.id, () => opts.onWorkspaceChanged?.())
   // Read synchronously by promptAsIsOnFolder: App adopts the new thread and fires in the same tick.
   const threadIdRef = useRef<string | null>(null)
   const [threadFolders, setThreadFolders] = useState<Record<string, string>>({})
@@ -83,16 +84,13 @@ export function useAgent(opts: { onWorkspaceChanged?: () => void; onNoteCreated?
   /** A late completion from a replaced thread must never overwrite the newly adopted transcript. */
   const conversationGenerationRef = useRef(0)
 
-  // Live mirrors for the stable callbacks below (the sidebarOpenRef pattern): running gates
-  // re-entrancy the instant a key fires; undoable gates ⌘⇧Z so a stray press can never restore
-  // a snapshot from an earlier app run (bridle's restoreLastTurn falls back to the store's last
-  // restore point, which may predate this window).
+  // The synchronous mirror prevents re-entrant prompts and undo while a turn is running.
   const runningRef = useRef(false)
   runningRef.current = state.running
-  const undoableRef = useRef(false)
-  undoableRef.current = state.turns.some((turn) => turn.kind === 'agent' && turn.undoable)
   // Whether a suggestion accept will arm Undo turn — read synchronously by noteSuggestionApplied
   // so the accept path can pick honest status copy before the reducer state commits.
+  const userSavedRef = useRef(state.userSavedSinceTurn)
+  userSavedRef.current = state.userSavedSinceTurn
   const applyArmsRef = useRef(false)
   applyArmsRef.current = applyArmsUndo(state)
   // Whether the in-flight turn executed housekeeping (disk writes): set from traces, read on
@@ -341,24 +339,16 @@ export function useAgent(opts: { onWorkspaceChanged?: () => void; onNoteCreated?
 
   const undoTurn = useCallback(() => {
     if (runningRef.current) return
-    // ⌘⇧Z reaches an accepted running order when it is the latest agent change (frame 4).
-    const plan = latestUndoableCard(planCardsRef.current)
-    const lastTurn = [...turnsRef.current].reverse().find((turn) => turn.kind === 'agent')
-    if (plan && (plan.acceptedAt ?? 0) >= (lastTurn?.at ?? 0)) {
-      undoPlan(plan.id)
-      return
-    }
-    if (!undoableRef.current) return
-    void window.writeflex
-      .restoreLastTurn()
-      .then((paths) => {
-        dispatch({ type: 'undone', paths, at: Date.now() })
-        changedRef.current?.()
-      })
-      .catch(() => {})
-  }, [])
+    void window.writeflex.assistantTurns.list().then(async ({ turns }) => {
+      const target = latestUndoTarget(planCardsRef.current, turns)
+      if (target?.kind === 'plan') { undoPlan(target.id); return null }
+      return userSavedRef.current ? null : assistantTurns.undoLatest()
+    }).then((result) => {
+      if (result?.undone) dispatch({ type: 'undone', paths: result.paths, at: Date.now() })
+    }).catch(() => {})
+  }, [assistantTurns.undoLatest, undoPlan])
 
-  const noteUserSave = useCallback(() => dispatch({ type: 'user-saved' }), [])
+  const noteUserSave = useCallback(() => { userSavedRef.current = true; dispatch({ type: 'user-saved' }) }, [])
 
   const noteSuggestionApplied = useCallback(() => {
     const arms = applyArmsRef.current
@@ -367,6 +357,7 @@ export function useAgent(opts: { onWorkspaceChanged?: () => void; onNoteCreated?
   }, [])
 
   return {
+    assistantTurns,
     available: state.available,
     history: state.history,
     messages: state.turns,

@@ -36,7 +36,12 @@ function path(input: unknown, key: string): string {
 function promoteInput(input: unknown): PromoteOffcutInput {
   const dir = text(input, 'dir')
   if (dir !== '') assertRelativeWorkspacePath(dir)
-  return { dir, scrapsPath: path(input, 'scrapsPath'), scrapId: text(input, 'scrapId'), name: text(input, 'name') }
+  const scrapId = text(input, 'scrapId')
+  const scrapsPath = text(input, 'scrapsPath')
+  // A lossless Scratchpad offcut has no scraps file ('' on the Board); its id is its address.
+  if (scrapsPath !== '') assertRelativeWorkspacePath(scrapsPath)
+  else if (!/^p_[0-9a-z]{6,40}$/.test(scrapId)) throw new Error('Invalid Board request: scrapsPath is missing.')
+  return { dir, scrapsPath, scrapId, name: text(input, 'name') }
 }
 
 function appendInput(input: unknown): AppendScrapInput {

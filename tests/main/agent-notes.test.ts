@@ -55,7 +55,7 @@ test('two recalls update the originating note so three settlement cycles remain 
   })
   const document = await readFile(join(root, 'draft.md'), 'utf8')
   const firstPosition = frontmatterSafeInsertPosition(document, document.length)
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes: notes,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),
@@ -87,7 +87,7 @@ test('a restaged accept uses the renderer payload shape: the entire safe documen
     sourceDocument: 'draft.md', kind: 'query', source: '```query\nstatus: editing\n```', status: 'discarded', summary: 'Editing pieces',
   })
   const position = frontmatterSafeInsertPosition(content, 12)
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes: notes,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),
@@ -145,7 +145,7 @@ test('reject clears a restaged origin even when the Change was no longer pending
   const original = await persistAgentObjectNote(ws, {
     sourceDocument: 'draft.md', kind: 'query', source: '```query\nstatus: editing\n```', status: 'discarded', summary: 'Editing pieces',
   })
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes: notes,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),
@@ -175,7 +175,7 @@ test('a failed note create keeps reject settled and returns a visible path-namin
     oldText: '', newText: '```query\nstatus: editing\n```', insertAfter: '# Draft', isCorrection: false,
   })
   ws.createFile = async () => { throw new Error('forced createFile failure') }
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),
@@ -197,7 +197,7 @@ test('a failed note create keeps accept settled, lands the object, and returns a
     oldText: '', newText: '```query\nstatus: editing\n```', insertAfter: content, isCorrection: false,
   })
   ws.createFile = async () => { throw new Error('forced createFile failure') }
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),
@@ -215,7 +215,7 @@ test('a failed note create keeps accept settled, lands the object, and returns a
 test('direct discard returns its note-write warning once and does not leak it into the next settlement', async () => {
   const queue: ScriptedTurn[] = []
   const changes = new ChangeStore(ws)
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory(queue),
@@ -258,7 +258,7 @@ test('restage validates the stored object and lands at an exact zero-width curso
   const original = await persistAgentObjectNote(ws, {
     sourceDocument: 'draft.md', kind: 'query', source: '```query\nstatus: editing\n```', status: 'discarded', summary: 'Editing pieces',
   })
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes: notes,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),

@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { existsSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -57,7 +58,7 @@ const threeAdds: PlanProposalChange[] = [
 
 async function propose(changes: PlanProposalChange[], proposeDir = dir): Promise<{ agent: WorkspaceAgent; id: string }> {
   const step: ScriptedStep = { cap: 'plan.propose', input: { dir: proposeDir, changes } }
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws,
     appDataDir,
     onTrace: () => {},
@@ -66,6 +67,7 @@ async function propose(changes: PlanProposalChange[], proposeDir = dir): Promise
     sessionFactory: scriptedSessionFactory([{
       prompt: 'give me an order',
       rounds: [
+        { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
         { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
         { kind: 'message', text: 'Proposed.' },
       ],
@@ -169,13 +171,13 @@ test('undo refuses when a part was renamed since, and names the rename', async (
   // A later rename (Journey 6 repairs the plan line) changes the part's title and the Index Note.
   await rename(join(root, `${dir}/02_key-strategic-moves.md`), join(root, `${dir}/02_moves-for-2027.md`))
   await writeFile(join(root, `${dir}/02_moves-for-2027.md`), '# Moves for 2027\n\nMoves.\n')
-  await writeFile(join(root, indexPath), accepted.replace('[[Key strategic moves]]', '[[Moves for 2027]]'))
+  await writeFile(join(root, indexPath), accepted.replace('[[./02_key-strategic-moves.md|Key strategic moves]]', '[[./02_moves-for-2027.md|Moves for 2027]]'))
 
   const undone = await agent.undoPlanProposal(id)
   expect(undone.ok).toBe(false)
   if (undone.ok) return
   expect(undone.message).toBe("Can't put the order back: you have since renamed Key strategic moves to Moves for 2027, and undoing would bring back the old name in the Folio outline. Undo the rename first, or change the order in the Folio outline pane.")
-  expect(await read(indexPath)).toContain('[[Moves for 2027]]')
+  expect(await read(indexPath)).toContain('[[./02_moves-for-2027.md|Moves for 2027]]')
 })
 
 test('remove takes a part out without deleting its file; materialise writes the file through the Folio outline operation', async () => {
@@ -208,7 +210,7 @@ test('a folder with no Index Note: accepting creates it first, and undo removes 
   expect(view?.basis.hasIndexNote).toBe(false)
   expect(existsSync(join(root, indexPath))).toBe(false)
   expect((await agent.acceptPlanProposal(id)).ok).toBe(true)
-  expect(await read(indexPath)).toContain('- [[Framework for Community Garden Planning]]')
+  expect(await read(indexPath)).toContain(pinnedIndex('- [[Framework for Community Garden Planning]]', {"Framework for Community Garden Planning":"./00_strategy-framework.md|Framework for Community Garden Planning"}))
   expect((await agent.undoPlanProposal(id)).ok).toBe(true)
   expect(existsSync(join(root, indexPath))).toBe(false)
 })

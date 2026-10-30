@@ -1,5 +1,5 @@
-import { mkdir, readFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { readMovedVersions, settleVersionMoves } from './version-moves'
+import { mkdir } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { userInfo } from 'node:os'
 import type { Workspace } from './workspace'
@@ -88,6 +88,7 @@ export class VersionStore {
       }
       this.#assertWellFormed(version)
       assertCollectionWritable(this.ws.root)
+      settleVersionMoves(this.ws.root)
       await mkdir(this.ws.absolute(STORE_DIR), { recursive: true })
       await this.#appendLine(version, 'record this version')
       return version
@@ -115,6 +116,7 @@ export class VersionStore {
       }
       this.#assertWellFormed(version)
       assertCollectionWritable(this.ws.root)
+      settleVersionMoves(this.ws.root)
       await mkdir(this.ws.absolute(STORE_DIR), { recursive: true })
       await this.#appendLine(version, 'record this version')
       return version
@@ -142,6 +144,7 @@ export class VersionStore {
       }
       this.#assertWellFormed(renamed)
       assertCollectionWritable(this.ws.root)
+      settleVersionMoves(this.ws.root)
       await mkdir(this.ws.absolute(STORE_DIR), { recursive: true })
       await this.#appendLine(renamed, 'rename this version')
       return renamed
@@ -149,19 +152,7 @@ export class VersionStore {
   }
 
   async #readLatest(): Promise<Version[]> {
-    const abs = this.ws.absolute(JOURNAL_REL)
-    if (!existsSync(abs)) return []
-    const raw = await readFile(abs, 'utf8')
-    const latest = new Map<string, Version>()
-    for (const line of raw.split('\n')) {
-      const version = parseVersionLine(line)
-      if (!version) continue
-      const current = latest.get(version.id)
-      if (!current || version.ts > current.ts || (version.ts === current.ts && version.id.localeCompare(current.id) >= 0)) {
-        latest.set(version.id, version)
-      }
-    }
-    return Array.from(latest.values())
+    return readMovedVersions(this.ws.root)
   }
 }
 

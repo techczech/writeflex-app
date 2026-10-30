@@ -225,7 +225,7 @@ describe('only Accept writes', () => {
   async function withAgent(c: { root: string; workspace: Workspace; changes: ChangeStore }) {
     const appData = await mkdtemp(join(tmpdir(), 'wf-reader-notes-data-'))
     roots.push(appData)
-    const agent = await WorkspaceAgent.create({ workspace: c.workspace, appDataDir: appData, changes: c.changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
+    const agent = await WorkspaceAgent.create({ mode: 'work', workspace: c.workspace, appDataDir: appData, changes: c.changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
     agents.push(agent)
     return agent
   }

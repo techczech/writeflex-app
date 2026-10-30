@@ -8,7 +8,8 @@ import { posix } from 'node:path'
 import { collectionPieces } from './collection'
 import { BOARD_STATUS_ORDER } from '../shared/collection-status'
 import type { Workspace } from './workspace'
-import { collectionMaterial, collectionOffcuts, collectionSourceUse, isResearchNotePath, materialFactOf, type Offcut, type PieceDrawer, type SourceUser } from './piece-material'
+import { collectionMaterial, collectionOffcuts, collectionSourceUse, isResearchNotePath, looseOffcuts, materialFactOf, type LooseScrap, type Offcut, type PieceDrawer, type SourceUser } from './piece-material'
+import { readWaitingLossless } from './scrap-listing'
 import { isScrapsPath } from './scraps'
 
 export type QueryFilterField = 'title' | 'date' | 'status' | 'description' | 'purpose' | 'related' | 'tags' | 'goal' | 'due' | 'project' | 'words'
@@ -49,6 +50,8 @@ export type QueryRow = {
   material?: 'scraps' | 'research'
   /** On a scraps file: every scrap it holds, as the Offcuts column lists them. */
   offcuts?: Offcut[]
+  /** On a piece: the floating Scratchpad's items cut from it and still waiting (no scraps file holds them). */
+  looseOffcuts?: Offcut[]
   /** On a research note: the pieces that use it (list it in `sources:` or wikilink to it), as the
    *  Board's Sources rail names them; empty when none does yet. */
   usedBy?: SourceUser[]
@@ -205,6 +208,13 @@ function filterValues(piece: Awaited<ReturnType<typeof collectionPieces>>[number
   return value === null ? [] : [value]
 }
 
+/** The floating Scratchpad's waiting items cut from documents in `dir`; none when its store cannot be read. */
+async function looseScraps(ws: Workspace, dir: string): Promise<LooseScrap[]> {
+  return (await readWaitingLossless(ws))
+    .filter((item) => dir === '' || item.origin.path.startsWith(`${dir}/`))
+    .map((item) => ({ id: item.id, origin: item.origin.path, text: item.markdown, done: item.done, createdAt: item.createdAt }))
+}
+
 /** Evaluate a Query over the Collection's recursive Piece population. */
 export async function evaluateCollectionQuery(ws: Workspace, dir: string, source: string): Promise<QueryResult> {
   const parsed = parseQuery(source)
@@ -214,8 +224,10 @@ export async function evaluateCollectionQuery(ws: Workspace, dir: string, source
   // Material is derived from the same Piece reads (scraps files and research notes are Pieces too),
   // over the whole scope before filtering, so a filtered row still counts material it does not match.
   const facts = pieces.map(materialFactOf)
-  const material = collectionMaterial(scopeDir, facts)
+  const loose = await looseScraps(ws, scopeDir)
+  const material = collectionMaterial(scopeDir, facts, loose)
   const offcuts = collectionOffcuts(facts)
+  const loosePerPiece = looseOffcuts(facts, loose)
   const sourceUse = collectionSourceUse(scopeDir, facts)
   const rows: QueryRow[] = []
 
@@ -254,6 +266,7 @@ export async function evaluateCollectionQuery(ws: Workspace, dir: string, source
       taskOpen: piece.derived.tasks?.open ?? 0,
       taskDone: piece.derived.tasks?.done ?? 0,
       ...(material.get(piece.path)?.drawer ? { drawer: material.get(piece.path)!.drawer! } : {}),
+      ...(loosePerPiece.get(piece.path)?.length ? { looseOffcuts: loosePerPiece.get(piece.path)! } : {}),
       ...(isScrapsPath(piece.path) ? { material: 'scraps' as const, offcuts: offcuts.get(piece.path) ?? [] }
         : isResearchNotePath(piece.path, scopeDir) ? { material: 'research' as const, usedBy: sourceUse.get(piece.path) ?? [] } : {}),
     })

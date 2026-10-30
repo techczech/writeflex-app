@@ -15,6 +15,8 @@
  * It does not stop another process (a sync client, a second app) from writing the files; the byte
  * comparisons before each write in plan.ts remain the guard against that.
  */
+import { withFolioNotices } from './folio-declaration'
+
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { folioKey } from './folio-dir'
@@ -40,7 +42,9 @@ export async function withPlanLock<T>(ws: { root: string }, dir: string, run: ()
   tails.set(key, tail)
   await before
   try {
-    return await held.run(new Set([...(mine ?? []), key]), run)
+    const { result, notices } = await withFolioNotices(() => held.run(new Set([...(mine ?? []), key]), run))
+    if (notices.length && result && typeof result === 'object') return { ...result, notices }
+    return result
   } finally {
     // Whatever this hold wrote, the Outline's kept answer about this Folio's order is no longer trusted.
     invalidateFolioOrderFacts(ws.root, dir)

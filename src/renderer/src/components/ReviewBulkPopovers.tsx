@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Send, X } from 'lucide-react'
 import type { DeclineQuestion, SendBackScope } from '../app/margin-bulk'
+import { SourceBulkSheet, type SourceSheet } from './ReviewSourceSheet'
 
 /**
  * The two popovers the review line opens over the status bar (ADR-0046, frames `bulk-decline-confirm` and `send-back`).
@@ -11,6 +12,8 @@ import type { DeclineQuestion, SendBackScope } from '../app/margin-bulk'
 export type ReviewAsk =
   | { kind: 'decline'; question: DeclineQuestion; onConfirm: () => void; onCancel: () => void }
   | { kind: 'send-back'; scope: SendBackScope; onSend: (note: string) => void; onCancel: () => void }
+  /** Accept all / Decline all from one source, across the collection (ReviewSourceSheet.tsx). */
+  | { kind: 'outside-source'; sheet: SourceSheet }
 
 /** A click outside the popover cancels it. */
 function useClickAway(ref: React.RefObject<HTMLElement | null>, onAway: () => void): void {
@@ -83,7 +86,9 @@ export function ReviewAskPopover({ ask }: { ask: ReviewAsk }): JSX.Element {
     <div className="rbp-wrap" data-review-ask={ask.kind}>
       {ask.kind === 'decline'
         ? <DeclineConfirm question={ask.question} onConfirm={ask.onConfirm} onCancel={ask.onCancel} />
-        : <SendBackPopover scope={ask.scope} onSend={ask.onSend} onCancel={ask.onCancel} />}
+        : ask.kind === 'outside-source'
+          ? <SourceBulkSheet sheet={ask.sheet} />
+          : <SendBackPopover scope={ask.scope} onSend={ask.onSend} onCancel={ask.onCancel} />}
     </div>
   )
 }

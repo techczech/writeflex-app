@@ -94,6 +94,7 @@ export function assertPathSubset(declared: readonly string[], applied: readonly 
 export type CapabilityServices = {
   scraps?: ScrapStore
   onScrapsChanged?: () => void
+  onVersionHistoryChanged?: () => void
   onFileRead?: (path: string) => void
   prepareFolioInstructions?: (dir: string) => Promise<void>
   trashFile?: (absolute: string) => Promise<void>
@@ -113,6 +114,22 @@ export type CapabilityServices = {
    * unless the answer is true; with no review surface to ask (this service absent) it writes nothing.
    */
   widgetFileShown?: (file: { documentPath: string; path: string; sha256: string }) => Promise<boolean>
+  /**
+   * The frozen Scratchpad insertion THE Change being accepted right now was reviewed as (exact
+   * prepared Markdown, exact resulting document, item version, destination digest), or null when
+   * this accept has no such proof — outside an accept, for another Change, or in a session that
+   * never ingested the proposal (after a restart). The scratchpad.insert / put_back / cite / link /
+   * insert_quote verbs write only the bound bytes this returns, after revalidating them; with no
+   * review surface to ask (this service absent) they write nothing.
+   */
+  scratchpadBoundInsert?: (ask: { verb: string; itemId: string; destPath: string }) => Promise<import('../scratchpad-agent-insert').ScratchBoundInsert | null>
+  /** The accepting window's main-derived Scratchpad editor-session holder, for a put-back's use
+   *  record (main derives it from the window's sender; a headless host has none). */
+  scratchpadHolder?: () => string | null
+  /** Main's typed placement receipt for the put-back THIS accept just wrote: carried into the
+   *  accept's response so the accepting window's editor can anchor exactly those bytes on the
+   *  transaction that takes them. Scoped to the one accept in flight, like `acceptNotice`. */
+  scratchpadPlacement?: (receipt: import('../../shared/scratchpad-items').ScratchPlacementReceipt) => void
   /** Something the writer must be told about an accept that succeeded (the document saved but could not be read
    *  back): carried into that accept's response and shown on the margin card. */
   acceptNotice?: (text: string) => void
@@ -530,7 +547,7 @@ function joinAfterRemoval(before: string, after: string): string {
   return `${before.slice(0, before.length - trailing.length)}${separator}${after.slice(leading.length)}`
 }
 
-function insertBlockAfter(content: string, insertAt: number, text: string): string {
+function insertBlockAfter(content: string, insertAt: number, text: string): { nextContent: string; range: { from: number; to: number } } {
   const beforeRaw = content.slice(0, insertAt)
   const afterRaw = content.slice(insertAt)
   const trailing = beforeRaw.match(/\n+$/)?.[0] ?? ''
@@ -539,15 +556,16 @@ function insertBlockAfter(content: string, insertAt: number, text: string): stri
   const after = leading ? afterRaw.slice(leading.length) : afterRaw
   const prefix = before ? '\n\n' : ''
   const suffix = after ? '\n\n' : ''
-  return `${before}${prefix}${text}${suffix}${after}`
+  const from = before.length + prefix.length
+  return { nextContent: `${before}${prefix}${text}${suffix}${after}`, range: { from, to: from + text.length } }
 }
 
 /** Place a block at an exact, current document cursor after frontmatter safety has been applied. */
-export function resolveProseInsertAt(content: string, position: number, text: string): { nextContent: string } {
+export function resolveProseInsertAt(content: string, position: number, text: string): { nextContent: string; range: { from: number; to: number } } {
   if (!Number.isInteger(position) || position < 0 || position > content.length) {
     throw new Error('The restage cursor is outside the current document; place the cursor again and retry.')
   }
-  return { nextContent: insertBlockAfter(content, frontmatterSafeInsertPosition(content, position), text) }
+  return insertBlockAfter(content, frontmatterSafeInsertPosition(content, position), text)
 }
 
 export type ResolvedProseMove = {
@@ -566,7 +584,7 @@ export function resolveProseMove(content: string, input: ProseMoveInput): Resolv
   const withoutSource = joinAfterRemoval(content.slice(0, moveFrom.from), content.slice(moveFrom.to))
   const anchorInWithoutSource = uniqueRange(withoutSource, input.insertAfter, 'insertAfter', input.path)
   if (typeof anchorInWithoutSource === 'string') throw notPlaced(withoutSource, input.insertAfter, anchorInWithoutSource)
-  const inserted = insertBlockAfter(withoutSource, anchorInWithoutSource.to, input.text)
+  const inserted = insertBlockAfter(withoutSource, anchorInWithoutSource.to, input.text).nextContent
   const nextContent = content.endsWith('\n') && !inserted.endsWith('\n') ? `${inserted}\n` : inserted
   // Pending Change ranges are rendered against the current, pre-apply buffer:
   // moveFrom is the source range, moveTo is the zero-width insertion point after
@@ -585,14 +603,14 @@ export function resolveProseMove(content: string, input: ProseMoveInput): Resolv
  * nothing to replace, so prose.edit cannot express it). Throws with the agent-facing reason when a
  * non-empty anchor is missing or ambiguous, so a malformed insertion is never staged.
  */
-export function resolveProseInsert(content: string, input: ProseInsertInput): { nextContent: string } {
+export function resolveProseInsert(content: string, input: ProseInsertInput): { nextContent: string; range: { from: number; to: number } } {
   if (input.insertAfter === '') {
     const afterMetadata = frontmatterSafeInsertPosition(content, 0)
-    return { nextContent: insertBlockAfter(content, afterMetadata > 0 ? afterMetadata : content.length, input.text) }
+    return insertBlockAfter(content, afterMetadata > 0 ? afterMetadata : content.length, input.text)
   }
   const anchor = uniqueRange(content, input.insertAfter, 'insertAfter', input.path)
   if (typeof anchor === 'string') throw notPlaced(content, input.insertAfter, anchor)
-  return { nextContent: insertBlockAfter(content, anchor.to, input.text) }
+  return insertBlockAfter(content, anchor.to, input.text)
 }
 
 /**
@@ -605,8 +623,8 @@ export function resolveProseInsert(content: string, input: ProseInsertInput): { 
  * The in-app agent's `prose.insert` with no anchor is NOT this: it keeps `resolveProseInsert`, whose
  * anchorless place in a document that has frontmatter is just after the frontmatter.
  */
-export function resolveOutsideInsert(content: string, input: Pick<ProseInsertInput, 'path' | 'insertAfter' | 'text'>): { nextContent: string } {
-  if (input.insertAfter === '') return { nextContent: insertBlockAfter(content, content.length, input.text) }
+export function resolveOutsideInsert(content: string, input: Pick<ProseInsertInput, 'path' | 'insertAfter' | 'text'>): { nextContent: string; range: { from: number; to: number } } {
+  if (input.insertAfter === '') return insertBlockAfter(content, content.length, input.text)
   return resolveProseInsert(content, { ...input, category: 'other', summary: '' })
 }
 
@@ -632,6 +650,14 @@ export const CAPABILITY_PERMISSION_KEYS: Record<string, string | readonly string
   'tasks.list': 'permissions.readWorkspace',
   'sources.list': 'permissions.readWorkspace',
   'tasks.toggle': 'permissions.proseEdits',
+  'scratchpad.sources': 'permissions.readWorkspace',
+  // Filing a candidate creates the item's payload and record files; it edits no document.
+  'scratchpad.send_text': 'permissions.createFiles',
+  'scratchpad.cite': 'permissions.proseEdits',
+  'scratchpad.link': 'permissions.proseEdits',
+  'scratchpad.insert_quote': 'permissions.proseEdits',
+  'scratchpad.insert': 'permissions.proseEdits',
+  'scratchpad.put_back': 'permissions.proseEdits',
   'widgets.insert': 'permissions.proseEdits',
   'widgets.remove': 'permissions.proseEdits',
   // Makes a file AND edits the document's text, so it needs both switches: with prose edits off, the embed line is refused too.
@@ -733,6 +759,13 @@ export function writeflexApprovalPolicy(isEnabled?: (name: string) => boolean, w
     if (capability.name === 'scraps.promote') return 'stage'
     // And a source attached to a piece (scraps ticket 03): one frontmatter line, proposed, never written directly.
     if (capability.name === 'sources.attach') return 'stage'
+    // And a Scratchpad citation, link or quote (floating-scratchpad ticket 03): agent-authored
+    // insertions are proposals at every trust level; collecting and attaching evidence stay direct.
+    if (capability.name === 'scratchpad.cite' || capability.name === 'scratchpad.link' || capability.name === 'scratchpad.insert_quote' || capability.name === 'scratchpad.insert' || capability.name === 'scratchpad.put_back') return 'stage'
+    // Deleting a rejected Scratchpad item forever (spec §8): APPROVAL at every trust level that
+    // may act at all. No host, CLI or build-tool approval setting lowers this content floor.
+    if (capability.name === 'scratchpad.delete') return trigger.trust === 'background' ? 'deny' : 'ask'
+    if (capability.name === 'history.follow' || capability.name === 'history.undo_follow') return trigger.trust === 'background' ? 'deny' : 'ask'
     if (capability.name === 'folio.turn_back') return trigger.trust === 'background' ? 'deny' : 'ask'
     const trusted = trigger.trust === 'interactive' || trigger.trust === 'trusted_app'
     if (capability.risk === 'read') return 'allow'

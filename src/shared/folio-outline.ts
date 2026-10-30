@@ -8,11 +8,15 @@ import type { FolioPlace } from './folio-place'
 import { isNotInOutlineName } from './folio-part-name'
 import { compareChapterOrder } from './folio-chapter-order'
 import { partChildHeadings, type PartHeadingMode } from './folio-part-title'
+import type { RoomBinder } from './folio-room'
 
 export type FolioOutlineHeading = { level: number; text: string; line: number }
 
 /** One file of the Folio's folder with its title and ATX headings, read from disk. */
 export type FolioOutlineFile = {
+  /** A bound chapter whose file is absent; kept in its original slot. */
+  sectionPage?: true
+  missing?: true
   path: string
   title: string
   headings: FolioOutlineHeading[]
@@ -56,6 +60,11 @@ export type FolioOutline = {
    * owner to the Plan. Main refuses the same Folios (folio-order-assessment.ts).
    */
   orderInPlanOnly?: true
+  /**
+   * The binder's Research, Notes and Ideas groups (ADR-0048, spec § 4.6), computed from the Folio's folders and
+   * listed under the running order. Read-only; absent when all three are empty.
+   */
+  binder?: RoomBinder
 }
 
 export type OutlineSwitch = {
@@ -184,11 +193,11 @@ export function folioKeyAction(rows: readonly FolioKeyRow[], key: string, presse
       if (!row.file || row.expanded === undefined) return {}
       if (!row.expanded) return filtering ? {} : { toggle: { key, open: true } }
       const next = rows[at + 1]
-      return next && !next.file && next.parent === key ? { focus: next.key } : {}
+      return next && next.parent === key ? { focus: next.key } : {}
     }
     case 'ArrowLeft': {
       if (!row.file) return row.parent !== undefined && rows.some((r) => r.key === row.parent) ? { focus: row.parent } : {}
-      return row.expanded === true && !filtering ? { toggle: { key, open: false } } : {}
+      return row.expanded === true && !filtering ? { toggle: { key, open: false } } : row.parent !== undefined ? { focus: row.parent } : {}
     }
     default: return null
   }

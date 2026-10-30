@@ -1,6 +1,6 @@
-import { EditorView, keymap } from '@codemirror/view'
-import type { Extension } from '@codemirror/state'
-import { skipWriterReviewTracking } from './writer-review'
+import { EditorView, keymap, type ViewUpdate } from '@codemirror/view'
+import type { EditorState, Extension } from '@codemirror/state'
+import { anchorsMayHaveChanged, scratchpadEditing } from '../scratchpad/scratchpad-editor'
 
 /** The drag payload a scrap tile writes; the editor's drop handler reads it to insert + remove. */
 export const SCRAP_DRAG_MIME = 'application/x-writeflex-scrap'
@@ -18,8 +18,11 @@ export function writeScrapDrag(dataTransfer: Pick<DataTransfer, 'setData' | 'eff
 export type ScrapExpansion = { trigger: string; text: string }
 
 export type ScrapEditingOpts = {
-  /** ⌘⇧X removed a selection into a scrap: App stores it via add(activeFile, text). */
-  onCut: (text: string) => void
+  /** ⌘⇧X with a selection: App's Scratchpad controller saves the exact text first and only then removes
+   *  the unchanged span (scratchpad-controller.ts). The binding itself never deletes anything. */
+  onCut: () => void
+  /** The editor's explicit Scratchpad anchors changed (an insert, its Undo or Redo, or its text deleted). */
+  onAnchors?: (before: EditorState, after: EditorState) => void
   /** A scrap was dropped into the document (text already inserted): App removes it from the store. */
   onDrop: (id: string) => void
   /** The live expandable set (App reads it off the scrap list). */
@@ -37,7 +40,7 @@ const TRIGGER_BEFORE_CURSOR = /\{([^{}\s]+)\}$/
 
 /**
  * The Scratchpad editor integration (Task 20, ADR-0008):
- *  - ⌘⇧X cuts the selection into a scrap through a normal transaction (so ⌘Z restores it);
+ *  - ⌘⇧X hands the selection to the Scratchpad, which removes it once saved (so ⌘Z restores it);
  *  - typing a registered `{trigger}` + space expands it to the scrap body in place, resolving
  *    `[date]` and `[clipboard]` placeholders;
  *  - dropping a scrap tile inserts its text at the drop point and removes the scrap.
@@ -66,7 +69,14 @@ export function scrapEditing(opts: ScrapEditingOpts): Extension {
     return true
   }
 
+  const anchorsChanged = (update: ViewUpdate): void => {
+    if (update.transactions.length === 0 || !opts.onAnchors || !anchorsMayHaveChanged(update.startState, update.state)) return
+    opts.onAnchors(update.startState, update.state)
+  }
+
   return [
+    scratchpadEditing(),
+    EditorView.updateListener.of(anchorsChanged),
     keymap.of([
       {
         key: 'Mod-Shift-x',
@@ -74,21 +84,11 @@ export function scrapEditing(opts: ScrapEditingOpts): Extension {
         run: (view) => {
           const { from, to } = view.state.selection.main
           if (from === to) return false // nothing selected — let the key fall through
-          const text = view.state.sliceDoc(from, to)
           // Undo-the-cut semantics (ruled): the removal is a normal CM6 transaction, so ⌘Z restores the
-          // doc text — but the scrap it created deliberately STAYS. A cut is committed to Scratchpad the
-          // instant it lands (that is the whole point: recover the words even after ⌘Z); an unwanted
-          // scrap is dropped by deleting its tile. CM6 history is intentionally NOT coupled to the store
-          // — undo touches only the document, never the on-disk SCRAPS.md.
-          // A cut to Scratchpad is an EXPLICIT removal already recorded as a scrap — never a track-change.
-          // Without the skip annotation, Reviewing mode would retain the text struck-through beside its
-          // scrap copy, so ⌘⇧X looked broken (the text never left the document).
-          view.dispatch({
-            changes: { from, to, insert: '' },
-            selection: { anchor: from },
-            annotations: skipWriterReviewTracking.of(true),
-          })
-          opts.onCut(text)
+          // doc text, and the scrap deliberately STAYS. What changed (ADR-0050): the removal now happens
+          // after the Scratchpad holds the exact text, and only if that span is unchanged, so a failed
+          // save can never lose prose. The removal skips Reviewing-mode tracking (scratchpad-editor.ts).
+          opts.onCut()
           return true
         },
       },
@@ -118,7 +118,17 @@ export function scrapEditing(opts: ScrapEditingOpts): Extension {
           return false
         }
         event.preventDefault()
+        // A read-only state (a saved version) takes no drop: nothing is inserted and nothing removed.
+        if (view.state.readOnly) return true
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head
+        // A floating Scratchpad item (p_…) is inserted by the Scratchpad itself, as a copy after the block
+        // at the drop point, so its anchor is recorded and its links carried; here only the caret moves.
+        if (/^p_/.test(payload.id)) {
+          view.dispatch({ selection: { anchor: pos } })
+          view.focus()
+          opts.onDrop(payload.id)
+          return true
+        }
         view.dispatch({ changes: { from: pos, insert: payload.text }, selection: { anchor: pos + payload.text.length }, scrollIntoView: true })
         view.focus()
         opts.onDrop(payload.id)

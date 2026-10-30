@@ -12,7 +12,7 @@ import { Type } from "typebox";
 import { ApprovalBroker } from "./approval.ts";
 import { BridleAuth } from "./auth.ts";
 import { executeCapabilityDetailed, type ExecutorDeps } from "./executor.ts";
-import { buildSystemPrompt, createManifest, scopedCapabilities, wireName, type PromptComposition } from "./manifest.ts";
+import { buildSystemPrompt, createManifest, discoverManifestTools, wireName, type PromptComposition } from "./manifest.ts";
 import type { Skill } from "./skills/types.ts";
 import { takeCheckpoint as takeVersionCheckpoint } from "./versioning/checkpoint.ts";
 import {
@@ -46,13 +46,13 @@ function snapshotComposition(composition: PromptComposition): PromptComposition 
 }
 import { defaultApprovalPolicy } from "./policy.ts";
 import { createBridleSession, createPiEventRelay } from "./runtime-pi.ts";
-import { bindSnapshotSession, SnapshotStore } from "./snapshots.ts";
+import { bindSnapshotSession, RestoreRefusedError, SnapshotStore } from "./snapshots.ts";
 import { BridleEventEmitter } from "./events.ts";
 import { RecorderStore, type RecordingMode } from "./recorder/store.ts";
-import { openProposalStore } from "./proposals/store.ts";
-import type { ProposalStore } from "./proposals/types.ts";
+import { openProposalStore, PROPOSAL_CLOSE_TIMEOUT_MS } from "./proposals/store.ts";
+import type { ProposalStore, ProposalStoreState } from "./proposals/types.ts";
 import { deriveProposalPreview } from "./proposals/preview.ts";
-import type { BridleEvent, ContextItem, TurnId, TurnOutcome, TurnReceipt, TurnResult } from "./events.ts";
+import type { BridleEvent, ContextItem, TurnId, TurnOutcome, TurnReceipt, TurnResult, TurnEndReason, TurnResponder, TurnToolError } from "./events.ts";
 import { resolveContextItems, SharpImageNormalizer, type ImageNormalizer } from "./context.ts";
 import { projectUserContext, type TranscriptOptions } from "./transcript-user-context.ts";
 import type {
@@ -62,8 +62,12 @@ import type {
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { Usage } from "@earendil-works/pi-ai/compat";
 import { createModelService, type BridleModelService } from "./model-listing.ts";
+import { TurnToolOutcomes } from "./turn-tool-outcomes.ts";
+import { turnFailureReason } from "./turn-failure.ts";
 import { BRIDLE_VERSION } from "./version.ts";
 import { openExecutionJournal, type UnknownExecution } from "./execution-journal/index.ts";
+import { TurnHistory, type BridleTurns, type UndoTurnResult, type TurnVersionRestore } from "./turns.ts";
+import type { BridleMode } from "./types.ts";
 
 export type BridleThinkingLevel = "minimal" | "low" | "medium" | "high";
 
@@ -159,18 +163,21 @@ export type BridleTranscriptMessage =
   | { role: "tool"; text: string; timestamp: number; toolCallId: string; toolName: string; isError: boolean };
 
 export type Bridle = {
+  readonly mode: BridleMode;
+  setMode(mode: BridleMode): void;
+  readonly turns: BridleTurns;
   prompt(text: string, opts?: { trigger?: AgentTrigger; context?: ContextItem[] }): Promise<TurnResult>;
   events: { subscribe(fn: (event: BridleEvent) => void): () => void };
   abort(turnId: TurnId): boolean;
   readonly activeTurn: TurnId | null;
   approvals: ApprovalBroker;
   proposals: ProposalStore;
+  readonly proposalStore: ProposalStoreState;
   snapshots: SnapshotStore;
   readonly executions: BridleExecutions;
   readonly versioning?: BridleVersioning;
   /**
-   * Intentionally restores through the legacy ADR-0008 SnapshotStore only.
-   * Under D6 side-by-side behaviour it does not consult whole-folder versioning.
+   * Undoes the latest recorded turn; legacy unrecorded restore points still use SnapshotStore.
    */
   restoreLastTurn(): Promise<string[]>;
   auth: BridleAuth;
@@ -386,6 +393,7 @@ export type CreateBridleOptions = {
   lane?: BridleLane;
   snapshotDir?: string;
   approvalPolicy?: ApprovalPolicy;
+  mode?: BridleMode;
   approvalTimeoutMs?: number;
   onApprovalRequest?: (req: ApprovalRequest) => void;
   onTrace?: (e: TraceEvent) => void;
@@ -459,10 +467,48 @@ async function createBridleAsync(
   composition: PromptComposition | undefined,
   lane: BridleLane,
 ): Promise<Bridle> {
+  let activeAnswerText = "";
+  let activeReasoning = "";
+  let activeStopReason: string | undefined;
+  let activeFinalAnswer = false;
+  let activeAccumulator: {
+    filesRead: Set<string>;
+    filesWritten: Set<string>;
+    callsDenied: number;
+    callsStaged: number;
+    tools: TurnToolOutcomes;
+    nonReadExecuted: boolean;
+    toolErrors: Map<string, TurnToolError>;
+    writesAfterStop: Set<string>;
+    capabilitiesAfterStop: Set<string>;
+    usageSeen: boolean;
+    usage: { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number; costSeen: boolean };
+  } | null = null;
   let activeTurn: TurnId | null = null;
+  let turnSignal: AbortSignal | undefined;
+  let turnClosing = false;
+  let activeFailure: TurnEndReason | undefined;
+  let mode: BridleMode = opts.mode ?? "work";
+  if (!["suggest", "work", "read-only"].includes(mode)) throw new Error("Unknown Bridle mode.");
+  let history: TurnHistory;
+  let session!: Awaited<ReturnType<BridleSessionFactory>>["session"];
+  const observerAudits = new Set<Promise<void>>();
+  const recordObserver = (event: AuditEvent) => {
+    const pending = Promise.resolve(audit.record(event)).catch(() => {}).finally(() => observerAudits.delete(pending));
+    observerAudits.add(pending);
+  };
   let events!: BridleEventEmitter;
   const trace = (e: Omit<TraceEvent, "id" | "timestamp">) => {
-    opts.onTrace?.({ ...e, id: randomUUID(), timestamp: Date.now() });
+    if (e.type === "events.listener_error" && (e.metadata?.eventType === "approval_requested" || e.metadata?.eventType === "approval_settled")) {
+      recordObserver({ type: "approval.observer_error", timestamp: Date.now(), sessionId: session.sessionId, ...(activeTurn ? { turnId: activeTurn } : {}), metadata: { stage: "subscriber", eventType: e.metadata.eventType } });
+      if (e.metadata.eventType === "approval_requested") {
+        for (const request of approvals.pending()) {
+          if (request.turnId === activeTurn) approvals.resolve(request.id, false);
+        }
+      }
+    }
+    try { opts.onTrace?.({ ...e, id: randomUUID(), timestamp: Date.now() }); }
+    catch { /* Diagnostic observers cannot interrupt turn or approval settlement. */ }
   };
   events = new BridleEventEmitter(trace);
   const executionJournal = await openExecutionJournal({
@@ -477,8 +523,14 @@ async function createBridleAsync(
   const approvals = new ApprovalBroker({
     timeoutMs: opts.approvalTimeoutMs,
     onRequest: (request) => {
-      opts.onApprovalRequest?.(request);
       if (activeTurn) events.emit({ type: "approval_requested", turnId: activeTurn, request });
+      if (approvals.pending().some((pending) => pending.id === request.id)) opts.onApprovalRequest?.(request);
+    },
+    onObserverError: (request, stage) => {
+      recordObserver({ type: "approval.observer_error", timestamp: Date.now(), sessionId: session.sessionId, turnId: request.turnId, capability: request.capabilityName, metadata: { stage, requestId: request.id } });
+    },
+    onRefused: (request, reason, history) => {
+      recordObserver({ type: "approval.refused", timestamp: Date.now(), sessionId: session.sessionId, turnId: request?.turnId ?? history?.turnId, metadata: { reason, requestId: request?.id ?? history?.id } });
     },
     onSettle: (request, outcome) => {
       if (activeTurn) {
@@ -492,18 +544,27 @@ async function createBridleAsync(
   const auditEvents: BridleAuditEvent[] = [];
   const audit: AuditLog = {
     async record(event) {
-      const withTurn = activeTurn && !event.turnId ? { ...event, turnId: activeTurn } : event;
+      const withTurn = event;
       const enriched = { ...withTurn, lane };
       auditEvents.push(enriched);
+      if (activeAccumulator && event.turnId === activeTurn && (event.type === "capability.failed" || event.type === "approval.observer_error" || event.resultIsError && event.type === "capability.executed")) {
+        const key = event.toolCallId ?? event.attemptId ?? event.capability ?? event.type;
+        activeAccumulator.tools.error(event.toolCallId);
+        activeAccumulator.toolErrors.set(key, { ...(event.capability ? { capability: event.capability } : {}), ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}), message: event.resultText ?? event.message ?? "Approval observer failed." });
+      }
       if (recorder) {
         await recorder.appendAudit(enriched.sessionId, enriched as unknown as Record<string, unknown>);
         if (enriched.type === "approval.settled") await recorder.flush();
       }
+      await history?.observe(enriched);
       await opts.auditLog?.record(enriched);
     },
   };
   const snapshots = await SnapshotStore.open({
     dir: snapshotDir,
+    async onRecovery(warning) {
+      await audit.record({ type: "snapshots.recovered", timestamp: Date.now(), sessionId: "recovery", metadata: warning });
+    },
     // A restore may change the workspace only, wherever the store itself is kept.
     ...(opts.manifest.workspaceRoot ? { root: opts.manifest.workspaceRoot } : {}),
     async onRestore(restoration) {
@@ -540,6 +601,15 @@ async function createBridleAsync(
     appDataDir: opts.appDataDir,
     recorder,
     snapshots,
+    async onRecovery(warning) {
+      await audit.record({ type: "proposals.recovered", timestamp: Date.now(), sessionId: "recovery", metadata: warning });
+    },
+    async onCancellationRefused(proposal, reason) {
+      await audit.record({ type: "proposal.cancel_refused", timestamp: Date.now(), sessionId: proposal.sessionId, turnId: proposal.turnId, metadata: { proposalId: proposal.id, reason } });
+    },
+    async onAdoptionRefused(proposal, reason) {
+      await audit.record({ type: "proposal.adoption_refused", timestamp: Date.now(), sessionId: proposal.sessionId, turnId: proposal.turnId, metadata: { proposalId: proposal.id, reason } });
+    },
     async onLifecycle(lifecycleEvent) {
       const { type, proposal } = lifecycleEvent;
       if (type === "proposal_created") {
@@ -601,7 +671,43 @@ async function createBridleAsync(
       }
     },
   });
-  const proposals = proposalStore.store;
+  // Assembly owns the proposal writer lock until dispose; startup failure releases it.
+  try {
+  // Same-turn adoption is nested work: queuing it behind its own prompt would
+  // deadlock approval while streaming. Undo refuses the active turn and waits
+  // for these claims; other adoption shares the prompt/undo queue.
+  let promptQueue: Promise<void> = Promise.resolve();
+  let inFlightUndo: Promise<UndoTurnResult> | undefined;
+  const inTurnAdoptions = new Set<Promise<unknown>>();
+  const trackInTurnAdoption = <T>(operation: Promise<T>): Promise<T> => {
+    const tracked = operation.finally(() => inTurnAdoptions.delete(tracked));
+    inTurnAdoptions.add(tracked);
+    return tracked;
+  };
+  const queueAdoption = <T>(run: () => Promise<T>): Promise<T> => {
+    const result = promptQueue.then(run);
+    promptQueue = result.then(() => {}, () => {});
+    return result;
+  };
+  const proposals: ProposalStore = {
+    ...proposalStore.store,
+    adopt: (id) => {
+      if (disposed) return Promise.reject(new BridleDisposedError());
+      if (activeTurn && !turnClosing) return proposalStore.store.get(id).then((proposal) => {
+        if (proposal?.turnId === activeTurn && !turnClosing) return trackInTurnAdoption(proposalStore.store.adopt(id));
+        return queueAdoption(() => proposalStore.store.adopt(id));
+      });
+      return queueAdoption(() => proposalStore.store.adopt(id));
+    },
+    adoptGroup: (groupId) => {
+      if (disposed) return Promise.reject(new BridleDisposedError());
+      if (activeTurn && !turnClosing) return proposalStore.store.list({ groupId, status: "proposed" }).then((members) => {
+        if (members.length && members.every((proposal) => proposal.turnId === activeTurn) && !turnClosing) return trackInTurnAdoption(proposalStore.store.adoptGroup(groupId));
+        return queueAdoption(() => proposalStore.store.adoptGroup(groupId));
+      });
+      return queueAdoption(() => proposalStore.store.adoptGroup(groupId));
+    },
+  };
   const manifest = createManifest(withBuiltinCapabilities(opts.manifest, proposals));
   const auth = opts.auth ?? BridleAuth.file(join(opts.appDataDir, "auth.json"));
   const ownsModelService = opts.modelService === undefined;
@@ -611,6 +717,7 @@ async function createBridleAsync(
   if (age < 0 || age >= 60_000) await modelService.refresh();
 
   let versioning: BridleVersioning | undefined;
+  let restoreTurnVersion: ((options: TurnVersionRestore) => Promise<BridleVersioningRestoreResult>) | undefined;
   let executorVersioning: ExecutorDeps["versioning"];
   if (opts.versioning?.enabled) {
     const workspaceRoot = manifest.workspaceRoot!;
@@ -620,6 +727,10 @@ async function createBridleAsync(
       workspaceRoot,
     );
     await takeBootVersionCheckpoint(store, workspaceRoot, largeFileCeiling);
+    restoreTurnVersion = async ({ checkpointId, paths, sourceCheckpoints, guard }) => {
+      const result = await restoreVersionTo(store, workspaceRoot, checkpointId, { largeFileCeiling, paths, sourceCheckpoints, beforeRestore: guard });
+      return { id: result.id, noop: result.noop === true, beforeCheckpointId: result.beforeCheckpointId, report: result.report };
+    };
     versioning = Object.freeze({
       workspaceId: identity.id,
       workspaceClaim,
@@ -644,37 +755,68 @@ async function createBridleAsync(
         }),
     });
     executorVersioning = {
-      takeCheckpoint: (checkpointOpts) => takeVersionCheckpoint(store, workspaceRoot, {
-        label: `before ${checkpointOpts.capability}`,
-        trigger: "write",
-        largeFileCeiling,
-        ...checkpointOpts,
-      }),
+      takeCheckpoint: async (checkpointOpts) => {
+        const checkpoint = await takeVersionCheckpoint(store, workspaceRoot, {
+          label: `before ${checkpointOpts.capability}`,
+          trigger: "write",
+          largeFileCeiling,
+          ...checkpointOpts,
+          force: true,
+        });
+        await history?.checkpoint(checkpointOpts.turnId, checkpoint.id);
+        if (checkpointOpts.turnId) {
+          const turn = await history?.get(checkpointOpts.turnId);
+          await audit.record({ type: "turn.checkpoint.write", timestamp: Date.now(), sessionId: checkpointOpts.sessionId,
+            turnId: checkpointOpts.turnId, capability: checkpointOpts.capability, toolCallId: checkpointOpts.toolCallId,
+            metadata: { checkpointId: turn?.checkpointId ?? checkpoint.id, writeCheckpointId: checkpoint.id } });
+        }
+        return checkpoint;
+      },
     };
   }
 
   const deps: ExecutorDeps = {
     lane,
+    mode: () => mode,
+    workspaceRoot: manifest.workspaceRoot,
+    activity: (cap, input, ctx, paths, before, ids, succeeded) => history!.executed(ctx.turnId, cap, input, paths, before, ids, succeeded),
+    activeTurn: () => activeTurn && turnSignal ? { turnId: activeTurn, signal: turnSignal } : undefined,
+    onExecution: (event) => {
+      if (!activeAccumulator || event.turnId !== activeTurn) return;
+      if (event.risk !== "read") activeAccumulator.nonReadExecuted = true;
+      if (event.succeeded) activeAccumulator.tools.success(event.toolCallId);
+      if (event.phase === "end" && event.afterStop && event.risk !== "read") {
+        for (const path of event.paths) activeAccumulator.writesAfterStop.add(path);
+        activeAccumulator.capabilitiesAfterStop.add(event.capability);
+      }
+    },
     policy: opts.approvalPolicy ?? defaultApprovalPolicy(), broker: approvals,
     proposals: proposalStore.controller, snapshots, audit, trace,
     executionJournal,
     ...(executorVersioning ? { versioning: executorVersioning } : {}),
   };
+  history = new TurnHistory({ root: manifest.workspaceRoot, recorder, snapshots, versioning, restoreVersion: restoreTurnVersion,
+    largeFileCeiling: opts.versioning?.enabled ? opts.versioning.largeFileCeiling ?? DEFAULT_LARGE_FILE_CEILING : undefined,
+    audit: (event) => audit.record(event) as Promise<void>,
+    emit: (activity) => events.emit({ type: "turn.activity", turnId: activity.turnId, activity }),
+    active: () => activeTurn,
+    writable: () => proposalStore.controller.ensureWritable(),
+    cancel: async (turnId) => {
+      const cancellations = await proposalStore.controller.cancelTurn(turnId);
+      if (cancellations.some((result) => result.refused === "store-locked")) return "store-read-only";
+      if (cancellations.some((result) => result.refused === "adoption-in-flight")) return "adoption-in-flight";
+      approvals.cancelTurn(turnId);
+      await proposalStore.controller.waitForTurn(turnId);
+      approvals.finishTurn(turnId);
+      await proposalStore.controller.finishTurn(turnId);
+    },
+  });
+  await history.load();
 
   const triggerRef = { current: INTERACTIVE };
-  let activeAnswerText = "";
-  let activeReasoning = "";
-  let activeStopReason: string | undefined;
-  let activeAccumulator: {
-    filesRead: Set<string>;
-    filesWritten: Set<string>;
-    callsDenied: number;
-    callsStaged: number;
-    usage: { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number; costSeen: boolean };
-  } | null = null;
   const sessionFactory = opts.session ?? opts._sessionFactory ?? createBridleSession;
   const imageNormalizer = opts.imageNormalizer ?? new SharpImageNormalizer();
-  const { session, capabilities, toolOutcomes, toolPathResolutions, toolCallIdentity } = await sessionFactory({
+  const { session: createdSession, capabilities, toolOutcomes, toolPathResolutions, toolCallIdentity } = await sessionFactory({
     manifest, auth,
     agentDir: opts.appDataDir,
     ...(recording === "off" ? {} : { sessionDir: join(opts.appDataDir, "sessions") }),
@@ -683,6 +825,7 @@ async function createBridleAsync(
     deps, trigger: INTERACTIVE, triggerRef,
     ...(composition ? { composition } : {}),
   });
+  session = createdSession;
   // Sol F1 (P0): never record a scoped envelope for a session that didn't run
   // scoped. Whenever the session exposes its registered tool set, verify it
   // matches the composition exactly; a factory that ignored the composition is
@@ -690,7 +833,7 @@ async function createBridleAsync(
   if (composition?.activeSkill) {
     const accessor = (session as { getActiveToolNames?: () => string[] }).getActiveToolNames;
     if (typeof accessor === "function") {
-      const expected = new Set(scopedCapabilities(manifest, composition.activeSkill).map((cap) => wireName(cap.name)));
+      const expected = new Set(discoverManifestTools(manifest, composition).visible().map((cap) => wireName(cap.name)));
       const actual = accessor.call(session);
       const unexpected = actual.filter((name) => !expected.has(name));
       const missing = [...expected].filter((name) => !actual.includes(name));
@@ -709,11 +852,11 @@ async function createBridleAsync(
   // tool_start/tool_end. Proposal preview/adoption keeps the full map (adoption
   // is an explicit user action and durable Proposals may predate the skill).
   const sessionCapabilities = composition?.activeSkill
-    ? new Map(scopedCapabilities(manifest, composition.activeSkill).map((cap) => [cap.name, cap]))
+    ? new Map(discoverManifestTools(manifest, composition).capabilities.map((cap) => [cap.name, cap]))
     : capabilities;
   bindSnapshotSession(snapshots, session.sessionId);
   proposalStore.controller.bind({
-    async adopt(proposal) {
+    async adopt(proposal, signal) {
       const capability = capabilities.get(proposal.capability);
       if (!capability) {
         return { result: { text: `Proposal ${proposal.id} names an unknown capability: ${proposal.capability}`, isError: true }, denied: true };
@@ -722,6 +865,7 @@ async function createBridleAsync(
         trigger: { id: "adoption", source: "user", trust: "interactive", label: "proposal adoption" },
         sessionId: session.sessionId,
         turnId: proposal.turnId,
+        signal,
         toolCallId: proposal.toolCallId,
         adoption: true,
         proposalId: proposal.id,
@@ -735,7 +879,7 @@ async function createBridleAsync(
     async preview(proposal) {
       const capability = capabilities.get(proposal.capability);
       if (!capability) throw new Error(`Proposal ${proposal.id} names an unknown capability: ${proposal.capability}`);
-      return deriveProposalPreview(proposal, capability, { trace, audit });
+      return deriveProposalPreview(proposal, capability, { trace, audit: { record: (event) => audit.record({ ...event, turnId: proposal.turnId }) } });
     },
   });
   const appendEnvelope = () => {
@@ -747,9 +891,7 @@ async function createBridleAsync(
     const model = session.model;
     // S4: a skill-bound instance records its SCOPED reality — the narrowed
     // prompt and catalogue the session actually ran with, never the full manifest.
-    const envelopeCapabilities = composition?.activeSkill
-      ? scopedCapabilities(manifest, composition.activeSkill)
-      : manifest.capabilities;
+    const envelopeCapabilities = discoverManifestTools(manifest, composition).visible();
     sessionManager.appendCustomEntry("bridle.envelope", {
       recorderVersion: 1,
       bridleVersion: BRIDLE_VERSION,
@@ -778,11 +920,18 @@ async function createBridleAsync(
     toolOutcomes,
     toolPathResolutions,
     toolCallIdentity,
-    onAssistantMessage: (text) => { activeAnswerText = text; },
+    onAssistantMessage: (text, toolCallIds) => { activeAnswerText = text; activeAccumulator?.tools.assistant(text, toolCallIds); },
     onReasoning: (reasoning) => { activeReasoning = reasoning; },
+    onRetryStart: () => { activeFailure = undefined; activeStopReason = undefined; activeFinalAnswer = false; activeAnswerText = ""; },
+    onAssistantStatus: (message) => {
+      activeStopReason = message.stopReason;
+      activeFinalAnswer = message.stopReason !== "error" && message.stopReason !== "aborted" && message.stopReason !== "toolUse" && message.stopReason !== "length" && activeAnswerText.trim().length > 0;
+      activeFailure = message.stopReason === "error" || message.stopReason === "aborted" ? turnFailureReason(message, turnSignal?.aborted === true) : undefined;
+    },
     onUsage: (usage: Usage, stopReason) => {
       activeStopReason = stopReason;
       if (!activeAccumulator) return;
+      activeAccumulator.usageSeen = true;
       activeAccumulator.usage.input += usage.input;
       activeAccumulator.usage.output += usage.output;
       activeAccumulator.usage.cacheRead += usage.cacheRead;
@@ -804,9 +953,13 @@ async function createBridleAsync(
   session.subscribe(piRelay);
   events.subscribe((event) => {
     if (!activeAccumulator || event.type !== "tool_end" || event.turnId !== activeTurn) return;
+    if (event.result === "error") activeAccumulator.tools.error(event.toolCallId);
+    if (event.result === "error" && !activeAccumulator.toolErrors.has(event.toolCallId)) activeAccumulator.toolErrors.set(event.toolCallId, { capability: event.capability, toolCallId: event.toolCallId, message: event.message ?? "Tool failed." });
     if (event.result === "denied") activeAccumulator.callsDenied += 1;
     if (event.result === "staged") activeAccumulator.callsStaged += 1;
     if (event.result !== "ok") return;
+    activeAccumulator.tools.success(event.toolCallId);
+    if (event.risk !== "read") activeAccumulator.nonReadExecuted = true;
     const target = event.risk === "read" ? activeAccumulator.filesRead : activeAccumulator.filesWritten;
     for (const path of event.paths ?? []) target.add(path);
   });
@@ -814,7 +967,6 @@ async function createBridleAsync(
   let lastRestorePoint: string | null = null;
   let disposed = false;
   const abortedTurns = new Set<TurnId>();
-  let promptQueue: Promise<void> = Promise.resolve();
 
   const runPrompt = async (
     text: string,
@@ -823,8 +975,21 @@ async function createBridleAsync(
     // A prompt queued before dispose() never starts; it settles with the typed disposed error.
     if (disposed) throw new BridleDisposedError();
     const trigger = promptOpts.trigger ?? INTERACTIVE;
+    const startedAt = Date.now();
+    let checkpointId: string | undefined;
+    let checkpointFailed = false;
+    let checkpointError: unknown;
+    if (versioning && mode !== "read-only" && trigger.trust !== "background") {
+      try {
+        const checkpoint = await versioning.takeCheckpoint({ label: `turn: ${text.slice(0, 60)}`, fullRehash: true });
+        if (checkpoint.report.uncaptured.length) throw new Error("The turn checkpoint did not capture the whole workspace.");
+        checkpointId = checkpoint.id;
+      } catch (error) {
+        checkpointFailed = true; checkpointError = error;
+      }
+    }
     const context = await resolveContextItems({
-      text, items: promptOpts.context ?? [], manifest, capabilities,
+      text, items: checkpointFailed ? [] : promptOpts.context ?? [], manifest, capabilities,
       trigger, sessionId: session.sessionId, deps,
       modelInput: session.model?.input ?? ["text"], imageNormalizer,
     });
@@ -832,8 +997,8 @@ async function createBridleAsync(
     if (disposed) throw new BridleDisposedError();
     const providerText = context.providerText;
     const turnId = randomUUID();
-    const startedAt = Date.now();
     const turnThinkingLevel = publicThinkingLevel(session.thinkingLevel, opts.thinkingLevel ?? "medium");
+    let responder: TurnResponder = { providerId: opts.provider ?? "unknown", modelId: opts.modelId ?? "unknown", authLane: "none" };
     let outcome: TurnOutcome = "completed";
     let receipt!: TurnReceipt;
     // Lifecycle failures (turn.start/turn.end audit, restore point, recorder flush) settle the prompt
@@ -841,17 +1006,32 @@ async function createBridleAsync(
     const lifecycleErrors: Array<{ stage: string; error: unknown }> = [];
     let unsubscribeContext: (() => void) | undefined;
     activeTurn = turnId;
+    turnSignal = proposalStore.controller.beginTurn(turnId);
+    turnClosing = false;
+    activeFailure = undefined;
     try {
       activeAnswerText = "";
       activeReasoning = "";
       activeStopReason = undefined;
+      activeFinalAnswer = false;
       activeAccumulator = {
         filesRead: new Set(), filesWritten: new Set(), callsDenied: 0, callsStaged: 0,
+        tools: new TurnToolOutcomes(), nonReadExecuted: false, toolErrors: new Map(), writesAfterStop: new Set(), capabilitiesAfterStop: new Set(), usageSeen: false,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, costSeen: false },
       };
       for (const path of context.filesRead) activeAccumulator.filesRead.add(path);
       triggerRef.current = trigger;
       try {
+        try {
+          const model = session.model;
+          responder = {
+            providerId: model?.provider ?? opts.provider ?? "unknown",
+            modelId: model?.id ?? opts.modelId ?? "unknown",
+            ...((session.thinkingLevel === "minimal" || session.thinkingLevel === "low" || session.thinkingLevel === "medium" || session.thinkingLevel === "high" || opts.thinkingLevel) ? { thinkingLevel: turnThinkingLevel } : {}),
+            authLane: "none",
+          };
+          responder.authLane = auth.authLane(responder.providerId, session.modelRuntime?.getProviderAuthStatus(responder.providerId));
+        } catch (error) { activeFailure = turnFailureReason(error); }
         events.emit({
           type: "turn_start", turnId, lane, trigger, promptPreview: text,
           // S7: the Trace shows which skill ran the turn (skill-bound instance = every turn).
@@ -859,9 +1039,14 @@ async function createBridleAsync(
         });
         await audit.record({
           type: "turn.start", timestamp: Date.now(), sessionId: session.sessionId,
-          turnId, prompt: providerText, trigger,
+          turnId, prompt: providerText, trigger, responder, outcome: "pending",
+          metadata: { mode },
         });
+        await history!.start({ turnId, startedAt, responder, mode }, session.sessionId);
+        await history!.contextReads(turnId, context.filesRead, manifest.contextReader ?? "context");
+        if (checkpointFailed) throw checkpointError;
         lastRestorePoint = await snapshots.beginRestorePoint(`turn: ${text.slice(0, 60)}`, session.sessionId);
+        await history!.protect(turnId, lastRestorePoint, checkpointId);
         // Pi 0.83 emits these events before appendMessage, using the same message object
         // as its live state. Annotate only this prompt's first user message, before disk flush.
         let userMessage: object | undefined;
@@ -872,30 +1057,59 @@ async function createBridleAsync(
           }
         });
         try {
-          if (!abortedTurns.has(turnId)) await session.prompt(providerText, context.images.length ? { images: context.images } : undefined);
-          if (abortedTurns.has(turnId) || activeStopReason === "aborted") outcome = "aborted";
+          if (!abortedTurns.has(turnId) && !activeFailure) await session.prompt(providerText, context.images.length ? { images: context.images } : undefined);
+          if (abortedTurns.has(turnId) || turnSignal?.aborted) {
+            outcome = "aborted";
+            activeFailure = "aborted";
+          } else if (activeFailure || activeStopReason === "error") {
+            outcome = "error";
+            activeFailure ??= "provider-error";
+          } else if (activeAccumulator.tools.unansweredError || activeStopReason === "length" && activeAccumulator.toolErrors.size) {
+            outcome = "error";
+            activeFailure = "tool-error";
+          } else if (activeStopReason === "length" && activeAnswerText.trim()) {
+            activeFailure = "truncated";
+          } else if (!activeFinalAnswer) {
+            if (activeAccumulator.tools.successfulTool) activeFailure = "no-text";
+            else {
+              outcome = "error";
+              activeFailure = activeAccumulator.toolErrors.size ? "tool-error" : "no-answer";
+            }
+          }
+          if (outcome === "error") events.emit({ type: "turn_error", turnId, message: `Turn failed: ${activeFailure}.`, recoverable: !activeAccumulator.nonReadExecuted });
         } catch (error) {
           if (abortedTurns.has(turnId)) {
             outcome = "aborted";
+            activeFailure = "aborted";
           } else {
-            outcome = "error";
+            activeFailure = turnFailureReason(error, turnSignal?.aborted === true);
+            outcome = activeFailure === "aborted" ? "aborted" : "error";
             events.emit({
               type: "turn_error", turnId,
-              message: error instanceof Error ? error.message : String(error), recoverable: true,
+              message: error instanceof Error ? error.message : String(error), recoverable: !activeAccumulator.nonReadExecuted,
             });
           }
         }
       } catch (error) {
         // Opening failed (turn.start audit or restore point); the provider was never called.
         outcome = "error";
-        lifecycleErrors.push({ stage: "turn.open", error });
+        activeFailure = checkpointFailed ? "checkpoint-failed" : activeFailure ?? "tool-error";
+        if (!checkpointFailed) lifecycleErrors.push({ stage: "turn.open", error });
         events.emit({
           type: "turn_error", turnId,
-          message: error instanceof Error ? error.message : String(error), recoverable: true,
+          message: error instanceof Error ? error.message : String(error), recoverable: !activeAccumulator.nonReadExecuted,
         });
       } finally {
+        turnClosing = true;
         unsubscribeContext?.();
-        const model = session.model;
+        if (abortedTurns.has(turnId)) {
+          outcome = "aborted";
+          activeFailure = "aborted";
+          try { await proposalStore.controller.cancelTurn(turnId); await proposalStore.controller.waitForTurn(turnId); }
+          catch (error) { lifecycleErrors.push({ stage: "turn.cancel", error }); }
+        }
+        await Promise.allSettled([...inTurnAdoptions]);
+        await Promise.all(observerAudits);
         const accumulator = activeAccumulator!;
         const usage = {
           input: accumulator.usage.input,
@@ -905,23 +1119,29 @@ async function createBridleAsync(
           ...(accumulator.usage.costSeen ? { costUsd: accumulator.usage.costUsd } : {}),
         };
         receipt = {
-          turnId, lane, outcome,
+          turnId, lane, outcome, responder, ...(activeFailure ? { reason: activeFailure } : {}),
           thinkingLevel: turnThinkingLevel,
           filesRead: [...accumulator.filesRead], filesWritten: [...accumulator.filesWritten],
           callsDenied: accumulator.callsDenied, callsStaged: accumulator.callsStaged,
-          usage,
+          ...(accumulator.usageSeen ? { usage } : {}),
+          toolErrors: [...accumulator.toolErrors.values()],
+          ...(activeStopReason === "length" ? { truncated: true } : {}),
+          ...(accumulator.writesAfterStop.size ? { writesAfterStop: [...accumulator.writesAfterStop] } : {}),
+          ...(accumulator.capabilitiesAfterStop.size ? { capabilitiesAfterStop: [...accumulator.capabilitiesAfterStop] } : {}),
           egress: {
-            providerId: model?.provider ?? opts.provider ?? "unknown",
-            modelId: model?.id ?? opts.modelId ?? "unknown",
+            providerId: responder.providerId,
+            modelId: responder.modelId,
             egressClass: "remote",
             dataSent: { contextItems: promptOpts.context?.length ?? 0, filesReadCount: accumulator.filesRead.size, promptChars: providerText.length },
           },
           durationMs: Date.now() - startedAt,
         };
+        try { await history!.end(turnId, outcome, activeFailure, [...accumulator.toolErrors.values()]); }
+        catch (error) { lifecycleErrors.push({ stage: "turn.activity", error }); }
         events.emit({ type: "turn_end", turnId, receipt });
         try {
           await audit.record({
-            type: "turn.end", timestamp: Date.now(), sessionId: session.sessionId, turnId, receipt,
+            type: "turn.end", timestamp: Date.now(), sessionId: session.sessionId, turnId, receipt, responder, outcome, ...(accumulator.usageSeen ? { usage } : {}), ...(activeFailure ? { reason: activeFailure } : {}),
             // ADR-0024: the turn's reasoning is recorded evidence, surfaced by turns().
             ...(activeReasoning ? { reasoning: activeReasoning } : {}),
           });
@@ -937,6 +1157,10 @@ async function createBridleAsync(
     } finally {
       // Innermost unconditional cleanup: whatever failed above, the harness accepts the next prompt.
       activeTurn = null;
+      approvals.finishTurn(turnId);
+      try { await proposalStore.controller.finishTurn(turnId); } catch (error) { lifecycleErrors.push({ stage: "turn.prune", error }); }
+      turnSignal = undefined;
+      turnClosing = false;
       activeAccumulator = null;
       abortedTurns.delete(turnId);
     }
@@ -950,13 +1174,37 @@ async function createBridleAsync(
       }
       throw firstFailure.error;
     }
-    return { turnId, outcome, answerText: activeAnswerText, receipt };
+    return { turnId, outcome, ...(receipt.reason ? { reason: receipt.reason } : {}), answerText: activeAnswerText, receipt };
   };
 
   const handle: Bridle = {
+    get mode() { return mode; },
+    setMode(nextMode) {
+      if (disposed) throw new BridleDisposedError();
+      if (!["suggest", "work", "read-only"].includes(nextMode)) throw new Error("Unknown Bridle mode.");
+      const previous = mode; mode = nextMode;
+      recordObserver({ type: "mode.changed", timestamp: Date.now(), sessionId: session.sessionId, metadata: { previous, mode } });
+    },
+    turns: {
+      list: history.list,
+      get: history.get,
+      undo(turnId, options) {
+        if (disposed) return Promise.reject(new BridleDisposedError());
+        if (activeTurn) return Promise.resolve({ undone: false, reason: "turn-active" });
+        const result = promptQueue.then(() => {
+          if (disposed) throw new BridleDisposedError();
+          const operation = history!.undo(turnId, options);
+          inFlightUndo = operation;
+          return operation.finally(() => { inFlightUndo = undefined; });
+        });
+        promptQueue = result.then(() => {}, () => {});
+        return result;
+      },
+    },
     unsafeSession: session, approvals, proposals, snapshots, auth, models: modelService, auditEvents, events, recording,
     executions: Object.freeze({ unknown: () => executionJournal.unknown() }),
     ...(versioning ? { versioning } : {}),
+    get proposalStore() { return proposalStore.state; },
     get activeTurn() { return activeTurn; },
     get lane() { return lane; },
     get sessionId() { return session.sessionId; },
@@ -988,8 +1236,10 @@ async function createBridleAsync(
       return result;
     },
     abort(turnId) {
-      if (turnId !== activeTurn) return false;
+      if (turnId !== activeTurn || turnClosing) return false;
       abortedTurns.add(turnId);
+      void proposalStore.controller.cancelTurn(turnId).catch(() => {});
+      approvals.cancelTurn(turnId);
       piRelay.clearThinkingTimers(turnId);
       piRelay.clearToolPathResolutions();
       void session.abort().catch((error) => trace({
@@ -1011,35 +1261,59 @@ async function createBridleAsync(
     async dispose() {
       if (disposed) return;
       disposed = true;
-      if (activeTurn) {
-        abortedTurns.add(activeTurn);
-        piRelay.clearThinkingTimers(activeTurn);
-        piRelay.clearToolPathResolutions();
-        try {
-          await session.abort();
-        } catch (error) {
-          trace({
-            type: "session.abort_error", title: "Runtime abort failed during dispose",
-            metadata: { message: error instanceof Error ? error.message : String(error) },
-          });
-        }
-      }
-      // Queued prompts that had not started settle with BridleDisposedError; none reaches the provider.
-      await promptQueue;
-      // Every cleanup step runs even if an earlier one fails; the first failure is rethrown afterwards.
       const failures: unknown[] = [];
       const step = async (run: () => unknown): Promise<void> => {
         try { await run(); } catch (error) { failures.push(error); }
       };
+      let aborting: Promise<void> = Promise.resolve();
+      if (activeTurn) {
+        abortedTurns.add(activeTurn);
+        void proposalStore.controller.cancelTurn(activeTurn).catch(() => {});
+        approvals.cancelTurn(activeTurn);
+        piRelay.clearThinkingTimers(activeTurn);
+        piRelay.clearToolPathResolutions();
+        aborting = Promise.resolve().then(() => session.abort()).catch((error) => {
+          trace({ type: "session.abort_error", title: "Runtime abort failed during dispose",
+            metadata: { message: error instanceof Error ? error.message : String(error) } });
+        });
+      }
+      // Local restores must finish while proposal and recording stores are still open.
+      await step(() => inFlightUndo);
+      const deadline = Date.now() + PROPOSAL_CLOSE_TIMEOUT_MS;
+      // Closing releases stuck proposal waiters before waiting for the prompt queue.
+      await step(() => proposalStore.controller.close());
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        Promise.allSettled([aborting, promptQueue]),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.max(0, deadline - Date.now())); }),
+      ]).finally(() => clearTimeout(timer));
+      // Every cleanup step runs even if an earlier one fails; the first failure is rethrown afterwards.
       // Ownership follows construction: the harness disposes only a model service it created.
       await step(() => { if (ownsModelService) modelService.dispose(); });
       await step(() => { piRelay.clearThinkingTimers(); piRelay.clearToolPathResolutions(); });
       await step(() => session.dispose());
+      await step(() => Promise.all(observerAudits));
       await step(() => recorder?.flush());
       await step(() => executionJournal.close());
       if (failures.length > 0) throw failures[0];
     },
     async restoreLastTurn() {
+      if (disposed) throw new BridleDisposedError();
+      const latest = (await history.list())[0];
+      const active = activeTurn;
+      if (active) {
+        const path = await history.activePath();
+        throw new RestoreRefusedError(active, path ? [{ path, reason: "turn-active" }] : [], { reason: "turn-active" });
+      }
+      const root = manifest.workspaceRoot;
+      if (root) {
+        if (!latest) throw new RestoreRefusedError("latest-turn", [{ path: root, reason: "undo-unavailable" }]);
+        const result = await handle.turns.undo(latest.turnId);
+        if (result.undone) return result.paths.map((path) => resolve(root, path));
+        let path = result.path ?? root;
+        if (result.path && result.reason !== "outside-workspace") path = resolve(root, result.path);
+        throw new RestoreRefusedError(latest.turnId, [{ path, reason: result.reason }]);
+      }
       if (!lastRestorePoint) {
         const points = (await snapshots.entries()).filter((e) => e.kind === "restore-point");
         lastRestorePoint = points.at(-1)?.id ?? null;
@@ -1054,4 +1328,9 @@ async function createBridleAsync(
     get: () => lane,
   });
   return handle;
+  } catch (error) {
+    await proposalStore.controller.close().catch(() => {});
+    await executionJournal.close().catch(() => {});
+    throw error;
+  }
 }

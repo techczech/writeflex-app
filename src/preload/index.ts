@@ -1,3 +1,8 @@
+import type { FolioSectionExportField } from '../shared/folio-sections'
+import type { MapOp } from '../shared/folio-map'
+import type { MapWriteResult } from '../main/folio-map'
+import type { AssistantTurnsState, AssistantTurnUndo } from '../shared/assistant-turns'
+import type { TurnActivity } from '@bridle/core'
 import type { MetadataValues } from '../shared/metadata-registry'
 import type { AmbientSnapshot } from '../main/ambient'
 import type { ModelDiscoveryReason, ModelRefreshResult, ModelsChecked } from '../shared/model-refresh'
@@ -5,7 +10,7 @@ export type { AmbientSnapshot } from '../main/ambient'
 import { clipboard, contextBridge, ipcRenderer, webUtils } from 'electron'
 import { createAuthTransport } from '@bridle/electron/preload'
 import type { AuthTransport } from '@bridle/electron'
-import { multiplexIpcChannel } from './subscriptions'
+import { invokeTurnBackAfterNotifications, multiplexIpcChannel } from './subscriptions'
 import type { ArchivePassageResponse, ArchiveSearchRequest, ArchiveSearchResponse } from '../shared/scout'
 import type { PreserveResult } from '../shared/preserve-receipt'
 import type { OpenLinkResult } from '../main/scout-ipc'
@@ -25,6 +30,9 @@ import type { FolioAgentInstructionsAction, FolioAgentInstructionsStatus } from 
 export type { FolioAgentInstructionsAction, FolioAgentInstructionsStatus } from '../shared/folio-agent-files'
 export type { FolioPlace } from '../shared/folio-place'
 import type { FolioOutline } from '../shared/folio-outline'
+import type { RoomAuthoringRequest, RoomAuthoringResult } from '../shared/folio-room-authoring'
+import type { FolioRoomModel, RoomState } from '../shared/folio-room'
+import type { RoomCardResult, RoomOrderResult } from '../shared/folio-room-order'
 import type { FolioDetailAnswer, FolioDetailField, FolioDetailUndoAnswer, FolioDetailValuesAnswer, FolioDetailsRead } from '../shared/folio-details'
 import type { VaultIndex } from '../shared/vault-index'
 import type { VaultPreview } from '../shared/vault-preview'
@@ -34,10 +42,13 @@ export type { RootSwitchResult, RootSwitchTarget, SwitcherList } from '../shared
 export type { VaultHidden, VaultIndex, VaultWork, VaultWorkKind } from '../shared/vault-index'
 import type { PlanCardKey, PlanOrderResult, PlanPartKey, RunningOrderResult } from '../shared/folio-running-order'
 export type { RunningOrderResult } from '../shared/folio-running-order'
+import type { ExportOrderCheck, ExportOrderExpected, ExportOrderRepairResult } from '../shared/export-order-agreement'
+export type { ExportOrderAgreement, ExportOrderCheck, ExportOrderExpected, ExportOrderRepairResult } from '../shared/export-order-agreement'
 export type { FolioOutline, FolioOutlineFile, FolioOutlineHeading } from '../shared/folio-outline'
+export type { FolioRoomModel, RoomPart, RoomState, RoomSurface, RoomView } from '../shared/folio-room'
 import { RENAME_REPAIR_ISSUE_KINDS } from '../shared/rename-repair-message'
 import { e2eWriteHooksFromProcess } from '../shared/e2e-write-hooks'
-import type { OutsideChangeFields, OutsideSource, OutsideSummary } from '../shared/outside-source'
+import type { OutsideBulkAccept, OutsideChangeFields, OutsideSource, OutsideSummary } from '../shared/outside-source'
 import type { ClosedCode } from '../shared/closed-code'
 import type { BoardStatus } from '../shared/collection-status'
 import type { ClipboardKind } from '../main/clipboard'
@@ -48,12 +59,14 @@ import type { AgentNote, AgentObjectNote, AgentProseNote } from '../main/agent-n
 import type { CollectionDigest } from '../main/digest'
 import type { DrawerScrap, DrawerSource, Offcut, PieceDrawer, SourceUser } from '../main/piece-material'
 import type { ExportPresetSettings } from '../shared/export-presets'
+import type { ShelfCollectionNode } from '../shared/shelf-collections'
 import type { AttachAddressRequest, SharingDomainsResult, SharingRemovalQuestion, SharingRemoveRequest, SharingResult, SharingSetupStatus } from '../shared/sharing-setup'
 import type { MakeLinkRequest, PieceSharingView, SharingLinkResult } from '../shared/sharing-links'
 import type { OpenedCounts, SharesListView } from '../shared/sharing-shares-list'
 import type { LimitsActionResult, NotesCounts } from '../shared/sharing-notes'
 import type { PlanAcceptEdits, PlanAcceptResult, PlanProposalView, PlanUndoResult } from '../shared/plan-proposal'
 import type { PieceSourceListing } from '../shared/piece-sources'
+import type { ScratchPlacementReceipt, ScratchpadBridge } from '../shared/scratchpad-items'
 import type { AppendScrapInput, AttachSourceInput, BoardStepResult, BoardUndoResult, PromoteOffcutInput } from '../shared/board-material'
 export type { PlanAcceptEdits, PlanAcceptResult, PlanProposalView, PlanUndoResult }
 export type { BoardStep, BoardStepResult, BoardUndoResult } from '../shared/board-material'
@@ -158,7 +171,8 @@ export type OutlineScanEntry =
 
 /** A file-native cutting (Task 20, ADR-0008). `origin` is the group label (the source doc's
  *  basename); `expandTrigger`, when set, is the `{trigger}` that expands the body in the editor. */
-export type Scrap = { id: string; origin: string; text: string; done: boolean; colour?: string; expandTrigger?: string }
+/** `source` (scraps:list): `lossless` is a floating Scratchpad item (id `p_…`, exact Markdown as `text`). */
+export type Scrap = { id: string; origin: string; text: string; done: boolean; colour?: string; expandTrigger?: string; source?: 'legacy' | 'lossless'; how?: 'cut' | 'copy' }
 
 /** A reference-material file under research/ (Task 21, PRD S30). `kind` drives the row icon and the
  *  open-vs-reveal split: md sources open in a tab, everything else reveals in the OS file manager. */
@@ -254,6 +268,8 @@ export type QueryRow = {
   material?: 'scraps' | 'research'
   /** On a scraps file: its scraps, as the Board's Offcuts column lists them. */
   offcuts?: Offcut[]
+  /** On a piece: the floating Scratchpad's items cut from it and still waiting. */
+  looseOffcuts?: Offcut[]
   /** On a research note: the pieces that use it, as the Board's Sources rail names them. */
   usedBy?: SourceUser[]
 }
@@ -275,7 +291,7 @@ export type CreateStubResult = { created: true; path: string; content: string; s
 export type FolioFile = { path: string; role?: string; render?: string; toc?: boolean }
 export type Folio = { contentRoot: string; output?: string; titleMatter?: string; files: FolioFile[]; contentRootRefused?: true }
 /** A listed Folio entry that an export leaves out, with its path as the manifest wrote it. */
-export type FolioLeftOut = { path: string; reason: 'not-found' | 'outside-folio' | 'agent-instructions' }
+export type FolioLeftOut = { path: string; reason: 'not-found' | 'outside-folio' | 'agent-instructions' | 'room-support' }
 /** A Folio's listed entries, resolved by main: the pieces in order, and the entries left out. */
 export type FolioPieces = { pieces: string[]; leftOut: FolioLeftOut[] }
 /** What the part-title rule says of a part's file (shared/folio-part-title.ts). */
@@ -288,9 +304,12 @@ export type TitleFixAnswer =
   | { ok: true; written: string[]; skipped: Array<{ path: string; message: string }>; undo: string | null }
   | { ok: false; message: string }
 export type TitleUndoAnswer = { ok: true; restored: string[]; kept: Array<{ path: string; message: string }> } | { ok: false; message: string }
-export type PlanPart = { title: string; gloss: string | null; role: string; tags: string[]; path: string | null; line: number; manifestBacked?: boolean; putBackRefusal?: string; under?: string; heading?: PlanPartHeading; titlePage?: true; manifestTitlePage?: true; frontMatterOffer?: true }
-export type Plan = { dir: string; indexPath: string; headingLine: number; parts: PlanPart[]; unlisted: PlanPart[]; orderFrom?: 'manifest'; indexNoteAbsent?: true }
+export type PlanPart = { sectionPage?: true; resolution?: 'missing' | 'ambiguous'; title: string; gloss: string | null; role: string; tags: string[]; path: string | null; line: number; manifestBacked?: boolean; putBackRefusal?: string; under?: string; heading?: PlanPartHeading; titlePage?: true; manifestTitlePage?: true; frontMatterOffer?: true }
+export type Plan = { sectionRoleUndoToken?: string; dir: string; indexPath: string; headingLine: number; parts: PlanPart[]; unlisted: PlanPart[]; orderFrom?: 'manifest'; indexNoteAbsent?: true }
 export type PlanPartInput = { title: string; gloss?: string; role?: string }
+/** An order write from the Folio room (spec D-ORD-2): `createManifest` creates the manifest on a Folio that has none. */
+/** `room`: the Folio room's order write (ticket 11), through the room's pinned view, with `createManifest`, refused while two parts share a title. */
+export type PlanOrderWrite = { createManifest?: boolean; room?: true }
 
 export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high'
 export type TurnExecution = { turnId: string; provider: string; modelId: string; thinkingLevel: ThinkingLevel; completedAt: number }
@@ -345,6 +364,9 @@ type LedgerChange = {
   /** A Change over the whole document: `oldText` is the document as it stood, `newText` what it would
    *  become. It is applied only while the document is exactly `oldText`. */
   whole?: true
+  /** A Change to the frontmatter only: `oldText` is the whole frontmatter block as proposed over, `newText` the new block;
+   *  placed only while the document's block is exactly `oldText`. A whole-document record that changes only the frontmatter is read so too. */
+  frontmatter?: true
 }
 /**
  * A Change that came from outside WriteFlex through the command line (ticket 06) also carries
@@ -352,7 +374,7 @@ type LedgerChange = {
  * fields and the closed list of sources are defined once, in shared/outside-source.ts.
  */
 export type Change = LedgerChange & OutsideChangeFields
-export type { OutsideChangeFields, OutsideLook, OutsideSource, OutsideSummary } from '../shared/outside-source'
+export type { OutsideBulkAccept, OutsideChangeFields, OutsideLook, OutsideSource, OutsideSummary } from '../shared/outside-source'
 export type { ClosedCode } from '../shared/closed-code'
 export type EditSession = {
   id: string
@@ -528,6 +550,7 @@ export type ShelfRow = {
 }
 export type HighlightBodyKind = 'quote' | 'note' | 'mark'
 export type HighlightRow = {
+  zoteroKey?: string | null
   key: string
   type: 'highlight' | 'note' | 'image' | 'ink' | 'underline' | 'text' | 'unknown'
   bodyKind: HighlightBodyKind
@@ -577,10 +600,11 @@ export type HighlightsResult = {
 /** Which refusal a drain hit, when it hit one. Mirrors the main process's `DrainSkipReason`. */
 export type ReadingRoomWriteRefusal =
   | 'no-credential'
-  | 'zotero-is-open'
-  | 'schema-drift'
-  | 'schema-unreadable'
-  | 'library-missing'
+  | 'zotero-closed'
+  | 'zotero-busy'
+  | 'plugin-missing'
+  | 'plugin-outdated'
+  | 'plugin-not-paired'
 export type ReadingRoomKeptLocal = {
   code: 'unsupported-position'
   count: number
@@ -590,8 +614,8 @@ export type ReadingRoomKeptLocal = {
 /**
  * What came back from an attempt to hand highlights to Zotero.
  *
- * `notWritten` is the sentence for a person — *"Close Zotero and this highlight will be saved to your
- * library."* — and it is the whole point of this shape: ADR-0036 records that the renderer used to
+ * `notWritten` is the sentence for a person — *"Zotero is not open. Your highlights are saved here and
+ * are sent when Zotero is open."* — and it is the whole point of this shape: ADR-0036 records that the renderer used to
  * discard it, so a refused write was invisible. `notWrittenCode` names the cause, so a surface can say
  * *why* without reading the sentence for keywords.
  */
@@ -601,6 +625,10 @@ export type ReadingRoomWriteResult = {
   keptLocal?: ReadingRoomKeptLocal
   notWritten?: string
   notWrittenCode?: ReadingRoomWriteRefusal
+  /** Rows this drain wrote into Zotero. */
+  written?: number
+  /** Rows this drain refused or found in conflict; listed with their reason. */
+  refusedNow?: number
 }
 export type ReadingRoomOutboxCounts = Pick<
   ReadingRoomWriteResult,
@@ -612,6 +640,7 @@ export type ReadingRoomCitationResult = Omit<ReadingRoomWriteResult, 'notWritten
   link: string
   notWrittenCode?: ReadingRoomWriteRefusal | 'document-mismatch'
 }
+export type { ShelfCollectionNode }
 export type ShelfSearchResult = {
   query: string
   rows: ShelfRow[]
@@ -636,7 +665,7 @@ export type SkillMeta = {
 // replaced by @bridle/electron's AuthTransport on the bridle.auth:* channels —
 // the renderer consumes it via useIpcAuthFlow + @bridle/react's AuthFlow.
 
-export type MenuAction = `collection-page:${import('../shared/collection-page-commands').CollectionPageCommand}` | 'save' | 'name-version' | 'new-file' | 'new-folder' | 'capture-idea' | 'follow-wikilink' | 'materialise-stub' | 'close-tab' | 'quick-open' | 'command-palette' | 'open-files' | 'open-tabs' | 'open-board' | 'next-tab' | 'previous-tab' | 'next-folder-file' | 'previous-folder-file' | 'search' | 'archive-search' | 'toggle-outline' | 'focus-review-margin' | 'switch-margin-view' | 'toggle-margin' | 'open-versions' | 'toggle-typewriter' | 'open-dialog' | 'undo' | 'redo' | 'prose-zoom-in' | 'prose-zoom-out' | 'prose-zoom-reset' | 'column-width-in' | 'column-width-out'
+export type MenuAction = `collection-page:${import('../shared/collection-page-commands').CollectionPageCommand}` | 'save' | 'name-version' | 'new-file' | 'new-folder' | 'capture-idea' | 'follow-wikilink' | 'materialise-stub' | 'close-tab' | 'quick-open' | 'command-palette' | 'open-files' | 'open-tabs' | 'open-board' | 'next-tab' | 'previous-tab' | 'next-folder-file' | 'previous-folder-file' | 'search' | 'archive-search' | 'toggle-outline' | 'focus-review-margin' | 'switch-margin-view' | 'toggle-margin' | 'open-versions' | 'toggle-typewriter' | 'toggle-left-pane' | 'toggle-right-pane' | 'open-dialog' | 'undo' | 'redo' | 'prose-zoom-in' | 'prose-zoom-out' | 'prose-zoom-reset' | 'column-width-in' | 'column-width-out' | 'open-scratchpad' | 'scratchpad-send-copy' | 'scratchpad-cut' | 'scratchpad-insert-copy' | 'scratchpad-compare' | 'scratchpad-search'
 
 export type RuntimeInfo = { electron: string; chrome: string; node: string; macOS: string }
 
@@ -742,7 +771,7 @@ export type WriteFlexApi = {
   setExportPresetSettings: (settings: ExportPresetSettings) => Promise<ExportPresetSettings>
   openDialog: (droppedPath?: string) => Promise<WorkspaceState | null>
   metadataValues: (exclude?: string) => Promise<MetadataValues>
-  setCollectionPageActive: (active: boolean, folio?: boolean) => Promise<void>
+  setCollectionPageActive: (active: boolean, folio?: boolean, canStart?: boolean) => Promise<void>
   getWorkspace: () => Promise<WorkspaceState>
   /** Every checklist note's progress, read from main's search content cache (no file is read twice). */
   /** With `paths`, just those files' rows (a save patched them in the listing: no walk of the tree). */
@@ -900,6 +929,8 @@ export type WriteFlexApi = {
   toggleScrapDone: (id: string) => Promise<void>
   setScrapColour: (id: string, colour: string | null) => Promise<void>
   removeScrap: (id: string) => Promise<Scrap>
+  /** The floating Scratchpad (ADR-0050): exact text payloads and the legacy scraps, per calling window's folder. */
+  scratchpad: ScratchpadBridge
   /** Change Ledger (Task 2, ADR-0010/0011): the review-and-learn store. Every mutation pushes
    *  `changes:changed` (onChangesChanged) so the dock re-lists over `.writeflex/changes.jsonl`. */
   listChanges: (scope?: ChangeScope) => Promise<Change[]>
@@ -914,15 +945,24 @@ export type WriteFlexApi = {
    *  honestly. Accept may return the rewritten file so the renderer can reconcile a fallback apply. */
   /** `written`: the text main wrote to the change's file in this call, when it wrote one; `file` is the
    *  file read back after, which differs from `written` only when another program wrote it between. */
-  resolveChange: (id: string, action: 'accept' | 'reject') => Promise<{ applied: boolean; file?: FileReadResult; written?: string; seq?: number; message?: string; closed?: true; changedOnDisk?: { path: string; diskText: string | null } }>
+  resolveChange: (id: string, action: 'accept' | 'reject', options?: { sweep?: false }) => Promise<{ applied: boolean; file?: FileReadResult; written?: string; seq?: number; message?: string; closed?: true; changedOnDisk?: { path: string; diskText: string | null }; scratchPlacement?: ScratchPlacementReceipt }>
   /** How many undecided Changes from outside the ledger holds (in all, per source, per request), the
    *  limits, and what the app's last look at the command line's inbox did. */
   outsideSummary: () => Promise<OutsideSummary>
   /** Reject every undecided Change of one request, or of one source, in one step. Name exactly one. */
   rejectOutsideChanges: (which: { request: string } | { source: OutsideSource }) => Promise<{ rejected: number }>
+  /** Accept every undecided Change of one source, each by the single Accept (never a reader's). `open`: the documents the window
+   *  has open; their Changes come back in `open`, in order, for the window to accept through its own route. */
+  acceptOutsideChanges: (which: { source: OutsideSource; open: string[] }) => Promise<OutsideBulkAccept>
   /** Save version (ADR-0014/C6): snapshot the explicit accepted/rejected state without auto-accepting
    *  undecided pending changes; pending proposals persist for a future version. */
   saveChangeVersion: (input: { path: string; changeIds: string[]; name: string; note?: string }) => Promise<{ versionId: string; snapshotId: string; record: Version; accepted: number; rejected: number; pending: number; corpusEntries: number }>
+  /** Read-only suggestions for an outside move and the journal-backed attachment Undo. */
+  historyAttachmentSuggestions: (path: string) => Promise<Array<{ from: string; to: string }>>
+  waitingVersionHistory: () => Promise<Array<{ from: string; count: number }>>
+  historyAttachmentUndo: (path: string) => Promise<{ id: string; files: number } | null>
+  attachVersionHistory: (input: { from: string; to: string }) => Promise<string | null>
+  undoHistoryAttachment: (id: string) => Promise<void>
   /** Version spine (ADR-0016 V1): named, authored version records over `.writeflex/versions.jsonl`. */
   listVersions: (scope?: VersionScope) => Promise<Version[]>
   /** Rename a Version by appending a newer record with the same stable id. */
@@ -1003,12 +1043,21 @@ export type WriteFlexApi = {
   readFolioDir: (dir: string) => Promise<string | null>
   /** The Outline's Folio part: the Folio of this file with its pieces and the folder's other files, with headings. Read-only. */
   readFolioOutline: (path: string) => Promise<FolioOutline | null>
+  /** The Folio room (ADR-0048): a read-only model of the Folio at `dir`, and its UI state (last view, selected part) kept in app state, never in the Folio. */
+  folioRoom: {
+    map: (dir: string, request: { session: string; stateKey: string; ops?: MapOp[]; token?: string }) => Promise<MapWriteResult>
+    author: (dir: string, request: RoomAuthoringRequest) => Promise<RoomAuthoringResult>
+    read: (dir: string, essential?: boolean) => Promise<FolioRoomModel | null>
+    getState: (dir: string) => Promise<RoomState>
+    /** Lay a patch (`{ view }`, `{ selected }` or `{ surface }`) over the stored state. */
+    setState: (dir: string, patch: Partial<RoomState>) => Promise<boolean>
+  }
   /** The Folio outline's Details card (0.26 ticket 4). The Folio is named by its folder; main derives its Index Note. */
   folioDetails: {
     /** The seven fields as the card shows them, and the Index Note text they were read from (the next write's basis). */
     read: (dir: string) => Promise<FolioDetailsRead>
     /** Set one field (null removes its key) in the Index Note's header, only over `basis`, the Index Note text last read. */
-    set: (dir: string, field: FolioDetailField, value: string | null, basis: string) => Promise<FolioDetailAnswer>
+    set: (dir: string, field: FolioDetailField | FolioSectionExportField, value: string | null, basis: string) => Promise<FolioDetailAnswer>
     /** Undo the change `token` names, only while the Index Note holds exactly what it left. */
     undo: (dir: string, token: string) => Promise<FolioDetailUndoAnswer>
     /** The Author, Audience and Language values other files in the Workspace use (read-only), with the writer's name first for Author. */
@@ -1031,7 +1080,9 @@ export type WriteFlexApi = {
   onFolioFlushRequested: (fn: (input: { id: string; dir: string }) => void) => () => void
   replyFolioFlush: (id: string, saved: boolean) => Promise<void>
   createNestedFolio: (dir: string) => Promise<string>
-  turnBackIntoCollection: (dir: string) => Promise<boolean>
+  readFolioDeclaration: (dir: string) => Promise<import('../main/folio-declaration').FolioDeclaration>
+  undoTurnBack: (dir: string) => Promise<boolean>
+  turnBackIntoCollection: (dir: string) => Promise<boolean | string>
   /** A Folio's agent instructions (AGENTS.md, CLAUDE.md): their state for the Plan's and the Folder
    *  dashboard's row (null when `dir` is not a Folio), and the author's requests from it. */
   folioAgentInstructions: {
@@ -1039,23 +1090,35 @@ export type WriteFlexApi = {
     act: (dir: string, action: FolioAgentInstructionsAction) => Promise<FolioAgentInstructionsStatus>
   }
   plan: {
+    onIdentityLinked: (fn: (result: { root: string; dir: string; indexPath: string; undoToken?: string; warning?: string }) => void) => () => void
+    identityCheck: (dir: string, root: string, force?: boolean) => Promise<boolean>
+    open: (dir: string, root: string, force?: boolean) => Promise<{ changed: boolean; undoToken?: string; indexPath?: string; warning?: string }>
     read: (dir: string) => Promise<Plan | null>
     /** Put back one "Not in the outline" row; `expected` is that row's file and title as shown, so a list that changed meanwhile is refused.
      *  `asFrontMatter`: "Add as front matter" (ADR-0046), for a row offered as front matter (`frontMatterOffer`). */
     adoptPart: (dir: string, unlistedIndex: number, expected: PlanPartKey, asFrontMatter?: boolean) => Promise<Plan>
-    insertPart: (dir: string, at: number, part: PlanPartInput) => Promise<Plan>
-    movePart: (dir: string, from: number, to: number) => Promise<Plan>
+    /** `order.createManifest` (the Folio room's order writes): a Folio with an Index Note and no manifest gets its manifest in the same write. Absent: today's behaviour. */
+    insertPart: (dir: string, at: number, part: PlanPartInput, order?: PlanOrderWrite) => Promise<Plan>
+    movePart: (dir: string, from: number, to: number, order?: PlanOrderWrite) => Promise<Plan>
     removePart: (dir: string, index: number) => Promise<Plan>
     /** Change one card's role; `expected` is that card's whole line as shown (title, file, gloss, role, tags), so a running order that moved meanwhile is refused. */
     setPartRole: (dir: string, index: number, role: string, expected: PlanCardKey) => Promise<Plan>
     /** Put the whole running order in `order` (`order[k]` = index into `expected` of the part at k), in one write. Sort by chapter number and its Undo. */
-    reorderParts: (dir: string, order: number[], expected: PlanPartKey[]) => Promise<PlanOrderResult>
+    reorderParts: (dir: string, order: number[], expected: PlanPartKey[], write?: PlanOrderWrite) => Promise<RoomOrderResult>
+    /** The Folio room's New card: an unwritten part `title` at the end of the running order, refused unless the running order is still `expected` and no part has the title. */
+    roomNewCard: (dir: string, title: string, expected: PlanPartKey[]) => Promise<RoomCardResult>
+    /** Its Undo: the card's line at `index` taken out, only while the running order is `expected` (the one New card left). */
+    roomRemoveCard: (dir: string, index: number, title: string, expected: PlanPartKey[]) => Promise<PlanOrderResult>
     /** Add files at the end of the running order, in the order given, in one write (Add all from this folder). */
     addParts: (dir: string, paths: string[], expected: PlanPartKey[]) => Promise<PlanOrderResult>
     /** Undo of `addParts`: take the files (the last parts of `expected`) out again. */
     /** Undo of an Add all, by the token its answer carried (`undoToken`). */
     removeAdded: (dir: string, token: string) => Promise<PlanOrderResult>
     materialisePart: (dir: string, index: number) => Promise<{ plan: Plan; path: string }>
+    /** Whether export and sharing follow the running order (the export sheet's and Share page's line). A read: writes nothing. Null: no Index Note. */
+    exportOrder: (dir: string) => Promise<ExportOrderCheck | null>
+    /** Make export follow the running order: the manifest alone, refused unless what the read saw (`check.expected`: the running order, whether a manifest was there) still holds. */
+    alignManifest: (dir: string, expected: ExportOrderExpected) => Promise<ExportOrderRepairResult>
     /** The Plan's choice per part: no heading in the text (`heading: none`) or its own heading. */
     setHeadingMode: (dir: string, path: string, mode: 'own' | 'none') => Promise<Plan>
     /** The same choice for a part whose Folio is not known to the caller (the margin card): main finds the Folio. */
@@ -1138,6 +1201,12 @@ export type WriteFlexApi = {
   applySuggestion: (id: string) => Promise<{ outcome: CapabilityOutcome; workspace: WorkspaceState; file?: FileReadResult }>
   discardSuggestion: (id: string) => Promise<{ suggestions: Suggestion[]; settlementWarning?: string }>
   respondApproval: (id: string, approved: boolean) => Promise<void>
+  assistantTurns: {
+    list: () => Promise<AssistantTurnsState>
+    get: (id: string) => Promise<import('../shared/assistant-turns').AssistantTurnActivity | undefined>
+    undo: (id: string, includingLater?: boolean) => Promise<AssistantTurnUndo>
+    onActivity: (fn: (activity: TurnActivity) => void) => () => void
+  }
   restoreLastTurn: () => Promise<string[]>
   /** Settings (Task 17): the full stored record — the settings window's one-pull hydrate. */
   getSettings: () => Promise<SettingsRecord>
@@ -1162,7 +1231,9 @@ export type WriteFlexApi = {
      *  reading yesterday", which search cannot give because the title is what the user has forgotten. */
     recentDocuments: () => Promise<RecentDocumentRow[]>
     /** Instant search over the whole Zotero library; an empty query browses it. */
-    searchShelf: (query: string) => Promise<ShelfSearchResult>
+    searchShelf: (query: string, collectionId?: string | null) => Promise<ShelfSearchResult>
+    /** The Zotero collection tree for the Shelf's filter; empty when the library has none. */
+    shelfCollections: () => Promise<ShelfCollectionNode[]>
     /** Opens a Shelf selection through the remembered-document seam and returns the Room's state.
      *  `draftPath` travels with the open so the paper lands against the draft that asked for it. */
     openShelfItem: (input: {
@@ -1204,11 +1275,16 @@ export type WriteFlexApi = {
     /**
      * Queue highlights, then write them into Zotero's own database (ADR-0031). Resolves once they are
      * DURABLE locally, which is before the write — so a refused write never costs the reader a mark.
-     * `notWritten` carries the plain reason when Zotero would not take it ("Close Zotero and…").
+     * `notWritten` carries the plain reason when Zotero would not take it ("Zotero is not open…").
      */
     saveAnnotations: (input: {
-      operation: 'create' | 'update'
+      operation: 'create' | 'update' | 'delete'
       annotations: unknown[]
+      /** For an edit or deletion, each mark as THIS reader showed it before the change (aligned by
+       *  index; null when the reader held nothing for it). Zotero is written only if it still holds this. */
+      before?: unknown[]
+      /** The reader instance making the change (32 hex characters); see ADR-0047 on re-keyed creates. */
+      readerSession?: string
     }) => Promise<ReadingRoomWriteResult & { queued: number }>
     /**
      * Hand Zotero whatever is still owed to it (ADR-0036, decision 2), without making a highlight
@@ -1218,6 +1294,12 @@ export type WriteFlexApi = {
     drainOutbox: () => Promise<ReadingRoomWriteResult>
     /** Drainable and permanently rejected highlights, counted separately in main. */
     outboxCounts: () => Promise<ReadingRoomOutboxCounts>
+    /** The main process sent (or tried to send) waiting highlights on its own — when Zotero, with the
+     *  WriteFlex plugin, became reachable. Same shape as a write result, so it lands where every
+     *  other result lands. */
+    onOutboxChanged: (fn: (result: ReadingRoomWriteResult) => void) => () => void
+    /** Show the WriteFlex plugin file shipped with the app in Finder. False when it is not there. */
+    showZoteroPlugin: () => Promise<boolean>
     /** Every highlight Zotero would not take, across all documents: what `rejected` counts. */
     refusedHighlights: () => Promise<RefusedHighlight[]>
     /** Requeue a refused insert and try the write again. A no-op for a row that is not retryable. */
@@ -1234,7 +1316,7 @@ export type WriteFlexApi = {
       attachmentKey: string
       libraryId: number
       viewState: Record<string, unknown>
-    }) => Promise<void>
+    }) => Promise<boolean>
     saveWidth: (width: number) => Promise<number>
   }
   /** The bundled sound pack (resources/sounds). The renderer cannot fetch() a file: URL off a
@@ -1509,7 +1591,7 @@ const api: WriteFlexApi = {
   setExportPresetSettings: (settings) => ipcRenderer.invoke('export-presets:set', settings),
   openDialog: (droppedPath) => ipcRenderer.invoke('workspace:open-dialog', droppedPath),
   metadataValues: (exclude) => ipcRenderer.invoke('metadata:values', exclude),
-  setCollectionPageActive: (active, folio = false) => ipcRenderer.invoke('menu:collection-active', { active, folio }),
+  setCollectionPageActive: (active, folio = false, canStart = true) => ipcRenderer.invoke('menu:collection-active', { active, folio, canStart }),
   getWorkspace: () => ipcRenderer.invoke('workspace:get'),
   getChecklistProgress: (input) => ipcRenderer.invoke('workspace:checklist-progress', input),
   getVaultIndex: () => ipcRenderer.invoke('vault:index'),
@@ -1594,16 +1676,55 @@ const api: WriteFlexApi = {
   toggleScrapDone: (id) => ipcRenderer.invoke('scraps:toggle-done', id),
   setScrapColour: (id, colour) => ipcRenderer.invoke('scraps:set-colour', { id, colour }),
   removeScrap: (id) => ipcRenderer.invoke('scraps:remove', id),
+  scratchpad: {
+    sources: (input) => ipcRenderer.invoke('scratchpad:sources', input),
+    collectSource: (input) => ipcRenderer.invoke('scratchpad:collect-source', input),
+    prepareReference: (input) => ipcRenderer.invoke('scratchpad:prepare-reference', input),
+    attachReference: (input) => ipcRenderer.invoke('scratchpad:attach-reference', input),
+    undoAttach: (input) => ipcRenderer.invoke('scratchpad:undo-attach', input),
+    collectAsset: (input) => ipcRenderer.invoke('scratchpad:collect-asset', input),
+    inventory: (input) => ipcRenderer.invoke('scratchpad:inventory', input),
+    onReadBuffersRequested: on('scratchpad:read-buffers'),
+    answerBuffers: (input) => ipcRenderer.invoke('scratchpad:answer-buffers', input),
+    list: (input) => ipcRenderer.invoke('scratchpad:list', input),
+    sendText: (input) => ipcRenderer.invoke('scratchpad:send-text', input),
+    reserveCut: (input) => ipcRenderer.invoke('scratchpad:reserve-cut', input),
+    cancelCut: (input) => ipcRenderer.invoke('scratchpad:cancel-cut', input),
+    confirmCut: (input) => ipcRenderer.invoke('scratchpad:confirm-cut', input),
+    discardCopy: (input) => ipcRenderer.invoke('scratchpad:discard-copy', input),
+    deleteForever: (input) => ipcRenderer.invoke('scratchpad:delete-forever', input),
+    setStatus: (input) => ipcRenderer.invoke('scratchpad:set-status', input),
+    setGroup: (input) => ipcRenderer.invoke('scratchpad:set-group', input),
+    createGroup: (input) => ipcRenderer.invoke('scratchpad:create-group', input),
+    toggleDone: (input) => ipcRenderer.invoke('scratchpad:toggle-done', input),
+    setColour: (input) => ipcRenderer.invoke('scratchpad:set-colour', input),
+    recordUse: (input) => ipcRenderer.invoke('scratchpad:record-use', input),
+    dropUse: (input) => ipcRenderer.invoke('scratchpad:drop-use', input),
+    releaseUses: (input) => ipcRenderer.invoke('scratchpad:release-uses', input),
+    prepareInsert: (input) => ipcRenderer.invoke('scratchpad:prepare-insert', input),
+    prepareWidgetPreview: (input) => ipcRenderer.invoke('scratchpad:prepare-widget-preview', input),
+    externalStatus: (input) => ipcRenderer.invoke('scratchpad:external-status', input),
+    externalSearch: (input) => ipcRenderer.invoke('scratchpad:external-search', input),
+    externalCollect: (input) => ipcRenderer.invoke('scratchpad:external-collect', input),
+    externalImport: (input) => ipcRenderer.invoke('scratchpad:external-import', input),
+    onChanged: on('scratchpad:changed'),
+  },
   listChanges: (scope) => ipcRenderer.invoke('changes:list', scope),
   addChange: (input) => ipcRenderer.invoke('changes:add', input),
   updateWriterChange: (id, input) => ipcRenderer.invoke('changes:update-writer', { id, input }),
   setChangeStatus: (id, status) => ipcRenderer.invoke('changes:set-status', { id, status }),
   replyToReader: (id, text) => ipcRenderer.invoke('changes:reader-reply', { id, text }),
   classifyChange: (id, editClass) => ipcRenderer.invoke('changes:classify', { id, editClass }),
-  resolveChange: (id, action) => ipcRenderer.invoke('changes:resolve', { id, action }),
+  resolveChange: (id, action, options) => ipcRenderer.invoke('changes:resolve', { id, action, ...(options?.sweep === false ? { sweep: false } : {}) }),
   outsideSummary: () => ipcRenderer.invoke('changes:outside-summary'),
   rejectOutsideChanges: (which) => ipcRenderer.invoke('changes:reject-outside', which),
+  acceptOutsideChanges: (which) => ipcRenderer.invoke('changes:accept-outside', which),
   saveChangeVersion: (input) => ipcRenderer.invoke('changes:save-version', input),
+  historyAttachmentSuggestions: (path) => ipcRenderer.invoke('versions:attachment-suggestions', path),
+  waitingVersionHistory: () => ipcRenderer.invoke('versions:waiting'),
+  historyAttachmentUndo: (path) => ipcRenderer.invoke('versions:attachment-undo', path),
+  attachVersionHistory: (input) => ipcRenderer.invoke('versions:attach', input),
+  undoHistoryAttachment: (id) => ipcRenderer.invoke('versions:undo-attachment', id),
   listVersions: (scope) => ipcRenderer.invoke('versions:list', scope),
   renameVersion: (id, name) => ipcRenderer.invoke('versions:rename', { id, name }),
   versionContent: (input) => ipcRenderer.invoke('versions:content', input),
@@ -1659,6 +1780,13 @@ const api: WriteFlexApi = {
   readFolioPlace: (path) => ipcRenderer.invoke('folio:place', { path }),
   readFolioDir: (dir) => ipcRenderer.invoke('folio:dir', { dir }),
   readFolioOutline: (path) => ipcRenderer.invoke('folio:outline', { path }),
+  folioRoom: {
+    map: (dir, request) => ipcRenderer.invoke('plan:room-map', { dir, ...request }),
+    author: (dir, request) => ipcRenderer.invoke('plan:room-authoring', { dir, request }),
+    read: (dir, essential) => ipcRenderer.invoke('folio-room:read', { dir, essential }),
+    getState: (dir) => ipcRenderer.invoke('folio-room:get-state', { dir }),
+    setState: (dir, state) => ipcRenderer.invoke('folio-room:set-state', { dir, state }),
+  },
   folioDetails: {
     read: (dir) => ipcRenderer.invoke('folio:read-details', { dir }),
     set: (dir, field, value, basis) => ipcRenderer.invoke('folio:set-detail', { dir, field, value, basis }),
@@ -1675,22 +1803,31 @@ const api: WriteFlexApi = {
   onFolioFlushRequested: on('folio:flush-requested'),
   replyFolioFlush: (id, saved) => ipcRenderer.invoke('folio:flush-result', { id, saved }),
   createNestedFolio: (dir) => ipcRenderer.invoke('folio:create-nested', { dir }),
-  turnBackIntoCollection: (dir) => ipcRenderer.invoke('folio:turn-back', { dir }),
+  readFolioDeclaration: (dir) => ipcRenderer.invoke('folio:declaration', { dir }),
+  undoTurnBack: (dir) => ipcRenderer.invoke('folio:undo-turn-back', { dir }),
+  turnBackIntoCollection: (dir) => invokeTurnBackAfterNotifications(ipcRenderer, dir),
   folioAgentInstructions: {
     read: (dir) => ipcRenderer.invoke('folio:agent-instructions', { dir }),
     act: (dir, action) => ipcRenderer.invoke('folio:agent-instructions-act', { dir, action }),
   },
   plan: {
+    onIdentityLinked: on('plan:identity-linked'),
+    identityCheck: (dir, root, force) => ipcRenderer.invoke('plan:identity-check', { dir, root, force }),
+    open: (dir, root, force) => ipcRenderer.invoke('plan:open', { dir, root, force }),
     read: (dir) => ipcRenderer.invoke('plan:read', { dir }),
     adoptPart: (dir, unlistedIndex, expected, asFrontMatter) => ipcRenderer.invoke('plan:adopt-part', { dir, unlistedIndex, expected, ...(asFrontMatter ? { asFrontMatter: true } : {}) }),
-    insertPart: (dir, at, part) => ipcRenderer.invoke('plan:insert-part', { dir, at, part }),
-    movePart: (dir, from, to) => ipcRenderer.invoke('plan:move-part', { dir, from, to }),
+    insertPart: (dir, at, part, order) => ipcRenderer.invoke('plan:insert-part', { dir, at, part, ...(order?.createManifest !== undefined ? { createManifest: order.createManifest } : {}) }),
+    movePart: (dir, from, to, order) => ipcRenderer.invoke('plan:move-part', { dir, from, to, ...(order?.createManifest !== undefined ? { createManifest: order.createManifest } : {}) }),
     removePart: (dir, index) => ipcRenderer.invoke('plan:remove-part', { dir, index }),
     setPartRole: (dir, index, role, expected) => ipcRenderer.invoke('plan:set-part-role', { dir, index, role, expected }),
-    reorderParts: (dir, order, expected) => ipcRenderer.invoke('plan:reorder-parts', { dir, order, expected }),
+    reorderParts: (dir, order, expected, write) => ipcRenderer.invoke('plan:reorder-parts', { dir, order, expected, ...(write?.createManifest !== undefined ? { createManifest: write.createManifest } : {}), ...(write?.room ? { room: true } : {}) }),
+    roomNewCard: (dir, title, expected) => ipcRenderer.invoke('plan:room-new-card', { dir, title, expected }),
+    roomRemoveCard: (dir, index, title, expected) => ipcRenderer.invoke('plan:room-remove-card', { dir, index, title, expected }),
     addParts: (dir, paths, expected) => ipcRenderer.invoke('plan:add-parts', { dir, paths, expected }),
     removeAdded: (dir, token) => ipcRenderer.invoke('plan:remove-added', { dir, token }),
     materialisePart: (dir, index) => ipcRenderer.invoke('plan:materialise-part', { dir, index }),
+    exportOrder: (dir) => ipcRenderer.invoke('plan:export-order', { dir }),
+    alignManifest: (dir, expected) => ipcRenderer.invoke('plan:align-manifest', { dir, expected }),
     setHeadingMode: (dir, path, mode) => ipcRenderer.invoke('plan:set-heading-mode', { dir, path, mode }),
     setHeadingModeOfPart: (path, mode) => ipcRenderer.invoke('plan:set-heading-mode', { path, mode, locate: true }),
     setHeadingModeOfOpenPart: (path, mode, basis) => ipcRenderer.invoke('plan:set-heading-mode', { path, mode, locate: true, basis }),
@@ -1738,6 +1875,12 @@ const api: WriteFlexApi = {
   applySuggestion: (id) => ipcRenderer.invoke('suggestions:apply', id),
   discardSuggestion: (id) => ipcRenderer.invoke('suggestions:discard', id),
   respondApproval: (id, approved) => ipcRenderer.invoke('approvals:respond', { id, approved }),
+  assistantTurns: {
+    list: () => ipcRenderer.invoke('agent:turns:list'),
+    get: (id) => ipcRenderer.invoke('agent:turns:get', id),
+    undo: (id, includingLater) => ipcRenderer.invoke('agent:turns:undo', { id, includingLater }),
+    onActivity: on('agent:turn-activity'),
+  },
   restoreLastTurn: () => ipcRenderer.invoke('agent:restore-last-turn'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSetting: (key, value, label, opts) => ipcRenderer.invoke('settings:set', { key, value, label, ...(opts?.log === false ? { log: false } : {}) }),
@@ -1747,7 +1890,8 @@ const api: WriteFlexApi = {
   readingRoom: {
     getState: (draftPath) => ipcRenderer.invoke('reading-room:get-state', draftPath),
     recentDocuments: () => ipcRenderer.invoke('reading-room:recent-documents'),
-    searchShelf: (query) => ipcRenderer.invoke('reading-room:search-shelf', query),
+    searchShelf: (query, collectionId) => ipcRenderer.invoke('reading-room:search-shelf', query, collectionId ?? null),
+    shelfCollections: () => ipcRenderer.invoke('reading-room:shelf-collections'),
     openShelfItem: (input) => ipcRenderer.invoke('reading-room:open-shelf-item', input),
     readHighlights: () => ipcRenderer.invoke('reading-room:read-highlights'),
     citeSelection: (input) => ipcRenderer.invoke('reading-room:cite-selection', input),
@@ -1756,6 +1900,8 @@ const api: WriteFlexApi = {
     saveAnnotations: (input) => ipcRenderer.invoke('reading-room:save-annotations', input),
     drainOutbox: () => ipcRenderer.invoke('reading-room:drain-outbox'),
     outboxCounts: () => ipcRenderer.invoke('reading-room:outbox-counts'),
+    onOutboxChanged: on<ReadingRoomWriteResult>('reading-room:outbox-changed'),
+    showZoteroPlugin: () => ipcRenderer.invoke('reading-room:show-zotero-plugin'),
     refusedHighlights: () => ipcRenderer.invoke('reading-room:refused-highlights'),
     retryRefused: (id) => ipcRenderer.invoke('reading-room:retry-refused', id),
     dismissRefused: (id) => ipcRenderer.invoke('reading-room:dismiss-refused', id),

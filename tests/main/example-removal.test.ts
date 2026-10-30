@@ -1,7 +1,8 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterAll, afterEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { cleanUpScratch, trackScratch } from '../helpers/scratch-dirs'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve, sep } from 'node:path'
 import { EXAMPLE_ASSET_FILES, EXAMPLE_BUNDLE_FILES, EXAMPLE_LESSON_FILES, EXAMPLE_ORIGINAL_FILES, ExampleCollection } from '../../src/main/example-collection'
@@ -94,7 +95,7 @@ type Sandbox = {
 }
 
 async function sandbox(): Promise<Sandbox> {
-  const base = await realpath(await mkdtemp(join(tmpdir(), 'wf-example-removal-')))
+  const base = trackScratch(await realpath(await mkdtemp(join(tmpdir(), 'wf-example-removal-'))))
   const home = join(base, 'home')
   const documents = join(home, 'Documents')
   const bin = join(home, '.Trash')
@@ -932,7 +933,7 @@ test('every sentence the person can be shown is one sentence', () => {
 
 /** A fake system temp directory with a Bin inside it, and a folder outside it, all under one real temp base. */
 async function harnessDirs(): Promise<{ temp: string; inside: string; outsideTemp: string }> {
-  const base = await realpath(await mkdtemp(join(tmpdir(), 'wf-example-bin-')))
+  const base = trackScratch(await realpath(await mkdtemp(join(tmpdir(), 'wf-example-bin-'))))
   const temp = join(base, 'tmp')
   const inside = join(temp, 'run', '.Trash')
   const outsideTemp = join(base, 'elsewhere')
@@ -1036,3 +1037,6 @@ test('restore: the list of written files is saved before the folder is made; if 
   expect(await next.collection.ensure()).toBe('present')
   expect(existsSync(join(box.example, '11 Objects.md'))).toBe(false)
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 /**
  * The Outline's running-order routes refuse what they cannot do exactly, and write nothing when they
  * refuse: a stale running order (manifest or Index Note), a Folio the Plan must change, a file whose
@@ -157,16 +158,12 @@ test('D: a Folio the Outline can change carries no flag, and its addable files a
   expect(outline?.also.filter((file) => file.addable).map((file) => file.path)).toEqual([piece('glossary'), piece('snippets')])
 })
 
-test('D: a Folio outline write that would change the Index Note and leave the manifest alone is refused before anything is written', async () => {
-  // [a, b, b, c]: the Plan view moves `a` in the Index Note only (the manifest write is skipped for a Folio with a repeated part).
+test('D: duplicated membership refuses both guarded and ordinary moves without splitting the documents', async () => {
   await makeFolio({ manifest: manifestOf(['a.md', 'b.md', 'b.md', 'c.md']), index: indexOf(['Alpha', 'Beta', 'Beta', 'Gamma']) })
   const bytes = await bytesNow()
-  await expect(movePart(ws, DIR, 0, 3, { requireManifestWrite: true })).rejects.toThrow(MANIFEST_WOULD_NOT_FOLLOW)
+  await expect(movePart(ws, DIR, 0, 3, { requireManifestWrite: true })).rejects.toThrow(/duplicate/i)
+  await expect(movePart(ws, DIR, 0, 3)).rejects.toThrow(/duplicate/i)
   expect(await bytesNow()).toEqual(bytes)
-  // The Plan view's own write (no such option) is unchanged: it still writes the Index Note.
-  await movePart(ws, DIR, 0, 3)
-  expect(await read(INDEX)).toContain('- [[Beta]]\n- [[Beta]]\n- [[Gamma]]\n- [[Alpha]]')
-  expect(await read(MANIFEST)).toBe(bytes[0]!)
 })
 
 // ---- E: Add adopts exactly the named file ----
@@ -176,7 +173,7 @@ test('E: a file that shares its title with another file is added by its path, an
   await makeFolio({ extra: { 'z.md': '# Shared\n', 'README.md': '# Shared\n' } })
   const { result } = await addFolioPieces(ws, DIR, { paths: [piece('z')], expected: ABCD })
   expect(result).toMatchObject({ ok: true, order: [...ABCD, piece('z')] })
-  expect(await read(INDEX)).toContain('- [[./z]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[./z]]', {"./z":"./z.md|Shared"}))
   expect((await folioPieces(ws, DIR))!.pieces).toEqual([...ABCD, piece('z')])
 })
 
@@ -208,7 +205,7 @@ test('E: a content_root Folio: what the Outline marks addable is what Add accept
   const added = await addFolioPieces(ws, DIR, { paths: [`${DIR}/chapters/extra.md`], expected })
   expect(added.result).toMatchObject({ ok: true, changed: true, order: [...expected, `${DIR}/chapters/extra.md`] })
   expect((await folioPieces(ws, DIR))!.pieces).toEqual([...expected, `${DIR}/chapters/extra.md`])
-  expect(await read(INDEX)).toContain('- [[Beta]]\n- [[Extra]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[Beta]]\n- [[Extra]]', {"Beta":"./chapters/b.md|Beta","Extra":"./chapters/extra.md|Extra"}))
 })
 
 // ---- G: Undo of an Add ----

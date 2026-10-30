@@ -15,14 +15,16 @@ import { existsSync } from 'node:fs'
 import { DEFAULT_PATTERN, frontmatterKeys, parseFrontmatter } from './frontmatter'
 import type { Frontmatter } from './frontmatter'
 import type { FileReadResult, Workspace } from './workspace'
-import { isFolioAgentInstructionsFile, readManifest, resolveManifestFilePath } from './folio'
+import { isFolioAgentInstructionsFile, manifestPartEntries, readManifest } from './folio'
 import { folioPartPaths } from './folio-part-set'
 import { INDEX_NOTE_EXISTS, indexNoteCreationRefusal } from './folio-index-note'
 import { partTitle } from '../shared/folio-part-title'
+import { resolvesToRoomSupportFile } from './room-support-target'
 import { REFERENCE_STATUS_ORDER, UNSORTED_STATUS, type BoardStatus } from '../shared/collection-status'
 import { setFrontmatterKeys } from './capabilities'
 import type { VaultIndex, VaultWorkKind } from '../shared/vault-index'
 import { FRONTMATTER_KEY_VALUE, frontmatterBlock } from '../shared/markdown/frontmatter'
+import { stripFlags } from '../shared/markdown/flags'
 import { stripFencedRegions } from '../shared/markdown/fences'
 import { summariseTasks } from '../shared/markdown/task-lines'
 import { isScrapsPath, scrapsInContent } from './scraps'
@@ -152,7 +154,12 @@ export type UnresolvedFolderPiece = { folderPath: string; title: string }
 /** The folder's observed Frontmatter Pattern, used by later capture paths and every projection. */
 export type CollectionPattern = { keys: string[]; statuses: string[] }
 
-/** Writer-owned Board move: one guarded workspace write, using the canonical metadata serialiser. */
+/**
+ * Writer-owned Board move: one guarded workspace write, using the canonical metadata serialiser. It commits
+ * only over the exact text it planned from (spec-folio-room-data-model D-STA-1, I-6): compared before staging
+ * and again in the tick of the rename, so a save another editor made between the read and the commit throws
+ * DiskChangedUnderBuffer and nothing is written. The bytes written are the plan's, as before.
+ */
 export async function setCollectionPieceStatus(
   ws: Workspace,
   dir: string,
@@ -160,7 +167,7 @@ export async function setCollectionPieceStatus(
   status: BoardStatus,
 ) {
   const planned = await planCollectionPieceStatus(ws, dir, path, status)
-  return planned.next === null ? planned.source : ws.saveFile(path, planned.next)
+  return planned.next === null ? planned.source : ws.saveFileOver(path, planned.next, { kind: 'disk', text: planned.source.content })
 }
 
 /** The piece as read and its text with the new status (`next` null when it already has it). Writes nothing. */
@@ -212,7 +219,7 @@ function bodyOf(text: string): string {
 
 /** Approximate prose word count (whitespace-delimited tokens of the body). Good enough for the footer. */
 function countWords(body: string): number {
-  const trimmed = body.trim()
+  const trimmed = stripFlags(body).trim()
   return trimmed === '' ? 0 : trimmed.split(/\s+/).length
 }
 
@@ -348,10 +355,9 @@ async function folderPieceMainDocument(
   const manifest = await readManifest(ws, folderPath)
   if (manifest) {
     // Manifest paths become workspace paths in one place (folio.ts), which refuses any that leave the folder.
-    for (const entry of manifest.files) {
-      const manifestMain = resolveManifestFilePath(folderPath, manifest, entry, files)
-      if (manifestMain) return manifestMain
-    }
+    // The first part of the manifest's logical order that is there (`manifestPartEntries`: never a room support file).
+    const manifestMain = manifestPartEntries(folderPath, manifest, files).find((entry) => entry.path !== null)?.path
+    if (manifestMain) return manifestMain
   }
 
   const fallbacks = ['README.md', 'index.md'].map((candidate) => inDir(folderPath, candidate))
@@ -730,6 +736,8 @@ export async function listCollection(ws: Workspace, dir: string, vault: Collecti
   for (const file of children) {
     if (file.path === coverPath || INDEX_NOTE.test(file.name) || file.name === `_${name}.md`) continue
     if (isFolioAgentInstructionsFile(ws, file.path)) continue // a Folio's agent instructions are never a piece
+    // Nor are the Folio room's evidence-and-notes and map files (I-9), by name or by the file a link really opens.
+    if (resolvesToRoomSupportFile(ws.root, file.path)) continue
     const facts = await reader.read(file)
     const text = facts.derive('piece:text', (content) => pieceTextFacts(content, file.path))
     const fm = text.frontmatter

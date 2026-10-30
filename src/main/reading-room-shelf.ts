@@ -12,10 +12,28 @@ import type {
   ShelfItem,
 } from '@readflex/zotero-bridge'
 import type { ReadingRoomDocument } from '@readflex/sidecar'
+import {
+  itemsInCollection,
+  knownCollectionId,
+  type ShelfCollectionData,
+} from '../shared/shelf-collections'
 
 /** How many rows cross the IPC boundary for one query. Browsing a large library needs no more than a
  *  scrollable page of them, and the count line always states the full match total. */
 export const SHELF_ROW_LIMIT = 80
+
+/** One page of Shelf results: the collection filter (when the id names a known collection) is applied
+ *  to the WHOLE match set, then the row limit — so a collection of hundreds is searchable within. */
+export function shelfPage(
+  found: readonly ShelfItem[],
+  collections: ShelfCollectionData,
+  rawCollection: unknown,
+  limit = SHELF_ROW_LIMIT,
+): { items: ShelfItem[]; matched: number } {
+  const collection = knownCollectionId(rawCollection, collections)
+  const matches = collection ? itemsInCollection(found, collections, collection) : found
+  return { items: matches.slice(0, limit), matched: matches.length }
+}
 
 export type ShelfRowKind = 'pdf' | 'snapshot' | 'other' | 'none'
 

@@ -743,6 +743,41 @@ export function pendingWriterChanges(state: EditorState): WriterPendingChange[] 
   return field ? pendingFromMarks(state.doc.toString(), field.marks) : []
 }
 
+/**
+ * The raw spans the writing content excludes: for each pending change, its anchor minus its
+ * new-role span (the old text, plus any gap persistence also drops). Removing exactly these
+ * spans from the raw buffer yields documentTextForPersistence, so a reader can parse the
+ * writing content and still address it in raw editor coordinates. Read-only; no mark moves.
+ * Drafting normally carries no marks and yields []; the abnormal Drafting-with-marks buffer
+ * is projected the same way persistence strips it.
+ */
+export function writerReviewRemovedSpans(state: EditorState): Array<{ from: number; to: number }> {
+  const field = state.field(writerReviewField, false)
+  if (!field?.marks.length) return []
+  const doc = state.doc.toString()
+  const byId = new Map<string, WriterTrackedMark[]>()
+  for (const mark of field.marks) {
+    const group = byId.get(mark.id) ?? []
+    group.push(mark)
+    byId.set(mark.id, group)
+  }
+  const spans: Array<{ from: number; to: number }> = []
+  for (const change of pendingFromMarks(doc, field.marks)) {
+    const group = byId.get(change.localId) ?? []
+    const newMark = group.find((mark) => mark.role === 'new')
+    const { from, to } = change.anchor
+    if (newMark && change.newText && doc.slice(newMark.from, newMark.to) === change.newText && newMark.from >= from && newMark.to <= to) {
+      if (newMark.from > from) spans.push({ from, to: newMark.from })
+      if (newMark.to < to) spans.push({ from: newMark.to, to })
+    } else if (!change.newText) {
+      if (to > from) spans.push({ from, to })
+    } else {
+      for (const mark of group) if (mark.role === 'old' && mark.to > mark.from) spans.push({ from: mark.from, to: mark.to })
+    }
+  }
+  return spans.sort((a, b) => a.from - b.from || a.to - b.to)
+}
+
 export function documentTextForPersistence(state: EditorState): string {
   const doc = state.doc.toString()
   // ADR-0025 §1: Drafting's buffer already IS the file. Applying captured ledger records to it would

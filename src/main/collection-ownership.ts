@@ -24,6 +24,8 @@
  * Electron-free (like window-close.ts) so opening and closing can be tested against a second real
  * process without a window.
  */
+import { retryFolioDeclarations } from './folio-declaration'
+import { settleVersionMoves } from './version-moves'
 import { basename } from 'node:path'
 import {
   acquireOwnerLock, ownerInPlainWords, refreshOwnerLock, releaseOwnerLock,
@@ -119,11 +121,15 @@ export class CollectionOwnership {
       const existing = this.#held.get(root)
       if (existing) {
         existing.claims += 1
+        if (existing.state === 'owned') await retryFolioDeclarations(root)
         return existing.state === 'owned' ? 'owned' : 'unlockable'
       }
       let lock: OwnerLock | null = null
       try {
         lock = await acquireOwnerLock(root, { ...this.#env, kind: 'app', waitMs: this.#waitMs })
+        resumeCollectionWrites(root)
+        this.#settleMoves(root, true)
+        await retryFolioDeclarations(root)
         await this.#newKey(root)
       } catch (error) {
         if (error instanceof OwnerLockBusyError || NO_ROOT.has((error as NodeJS.ErrnoException).code ?? '')) throw error
@@ -245,11 +251,22 @@ export class CollectionOwnership {
   }
 
   #resume(root: string, held: Held): void {
-    if (held.state === 'owned') return
+    if (held.state === 'owned') {
+      this.#settleMoves(root)
+      return
+    }
     held.state = 'owned'
     resumeCollectionWrites(root)
+    this.#settleMoves(root)
     this.#diagnostic('owner-lock.reclaimed', { root })
     this.#tell(root, 'regained')
+  }
+
+  #settleMoves(root: string, cancelUnmoved = false): void {
+    try { settleVersionMoves(root, cancelUnmoved) } catch (error) {
+      this.#failed('version-history-settle', root, error)
+      console.error('WriteFlex could not settle version-history moves; the next owner check will retry.', { root, error })
+    }
   }
 
   /** A fresh reply key for a Collection just taken. Without one the app still opens; requests are then refused unsigned. */

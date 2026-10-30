@@ -1,3 +1,4 @@
+import { folioKey, normalisedFolioDir } from './folio-dir'
 import {
   accessSync, closeSync, constants, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync,
   renameSync, statSync, unlinkSync, writeFileSync,
@@ -12,6 +13,8 @@ import {
   type ExportPresetSettings,
 } from '../shared/export-presets'
 import { ACTION_BAR_VISIBLE_KEY, actionBarVisibleFrom } from '../shared/action-bar-settings'
+import { DEFAULT_OPENAI_CODEX_MODEL } from '@bridle/core'
+import { ASSISTANT_MODE_KEY } from '../shared/assistant-turns'
 import { readSharingRecord, type SharingRecord } from './sharing-record'
 
 export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high'
@@ -27,7 +30,7 @@ export type ResolvedModelDefaults = {
   sources: { model: DefaultSource; thinking: DefaultSource }
 }
 
-const BUILT_IN_MODEL = { provider: 'openai-codex', id: 'gpt-5.5' }
+const BUILT_IN_MODEL = { provider: 'openai-codex', id: DEFAULT_OPENAI_CODEX_MODEL }
 const BUILT_IN_THINKING: ThinkingLevel = 'medium'
 
 /** Resolve each preference from WriteFlex Settings, then WriteFlex's own built-in default. */
@@ -112,6 +115,8 @@ type SettingsData = {
   sharing?: unknown
   /** The links made on this Mac (sharing-publisher.ts ShareRecord[]): never a secret. */
   sharingLinks?: unknown
+  /** The Folio room's UI state per Folio (last view, selected part), keyed by the Folio's one spelling (folio-room-ipc.ts). App state, never in the Folio (spec I-8). */
+  folioRoom?: unknown
 }
 
 const MAX_RECENTS = 10
@@ -149,6 +154,7 @@ export class SettingsStore {
   #path: string
   #data: SettingsData
   #needsMigration = false
+  #listeners = new Set<(key: string) => void>()
   #shownExampleRoot: () => string | null
 
   /**
@@ -190,6 +196,9 @@ export class SettingsStore {
         parsed.modelDefaults && typeof parsed.modelDefaults === 'object' ? parsed.modelDefaults : {}
       const favourites = this.#sanitiseFavourites(parsed.favourites)
       const values = this.#sanitiseValues(parsed.values)
+      // Older installs have no mode key. A malformed present value must still fail closed.
+      const rawValues = parsed.values && typeof parsed.values === 'object' ? parsed.values : {}
+      if (!Object.hasOwn(rawValues, ASSISTANT_MODE_KEY)) values[ASSISTANT_MODE_KEY] = 'work'
       const changelog = this.#sanitiseChangelog(parsed.changelog)
       const exportPresets = parsed.exportPresets === undefined
         ? shippedExportPresetSettings()
@@ -201,10 +210,11 @@ export class SettingsStore {
         ...('exampleFiles' in parsed ? { exampleFiles: parsed.exampleFiles } : {}),
         ...('sharing' in parsed ? { sharing: parsed.sharing } : {}),
         ...('sharingLinks' in parsed ? { sharingLinks: parsed.sharingLinks } : {}),
+        ...('folioRoom' in parsed ? { folioRoom: parsed.folioRoom } : {}),
       }
     } catch {
       return {
-        recents: [], pinned: [], modelDefaults: {}, favourites: {}, values: {}, changelog: [], exportPresets: shippedExportPresetSettings(),
+        recents: [], pinned: [], modelDefaults: {}, favourites: {}, values: text === null ? { [ASSISTANT_MODE_KEY]: 'work' } : {}, changelog: [], exportPresets: shippedExportPresetSettings(),
         // A file that is there but unreadable may have held a record: never a reason to write again.
         ...(text === null ? {} : { example: { state: 'incomplete', at: Date.now() } satisfies ExampleRecord }),
       }
@@ -336,6 +346,54 @@ export class SettingsStore {
     if (this.#persist()) return true
     if (before === undefined) delete this.#data.sharingLinks
     else this.#data.sharingLinks = before
+    return false
+  }
+
+  // ---- Folio room state (spec I-8, D-UI-2) -------------------------------------------------------
+
+  /** The room state stored under `key`, as saved (the room IPC checks its shape), or undefined. */
+  folioRoomState(key: string): unknown {
+    const all = this.#data.folioRoom
+    return all && typeof all === 'object' && !Array.isArray(all) ? (all as Record<string, unknown>)[key] : undefined
+  }
+
+  /** Store the room state under `key` and save. False when the save failed; the store then keeps what it had. */
+  setFolioRoomState(key: string, state: unknown): boolean {
+    const before = this.#data.folioRoom
+    const all = before && typeof before === 'object' && !Array.isArray(before) ? { ...(before as Record<string, unknown>) } : {}
+    all[key] = structuredClone(state)
+    this.#data.folioRoom = all
+    if (this.#persist()) return true
+    if (before === undefined) delete this.#data.folioRoom
+    else this.#data.folioRoom = before
+    return false
+  }
+
+  /** Carry only the completed-linking marker with a renamed/moved Folio, including nested Folios. */
+  followFolioIdentityMove(root: string, from: string, to: string): boolean {
+    const key = folioKey(root, from)
+    const target = folioKey(root, to)
+    const before = this.#data.folioRoom
+    if (!before || typeof before !== 'object' || Array.isArray(before) || key.dir === target.dir) return true
+    const all = { ...(before as Record<string, unknown>) }
+    let changed = false
+    for (const [storedKey, raw] of Object.entries(before)) {
+      const prefix = `${key.root}\u0000`
+      if (!storedKey.startsWith(prefix) || !raw || typeof raw !== 'object' || Array.isArray(raw) || (raw as { identityLinksAttempted?: unknown }).identityLinksAttempted !== true) continue
+      const dir = normalisedFolioDir(storedKey.slice(prefix.length))
+      if (dir !== key.dir && !dir.startsWith(`${key.dir}/`)) continue
+      const movedKey = `${target.root}\u0000${target.dir}${dir.slice(key.dir.length)}`
+      const destination = all[movedKey]
+      const source = { ...(raw as Record<string, unknown>) }
+      delete source.identityLinksAttempted
+      all[storedKey] = source
+      all[movedKey] = { ...(destination && typeof destination === 'object' && !Array.isArray(destination) ? destination : {}), identityLinksAttempted: true }
+      changed = true
+    }
+    if (!changed) return true
+    this.#data.folioRoom = all
+    if (this.#persist()) return true
+    this.#data.folioRoom = before
     return false
   }
 
@@ -549,6 +607,11 @@ export class SettingsStore {
     return this.#data.values[key] ?? null
   }
 
+  onChange(listener: (key: string) => void): () => void {
+    this.#listeners.add(listener)
+    return () => { this.#listeners.delete(listener) }
+  }
+
   /** A copy of every stored value — the settings window's one-pull hydrate. */
   values(): Record<string, SettingValue> {
     return { ...this.#data.values }
@@ -574,6 +637,7 @@ export class SettingsStore {
       this.#data.changelog = [entry, ...this.#data.changelog].slice(0, MAX_CHANGELOG)
     }
     this.#persist()
+    for (const listener of this.#listeners) listener(key)
     return entry ? { ...entry } : null
   }
 
@@ -602,6 +666,7 @@ export class SettingsStore {
     else this.#data.values[entry.key] = entry.old
     entry.reverted = true
     this.#persist()
+    for (const listener of this.#listeners) listener(entry.key)
     return { ...entry }
   }
 }

@@ -11,11 +11,13 @@ import type { ReviewActions } from '../app/review-actions'
 import { marginPerf } from '../app/margin-perf'
 import { visibleSelection } from '../app/margin-bulk'
 import { setMarginOutline } from '../editor/margin-outline'
+import { metadataProposalsField, sameMetadataProposals, setMetadataProposals } from '../editor/metadata-proposals'
+import { metadataProposalsOf } from '../app/metadata-proposal'
 import { changeMarksOf, reviewMarksOf, sameChangeMarks, setChangeMarkHover, setChangeMarks } from '../editor/change-marks'
 import { sameSpacers, setUnderSpacers, underSpacerField, type UnderSpacer } from '../editor/margin-under-spacers'
 import type { MarginOutside } from '../app/margin-outside'
 import { AllowanceStrip } from './OutsideDockParts'
-import { allowanceLimitReached } from './outside-dock-model'
+import { marginAllowanceVisible } from './outside-dock-model'
 import { filterLine } from '../app/margin-filter'
 import { modeLineOf, reviewModeOf } from '../app/margin-mode'
 import { EMPTY_HEAD_FILTER, type HeadControls, type HeadFilterState } from '../app/margin-head-state'
@@ -334,12 +336,12 @@ export function MarginTop({ model, controls, outside }: Pick<MarginPanelProps, '
     )
   }
   const filtered = filterLine(model, controls.state.filter, model.counts.total) !== null
-  const allowance = allowanceLimitReached(outside?.summary ?? null)
+  const allowance = marginAllowanceVisible(outside?.summary ?? null)
   if (!filtered && !allowance) return null
   return (
     <div className="mg-top" data-margin-top>
       <MarginFilterLine model={model} controls={controls} />
-      {allowance && <AllowanceStrip summary={outside?.summary ?? null} />}
+      {allowance && <AllowanceStrip summary={outside?.summary ?? null} onSourceBulk={outside?.onSourceBulk} />}
     </div>
   )
 }
@@ -1196,6 +1198,13 @@ export function ReviewMargin({ view, subscribe, changes, bulk, controlRef, chord
     view.dispatch({ effects: setChangeMarks.of(next) })
   }, [view, marks, selectedId, focusedId])
   useEffect(() => () => { if (changeMarksOf(view.state).marks.length > 0) view.dispatch({ effects: setChangeMarks.of({ marks: [], selectedId: null, focusedIds: [] }) }) }, [view])
+  // The metadata panel marks the fields the shown waiting edits would change (metadata-proposals.ts).
+  const proposals = useMemo(() => metadataProposalsOf(document, model.cards), [document, model.cards])
+  useEffect(() => {
+    if (sameMetadataProposals(view.state.field(metadataProposalsField, false) ?? [], proposals)) return
+    view.dispatch({ effects: setMetadataProposals.of(proposals) })
+  }, [view, proposals])
+  useEffect(() => () => { if ((view.state.field(metadataProposalsField, false) ?? []).length > 0) view.dispatch({ effects: setMetadataProposals.of([]) }) }, [view])
 
   // Hover outlines the card's words in the text: a marked card through its mark (`is-linked`).
   // A card whose words wear no mark (your own edit, which Drafting does not draw and Reviewing draws as its own

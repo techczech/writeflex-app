@@ -151,3 +151,36 @@ export async function saveQueuedBehindFolioWriteMayRun(
     return false
   }
 }
+
+/** Commit notifications that affect Folio identity; ordinary autosaves do not invalidate Folio caches. */
+export function announcesFolioDocumentWrite(path: string): boolean {
+  return /(?:^|\/)(?:_[^/]*_INDEX\.md|_report-structure\.json)$/i.test(path)
+}
+
+/** Preserve the normal busy guard. Only actions arriving during an actual linking write are queued. */
+export function createFolioAuthorQueue(): (action: () => Promise<boolean>, linking?: boolean) => Promise<boolean> {
+  let busy = false
+  let linkingWrite = false
+  const waiting: Array<() => void> = []
+  const start = async (action: () => Promise<boolean>, linking: boolean): Promise<boolean> => {
+    busy = true
+    linkingWrite = linking
+    try { return await action() } finally {
+      busy = false
+      linkingWrite = false
+      waiting.shift()?.()
+    }
+  }
+  return (action, linking = false) => {
+    if (linkingWrite) return new Promise((resolve, reject) => {
+      waiting.push(() => { void start(action, linking).then(resolve, reject) })
+    })
+    if (busy) return Promise.resolve(false)
+    return start(action, linking)
+  }
+}
+
+/** Read before touching buffers. A negative preflight performs no saves, holds or document writes. */
+export async function openFolioIdentityIfNeeded(check: () => Promise<boolean>, run: () => Promise<boolean>): Promise<boolean> {
+  return !await check() || await run()
+}

@@ -13,7 +13,7 @@ import { FolioDetailsCard, type FolioDetailsCardHandle } from './FolioDetailsCar
 import { PlanAddAllSheet } from './PlanAddAllSheet'
 import type { FolioRunningOrder } from '../app/folio-running-order'
 import { addAllCandidates, type AddAllCandidate } from '../../../shared/folio-add-all'
-import { PLAN_COMMAND_EVENT, type PlanCommandName } from '../plan/plan-commands'
+import { HANDOVER_PART_GONE, PLAN_COMMAND_EVENT, handoverStep, type PendingPlanCommand, type PlanCommandName } from '../plan/plan-commands'
 import { TITLE_FIX_LABEL, titleConflictSentence } from '../../../shared/title-conflict'
 import { useTitleConflictContext, type TitleFixTarget } from '../app/title-conflict-actions'
 import type { TitleFixDirection } from '../../../preload'
@@ -56,6 +56,10 @@ export type PlanViewProps = {
   onOpenBoard: () => void
   shortcutOverrides?: OverrideMap
   startWithComposer?: boolean
+  /** A command handed over from the room: run once, on this part, as soon as the Plan has been read. */
+  pendingCommand?: PendingPlanCommand | null
+  /** Told (with the hand-over's number) that it has been taken, so the owner clears it. */
+  onPendingCommandRun?: (seq: number) => void
   manifestUnreadable?: boolean
   /** Start the report skill on this Plan's folder (ticket 10). Absent: no button. */
   onHelpWithReport?: () => void
@@ -121,8 +125,10 @@ export function PartRoleControl({ title, role, onChoose, lockedReason, continues
     <label className="part-role" data-plan-role={role} data-plan-role-locked={lockedReason ? 'true' : undefined} title={lockedReason}>
       <span>Role</span>
       <select aria-label={`Role of ${title}`} aria-description={lockedReason} value={role} disabled={Boolean(lockedReason)} onChange={(event) => onChoose(event.target.value)}>
+        <option value="section-page">Section page</option>
         {ROLES.map((name) => <option key={name} value={name}>{roleLabel(name)}</option>)}
       </select>
+      <small className="part-role-description">Starts a section: every part after it belongs here until the next section page.</small>
       {continues && <span className="plan-continues-chip" data-plan-continues="true" title="Opens deeper than the chapter level, so it continues the chapter before it"><CornerDownRight />{continues}</span>}
     </label>
   )
@@ -194,6 +200,7 @@ export function planActionFailure(error: unknown, fallback: string): string {
 
 /** A card's flag when the part's title and heading disagree or it has no heading; the buttons that fix it are in the side rail. */
 function cardFlag(row: PlanDisplayRow): string | null {
+  if (row.resolution) return row.resolution === 'missing' ? 'Missing file' : 'Ambiguous link'
   const heading = row.heading
   if (!heading) return null
   if (heading.mismatch) return 'title differs from heading'
@@ -256,7 +263,7 @@ export function PlanPartList({ rows, selected, composer, composerAt = null, endI
                   <span className="pfoot">
                     {row.written && row.stage ? (
                       <span className={`stage ${STAGE_CLASS[row.stage]}`}><span className="sd" />{row.stage}</span>
-                    ) : !row.written ? <span className="unw">not written</span> : null}
+                    ) : !row.written ? <span className="unw">{row.resolution ? (row.resolution === 'missing' ? 'Missing file' : 'Ambiguous link') : 'not written'}</span> : null}
                     {chip && <span className="plan-continues-chip" data-plan-continues="true" title="Opens deeper than the chapter level, so it continues the chapter before it"><CornerDownRight />{chip}</span>}
                     {flag && <span className="hint plan-card-flag" data-plan-card-flag={row.heading?.mismatch ? 'title-differs' : 'no-heading'}><TriangleAlert className="icon sm" />{flag}</span>}
                   </span>
@@ -363,7 +370,7 @@ export function PlanEmptyState({ kind, onStart }: { kind: 'absent' | 'empty'; on
   )
 }
 
-export function PlanView({ headerActions, createActions, onOpenList, dir, onOpenPiece, onStatus, onOpenBoard, shortcutOverrides = {}, startWithComposer = false, manifestUnreadable = false, onHelpWithReport, runningOrder, openFolio }: PlanViewProps): JSX.Element {
+export function PlanView({ headerActions, createActions, onOpenList, dir, onOpenPiece, onStatus, onOpenBoard, shortcutOverrides = {}, startWithComposer = false, pendingCommand = null, onPendingCommandRun, manifestUnreadable = false, onHelpWithReport, runningOrder, openFolio }: PlanViewProps): JSX.Element {
   const [plan, setPlan] = useState<Plan | null | undefined>(undefined)
   // "Start a Folio outline" (which creates an Index Note) is offered only when main said, affirmatively, that there is
   // no Folio here (`plan:read` answered null: no manifest and nothing at the Index Note's name). A read that failed is
@@ -571,23 +578,30 @@ export function PlanView({ headerActions, createActions, onOpenList, dir, onOpen
     }
   }, [busy, dir, onOpenPiece, onStatus, preview])
 
+  // Remove (ADR-0049): at once, no question asked. The part's file goes to the Folio bin and the flash offers Undo
+  // (folio-bin.ts); a planned part only loses its line.
   const removeAt = useCallback(async (index: number | null) => {
-    if (index === null || busy) return
-    const part = plan?.parts[index]
+    if (index === null || busy || !plan) return
+    const part = plan.parts[index]
     if (!part) return
-    const confirmed = window.confirm(`Remove “${part.title}” from the Folio outline?\n\nThis removes the Folio outline line only. The file will not be deleted.`)
-    if (!confirmed) return
+    const expected = plan.parts.map((item) => ({ title: item.title, path: item.path, gloss: item.gloss, role: item.role, tags: [...item.tags] }))
     setBusy(true)
     try {
-      const next = await window.writeflex.plan.removePart(dir, index)
-      setPlan(next)
-      setSelected(next.parts.length ? Math.min(index, next.parts.length - 1) : null)
+      const answer = runningOrder
+        ? await runningOrder.removeToBin(dir, [index], expected)
+        : await window.writeflex.folioRoom.author(dir, { op: 'remove', indices: [index], expected })
+      if (answer && !runningOrder) onStatus(answer.message)
+      const next = await window.writeflex.plan.read(dir)
+      if (next) {
+        setPlan(next)
+        setSelected(next.parts.length ? Math.min(index, next.parts.length - 1) : null)
+      }
     } catch (error) {
-      onStatus(planActionFailure(error, 'Could not remove that Folio outline line. Reload the Folio outline and try again; no file was deleted.'))
+      onStatus(planActionFailure(error, 'Could not remove that part. Reload the Folio outline and try again; no file was deleted.'))
     } finally {
       setBusy(false)
     }
-  }, [busy, dir, onStatus, plan])
+  }, [busy, dir, onStatus, plan, runningOrder])
   const removeSelected = useCallback(() => removeAt(selected), [removeAt, selected])
 
   const adoptUnlisted = useCallback(async (index: number, asFrontMatter = false) => {
@@ -704,6 +718,13 @@ export function PlanView({ headerActions, createActions, onOpenList, dir, onOpen
     void fixTitle(target, direction)
   }, [fixTitle, onStatus, plan, selected])
 
+  const [roleUndo, setRoleUndo] = useState<{ token: string; title: string } | null>(null)
+  const undoRole = async (): Promise<void> => {
+    if (!roleUndo) return
+    const answer = await window.writeflex.folioRoom.author(dir, { op: 'undo', token: roleUndo.token })
+    if (answer.ok) { setRoleUndo(null); await reload() } else onStatus(answer.message)
+  }
+
   const chooseRole = useCallback(async (index: number, role: string) => {
     const part = plan?.parts[index]
     if (busy || !part) return
@@ -711,6 +732,7 @@ export function PlanView({ headerActions, createActions, onOpenList, dir, onOpen
     try {
       const next = await window.writeflex.plan.setPartRole(dir, index, role, { title: part.title, path: part.path, gloss: part.gloss, role: part.role, tags: [...part.tags] })
       setPlan(next)
+      setRoleUndo(next.sectionRoleUndoToken ? { token: next.sectionRoleUndoToken, title: part.title } : null)
       // A role across the front-matter boundary moves the part to the edge of its new group: the selection follows it.
       const moved = part.path ? next.parts.findIndex((other) => other.path === part.path) : -1
       if (moved >= 0) setSelected(moved)
@@ -770,6 +792,19 @@ export function PlanView({ headerActions, createActions, onOpenList, dir, onOpen
       else setLooseClosed((closed) => !closed)
     }
   }, [adoptUnlisted, beginAdd, composer, frontOffers, fixAllTitles, fixSelectedTitle, focusSelectedRole, moveSelected, onOpenPiece, onStatus, openAddAll, openPart, plan, removeSelected, selected, selectedUnlisted, sortByChapter])
+
+  // The hand-over from the room: once the Plan is read and the room's part is the selected one, run the command exactly once.
+  const handedSeq = useRef<number | null>(null)
+  useEffect(() => {
+    if (!pendingCommand || handedSeq.current === pendingCommand.seq) return
+    const step = handoverStep(plan, pendingCommand, selected)
+    if (step.kind === 'wait') return
+    if (step.kind === 'select') { setSelected(step.at); return }
+    handedSeq.current = pendingCommand.seq
+    onPendingCommandRun?.(pendingCommand.seq)
+    if (step.kind === 'refuse') onStatus(HANDOVER_PART_GONE)
+    else runCommand(pendingCommand.command)
+  }, [onPendingCommandRun, onStatus, pendingCommand, plan, runCommand, selected])
 
   useEffect(() => {
     const onCommand = (event: Event): void => runCommand((event as CustomEvent<PlanCommandName>).detail)
@@ -914,7 +949,7 @@ export function PlanView({ headerActions, createActions, onOpenList, dir, onOpen
             <FolioSelectedPanel
               row={selectedRow}
               headingCount={selectedHeadingCount}
-              roleControl={selectedRow && <PartRoleControl title={selectedRow.title} role={selectedRow.role} onChoose={(role) => void chooseRole(selectedRow.index ?? 0, role)} lockedReason={selectedRow.manifestTitlePage ? TITLE_PAGE_SET_IN_MANIFEST : undefined} />}
+              roleControl={selectedRow && <><PartRoleControl title={selectedRow.title} role={selectedRow.sectionPage && !isFrontMatterRole(selectedRow.role) ? 'section-page' : selectedRow.role} onChoose={(role) => void chooseRole(selectedRow.index ?? 0, role)} lockedReason={selectedRow.manifestTitlePage ? TITLE_PAGE_SET_IN_MANIFEST : undefined} />{roleUndo && <button type="button" onClick={() => void undoRole()}>Undo role change for {roleUndo.title}</button>}</>}
               headingControl={selectedRow && selectedRow.written && <PartHeadingControl part={selectedRow} onChoose={(path, mode) => void chooseHeadingMode(path, mode)} {...(titleActions ? { onFixTitle: (target: TitleFixTarget, direction: TitleFixDirection) => void fixTitle(target, direction) } : {})} />}
             />
             <FolioFrontMatterSlot

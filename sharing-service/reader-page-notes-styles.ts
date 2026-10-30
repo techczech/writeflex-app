@@ -123,5 +123,6 @@ sup.mn{font-size:11px;font-weight:750;color:var(--ink);margin-left:2px;line-heig
 .esc{margin:9px 0 0;font-size:12px;color:var(--muted)}
 .refuse{display:flex;gap:8px;margin:10px 0 0;padding:8px 10px;border:1.5px solid var(--st-fail);border-radius:6px;background:var(--note-bg);color:var(--ink);font-size:13px}
 .refuse .ic{color:var(--st-fail);margin-top:2px}
+@media (max-width:1199px){.rp.folio[data-layout="folio"].notes .viewswitch{display:none}}
 @media (max-width:1099px){.rp.notes .viewswitch{display:none}.rp.notes .rbody{display:block}.rp.notes .content,.rp.notes[data-view="under"] .content{width:auto;max-width:660px;margin:0 auto;padding:0 18px}.rp.folio.notes .content{margin:0 auto}}
 @media (max-width:720px){.rp.notes .content,.rp.notes[data-view="under"] .content{margin:0 18px;padding:0}.under{margin-left:0}.rp kbd{display:none}}`

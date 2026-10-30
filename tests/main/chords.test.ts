@@ -42,6 +42,8 @@ const COMMAND_BACKED_SHEET_ROWS = new Map([
   ['Previous open tab', 'navigation.previousTab'],
   ['Next file in folder', 'navigation.nextFolderFile'],
   ['Previous file in folder', 'navigation.previousFolderFile'],
+  ['Show/hide left sidebar', 'view.toggleLeftPane'],
+  ['Show/hide right pane', 'view.toggleRightPane'],
   ['Open Files pane', 'view.files'],
   ['Open tabs', 'view.openTabs'],
   ['Open Outline tab', 'view.outline'],
@@ -312,4 +314,17 @@ test('a modified Backspace is a chord only through backspaceChord', () => {
   expect(backspaceChord(key({ shiftKey: true }) as never, 'mac')).toBeNull()
   expect(backspaceChord({ ...key({ metaKey: true }), code: 'KeyA', key: 'a' } as never, 'mac')).toBeNull()
   expect(backspaceChord(key({ ctrlKey: true, shiftKey: true }) as never, 'other')).toBe('⇧⌘⌫')
+})
+
+
+test('pane toggles exclusively own plain Command brackets; folder and tab families stay distinct', () => {
+  for (const [chord, id] of [['⌘[', 'view.toggleLeftPane'], ['⌘]', 'view.toggleRightPane']]) {
+    expect(allBindableCommands().filter(command => effectiveChords(command, {}).includes(chord)).map(command => command.id)).toEqual([id])
+    expect(resolveChord(id, {})).toBe(chord)
+    expect(resolveChord(id, { [id]: '' })).toBeNull()
+  }
+  expect(resolveChord('navigation.previousFolderFile', {})).toBe('⌥⌘[')
+  expect(resolveChord('navigation.nextFolderFile', {})).toBe('⌥⌘]')
+  expect(resolveChord('navigation.previousTab', {})).toBe('⇧⌘[')
+  expect(resolveChord('navigation.nextTab', {})).toBe('⇧⌘]')
 })

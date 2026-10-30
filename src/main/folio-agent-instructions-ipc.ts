@@ -1,11 +1,10 @@
+import { folioDeclaration } from './folio-declaration'
 /**
  * The Plan's and the Folder dashboard's "Agent instructions" row (ticket 0.23-08): its state, and the
  * author's two requests (Restore WriteFlex's part, write CLAUDE.md or add its import line). Only for a
- * folder that is a Folio: a folder with no manifest answers null and refuses the requests.
+ * folder that is a Folio under the shared declaration rule: any other folder answers null and refuses the requests.
  */
 
-import { existsSync } from 'node:fs'
-import { MANIFEST_NAME } from './folio'
 import {
   actOnFolioAgentInstructions,
   folioAgentInstructionsStatus,
@@ -30,7 +29,7 @@ export type FolioAgentInstructionsIpcDependencies<State> = {
 const ACTIONS = new Set<FolioAgentInstructionsAction>(['restore', 'write-claude'])
 
 function isFolio(ws: Workspace, dir: string): boolean {
-  return existsSync(ws.absolute(dir === '' ? MANIFEST_NAME : `${dir}/${MANIFEST_NAME}`))
+  return folioDeclaration(ws, dir).isFolio
 }
 
 export function registerFolioAgentInstructionsIpc<State>(

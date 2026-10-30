@@ -7,7 +7,7 @@
 import { test, expect, beforeEach, afterEach, spyOn } from 'bun:test'
 import * as fsp from 'node:fs/promises'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { writeDocumentGuarded } from '../../src/main/guarded-document-write'
@@ -82,4 +82,26 @@ test('a move whose check refuses at the commit on a disk without hard links move
   expect(refused).toBe('changed meanwhile')
   expect(existsSync(join(root, 'notes/draft.md'))).toBe(true)
   expect(existsSync(join(root, 'notes/moved.md'))).toBe(false)
+})
+
+test('a file put at the name after it was checked free on a disk without hard links is not replaced by the rename: refused, the file stays, no temporary file is left', async () => {
+  // This test's own spies, over the real functions (the recording ones of beforeEach are removed first).
+  for (const undo of restore) undo()
+  const realLstat = fsp.lstat
+  let linked = false
+  const linkSpy = spyOn(fsp, 'link').mockImplementation(async () => { linked = true; throw Object.assign(new Error('not supported'), { code: 'ENOTSUP' }) })
+  // The free-check after the failed link finds no file; another program then puts one at the name.
+  const lstatSpy = spyOn(fsp, 'lstat').mockImplementation((async (path: string, ...rest: unknown[]) => {
+    try {
+      return await (realLstat as (...args: unknown[]) => Promise<unknown>)(path, ...rest)
+    } catch (error) {
+      if (linked && path.endsWith('notes/new.md')) writeFileSync(path, 'THEIRS\n')
+      throw error
+    }
+  }) as unknown as typeof realLstat)
+  restore = [() => linkSpy.mockRestore(), () => lstatSpy.mockRestore()]
+  const refused = await writeDocumentGuarded(ws, 'notes/new.md', 'mine\n', 'create').then(() => null, (error: unknown) => error)
+  expect((refused as { code?: string } | null)?.code).toBe('exists')
+  expect(await readFile(join(root, 'notes/new.md'), 'utf8')).toBe('THEIRS\n')
+  expect(readdirSync(join(root, 'notes')).sort()).toEqual(['draft.md', 'new.md'])
 })

@@ -8,6 +8,7 @@
  * (ADR-0019) and comments (ADR-0021), flattens wikilinks to their label text, and is otherwise
  * byte-faithful.
  */
+import { stripFlags } from './flags'
 import { exportSource, flattenWikilinks } from './dialect'
 
 const FENCE_LINE = /^\s*(?:```|~~~)/
@@ -32,7 +33,7 @@ export function toNormalisedMarkdown(markdown: string): string {
   let inFence = false
   let inIndentedCode = false
   let afterBlank = true // the top of the document can open an indented block
-  const lines = exportSource(markdown).split('\n').map((line) => {
+  const lines = stripFlags(exportSource(markdown)).split('\n').map((line) => {
     if (FENCE_LINE.test(line)) { inFence = !inFence; inIndentedCode = false; afterBlank = false; return line }
     if (inFence) return line
     const blank = BLANK_LINE.test(line)

@@ -55,9 +55,13 @@ export function boardAge(row: QueryRow, now = new Date()): BoardAge {
   return { label: days === 0 ? 'today' : `${days}d`, days, stalled: row.provenance.date === 'written' && days > 90 }
 }
 
-/** Every scrap in the Collection, as the Offcuts column lists it: scraps files in path order, each in file order. */
+/** Every scrap in the Collection, as the Offcuts column lists it: scraps files in path order, each in file
+ *  order, then the floating Scratchpad's waiting items by their piece. */
 export function boardOffcuts(rows: QueryRow[]): Offcut[] {
-  return rows.filter((row) => row.material === 'scraps').flatMap((row) => row.offcuts ?? [])
+  return [
+    ...rows.filter((row) => row.material === 'scraps').flatMap((row) => row.offcuts ?? []),
+    ...rows.flatMap((row) => row.looseOffcuts ?? []),
+  ]
 }
 
 /** The Board's selection key for an offcut (a piece is selected by its path). */

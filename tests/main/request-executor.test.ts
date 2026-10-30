@@ -59,11 +59,14 @@ test('a valid request is carried out, answered with what the operation prints di
 })
 
 test('every requestable operation can be carried out on request', async () => {
+  await fx.write('history-map.tsv', 'drafts/new.md\tdrafts/outside.md\n')
+  let historyUndo: string | undefined
   const requests: Array<[string, Record<string, unknown>]> = [
     ['create', { path: 'drafts/new', content: '# New\n' }], ['create-folder', { path: 'empty' }], ['duplicate', { path: 'notes.md' }],
     ['note', { document: 'talks/york.md', body: 'Tighten the intro.', kind: 'review' }], ['scrap', { document: 'talks/york.md', text: 'A cut line.' }],
     ['create-manifest', { folder: 'drafts' }], ['capture', { project: 'talks', title: 'A line', kind: 'snippet', body: 'A line.' }], ['move', MOVE], ['move-folder', { path: 'talks', to: 'events' }], ['trash', { path: 'notes (copy).md' }],
     ['undo', {}], ['save-version', { path: 'talks/york-2026.md', name: 'As sent', note: 'Before the rewrite.' }],
+    ['follow-history', { map: 'history-map.tsv' }], ['undo-history', {}],
   ]
   expect(requests.map(([operation]) => operation).sort()).toEqual([...REQUEST_OPERATIONS].sort())
   // `capture` runs scout, which writes the file itself: a fake one stands in, so no real engine runs.
@@ -74,11 +77,15 @@ test('every requestable operation can be carried out on request', async () => {
   process.env.WRITEFLEX_SCOUT_BIN = scout
   try {
     for (const [operation, args] of requests) {
+      if (operation === 'follow-history') await rename(join(fx.root, 'drafts/new.md'), join(fx.root, 'drafts/outside.md'))
+      if (operation === 'undo-history') args.id = historyUndo
       const id = await plantRequest(fx, operation, args)
       await app.executor.drain()
       const reply = await replyTo(fx, id)
       expect(reply.reason ?? '', operation).toBe('')
       expect(reply.outcome, operation).toBe('applied')
+      if (operation === 'undo-history') await rename(join(fx.root, 'drafts/outside.md'), join(fx.root, 'drafts/new.md'))
+      if (operation === 'follow-history') historyUndo = (reply.result as { undo: string }).undo
       if (operation === 'capture') {
         expect(reply.result).toMatchObject({ path: 'talks/research/2026-10-20-a-line.md', project: 'talks', indexed: false })
         // Scout made the file; the window is told it, and the manifest, as for any change the app carries out.
@@ -105,7 +112,7 @@ test('every requestable operation can be carried out on request', async () => {
   expect(history.slice(1).map((line) => (JSON.parse(line) as { kind: string }).kind)).toEqual(['restore-point', 'snapshot', 'restore-point', 'snapshot'])
   const versions = (await fx.read('.writeflex/versions.jsonl')).split('\n').filter(Boolean)
   expect(versions[0]).toBe('{"version":"fixture"}')
-  expect(versions.slice(1).map((line) => JSON.parse(line) as object)).toMatchObject([
+  expect(versions.slice(1).map((line) => JSON.parse(line) as { path?: string }).filter(record => record.path)).toMatchObject([
     { path: 'drafts/new.md', name: 'Created by Outside agent', author: { name: 'Outside agent' } },
     { path: 'talks/york-2026.md', name: 'As sent', note: 'Before the rewrite.', author: { name: 'App Writer' } },
   ])
@@ -324,12 +331,14 @@ test('every write made for a request asks the shared Collection write gate', asy
     await plantRequest(fx, 'scrap', { document: 'talks/york.md', text })
     await app.executor.drain()
   }
+  // A folder that is not inside, above or equal to the Folio `talks`, so the Folio guard is not what refuses create-manifest.
+  await fx.write('essays/a.md', '# A\n')
   const before = await content(fx)
   // The executor is told it owns the Collection; only the gate says no. Each write must have asked it.
   pauseCollectionWrites(fx.root, 'Saving is paused: another program has taken over the folder.')
   const requests: Array<[string, Record<string, unknown>]> = [
     ['create', { path: 'x.md', content: 'x' }], ['create-folder', { path: 'empty' }], ['duplicate', { path: 'notes.md' }], ['note', { document: 'talks/york.md', body: 'n' }],
-    ['scrap', { document: 'talks/york.md', text: 'Second.' }], ['create-manifest', { folder: '.' }], ['move', MOVE], ['move-folder', { path: 'talks', to: 'events' }],
+    ['scrap', { document: 'talks/york.md', text: 'Second.' }], ['create-manifest', { folder: 'essays' }], ['move', MOVE], ['move-folder', { path: 'talks', to: 'events' }],
     ['trash', { path: 'notes.md' }], ['undo', {}],
   ]
   for (const [operation, args] of requests) {
@@ -338,6 +347,7 @@ test('every write made for a request asks the shared Collection write gate', asy
     const reply = await replyTo(fx, id)
     expect(reply.outcome, operation).toBe('refused')
     expect(reply.reason, operation).toContain('Saving is paused')
+    expect(reply.reason, operation).not.toMatch(/Folio/i)
     expect(await content(fx), operation).toEqual(before)
   }
   expect(await readdir(fx.trashed)).toEqual([])
@@ -355,22 +365,27 @@ test('a path swapped for a link between the check and the write is not followed,
   })
   const requests: Array<[string, Record<string, unknown>]> = [
     ['create', { path: 'talks/new.md', content: 'x' }], ['duplicate', { path: 'talks/york.md' }], ['scrap', { document: 'talks/york.md', text: 'A cut.' }],
-    ['note', { document: 'talks/york.md', body: 'n' }], ['create-manifest', { folder: 'talks/sub' }], ['move', { path: 'talks/york.md', to: 'talks/y.md' }], ['trash', { path: 'talks/york.md' }],
+    ['note', { document: 'talks/york.md', body: 'n' }], ['create-manifest', { folder: 'essays' }], ['move', { path: 'talks/york.md', to: 'talks/y.md' }], ['trash', { path: 'talks/york.md' }],
   ]
   await fx.write('talks/sub/part.md', '# Part\n')
+  await fx.write('essays/york.md', YORK) // a folder outside the Folio, so create-manifest is not refused by the Folio guard
   await mkdir(join(fx.root, 'talks/scraps'))
   await fx.write(scrapsPathFor('talks/york.md'), '## a1b2\nEarlier.\n')
   for (const [operation, args] of requests) {
     const id = await plantRequest(fx, operation, args)
-    await app.restarted(swapAt('talks')).drain()
+    const swapped = operation === 'create-manifest' ? 'essays' : 'talks'
+    await app.restarted(swapAt(swapped)).drain()
     const reply = await replyTo(fx, id)
     expect(reply.outcome, `${operation}: ${reply.text ?? ''}`).toBe('refused')
+    // Refusal copy may contain absolute paths; checkout names are not Folio-guard messages.
+    const message = `${reply.reason ?? ''} ${reply.text ?? ''}`.replaceAll(fx.root, '<collection>').replaceAll(outside, '<outside>')
+    expect(message, operation).not.toMatch(/Folio/i)
     // Nothing was written or moved at the far end of the link, and nothing went to the Trash.
     expect(await readdir(outside), operation).toEqual(['kept'])
     expect(await readFile(join(outside, 'kept', 'york.md'), 'utf8'), operation).toBe(YORK)
     expect(await readdir(fx.trashed), operation).toEqual([])
-    await rm(join(fx.root, 'talks'))
-    await rename(join(outside, 'kept'), join(fx.root, 'talks'))
+    await rm(join(fx.root, swapped))
+    await rename(join(outside, 'kept'), join(fx.root, swapped))
   }
 })
 
@@ -526,4 +541,14 @@ test('capture on request: writes paused after the project was validated, and sco
     else process.env.WRITEFLEX_SCOUT_BIN = saved
     await rm(scoutDir, { recursive: true, force: true })
   }
+})
+
+test('scratchpad read requests return typed inventory without a document write or undo journal', async () => {
+  const before = await fx.read('notes.md')
+  const id = await plantRequest(fx, 'scratchpad', { path: 'notes.md' })
+  const drained = await app.executor.drain()
+  expect(drained.handled).toEqual([{ id, outcome: 'applied', operation: 'scratchpad', repeat: false }])
+  const reply = await replyTo(fx, id)
+  expect(reply.result).toMatchObject({ items: [], inventory: { items: [], notices: [] } })
+  expect(await fx.read('notes.md')).toBe(before)
 })

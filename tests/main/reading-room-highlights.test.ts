@@ -218,6 +218,28 @@ describe('what gets painted is Zotero plus the outbox, as one set (ADR-0029)', (
     expect(merged[0]?.text).toBe('a mark made offline')
   })
 
+  test('a mark painted from the outbox over a Zotero mark keeps that mark\'s tags, with no stamp, so its deletion is still checked', () => {
+    const stored = { ...annotation({ key: 'QUEUED1', tags: ['added in Zotero'] }), zoteroState: { modified: '2026-10-22 10:00:00', tags: ['added in Zotero'] } }
+    const update = entry({ operation: 'update' })
+    const [merged] = mergeWithOutbox([stored], [update])
+    // WriteFlex never writes tags, and its own write moves Zotero's stamp.
+    expect(merged?.zoteroState).toEqual({ modified: null, tags: ['added in Zotero'] })
+    expect(highlightsResult([merged!]).forReader[0]?.zoteroState).toEqual({ modified: null, tags: ['added in Zotero'] })
+    // A confirmed-unread create and a later edit over it: still the stored tags.
+    expect(mergeWithOutbox([stored], [entry(), entry({ id: 2, operation: 'update' })])[0]?.zoteroState)
+      .toEqual({ modified: null, tags: ['added in Zotero'] })
+    // A stored mark whose state is unknown gives the overlay none: unknown is not "no tags".
+    expect(mergeWithOutbox([annotation({ key: 'QUEUED1' })], [update])[0]?.zoteroState).toBeUndefined()
+  })
+
+  test('with nothing beneath it, a create has no tags in Zotero and an edit takes the tags its reader was shown', () => {
+    expect(mergeWithOutbox([], [entry()])[0]?.zoteroState).toEqual({ modified: null, tags: [] })
+    const base = JSON.parse(entry().payload) as Record<string, unknown>
+    const shown = entry({ operation: 'update', payload: JSON.stringify({ ...base, readflexBaseline: { zoteroState: { modified: '2026-10-22 10:00:00', tags: ['shown'] } } }) })
+    expect(mergeWithOutbox([], [shown])[0]?.zoteroState).toEqual({ modified: null, tags: ['shown'] })
+    expect(mergeWithOutbox([], [entry({ operation: 'update' })])[0]?.zoteroState).toBeUndefined()
+  })
+
   test('a quotation-only update never paints a second copy of its Area', () => {
     const base = JSON.parse(entry().payload) as Record<string, unknown>
     const quotation = entry({

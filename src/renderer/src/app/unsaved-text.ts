@@ -1,3 +1,4 @@
+import { hasRoomPending, flushRoomPending } from '../folio-room-pending'
 /**
  * The page's record of text that is not confirmed on disk, kept outside the React tree, and the one
  * place from which a window is told it may close.
@@ -115,7 +116,7 @@ export function editorIsPresent(): boolean {
  * sent, and the caller keeps the window (the mounted app) or has main ask (`closeWithoutEditor`).
  */
 export function closeWindowIfClean(options?: { checkpoint?: string[] }): boolean {
-  if (!page || !unsaved.clean()) return false
+  if (!page || !unsaved.clean() || hasRoomPending()) return false
   void page.closeWindow(options)
   return true
 }
@@ -183,7 +184,7 @@ export function closeWithoutEditor(): Promise<void> {
   if (closingWithoutEditor) return closingWithoutEditor
   const api = page
   const generation = closeGeneration
-  const run = saveUnsavedText().then(() => {
+  const run = saveUnsavedText().then(() => flushRoomPending()).then(() => {
     closingWithoutEditor = null
     if (generation !== closeGeneration) return // called off by main while the text was written
     if (!closeWindowIfClean(writtenHere.size > 0 ? { checkpoint: [...writtenHere] } : undefined)) void api?.closeUnsaved()
@@ -291,7 +292,7 @@ export function takeCloseRetry(): boolean {
  *  condition and is false while a write is in flight. */
 export function unsavedStatus(): { saving: boolean; safe: boolean; documents: UnsavedDocument[]; copies: RecoveryCopy[] } {
   const documents = unsaved.paths().map((path) => ({ path, text: unsaved.textOf(path) ?? '' }))
-  return { saving: savesRunning > 0, safe: unsaved.clean(), documents, copies: [...recoveryCopies] }
+  return { saving: savesRunning > 0, safe: unsaved.clean() && !hasRoomPending(), documents, copies: [...recoveryCopies] }
 }
 
 /** Told whenever `unsavedStatus()` may have changed. */

@@ -1,6 +1,7 @@
-import { app, ipcMain } from 'electron'
+import { setFolioZoteroEvidenceReader, zoteroSourceQuote } from './folio-zotero-evidence'
+import { app, ipcMain, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile, realpath } from 'node:fs/promises'
 import { dirname, extname, join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -13,31 +14,38 @@ import {
 import { createNodeSqliteDriver } from '@readflex/sqlite-driver/node'
 import {
   buildShelfIndex,
-  openZoteroAnnotationWriteSession,
   readAnnotations,
+  readCollections,
   type ShelfIndex,
+  type ZoteroAnnotation,
   type ShelfIndexOptions,
   type ShelfItem,
 } from '@readflex/zotero-bridge'
 import { discoverZoteroDataDirectory } from '@readflex/zotero-paths'
 import {
   readingRoomDocumentFor,
-  SHELF_ROW_LIMIT,
   shelfAuthorYear,
+  shelfPage,
   shelfRow,
   type ShelfSearchResult,
 } from './reading-room-shelf'
+import {
+  collectionNodes,
+  type ShelfCollectionData,
+  type ShelfCollectionNode,
+} from '../shared/shelf-collections'
 import { createReadingRoomBookmarks, type ReadingBookmarkRow } from './reading-room-bookmarks'
 import {
   highlightsResult,
   mergeWithOutbox,
+  retireConfirmed,
+  type ZoteroRead,
   withKeptEdits,
   type HighlightsResult,
 } from './reading-room-highlights'
 import {
   dismissRefused,
   keptEditKeys,
-  reconcileKeptEdits,
   refusedHighlights,
   retryRefused,
   type RefusedHighlight,
@@ -55,18 +63,29 @@ import {
   annotationPositionWithinCap,
   annotationTextWithinCap,
   citationAnnotation,
-  drainOutboxToZotero,
-  e2eZoteroLivenessProbes,
   findExactCitationAnnotation,
   isPdfCitationPosition,
   LOCAL_ONLY_COMPLEX_PDF_REASON,
   LOCAL_ONLY_NON_PDF_REASON,
   quotationComment,
-  UNSUPPORTED_ZOTERO_EDIT_REASON,
+  readerSessionOf,
+  validBaseline,
   type CitationSelectionAnnotation,
+  type DrainReport,
   type DrainSkipReason,
   type SavedAnnotation,
+  type ZoteroWriteAttempt,
 } from './zotero-annotation-writes'
+import { queueAnnotationChange, releaseKeptEdits } from './zotero-outbox-edits'
+import { readBracketed } from './zotero-read-snapshot'
+import {
+  drainOutboxToZoteroPlugin,
+  pingZoteroPlugin,
+  readAnnotationsThroughPlugin,
+  type ZoteroPluginConnection,
+} from './zotero-plugin-transport'
+import { createZoteroPluginWatcher, type WatcherClock } from './zotero-plugin-watcher'
+import { MainProcessDiagnostics } from './shutdown'
 import { createZoteroLibraryAccess, type ZoteroLibraryAccess } from './zotero-library-access'
 
 export type ReadingRoomViewState = Record<string, unknown>
@@ -245,12 +264,50 @@ export function zoteroDatabasePath(): string {
   return override ?? join(discoverZoteroDataDirectory().path, 'zotero.sqlite')
 }
 
+/** Zotero's data directory, where the WriteFlex plugin leaves `writeflex/bridge.json`. Null when it
+ *  cannot be worked out; the plugin is then reached on Zotero's default port without a key. */
+function zoteroDataDirectory(): string | null {
+  try {
+    return dirname(zoteroDatabasePath())
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The WriteFlex plugin file shipped with the app (`extraResources`), for him to install in Zotero.
+ * In development it is the one `bun run build:zotero-plugin` left in `zotero-plugin/dist`.
+ */
+export function bundledZoteroPluginFile(): string | null {
+  const directory = app.isPackaged
+    ? join(process.resourcesPath, 'zotero-plugin')
+    : join(app.getAppPath(), 'zotero-plugin', 'dist')
+  try {
+    const file = readdirSync(directory).filter((name) => /^writeflex-zotero-.+\.xpi$/.test(name)).sort().at(-1)
+    return file ? join(directory, file) : null
+  } catch {
+    return null
+  }
+}
+
+/** Collections for the Shelf, read-only from the same database file as the index. A library without
+ *  collection tables, or one that cannot be read for them, simply has none: the Shelf still works. */
+function readShelfCollections(databasePath: string): ShelfCollectionData {
+  try {
+    return readCollections(createNodeSqliteDriver(), databasePath)
+  } catch {
+    return { collections: [], itemCollections: {} }
+  }
+}
+
 type ShelfState = {
   index: ShelfIndex | null
   /** libraryId → the `zotero://` URL segment, so a group item's link is not silently wrong. */
   librarySegments: LibrarySegments
   items: ShelfItem[]
   byKey: Map<string, ShelfItem>
+  /** Zotero's collections and their members, read with the index and refreshed with it. */
+  collections: ShelfCollectionData
   error: string | null
   /** `zotero.sqlite`'s modification time when this index was built; the staleness signal. */
   builtFrom: number | null
@@ -285,17 +342,18 @@ function createShelfLoader(
       await new Promise((resolve) => setImmediate(resolve))
       const options = shelfIndexOptions()
       try {
-        // The Shelf build and the library-segment read are one read of `zotero.sqlite`, taken through
-        // the gate so neither can be in flight while the drain probes the lock (ADR-0031).
+        // The Shelf build and the library-segment read are one read of `zotero.sqlite`, through the gate.
         current = await access.read(() => {
           const index = buildShelfIndex(createNodeSqliteDriver(), options)
           const items = index.list()
           const databasePath = options.zoteroDatabasePath
             ?? join(index.zoteroDataDirectory.path, 'zotero.sqlite')
           const librarySegments = readLibrarySegments(createNodeSqliteDriver(), databasePath)
+          const collections = readShelfCollections(databasePath)
           return {
             builtFrom: libraryModifiedAt(databasePath),
             byKey: new Map(items.map((item) => [`${item.libraryId}:${item.itemKey}`, item])),
+            collections,
             error: null,
             index,
             items,
@@ -306,6 +364,7 @@ function createShelfLoader(
         current = {
           builtFrom: null,
           byKey: new Map<string, ShelfItem>(),
+          collections: { collections: [], itemCollections: {} },
           librarySegments: new Map(),
           error: `The Shelf could not read your Zotero library. ${
             error instanceof Error ? error.message : String(error)
@@ -333,8 +392,30 @@ function createShelfLoader(
   }
 }
 
+/** What the main process tells every window when the outbox changed without a renderer asking —
+ *  the plugin watcher's drain. Same shape as a write result, so the renderer has one path for both. */
+export type ReadingRoomOutboxNotice = ReadingRoomOutboxCounts & {
+  notWritten?: string
+  notWrittenCode?: DrainSkipReason
+  /** Rows this drain wrote into Zotero. Success is announced only when this is above zero. */
+  written?: number
+  /** Rows this drain refused or found in conflict. They are listed with their reason. */
+  refusedNow?: number
+}
+
+export type ReadingRoomOptions = {
+  /** Called after a drain nobody in the renderer asked for (the plugin watcher's). */
+  onOutboxChanged?: (notice: ReadingRoomOutboxNotice) => void
+  /** Test seam: the plugin watcher's timer. */
+  pluginWatcherClock?: WatcherClock
+}
+
+/** How many lines the Zotero write log keeps. One line per row per attempt; oldest go first. */
+const ZOTERO_WRITE_LOG_LINES = 2_000
+
 export async function registerReadingRoom(
   entryFile = fileURLToPath(import.meta.url),
+  options: ReadingRoomOptions = {},
 ): Promise<{ close(): void }> {
   const installedBundleDirectory = readerBundleDirectory(entryFile)
   const readerHtmlPath = join(installedBundleDirectory, 'reader', 'reader.html')
@@ -347,11 +428,37 @@ export async function registerReadingRoom(
     createNodeSqliteDriver(),
     join(app.getPath('userData'), 'reading-room', 'sidecar.sqlite'),
   )
-  // Edits that older releases left counted as "refused" are reclassified before anything reads a
-  // count. Idempotent, and a failure here must not stop the Room from opening: the worst case is the
-  // old count, which is wrong but loses nothing.
+  /**
+   * One line per write attempt or refusal, per outbox row: time, operation, key, outcome, reason. In
+   * WriteFlex's own app data (`reading-room/zotero-writes.log`), bounded, never in Zotero's tree.
+   */
+  const writeLog = new MainProcessDiagnostics(
+    join(app.getPath('userData'), 'reading-room', 'zotero-writes.log'),
+    ZOTERO_WRITE_LOG_LINES,
+  )
+  const logAttempt = (attempt: ZoteroWriteAttempt): void => {
+    void writeLog
+      .record('zotero-write', { at: new Date().toISOString(), ...attempt })
+      .catch(() => { /* a log that cannot be written must not stop a write */ })
+  }
+  // A row a drain was writing when the app last stopped is put back in the queue, marked as cut off,
+  // before any drain runs: the write may or may not have reached Zotero, and the next one is told so.
   try {
-    reconcileKeptEdits(store)
+    const recovered = store.recoverInterruptedSends()
+    if (recovered > 0) {
+      logAttempt({ key: null, operation: 'update', outbox: 0, outcome: 'recovered-interrupted-sends', reason: `${recovered} interrupted write(s) queued again` })
+    }
+  } catch {
+    // Left for the next launch; a claimed row is only ever skipped, never lost.
+  }
+  // PDF edits and deletions older releases kept back (there was no write path for them) go back in
+  // the queue, in their original order, before anything reads a count. Idempotent; a failure here
+  // must not stop the Room from opening — the rows stay kept and nothing is lost.
+  try {
+    const released = releaseKeptEdits(store)
+    if (released > 0) {
+      logAttempt({ key: null, operation: 'update', outbox: 0, outcome: 'released-kept-edits', reason: `${released} kept edit(s) queued for Zotero` })
+    }
   } catch {
     // Left for the next launch.
   }
@@ -400,38 +507,136 @@ export async function registerReadingRoom(
   }
 
   /**
-   * A write session on Zotero's own database (ADR-0031), opened per drain rather than held: the
-   * liveness and schema checks have to be re-read each time because Zotero can be launched between
-   * one highlight and the next, and a session held open would be the thing stopping him launching it.
-   *
-   * The pre-write copy lands in WriteFlex's own `userData`, which `assertNotInZoteroDataDirectory`
-   * checks with no exception — only the write TARGET has one.
-   *
-   * The liveness probes are injected rather than left to their defaults, because the defaults ask the
-   * machine and a test must be answered by its fixture (ADR-0031, correction). Outside the e2e
-   * harness `e2eZoteroLivenessProbes` returns nothing and the machine is consulted, unchanged.
-   */
-  const zoteroWriteSession = () => {
-    const liveness = e2eZoteroLivenessProbes()
-    return openZoteroAnnotationWriteSession(createNodeSqliteDriver(), {
-      backupDirectory: join(app.getPath('userData'), 'reading-room', 'zotero-backups'),
-      databasePath: zoteroDatabasePath(),
-      ...(liveness ? { liveness } : {}),
-    })
-  }
-
-  /**
-   * Single-writer discipline over Zotero's database inside this process (ADR-0031, second door). The
-   * drain is exclusive against our own reads so that the exclusive-lock probe is never answering our
-   * own contention; reads stay concurrent with each other, so the Shelf never waits behind painting.
-   *
-   * It lives here, and not in `@readflex/zotero-bridge`, because the bridge's read and write APIs are
-   * synchronous — an async gate cannot be threaded through them — and this is the one place with async
-   * control over both the reads and the drain.
+   * Reads of `zotero.sqlite` (the Shelf, painting, links) go through this gate. WriteFlex no longer
+   * writes that file at all (ADR-0047): writes go to the WriteFlex plugin inside Zotero.
    */
   const zoteroLibrary = createZoteroLibraryAccess()
 
+  /**
+   * How the WriteFlex plugin in Zotero is reached. The data directory is re-read per drain. With a test
+   * library (the e2e override) only that library's bridge file is used, never Zotero's default port.
+   */
+  const pluginConnection: ZoteroPluginConnection = {
+    dataDirectory: zoteroDataDirectory,
+    ...(shelfIndexOptions().zoteroDatabasePath ? { defaultPort: null } : {}),
+  }
+
+  /** One drain at a time, in the order they were asked for; claims keep rows safe either way. */
+  let drainChain: Promise<unknown> = Promise.resolve()
+
+  /**
+   * Send everything that is waiting, in queue order, in batches of 25. Stops at the first refusal
+   * (nothing more can be sent) or when a batch was not full. The watcher is told whether the plugin
+   * answered, so it neither repeats this drain nor misses Zotero coming back.
+   */
+  function drainEverything(): Promise<DrainReport> {
+    const run = drainChain.then(async (): Promise<DrainReport> => {
+      const batch = 25
+      const rounds = Math.ceil(store.countOutboxWaiting() / batch) + 1
+      // Totals across every batch: the renderer announces success only for rows actually written, and
+      // shows a refusal when a row was refused, whichever batch it was in.
+      const total: DrainReport = {
+        attempted: 0, confirmed: 0, conflicted: 0, keptLocal: 0, rejected: 0, retrying: 0, skipped: null,
+      }
+      for (let round = 0; round < rounds; round += 1) {
+        const report = await drainOutboxToZoteroPlugin(store, pluginConnection, batch, logAttempt)
+        total.attempted += report.attempted
+        total.confirmed += report.confirmed
+        total.conflicted += report.conflicted
+        total.keptLocal += report.keptLocal
+        total.rejected += report.rejected
+        total.retrying += report.retrying
+        total.skipped = report.skipped
+        if (report.skippedReason) total.skippedReason = report.skippedReason
+        else delete total.skippedReason
+        if (report.skipped || report.attempted < batch || store.countOutboxWaiting() === 0) break
+      }
+      if (total.skipped && total.skipped !== 'no-credential') pluginWatcher.poke({ reachable: false })
+      else if (total.attempted > 0) pluginWatcher.poke({ reachable: true })
+      else pluginWatcher.poke()
+      return total
+    })
+    drainChain = run.catch(() => {})
+    return run
+  }
+
+  /** What one drain did, for the renderer: written rows, refused rows, and why nothing was written. */
+  function drainFacts(report: DrainReport): Pick<ReadingRoomOutboxNotice, 'written' | 'refusedNow' | 'notWritten' | 'notWrittenCode'> {
+    return {
+      refusedNow: report.rejected + report.conflicted,
+      written: report.confirmed,
+      ...(report.skippedReason ? { notWritten: report.skippedReason } : {}),
+      ...(report.skipped ? { notWrittenCode: report.skipped } : {}),
+    }
+  }
+
+  function drainResult(report: DrainReport): ReadingRoomOutboxNotice {
+    return { ...zoteroOutboxCounts(store), ...drainFacts(report) }
+  }
+
+  /**
+   * One document's annotations, and how far the read can be trusted (`ZoteroRead`):
+   *
+   * - the plugin answers: Zotero's own read, inside a Zotero transaction, signed -> authoritative;
+   * - Zotero is closed: the immutable read of `zotero.sqlite`, bracketed (`readBracketed`): with no
+   *   write-ahead log content and no change to either file while it ran, the database file was the
+   *   whole committed state -> authoritative;
+   * - anything else (Zotero open without a usable plugin, a log with content, a file that changed
+   *   during the read): painted, but it retires nothing.
+   *
+   * The start time is taken before anything is asked, so a row confirmed after it is never retired by
+   * this read.
+   */
+  async function readZoteroAnnotations(libraryId: number, attachmentKey: string): Promise<{ annotations: ZoteroAnnotation[]; read: ZoteroRead }> {
+    const startedAt = Date.now()
+    const throughPlugin = await readAnnotationsThroughPlugin(pluginConnection, libraryId, attachmentKey)
+    if (throughPlugin.kind === 'read') return { annotations: throughPlugin.annotations, read: { authoritative: true, startedAt } }
+    const databasePath = zoteroDatabasePath()
+    const bracketed = await zoteroLibrary.read(() => readBracketed(databasePath, () => readAnnotations(
+      createNodeSqliteDriver(), databasePath, libraryId, attachmentKey,
+    )))
+    const authoritative = throughPlugin.code === 'zotero-closed' && bracketed.complete
+    // The file read has the tags but not Zotero's modification stamp.
+    const annotations = bracketed.value.map((annotation) => ({ ...annotation, zoteroState: { modified: null, tags: [...annotation.tags] } }))
+    return { annotations, read: { authoritative, startedAt } }
+  }
+
+  const pluginWatcher = createZoteroPluginWatcher({
+    ...(options.pluginWatcherClock ? { clock: options.pluginWatcherClock } : {}),
+    drain: async () => {
+      const report = await drainEverything()
+      options.onOutboxChanged?.(drainResult(report))
+    },
+    hasPending: () => store.countOutboxWaiting() > 0,
+    isReachable: async () => (await pingZoteroPlugin(pluginConnection)).kind === 'ready',
+  })
+  // Anything left waiting from an earlier session starts the watch at once.
+  pluginWatcher.poke()
+
   const shelf = createShelfLoader(zoteroLibrary)
+  const unregisterEvidenceReader = setFolioZoteroEvidenceReader(async requests => {
+    shelf.refresh()
+    const state = await shelf.load()
+    const annotations = new Map<string, Promise<ZoteroAnnotation[]>>()
+    return Promise.all(requests.map(async request => {
+      const annotation = /^zotero:\/\/open-pdf\/(library|groups\/\d+)\/items\/([A-Z\d]{8})\?annotation=([A-Z\d]{8})$/.exec(request.target)
+      const item = state.items.find(value => itemSelectLink(state.librarySegments, value.libraryId, value.itemKey) === request.target || (annotation && value.attachments.some(attachment => attachment.key === annotation[2]) && annotationLink(state.librarySegments, value.libraryId, annotation[2], annotation[3]) === request.target))
+      if (!state.index || state.error) return { target: request.target, state: 'Zotero not available' as const, highlights: [] }
+      if (!item) return { target: request.target, state: 'not found in Zotero' as const, highlights: [] }
+      const label = shelfAuthorYear(item)
+      const highlights = await Promise.all(request.highlights.map(async target => {
+        const match = /^zotero:\/\/open-pdf\/(library|groups\/\d+)\/items\/([A-Z\d]{8})\?annotation=([A-Z\d]{8})$/.exec(target)
+        if (!match || !item.attachments.some(attachment => attachment.key === match[2]) || annotationLink(state.librarySegments, item.libraryId, match[2], match[3]) !== target) return null
+        const key = `${item.libraryId}/${match[2]}`
+        if (!annotations.has(key)) annotations.set(key, readZoteroAnnotations(item.libraryId, match[2]).then(value => value.annotations))
+        const annotation = (await annotations.get(key)!).find(value => value.key === match[3])
+        if (!annotation) return null
+        const row = highlightsResult([annotation]).rows[0]
+        return { target, quote: zoteroSourceQuote(annotation), bodyKind:row.bodyKind, label: row.pageLabel ? `${label}, p. ${row.pageLabel}` : label }
+      }))
+      return { target: request.target, state: 'ready' as const, title: item.title, label, itemTarget: itemSelectLink(state.librarySegments,item.libraryId,item.itemKey), highlights: highlights.filter((value): value is NonNullable<typeof value> => value !== null) }
+    }))
+  })
   const citationBaseLinks = new Map<string, string>()
 
   function citationBaseLinkKey(document: ReadingRoomDocument): string {
@@ -519,21 +724,36 @@ export async function registerReadingRoom(
   ipcMain.handle('reading-room:recent-documents', (): RecentDocument[] =>
     store.listRecentDocuments(12))
 
-  ipcMain.handle('reading-room:search-shelf', async (_event, rawQuery: unknown): Promise<ShelfSearchResult> => {
+  /** The collection tree for the Shelf's filter: ids, names, parents, subtree item counts. Read-only. */
+  ipcMain.handle('reading-room:shelf-collections', async (): Promise<ShelfCollectionNode[]> => {
+    // Raised alongside the empty-query search: same staleness check, so tree, counts and the
+    // remembered-choice fallback agree with the index the search will use.
+    shelf.refresh()
+    const state = await shelf.load()
+    return collectionNodes(state.items, state.collections)
+  })
+
+  ipcMain.handle('reading-room:search-shelf', async (
+    _event,
+    rawQuery: unknown,
+    rawCollection?: unknown,
+  ): Promise<ShelfSearchResult> => {
     const query = typeof rawQuery === 'string' ? rawQuery : ''
     const trimmed = query.trim()
     // The Shelf is always raised on an empty query, so this is where a library changed in Zotero
     // since the index was built gets picked up — never mid-typing.
     if (!trimmed) shelf.refresh()
     const state = await shelf.load()
-    const matches = state.index ? (trimmed ? state.index.search(trimmed) : state.items) : []
+    const found = state.index ? (trimmed ? state.index.search(trimmed) : state.items) : []
+    // The collection filter runs on the whole match set BEFORE the row limit, so a collection of
+    // hundreds of items is searchable within. An id that is not a known collection is ignored.
+    const page = shelfPage(found, state.collections, rawCollection)
     return {
       diagnostics: state.index?.diagnostics.map((entry) => entry.message) ?? [],
       error: state.error,
-      matched: matches.length,
+      matched: page.matched,
       query,
-      rows: matches
-        .slice(0, SHELF_ROW_LIMIT)
+      rows: page.items
         .map((item) => shelfRow(item, itemSelectLink(state.librarySegments, item.libraryId, item.itemKey))),
       total: state.items.length,
       zoteroDataDirectory: state.index?.zoteroDataDirectory.path ?? '',
@@ -567,17 +787,18 @@ export async function registerReadingRoom(
     try {
       // Zotero's marks AND the ones still owed to it, as one set (ADR-0029): a highlight made in this
       // session paints immediately and stays painted across a reopen, with or without a credential.
-      // Through the gate, because this is the repaint a highlight triggers and it must not be in
-      // flight while the drain probes the lock (ADR-0031).
-      const annotations = await zoteroLibrary.read(() => readAnnotations(
-        createNodeSqliteDriver(),
-        zoteroDatabasePath(),
-        document.libraryId,
-        document.attachmentKey,
-      ))
-      const owed = store.outboxUnconfirmed()
-        .filter((entry) => entry.parentItemKey === document.attachmentKey)
-      return withKeptEdits(highlightsResult(mergeWithOutbox(annotations, owed)), keptEditKeys(owed))
+      const { annotations, read } = await readZoteroAnnotations(document.libraryId, document.attachmentKey)
+      // This document's rows only, with no window: a long log elsewhere cannot hide its edits.
+      const waiting = store.outboxUnconfirmedFor(document.libraryId, document.attachmentKey)
+      // What Zotero confirmed stays painted from here until an authoritative read that started after
+      // the confirmation, so a confirmed highlight never vanishes on reopen (ADR-0047).
+      const settled = retireConfirmed(store.outboxConfirmedUnreadFor(document.libraryId, document.attachmentKey), read)
+      if (settled.retired.length > 0) store.markOutboxRead(settled.retired)
+      const owed = [...settled.stillShown, ...waiting].sort((left, right) => left.id - right.id)
+      const shown = mergeWithOutbox(annotations, owed)
+      const result = withKeptEdits(highlightsResult(shown), keptEditKeys(owed))
+      const confirmed = new Set([...annotations.map(annotation => annotation.key), ...settled.stillShown.map(entry => entry.itemKey)])
+      return { ...result, rows: result.rows.map(row => ({ ...row, zoteroKey: confirmed.has(row.key) ? row.key : null })) }
     } catch (error) {
       return {
         colours: [],
@@ -688,7 +909,7 @@ export async function registerReadingRoom(
       })
     }
 
-    const report = await zoteroLibrary.drain(() => drainOutboxToZotero(store, zoteroWriteSession))
+    const report = await drainEverything()
     entries = allOutboxEntries(store)
     exact = findExactCitationAnnotation(
       entries,
@@ -707,24 +928,23 @@ export async function registerReadingRoom(
       confirmed: exact?.status === 'confirmed',
       link: written,
       ...zoteroOutboxCounts(store),
-      ...(report.skippedReason ? { notWritten: report.skippedReason } : {}),
-      ...(report.skipped ? { notWrittenCode: report.skipped } : {}),
+      ...drainFacts(report),
     }
   })
 
   /**
-   * A highlight made in the reader, on its way into Zotero's own database (ADR-0031).
+   * A highlight made in the reader, on its way into Zotero through the WriteFlex plugin (ADR-0047).
    *
    * It is **queued first** and only then written: the renderer awaits this call and only then tells
    * the reader "saved", so the boundary the reader trusts is the durable local queue and never the
-   * write (ADR-0014). If Zotero is open the write is refused and the entry simply stays queued —
+   * write (ADR-0014). If Zotero is not open the entry simply stays queued —
    * still painted, because ADR-0029 draws the union of Zotero and the outbox.
    */
   ipcMain.handle('reading-room:save-annotations', async (_event, input: unknown): Promise<{
     queued: number
     waiting: number
     rejected: number
-    /** Present when Zotero would not take the write, e.g. "Close Zotero and…". */
+    /** Present when Zotero would not take the write, e.g. "Zotero is not open…". */
     notWritten?: string
     /** Which refusal it was, so a surface can name the cause without reading the sentence. */
     notWrittenCode?: DrainSkipReason
@@ -741,11 +961,21 @@ export async function registerReadingRoom(
     if (!isRecord(input) || !Array.isArray(input.annotations)) {
       throw new Error('Invalid annotation payload.')
     }
-    const operation = input.operation === 'update' ? 'update' : 'create'
+    const operation = input.operation === 'update' || input.operation === 'delete'
+      ? input.operation
+      : 'create'
     let queued = 0
     let keptLocalCount = 0
     let keptLocalReason: string | null = null
-    for (const raw of input.annotations) {
+    // The before-state is the reader's, sent with each change: the mark as THAT reader instance showed
+    // it (ADR-0047). Main keeps no copy of its own, so a list refreshed since cannot stand in for it.
+    const before = Array.isArray(input.before) ? input.before : []
+    // Which reader instance made the change: a create re-keyed because Zotero already held its key is
+    // resolved to the new key only for that instance's later changes (ADR-0047).
+    const readerSession = readerSessionOf({ readflexReaderSession: input.readerSession })
+    // Each change is one sidecar transaction, and a row the drain has claimed is never folded into or
+    // cancelled (see zotero-outbox-edits), so this may interleave freely with a drain in flight.
+    for (const [index, raw] of input.annotations.entries()) {
       if (
         !isRecord(raw)
         || typeof raw.key !== 'string'
@@ -753,45 +983,41 @@ export async function registerReadingRoom(
         || typeof raw.position !== 'string'
       ) continue
       const annotation = raw as unknown as SavedAnnotation
-      const payload = annotationPayload(annotation, document.attachmentKey)
-      const entry = store.enqueueOutbox({
-        // The reader's OWN key, on a create as well as an update. ADR-0029 deduplicates the painted
-        // union by annotation key, so a queued mark with no key could not be matched against the same
-        // mark once Zotero has it — it would paint twice. The server's assigned key replaces this on
-        // confirm, and confirmed rows are not painted, so the two can never collide.
+      const payload = annotationPayload(annotation, document.attachmentKey, undefined, {
+        keepWholeComment: operation !== 'create',
+      })
+      // The reader's OWN key, on a create as well as an update or delete. ADR-0029 deduplicates the
+      // painted union by annotation key, and a key Zotero replaces on insert is carried to every row
+      // queued after it when the create is confirmed.
+      const queuedChange = queueAnnotationChange(store, {
         itemKey: annotation.key,
         libraryId: document.libraryId,
         operation,
         parentItemKey: document.attachmentKey,
-        payload: JSON.stringify(
-          operation === 'create' && annotation.type === 'image'
+        payload: JSON.stringify({
+          ...(operation === 'create' && annotation.type === 'image'
             ? { ...payload, readflexSourceKey: annotation.key }
-            : payload,
-        ),
-      })
-      if (
-        document.kind !== 'pdf'
-        ||
-        !annotationPositionWithinCap(annotation.position)
-        || !isPdfCitationPosition(annotation.position)
-      ) {
-        keptLocalReason = document.kind === 'pdf'
-          ? LOCAL_ONLY_COMPLEX_PDF_REASON
-          : LOCAL_ONLY_NON_PDF_REASON
-        store.markOutboxLocalOnly(entry.id, keptLocalReason)
-        keptLocalCount += 1
-      } else if (operation === 'update') {
-        // There is no write path for an edit yet (ADR-0031 covers the insert only), so Zotero is never
-        // asked: the edit is stored, drawn (ADR-0029) and kept out of both sync counts from the start.
-        // Queuing it as Zotero work would count it as "waiting" for a write that cannot happen, and
-        // then as "refused" by a library that was never asked.
-        store.markOutboxLocalOnly(entry.id, UNSUPPORTED_ZOTERO_EDIT_REASON)
-      }
+            : payload),
+          ...(readerSession ? { readflexReaderSession: readerSession } : {}),
+        }),
+      }, operation === 'create' ? null : validBaseline(before[index]))
       queued += 1
+      // A fold landed in a row that is already classified; a cancel left nothing to classify.
+      if (queuedChange.kind !== 'queued') continue
+      const keptReason = document.kind !== 'pdf'
+        ? LOCAL_ONLY_NON_PDF_REASON
+        : operation !== 'delete'
+            && (!annotationPositionWithinCap(annotation.position) || !isPdfCitationPosition(annotation.position))
+          ? LOCAL_ONLY_COMPLEX_PDF_REASON
+          : null
+      if (keptReason) {
+        keptLocalReason = keptReason
+        store.markOutboxLocalOnly(queuedChange.entry.id, keptReason)
+        keptLocalCount += 1
+      }
     }
-    // Now try to hand it to Zotero. A refusal is not a failure of the save. Exclusive against our own
-    // reads, so the liveness probe and the lock are answering Zotero and nothing else (ADR-0031).
-    const report = await zoteroLibrary.drain(() => drainOutboxToZotero(store, zoteroWriteSession))
+    // Now try to hand it to Zotero. A refusal is not a failure of the save.
+    const report = await drainEverything()
     return {
       queued,
       ...zoteroOutboxCounts(store),
@@ -805,8 +1031,7 @@ export async function registerReadingRoom(
             },
           }
         : {}),
-      ...(report.skippedReason ? { notWritten: report.skippedReason } : {}),
-      ...(report.skipped ? { notWrittenCode: report.skipped } : {}),
+      ...drainFacts(report),
     }
   })
 
@@ -945,7 +1170,7 @@ export async function registerReadingRoom(
         payload: JSON.stringify(areaQuotationPayload(source.payload, sourceKey, comment)),
       })
     }
-    const report = await zoteroLibrary.drain(() => drainOutboxToZotero(store, zoteroWriteSession))
+    const report = await drainEverything()
     const settled = allOutboxEntries(store).find((entry) => entry.id === quotation?.id) ?? quotation
     const recorded = settled?.status === 'confirmed'
     return {
@@ -953,8 +1178,7 @@ export async function registerReadingRoom(
       quotationStatus: settled!.status,
       ...(settled?.lastError ? { quotationError: settled.lastError } : {}),
       ...zoteroOutboxCounts(store),
-      ...(report.skippedReason ? { notWritten: report.skippedReason } : {}),
-      ...(report.skipped ? { notWrittenCode: report.skipped } : {}),
+      ...drainFacts(report),
     }
   })
 
@@ -977,12 +1201,19 @@ export async function registerReadingRoom(
   }> => {
     const before = zoteroOutboxCounts(store)
     if (before.waiting === 0) return before
-    const report = await zoteroLibrary.drain(() => drainOutboxToZotero(store, zoteroWriteSession))
+    const report = await drainEverything()
     return {
       ...zoteroOutboxCounts(store),
-      ...(report.skippedReason ? { notWritten: report.skippedReason } : {}),
-      ...(report.skipped ? { notWrittenCode: report.skipped } : {}),
+      ...drainFacts(report),
     }
+  })
+
+  /** Show the bundled WriteFlex plugin file in Finder, so he can install it in Zotero. */
+  ipcMain.handle('reading-room:show-zotero-plugin', (): boolean => {
+    const file = bundledZoteroPluginFile()
+    if (!file) return false
+    shell.showItemInFolder(file)
+    return true
   })
 
   /** Both sync signals cross IPC explicitly; the renderer never infers one from the other. */
@@ -1040,11 +1271,10 @@ export async function registerReadingRoom(
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || !retryRefused(store, id)) {
       return zoteroOutboxCounts(store)
     }
-    const report = await zoteroLibrary.drain(() => drainOutboxToZotero(store, zoteroWriteSession))
+    const report = await drainEverything()
     return {
       ...zoteroOutboxCounts(store),
-      ...(report.skippedReason ? { notWritten: report.skippedReason } : {}),
-      ...(report.skipped ? { notWrittenCode: report.skipped } : {}),
+      ...drainFacts(report),
     }
   })
 
@@ -1072,24 +1302,7 @@ export async function registerReadingRoom(
     (): ReadingBookmarkRow[] => bookmarks.list(),
   )
 
-  ipcMain.handle('reading-room:save-view-state', (_event, input: unknown) => {
-    if (!isRecord(input) || !isRecord(input.viewState)) {
-      throw new Error('Invalid Reading Room view state.')
-    }
-    const document = currentDocument()
-    if (
-      !document ||
-      input.libraryId !== document.libraryId ||
-      input.attachmentKey !== document.attachmentKey
-    ) {
-      throw new Error('The Reading Room view state does not match the active document.')
-    }
-    store.savePosition({
-      itemKey: document.attachmentKey,
-      libraryId: document.libraryId,
-      position: JSON.stringify(input.viewState),
-    })
-  })
+  ipcMain.handle('reading-room:save-view-state', (_event, input: unknown) => bookmarks.savePosition(input))
 
   ipcMain.handle('reading-room:save-width', (_event, rawWidth: unknown) => {
     if (typeof rawWidth !== 'number' || !Number.isFinite(rawWidth)) {
@@ -1107,9 +1320,13 @@ export async function registerReadingRoom(
 
   return {
     close() {
+      unregisterEvidenceReader()
+      pluginWatcher.stop()
+      ipcMain.removeHandler('reading-room:show-zotero-plugin')
       ipcMain.removeHandler('reading-room:get-state')
       ipcMain.removeHandler('reading-room:recent-documents')
       ipcMain.removeHandler('reading-room:search-shelf')
+      ipcMain.removeHandler('reading-room:shelf-collections')
       ipcMain.removeHandler('reading-room:open-shelf-item')
       ipcMain.removeHandler('reading-room:read-highlights')
       ipcMain.removeHandler('reading-room:cite-selection')

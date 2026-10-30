@@ -13,15 +13,18 @@
  * WritingWorkspace is the Workspace the app's own writers (rename repair, agent notes) are given, so
  * that their saves go through the session and nothing writes by another route.
  */
+import { guardFolioRemoval, finishFolioMove } from '../folio-declaration'
 import { rmdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, posix } from 'node:path'
 import type { PathKind } from '../document-path'
 import { fingerprintOf } from '../guarded-document-read'
+import type { OwnWriteExpectation } from '../workspace-watcher'
 import { ChangedSinceRead, DiskChangedUnderBuffer, NameTaken, SaveWithoutBasis, type EditorSaveResult, type FileReadResult, type SaveFileOptions, type SavedFileResult, type Workspace } from '../workspace'
 import { basisAllows, isSaveBasis, type SaveBasis } from '../../shared/save-basis'
 import { CommandLineWorkspace } from './guarded-workspace'
 import { ChangedSinceChecked, dropSecondName, folderIdentity, makeFolders, movePath, readBytes, realPathForTrash, writeWhole, type WriteSeams } from './guarded-fs'
+import type { CommitTarget } from '../guarded-document-write'
 import { CliError } from './operation'
 import { markdownPath } from './paths'
 
@@ -66,8 +69,11 @@ export type SessionOptions = {
     file: (path: string, before: Uint8Array | null, wrote: string) => Promise<void>
     move: (move: SessionMove) => Promise<void>
   }
-  /** Told the path of everything about to be written, moved or trashed (the app records its own writes). */
-  onWrite?: (path: string) => void
+  /** Told the path of everything about to be written, moved or trashed (the app records its own writes). Told
+   *  again, with `expected`, in the tick of the commit: the state the write leaves at that path (the staged file's
+   *  identity, or `'absent'` for a name a trash, a move or a removal leaves empty; D-WATCH-1). A trash, move or removal that fails is told
+   *  once more, with no `expected`, so no `'absent'` is left standing over a file that is still there. It must not throw. */
+  onWrite?: (path: string, expected?: OwnWriteExpectation) => void
   /** Told a non-fatal notice about a write that succeeded: a new file whose temporary second name could not be
    *  removed (guarded-document-write.ts `leftover`). The app passes its window's notice; the default, for the
    *  command line, is a `writeflex: note:` line on stderr. A notice that throws never changes the write's outcome. */
@@ -122,6 +128,11 @@ export class WriteSession {
     }
   }
 
+  /** The guarded write's `beforeCommit` for `path`: the app is told the state the commit leaves there. */
+  #committing(path: string): (target: CommitTarget) => void {
+    return ({ staged }) => this.options.onWrite?.(path, staged)
+  }
+
   #failed(path: string, error: unknown): void {
     if (this.firstFailure === undefined) this.stoppedAt = path
     this.firstFailure ??= error
@@ -169,7 +180,7 @@ export class WriteSession {
   async create(path: string, content: string | Uint8Array): Promise<void> {
     await this.folders(posix.dirname(path))
     await this.#guard(path, async (seams) => {
-      const { leftover } = await writeWhole(this.ws, path, content, 'create', seams)
+      const { leftover } = await writeWhole(this.ws, path, content, 'create', seams, undefined, this.#committing(path))
       this.#created.set(path, fingerprint(content))
       this.#steps.push({ did: 'created', path })
       // Created; only a create can leave a second name (a rewrite commits by rename). Said, never thrown.
@@ -187,7 +198,7 @@ export class WriteSession {
     const wrote = this.#created.get(path)
     if (wrote === undefined) throw new CliError(`${path} was not created by this operation, so it is not rewritten this way.`, 'failed')
     await this.#guard(path, async (seams) => {
-      await writeWhole(this.ws, path, content, 'replace', seams, { fingerprint: wrote })
+      await writeWhole(this.ws, path, content, 'replace', seams, { fingerprint: wrote }, this.#committing(path))
       this.#created.set(path, fingerprint(content))
     })
   }
@@ -222,7 +233,7 @@ export class WriteSession {
       const known = this.#files.get(path)?.before
       const before = known ?? await readBytes(this.ws, path)
       await this.options.intent?.file(path, known ? null : before, fingerprint(content))
-      await writeWhole(this.ws, path, content, 'replace', seams, expect)
+      await writeWhole(this.ws, path, content, 'replace', seams, expect, this.#committing(path))
       this.#files.set(path, { before, after: fingerprint(content) })
       this.#steps.push({ did: 'rewrote', path })
     }, excused)
@@ -250,7 +261,16 @@ export class WriteSession {
       const move: SessionMove = { from, to, kind, ...(identity ?? {}) }
       await this.options.intent?.move(move)
       this.options.onWrite?.(to)
-      await movePath(this.ws, from, to, kind, seams, identity ?? undefined)
+      try {
+        await movePath(this.ws, from, to, kind, seams, identity ?? undefined, ({ moved, sameName }) => {
+          this.options.onWrite?.(from, sameName ? moved : 'absent')
+          this.options.onWrite?.(to, moved)
+        })
+      } catch (error) {
+        // Not moved: the old name is not left empty, so its record is told again with no state (delivered).
+        this.options.onWrite?.(from)
+        throw error
+      }
       this.#moves.push(move)
       this.#steps.push({ did: 'moved', path: from, to })
       if (bytes) this.#files.set(from, { before: bytes, after: fingerprint(bytes) })
@@ -260,17 +280,33 @@ export class WriteSession {
 
   /** Hand an existing file or folder to the Trash mover. Not recorded: the Trash is its own undo. */
   async trash(path: string, kind: PathKind, mover: (absolute: string) => Promise<void>): Promise<void> {
-    await this.#guard(path, async (seams) => {
-      await mover(await realPathForTrash(this.ws, path, kind, seams))
+    await this.ws.exclusiveAll(() => this.#guard(path, async (seams) => {
+      guardFolioRemoval(this.ws, path)
+      const real = await realPathForTrash(this.ws, path, kind, seams)
+      this.options.onWrite?.(path, 'absent')
+      try {
+        await mover(real)
+      } catch (error) {
+        // The Trash failed and the file stays: told again with no state, so another program's delete is seen.
+        this.options.onWrite?.(path)
+        throw error
+      }
+      if (!existsSync(real)) await finishFolioMove(this.ws, path)
       this.#steps.push({ did: 'trashed', path })
-    })
+    }))
   }
 
   /** Remove `extra`, a second name of the very file at `kept`: what a file move leaves when it is
    *  stopped between making the new name and removing the old. Nothing is lost; `kept` stays. */
   async dropSecondName(extra: string, kept: string): Promise<void> {
     await this.#guard(extra, async (seams) => {
-      await dropSecondName(this.ws, extra, kept, seams)
+      this.options.onWrite?.(extra, 'absent')
+      try {
+        await dropSecondName(this.ws, extra, kept, seams)
+      } catch (error) {
+        this.options.onWrite?.(extra)
+        throw error
+      }
       this.#steps.push({ did: 'removed-second-name', path: extra })
     })
   }

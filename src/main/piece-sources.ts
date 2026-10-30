@@ -196,8 +196,23 @@ export async function pieceCollectionDir(ws: Workspace, piecePath: string): Prom
 /** Why a listing was refused; the text is shown as it stands. */
 export class PieceSourcesRefusal extends Error {}
 
+/** A single room read shares collection projections and citation metadata across all parts. */
+export function pieceSourcesContext(ws: Workspace, dir: string) {
+  let pending: Promise<Awaited<ReturnType<typeof collectionPieces>>> | undefined
+  return { pieces: () => pending ??= collectionPieces(ws, dir) }
+}
+export type PieceSourcesContext = ReturnType<typeof pieceSourcesContext>
+
+/** Metadata dates cannot be citations; explicit sources still require reconstruction. */
+export function needsPieceSources(content: string): boolean {
+  const block = frontmatterBlock(content)
+  const body = stripFencedRegions(block ? content.slice(block.end) : content)
+  return Boolean(block && /^sources\s*:/m.test(content.slice(0, block.end)))
+    || /\[\[/.test(body) || [...scanText(body).matchAll(CITATION)].length > 0
+}
+
 /** Read the piece and its collection and list its sources. `dir` is the collection when the caller knows it. */
-export async function readPieceSources(ws: Workspace, input: { path: string; dir?: string }): Promise<PieceSourceListing> {
+export async function readPieceSources(ws: Workspace, input: { path: string; dir?: string }, context?: PieceSourcesContext): Promise<PieceSourceListing> {
   try {
     assertRelativeWorkspacePath(input.path)
     if (input.dir) assertRelativeWorkspacePath(input.dir)
@@ -207,7 +222,7 @@ export async function readPieceSources(ws: Workspace, input: { path: string; dir
   if (!/\.(?:md|markdown|mdx)$/i.test(input.path)) throw new PieceSourcesRefusal('Only a Markdown piece has sources to list.')
   const dir = (input.dir ?? await pieceCollectionDir(ws, input.path)).replace(/^\/+|\/+$/g, '')
   const content = (await ws.readFile(input.path)).content
-  const pieces = await collectionPieces(ws, dir)
+  const pieces = await (context?.pieces() ?? collectionPieces(ws, dir))
   const facts = pieces.map(materialFactOf)
   const breakdown = pieceSourceBreakdown(dir, facts, input.path)
   if (!breakdown) throw new PieceSourcesRefusal(`${input.path} is not a piece of this collection.`)

@@ -104,10 +104,10 @@ afterEach(async () => {
 })
 
 const read = (rel: string): Promise<string> => readFile(join(root, rel), 'utf8')
-const turnOf = (prompt: string, step: ScriptedStep) => ({ prompt, rounds: [{ kind: 'tool-calls' as const, calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message' as const, text: 'Done.' }] })
+const turnOf = (prompt: string, step: ScriptedStep) => ({ prompt, rounds: [{ kind: 'tool-calls' as const, calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] }, { kind: 'tool-calls' as const, calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message' as const, text: 'Done.' }] })
 
 async function boot(script?: Parameters<typeof scriptedSessionFactory>[0]): Promise<WorkspaceAgent> {
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace, appDataDir: appData, changes, services: { scraps },
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     ...(script ? { sessionFactory: scriptedSessionFactory(script) } : {}),

@@ -1,3 +1,4 @@
+import { setEvidenceDrag, useEvidenceAttachmentTarget } from '../folio-evidence-transfer'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import { Library, Search, X } from 'lucide-react'
@@ -243,6 +244,7 @@ function DockListBody({ query, pending, response, selected, onPick, onDoubleClic
   onPick: (index: number) => void
   onDoubleClick: () => void
 }): JSX.Element {
+  const evidenceTarget = useEvidenceAttachmentTarget()
   if (response?.status === 'missing') {
     return (
       <div className="archive-empty" role="status">
@@ -276,14 +278,17 @@ function DockListBody({ query, pending, response, selected, onPick, onDoubleClic
         return (
           <div
             key={`${result.passageId}`}
+            draggable
+            onDragStart={event => setEvidenceDrag(event.dataTransfer, { kind: 'archive', title: result.title, url: result.publicUrl || result.link })}
             className={index === selected ? 'archive-row on' : 'archive-row'}
             role="option"
             aria-selected={index === selected}
-            onMouseDown={(event) => { event.preventDefault(); onPick(index) }}
+            onMouseDown={() => { onPick(index) }}
             onDoubleClick={onDoubleClick}
           >
             <span className={`archive-src ${badge.className}`}>{badge.label}</span>
             <span className="archive-title">{rowTitle(result)}</span>
+            {evidenceTarget && <button type="button" className="fr-linkbtn" onMouseDown={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); void evidenceTarget.attach({ kind: 'archive', title: result.title, url: result.publicUrl || result.link }) }}>Attach to {evidenceTarget.part}</button>}
             <span className="archive-meta">{rowMeta(result)}</span>
           </div>
         )

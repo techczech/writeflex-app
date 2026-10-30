@@ -44,7 +44,7 @@ const MAX_EDITS = 4000
  * The regions where `b` differs from `a` (Myers' shortest edit script on interned lines), in order, each
  * as half-open ranges of both. Common prefix and suffix are trimmed first.
  */
-function diffHunks(a: readonly number[], b: readonly number[]): Hunk[] {
+export function diffHunks(a: readonly number[], b: readonly number[]): Hunk[] {
   let pre = 0
   while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre += 1
   let suf = 0

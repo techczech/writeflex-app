@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 /**
  * The guards of a running-order write that only show under a race or a late failure. Each test fails when
  * the guard it names is taken out.
@@ -203,7 +204,7 @@ test('4: a move that was written is reported as made when the Folio outline cann
   expect(outcome.plan).toBeNull()
   expect(outcome.writtenIndex).toBe(INDEX)
   expect(JSON.parse(await read(MANIFEST)).files.map((file: { path: string }) => `${DIR}/${file.path}`)).toEqual(moved)
-  expect(await read(INDEX)).toContain('- [[Beta]]\n- [[Gamma]]\n- [[Delta]]\n- [[Alpha]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[Beta]]\n- [[Gamma]]\n- [[Delta]]\n- [[Alpha]]', {"Beta":"./b.md|Beta","Gamma":"./c.md|Gamma","Delta":"./d.md|Delta","Alpha":"./a.md|Alpha"}))
 })
 
 test('4: an Add that was written is reported as made, and a Folio outline write says so in its own error', async () => {

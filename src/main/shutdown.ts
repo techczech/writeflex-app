@@ -29,7 +29,8 @@ export async function waitForCleanupWithTimeout(
 export class MainProcessDiagnostics {
   #pending = Promise.resolve()
 
-  constructor(readonly path: string) {}
+  /** `maxLines` bounds the file; the oldest lines go first. 400 is the lifecycle log's own bound. */
+  constructor(readonly path: string, readonly maxLines = 400) {}
 
   record(event: string, details: Record<string, unknown> = {}, ts = Date.now()): Promise<void> {
     const write = this.#pending.then(() => this.#write({ ts, event, ...details }))
@@ -40,7 +41,7 @@ export class MainProcessDiagnostics {
   async #write(entry: Record<string, unknown>): Promise<void> {
     let existing: string[] = []
     try { existing = (await readFile(this.path, 'utf8')).split('\n').filter(Boolean) } catch {}
-    const lines = [...existing, JSON.stringify(entry)].slice(-400)
+    const lines = [...existing, JSON.stringify(entry)].slice(-this.maxLines)
     await mkdir(dirname(this.path), { recursive: true })
     const temporary = `${this.path}.tmp`
     await writeFile(temporary, `${lines.join('\n')}\n`, 'utf8')

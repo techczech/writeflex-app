@@ -1,57 +1,83 @@
 import { randomUUID } from "node:crypto";
 import type { ApprovalRequest, ToolRisk } from "./types.ts";
 
-type PendingEntry = {
-  request: ApprovalRequest;
-  settle: (outcome: "approved" | "denied") => void;
-  timer: ReturnType<typeof setTimeout>;
+export type ApprovalOutcome = "approved" | "denied" | "cancelled";
+export type ApprovalResolution = { resolved: true } | { resolved: false; reason: "aborted" | "already-settled" | "unknown-request" };
+type RequestInput = { capabilityName: string; risk: ToolRisk; input: unknown; preview?: string; turnId?: string; signal?: AbortSignal };
+type PendingEntry = { request: ApprovalRequest; settle: (outcome: ApprovalOutcome) => void };
+type BrokerOptions = {
+  timeoutMs?: number;
+  onRequest?: (req: ApprovalRequest) => void;
+  onSettle?: (req: ApprovalRequest, outcome: ApprovalOutcome) => void;
+  onObserverError?: (req: ApprovalRequest, stage: "onRequest" | "onSettle") => void;
+  onRefused?: (req: ApprovalRequest | undefined, reason: Exclude<ApprovalResolution, { resolved: true }>["reason"], history?: { id: string; turnId: string }) => void;
 };
 
-/**
- * ADR-0004: a needs-approval tool call suspends on a pending promise while the
- * host app shows the approval card; timeout resolves to denied.
- */
+/** Pause-and-resume approvals. Cancellation and observer failures always settle the waiter. */
 export class ApprovalBroker {
   #pending = new Map<string, PendingEntry>();
-  #timeoutMs: number;
-  #onRequest?: (req: ApprovalRequest) => void;
-  #onSettle?: (req: ApprovalRequest, outcome: "approved" | "denied") => void;
+  #settled = new Map<string, { request: ApprovalRequest; outcome: ApprovalOutcome }>();
+  #cancelledTurns = new Set<string>();
+  #history = new Map<string, { turnId: string; aborted: boolean }>();
+  constructor(private readonly options: BrokerOptions = {}) {}
 
-  constructor(opts?: {
-    timeoutMs?: number;
-    onRequest?: (req: ApprovalRequest) => void;
-    onSettle?: (req: ApprovalRequest, outcome: "approved" | "denied") => void;
-  }) {
-    this.#timeoutMs = opts?.timeoutMs ?? 120_000;
-    this.#onRequest = opts?.onRequest;
-    this.#onSettle = opts?.onSettle;
+  #observerError(request: ApprovalRequest, stage: "onRequest" | "onSettle"): void {
+    try { this.options.onObserverError?.(request, stage); } catch { /* Observers cannot strand a waiter. */ }
   }
 
-  request(req: { capabilityName: string; risk: ToolRisk; input: unknown; preview?: string }): Promise<"approved" | "denied"> {
+  request({ signal, ...req }: RequestInput): Promise<ApprovalOutcome> {
     const request: ApprovalRequest = { id: randomUUID(), requestedAt: Date.now(), ...req };
-    return new Promise((resolvePromise) => {
-      const settle = (outcome: "approved" | "denied") => {
-        const entry = this.#pending.get(request.id);
-        if (!entry) return;
-        clearTimeout(entry.timer);
-        this.#pending.delete(request.id);
-        this.#onSettle?.(request, outcome);
-        resolvePromise(outcome);
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cancel = () => settle("cancelled");
+      const settle = (outcome: ApprovalOutcome) => {
+        if (!this.#pending.delete(request.id)) return;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", cancel);
+        this.#settled.set(request.id, { request, outcome });
+        // Resolve before calling host code: even a throwing observer cannot lose this promise.
+        resolve(outcome);
+        try { this.options.onSettle?.(request, outcome); }
+        catch { this.#observerError(request, "onSettle"); }
       };
-      const timer = setTimeout(() => settle("denied"), this.#timeoutMs);
-      this.#pending.set(request.id, { request, settle, timer });
-      this.#onRequest?.(request);
+      this.#pending.set(request.id, { request, settle });
+      if (signal?.aborted || (request.turnId && this.#cancelledTurns.has(request.turnId))) {
+        settle("cancelled");
+        return;
+      }
+      timer = setTimeout(() => settle("denied"), this.options.timeoutMs ?? 120_000);
+      signal?.addEventListener("abort", cancel, { once: true });
+      try { this.options.onRequest?.(request); }
+      catch { this.#observerError(request, "onRequest"); settle("denied"); }
     });
   }
 
-  resolve(id: string, approved: boolean): boolean {
-    const entry = this.#pending.get(id);
-    if (!entry) return false;
-    entry.settle(approved ? "approved" : "denied");
-    return true;
+  cancelTurn(turnId: string): void {
+    this.#cancelledTurns.add(turnId);
+    for (const entry of this.#pending.values()) {
+      if (entry.request.turnId === turnId) entry.settle("cancelled");
+    }
   }
 
-  pending(): ApprovalRequest[] {
-    return [...this.#pending.values()].map((entry) => entry.request);
+  finishTurn(turnId: string): void {
+    const aborted = this.#cancelledTurns.delete(turnId);
+    for (const [id, settled] of this.#settled) if (settled.request.turnId === turnId) {
+      this.#history.set(id, { turnId, aborted: aborted || settled.outcome === "cancelled" });
+      this.#settled.delete(id);
+    }
+    while (this.#history.size > 1_000) this.#history.delete(this.#history.keys().next().value!);
   }
+
+  resolveDetailed(id: string, approved: boolean): ApprovalResolution {
+    const entry = this.#pending.get(id);
+    if (entry) { entry.settle(approved ? "approved" : "denied"); return { resolved: true }; }
+    const previous = this.#settled.get(id);
+    const history = this.#history.get(id);
+    const reason = previous?.outcome === "cancelled" || history?.aborted ? "aborted" : previous ? "already-settled" : "unknown-request";
+    try { this.options.onRefused?.(previous?.request, reason, history ? { id, turnId: history.turnId } : undefined); } catch { /* Refusal stays refused. */ }
+    return { resolved: false, reason };
+  }
+
+  resolve(id: string, approved: boolean): boolean { return this.resolveDetailed(id, approved).resolved; }
+  pending(): ApprovalRequest[] { return [...this.#pending.values()].map((entry) => entry.request); }
 }

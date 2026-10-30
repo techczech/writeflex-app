@@ -127,3 +127,16 @@ export type OutsideLook = {
   limits: { requestsPerLook: number; bytesPerLook: number; undecidedInLedger: number; undecidedPerSource: number; undecidedBytesInLedger: number; refusedRecordsInLedger: number; changesPerRequest: number }
   failed?: string
 }
+
+/** What Accept all from one source did (main `acceptOutsideFromSource`). `open`: the Changes in documents
+ *  the window has open, which the window accepts through its own route, in this order. */
+export type OutsideBulkAccept = {
+  accepted: number
+  /** The documents written. */
+  files: string[]
+  /** Still waiting, and why: not placeable now, or a move (a move is accepted from its own card). */
+  left: Array<{ id: string; path: string; reason: string }>
+  /** Closed meanwhile by the single Accept's own sweep: another Change to the same passage was accepted first. */
+  closed: Array<{ id: string; path: string; reason: string }>
+  open: Array<{ id: string; path: string }>
+}

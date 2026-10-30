@@ -1,3 +1,6 @@
+import { escapeHtml, escapeAttribute } from '../shared/markdown/html-document'
+import { declaresSectionPage, sectionMembership, sectionExportOptions } from '../shared/folio-sections'
+import { indexNotePath } from './folio'
 /**
  * The export organ (Round B T6/T7, ADR-0029) — a finished piece as a FILE.
  *
@@ -15,6 +18,8 @@ import { posix } from 'node:path'
 import { folioPieces } from './folio'
 import { folioTocDepth, saveExportTocDepth, type TocDepthWriteResult } from './export-toc-depth'
 import { tocDepthOf } from '../shared/toc-depth'
+import { isRoomSupportName } from '../shared/folio-part-name'
+import { resolvesToRoomSupportFile } from './room-support-target'
 import { folioFrontMatter, frontMatterExportOrder } from './folio-front-matter'
 import { loadExportWidgets } from './widget-export'
 import { writeFile } from 'node:fs/promises'
@@ -366,13 +371,14 @@ type BundlePiece = {
   place: BundlePlace
   data: HtmlDocumentData
   /** The inputs of the Folio heading flow (folio-heading-flow.ts), kept for a contents piece. */
+  sectionPage?: boolean
   flow: { mode: PartHeadingMode; headings: HtmlOutlineHeading[] }
 }
 
 /** The Folio's contents rows (shared/folio-heading-flow.ts): chapters, the parts that continue them, and their headings. */
 function folioContentsRows(contents: readonly BundlePiece[]): HtmlContentsRow[] {
   const flow = folioHeadingFlow<HtmlOutlineHeading>(contents.map((piece) => ({
-    path: piece.path, title: piece.title, mode: piece.flow.mode, headings: piece.flow.headings,
+    path: piece.path, title: piece.title, mode: piece.flow.mode, headings: piece.flow.headings, sectionPage: piece.sectionPage,
   })))
   return flow.rows.flatMap((row): HtmlContentsRow[] => {
     if (row.kind === 'mark') return []
@@ -409,7 +415,8 @@ export async function exportBundle(
   // A Folio's export (HTML and Word alike) follows its manifest: the listed pieces inside its folder, in order. Entries that
   // are missing or point outside the folder are left out by folio.ts and never read here.
   const folio = await folioPieces(workspace, input.dir)
-  const listedPaths = folio ? folio.pieces : collection.rows.map(row => row.path)
+  // The last boundary before reading: a Folio room support file is never exported, from either branch (I-9).
+  const listedPaths = (folio ? folio.pieces : collection.rows.map(row => row.path)).filter((path) => !isRoomSupportName(path))
   const listed = folio ? folio.pieces.length + folio.leftOut.length : listedPaths.length
   // Front matter first (ADR-0046): the title page first of all, then the other front matter, then the contents.
   const order = frontMatterExportOrder(listedPaths, await folioFrontMatter(workspace, input.dir))
@@ -422,6 +429,9 @@ export async function exportBundle(
   const files = new Map((await workspace.listFiles()).map(file => [file.path, file]))
   const folioParts = await folioPartPaths(workspace, paths)
   for (const { path, place, index } of placed) {
+    // Judged again on the file it really opens, just before the read: a part replaced since it was listed by a
+    // link to the evidence-and-notes file or a `.canvas` file is left out, its content never read (I-9).
+    if (resolvesToRoomSupportFile(workspace.root, path)) continue
     const row = collection.rows.find(row => row.path === path)
     const { content } = await workspace.readFile(path)
     const prefix = placePrefix(place, index)
@@ -462,6 +472,7 @@ export async function exportBundle(
       place,
       data,
       flow: { mode: named.named.mode, headings: flowHeadings },
+      ...(declaresSectionPage(content) && place === 'contents' ? { sectionPage: true } : {}),
     })
   }
   if (!pieces.length) {
@@ -489,7 +500,9 @@ export async function exportBundle(
   const candidateIndex = buildWikilinkCandidateIndex(candidates)
   // A link to the title page lands on it: the cover, or with the cover off its section, both `TITLE_PAGE_ANCHOR`.
   const anchors = new Map(pieces.map((piece) => [piece.path, piece.place === 'cover' ? TITLE_PAGE_ANCHOR : piece.anchor] as const))
-  const sections = await Promise.all(pieces.map(async (piece) => {
+  const sectionOptions = folio ? sectionExportOptions(await workspace.readFile(indexNotePath(workspace, input.dir)).then(read => read.content, () => '')) : { titlePages: false, contents: false }
+  const memberships = sectionMembership(pieces.map(piece => ({ sectionPage: piece.sectionPage, frontMatter: piece.place !== 'contents' })))
+  const sections = await Promise.all(pieces.map(async (piece, pieceIndex) => {
     const { html, missingImages: missed, interactionTargets } = toHtml(piece.source, {
       idPrefix: piece.prefix,
       headingOffset: 1,
@@ -515,7 +528,10 @@ export async function exportBundle(
       },
     })
     for (const missing of missed) missingImages.push(missing) // no spread: one argument per missing picture
-    return { anchor: piece.anchor, title: piece.title, body: html, interactionTargets, place: piece.place, data: piece.data }
+    const sectionContents = piece.sectionPage && sectionOptions.contents && memberships.includes(pieceIndex)
+      ? `<nav class="wf-section-contents" aria-label="Contents of ${escapeAttribute(piece.title)}"><ol>${pieces.flatMap((member, i) => memberships[i] === pieceIndex ? [`<li><a href="#${member.anchor}">${escapeHtml(member.title)}</a></li>`] : []).join('')}</ol></nav>` : ''
+    return { anchor: piece.anchor, title: piece.title, body: html + sectionContents, interactionTargets, place: piece.place, data: piece.data,
+      ...(piece.sectionPage && sectionOptions.titlePages ? { ownPage: true } : {}) }
   }))
   // A Folio's contents is the Outline's tree: the heading flow over the contents parts in running order.
   const contentsRows = folio ? folioContentsRows(pieces.filter((piece) => piece.place === 'contents')) : undefined

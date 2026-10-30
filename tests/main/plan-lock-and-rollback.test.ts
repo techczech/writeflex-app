@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 /**
  * Two guarantees every Plan write has, whoever calls it:
  * A. one writer at a time per Folio (plan-lock.ts);
@@ -126,7 +127,7 @@ test('B: when the manifest write fails after the Index Note was written, the Ind
   const restore = failManifestWrite(async () => { indexWhenManifestFailed = await read(INDEX) })
   await expect(movePart(ws, DIR, 0, 3)).rejects.toThrow('the Index Note was put back as it was. Nothing was changed.')
   // The Index Note really had been written before the manifest failed.
-  expect(indexWhenManifestFailed).toContain('- [[Beta]]\n- [[Gamma]]\n- [[Delta]]\n- [[Alpha]]')
+  expect(indexWhenManifestFailed).toContain(pinnedIndex('- [[Beta]]\n- [[Gamma]]\n- [[Delta]]\n- [[Alpha]]', {"Beta":"./b.md|Beta","Gamma":"./c.md|Gamma","Delta":"./d.md|Delta","Alpha":"./a.md|Alpha"}))
   expect(await bytesNow()).toEqual(bytes)
   await expect(adoptParts(ws, DIR, [0])).rejects.toThrow('Nothing was changed.')
   await expect(removePart(ws, DIR, 1)).rejects.toThrow('Nothing was changed.')
@@ -161,4 +162,12 @@ test('B: through the Outline route the failure is a refusal with no absolute pat
   }
   expect(plan).toBeNull()
   expect(await bytesNow()).toEqual(bytes)
+})
+
+
+test('orphan backup records do not block a Plan reorder', async () => {
+  await writeFile(join(root, `${INDEX}.writeflex-backup.json`), 'orphan index evidence\n')
+  await writeFile(join(root, `${MANIFEST}.writeflex-backup.json`), 'orphan manifest evidence\n')
+  await movePart(ws, DIR, 0, 3)
+  expect(await documentsAgree()).toEqual(['b', 'c', 'd', 'a'].map(piece))
 })

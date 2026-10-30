@@ -1,22 +1,23 @@
 {
   "name": "writeflex-app",
-  "version": "0.26.0",
+  "version": "0.28.0-alpha.1",
   "private": true,
   "type": "module",
-  "main": "./out/main/index.js",
+  "main": "./out/main/bootstrap.js",
   "scripts": {
     "postinstall": "node scripts/build-vendored.mjs",
     "build:packages": "node scripts/build-vendored.mjs",
     "dev": "electron-vite dev",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p sharing-service/tsconfig.json",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit && node node_modules/typescript/bin/tsc --noEmit -p sharing-service/tsconfig.json",
     "test": "bun test",
-    "build": "bun test tests/main/agent-parity.test.ts && bun run typecheck && bun run build:sharing-service && electron-vite build && bun scripts/stage-readflex-reader.ts",
+    "build": "bun test tests/main/agent-parity.test.ts && bun run typecheck && bun run build:sharing-service && bun run build:zotero-plugin && electron-vite build && bun scripts/stage-readflex-reader.ts",
     "build:sharing-service": "bun scripts/build-sharing-service.ts",
+    "build:zotero-plugin": "bun scripts/build-zotero-plugin.ts",
     "dist:mac": "bun run build && electron-builder --mac --publish never",
     "dist:win": "bun run build && electron-builder --win --publish never"
   },
   "dependencies": {
-    "@bridle/contract": "file:./packages/bridle/contract",
+    "@bridle/contract": "file:./vendor/bridle/bridle-contract-0.3.1.tgz",
     "@bridle/core": "file:./packages/bridle/core",
     "@bridle/electron": "file:./packages/bridle/electron",
     "@bridle/ledger": "file:./packages/bridle/ledger",
@@ -42,12 +43,12 @@
     "@readflex/zotero-bridge": "file:./packages/readflex/zotero-bridge",
     "@readflex/zotero-paths": "file:./packages/readflex/zotero-paths",
     "docx": "9.7.1",
-    "dompurify": "^3.4.11",
+    "dompurify": "^3.4.17",
     "lucide-react": "^1.21.0",
     "markmap-lib": "^0.18.12",
     "markmap-view": "^0.18.12",
     "mermaid": "^11.16.0",
-    "sharp": "0.35.3",
+    "sharp": "0.35.5",
     "typebox": "1.1.38",
     "@bridle/cognition": "file:./packages/bridle/cognition",
     "@bridle/knowledge": "file:./packages/bridle/knowledge",
@@ -64,7 +65,7 @@
     "@types/react": "^18.3.23",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.3.4",
-    "electron": "42.4.0",
+    "electron": "43.8.4",
     "electron-builder": "^26.0.12",
     "electron-vite": "5.0.0",
     "playwright": "1.61.1",
@@ -72,6 +73,7 @@
     "react-dom": "^18.3.1",
     "typescript": "^5.7.3",
     "vite": "^6.0.11",
+    "writeflex-build-typescript": "npm:typescript@6.0.3",
     "jszip": "3.10.1"
   },
   "license": "MIT",
@@ -111,6 +113,10 @@
       {
         "from": "sharing-service-dist",
         "to": "sharing-service-dist"
+      },
+      {
+        "from": "zotero-plugin/dist",
+        "to": "zotero-plugin"
       }
     ],
     "fileAssociations": [
@@ -183,5 +189,24 @@
       "repo": "writeflex-app",
       "releaseType": "draft"
     }
+  },
+  "overrides": {
+    "@bridle/cognition": "file:./packages/bridle/cognition",
+    "@bridle/contract": "file:./vendor/bridle/bridle-contract-0.3.1.tgz",
+    "@bridle/core": "file:./packages/bridle/core",
+    "@bridle/electron": "file:./packages/bridle/electron",
+    "@bridle/knowledge": "file:./packages/bridle/knowledge",
+    "@bridle/ledger": "file:./packages/bridle/ledger",
+    "@bridle/lens": "file:./packages/bridle/lens",
+    "@bridle/model-access": "file:./packages/bridle/model-access",
+    "@bridle/packs": "file:./packages/bridle/packs",
+    "@bridle/perception": "file:./packages/bridle/perception",
+    "@bridle/react": "file:./packages/bridle/react",
+    "@bridle/secrets": "file:./packages/bridle/secrets",
+    "@earendil-works/pi-coding-agent": "file:./vendor/earendil-works/earendil-works-pi-coding-agent-0.83.0-undici-8.12.2.tgz",
+    "markdown-it": "14.3.3",
+    "sharp": "0.35.5",
+    "zod": "4.6.6",
+    "dompurify": "3.4.17"
   }
 }

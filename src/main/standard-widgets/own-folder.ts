@@ -16,6 +16,8 @@
  * Every write goes through the Workspace inside the create step's record, so the step's rollback and its one undo
  * put all of it back.
  */
+import { prepareVersionMove } from '../version-moves'
+import { guardFolioRemoval } from '../folio-declaration'
 import { readdirSync, type Dirent } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { join, posix } from 'node:path'
@@ -176,11 +178,14 @@ export async function copyFileGuarded(ws: Workspace, realRoot: string, copy: Gua
 
 /** Remove a moved file's old name, the step's commit point: in one tick, its folder is the one checked, the name is a
  *  real file, and it is removed only while it holds exactly `read` (the text the copy was made from). */
-export function removeOriginalGuarded(ws: Workspace, realRoot: string, original: { from: string; fromFolder: CheckedFolder; read: string }): void {
+export function removeOriginalGuarded(ws: Workspace, realRoot: string, original: { from: string; to: string; fromFolder: CheckedFolder; read: string }): void {
   const now = folderIdentity(realRoot, original.fromFolder.path)
   if (!now || now.dev !== original.fromFolder.id.dev || now.ino !== original.fromFolder.id.ino) throw new Error(`${original.fromFolder.path || 'The Workspace folder'} changed while ${original.from} was being moved, so the move was stopped.`)
   if (walkNoFollowSync(realRoot, original.from).kind !== 'file') throw new Error(`${original.from} is no longer a plain file, so the move was stopped.`)
-  ws.removeFileOverRead(original.from, original.read)
+  guardFolioRemoval(ws, original.from)
+  const history = prepareVersionMove(ws.root, original.from, original.to, true)
+  try { ws.removeFileOverRead(original.from, original.read) } catch (error) { history.cancel(); throw error }
+  history.finish()
   operationSeams.afterOriginalRemoved?.(original.from)
 }
 

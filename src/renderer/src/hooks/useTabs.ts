@@ -51,9 +51,11 @@ export type UseTabs = {
  * instance) would leave this hook rootless forever: no hydration, and the pre-hydration guard
  * below would swallow every open() (fix wave 1). One workspace source, one truth.
  */
-export function useTabs(root: string | null | undefined, files: MarkdownFile[], boardDir = '', keepTab: (path: string) => boolean = () => false): UseTabs {
+export function useTabs(root: string | null | undefined, files: MarkdownFile[], boardDir = '', keepTab: (path: string) => boolean = () => false, onRestored?: (path: string) => void): UseTabs {
   // A tab whose file left the tree is kept while `keepTab` says so (its buffer holds unsaved text that the
   // writer has to resolve: review round 1, Sol S6). Read when the file list changes.
+  const restoredRef = useRef(onRestored)
+  restoredRef.current = onRestored
   const keepTabRef = useRef(keepTab)
   keepTabRef.current = keepTab
   const [state, setState] = useState<TabState>(emptyTabState)
@@ -95,6 +97,8 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
       // ⇧⌘B (queued before this root loaded) must replay, not be silently dropped.
       const openable = queued !== null && (known.includes(queued) || queued === BOARD_TAB_ID || (isWidgetWorkbenchTabId(queued) && known.includes(workbenchDocumentOf(queued))))
       setState(openable ? openTab(hydrated, queued as string) : hydrated)
+      // This is hydration, never ordinary tab activation or a queued URL/file-open request.
+      if (!openable && hydrated.active) restoredRef.current?.(hydrated.active)
     } else {
       // Same workspace, file list changed (create/delete/rename) — prune any now-stale tabs.
       setState((prev) => reconcileTabs(prev, [...known, ...prev.tabs.filter((tab) => keepTabRef.current(tab))]))

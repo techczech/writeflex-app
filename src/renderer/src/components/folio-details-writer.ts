@@ -1,3 +1,5 @@
+import { isSectionExportField, type FolioSectionExportField } from '../../../shared/folio-sections'
+type WriteField = FolioDetailField | FolioSectionExportField
 /**
  * The Details card's writes for one Folio, in order (0.26, Sol round 2 finding 2). Every change, Undo and re-read is
  * one turn of a queue: a change made while another is still being saved waits for it and is then sent, over the Index
@@ -40,7 +42,7 @@ export function folioDetailUnchanged(value: string | null, queued: string | null
 
 export type FolioDetailsApi = {
   read: (dir: string) => Promise<FolioDetailsRead>
-  set: (dir: string, field: FolioDetailField, value: string | null, basis: string) => Promise<FolioDetailAnswer>
+  set: (dir: string, field: WriteField, value: string | null, basis: string) => Promise<FolioDetailAnswer>
   undo: (dir: string, token: string) => Promise<FolioDetailUndoAnswer>
 }
 
@@ -53,7 +55,7 @@ export type FolioDetailsReport = {
   /** A sentence for the card, or null to clear it. */
   message: (message: string | null) => void
   /** The changes queued or being saved, field by field, with the value each is saving (the last one asked for). */
-  pending: (pending: ReadonlyMap<FolioDetailField, string | null>) => void
+  pending: (pending: ReadonlyMap<WriteField, string | null>) => void
   /** After `detach`: a sentence for the app's status line, for a change that was not saved (never dropped silently). */
   elsewhere?: (message: string) => void
 }
@@ -65,7 +67,7 @@ export class FolioDetailsWriter {
   #basis: string | null = null
   #tokens: string[] = []
   #chain: Promise<unknown> = Promise.resolve()
-  #pending: Array<{ field: FolioDetailField; value: string | null }> = []
+  #pending: Array<{ field: WriteField; value: string | null }> = []
   /** Bumped by every read that shows text the queue did not leave; a change made before the bump is not sent. */
   #shown = 0
   #detached = false
@@ -102,7 +104,7 @@ export class FolioDetailsWriter {
 
   #showPending(): void {
     if (this.#detached) return
-    const map = new Map<FolioDetailField, string | null>()
+    const map = new Map<WriteField, string | null>()
     for (const entry of this.#pending) map.set(entry.field, entry.value)
     this.report.pending(map)
   }
@@ -126,7 +128,7 @@ export class FolioDetailsWriter {
   }
 
   /** The value the queue will leave for `field` (the last change asked for), or undefined when none is queued. */
-  queued(field: FolioDetailField): string | null | undefined {
+  queued(field: WriteField): string | null | undefined {
     for (let i = this.#pending.length - 1; i >= 0; i -= 1) if (this.#pending[i].field === field) return this.#pending[i].value
     return undefined
   }
@@ -135,7 +137,7 @@ export class FolioDetailsWriter {
    * Write `field` (null removes it), in its turn, over the text the card last saw. Resolves true when it was
    * written (or already held), false when refused; the refusal is said in the card.
    */
-  set(field: FolioDetailField, value: string | null): Promise<boolean> {
+  set(field: WriteField, value: string | null): Promise<boolean> {
     const entry = { field, value }
     const shownAt = this.#shown
     this.#pending.push(entry)
@@ -165,7 +167,7 @@ export class FolioDetailsWriter {
         this.#say(answer.message)
         return false
       } catch {
-        this.#say(`Could not save the ${FOLIO_DETAIL_LABEL[field].toLocaleLowerCase()}. Nothing was changed.`)
+        this.#say(`Could not save the ${(isSectionExportField(field) ? field : FOLIO_DETAIL_LABEL[field]).toLocaleLowerCase()}. Nothing was changed.`)
         return false
       } finally {
         this.#pending.splice(this.#pending.indexOf(entry), 1)

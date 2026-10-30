@@ -1,3 +1,4 @@
+import { prepareVersionMove } from '../version-moves'
 /**
  * Putting back a widget step that moved documents (the own-folder step of Create and insert): its automatic
  * rollback, its undo and the clean-up of a step stopped by a crash. Step-specific on purpose: the shared
@@ -73,7 +74,7 @@ function bytesAt(realRoot: string, path: string): Buffer | null {
 const holdsLeft = (bytes: Buffer, left: Exclude<LeftState, null>): boolean => ('text' in left ? bytes.equals(Buffer.from(left.text, 'utf8')) : sha256(bytes) === left.sha256)
 
 /** Put back one file of the step (see the module note). */
-export async function putBackOne(ws: Workspace, realRoot: string, change: StepChange, folders: ReadonlyMap<string, FolderId>): Promise<'restored' | 'changed' | { reason: string; stop?: true }> {
+export async function putBackOne(ws: Workspace, realRoot: string, change: StepChange, folders: ReadonlyMap<string, FolderId>, moves: ReadonlyArray<{ from: string; to: string }> = []): Promise<'restored' | 'changed' | { reason: string; stop?: true }> {
   const folder = parentOf(change.path)
   const id = folders.get(folder)
   if (!id) return { reason: `${folder || 'the Workspace folder'} was not recorded by the step, so it could not be checked` }
@@ -95,8 +96,12 @@ export async function putBackOne(ws: Workspace, realRoot: string, change: StepCh
       const refused = change.guard?.()
       if (refused) return { reason: refused, stop: true }
       ws.assertWritable()
-      ws.recordOwnWrite(change.path)
-      unlinkSync(join(realRoot, ...change.path.split('/')))
+      // Recorded once the unlink has succeeded (synchronous: still before any watcher event is handled).
+      const move = moves.find(move => move.to === change.path)
+      const history = move ? prepareVersionMove(ws.root, move.to, move.from, true) : null
+      try { unlinkSync(join(realRoot, ...change.path.split('/'))) } catch (error) { history?.cancel(); throw error }
+      history?.finish()
+      ws.recordOwnWrite(change.path, 'absent')
       return 'restored'
     }
     if (change.after === null) {
@@ -118,7 +123,7 @@ export async function putBackOne(ws: Workspace, realRoot: string, change: StepCh
  * that was put back, the files it made. Never stops at a failure among the first group (putting more back is
  * always safer); never removes a made file after one.
  */
-export async function putBackStep(ws: Workspace, realRoot: string, changes: ReadonlyArray<StepChange & { unknown?: true }>, folders: ReadonlyMap<string, FolderId>): Promise<PutBackOutcome> {
+export async function putBackStep(ws: Workspace, realRoot: string, changes: ReadonlyArray<StepChange & { unknown?: true }>, folders: ReadonlyMap<string, FolderId>, moves: ReadonlyArray<{ from: string; to: string }> = []): Promise<PutBackOutcome> {
   const outcome: PutBackOutcome = { restored: [], changed: [], failed: [], kept: [] }
   await ws.outsideCallRecords(async () => {
     const unknown = changes.filter((change) => change.unknown)
@@ -130,7 +135,7 @@ export async function putBackStep(ws: Workspace, realRoot: string, changes: Read
         if (walkNoFollowSync(realRoot, change.path).kind !== 'missing') outcome.kept.push(change.path)
         continue
       }
-      const done = await putBackOne(ws, realRoot, change, folders)
+      const done = await putBackOne(ws, realRoot, change, folders, moves)
       if (done === 'restored') outcome.restored.push(change.path)
       else if (done === 'changed') outcome.changed.push(change.path)
       else outcome.failed.push({ path: change.path, reason: done.reason })

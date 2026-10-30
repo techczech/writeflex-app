@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // Pictures from other sites (src/main/sharing-remote-pictures.ts; sharing ticket 03 review round 1,
 // finding 1): a piece's picture address can never reach this Mac or its private network. Lookup and
 // request are injected; the one test of the real pinned request uses a server on loopback and no DNS.
@@ -159,3 +160,6 @@ test('a refused picture publishes as its alt text, with a plain note; the publis
   expect(link).toMatchObject({ problem: null, note: PICTURES_REFUSED(1) })
   expect(link.publishedAt).not.toBeNull()
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

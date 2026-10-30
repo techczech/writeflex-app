@@ -1,3 +1,4 @@
+import { workspacePathRefusal as refusalBelow, dotNameRefused, linkRefusal } from "./workspace-containment.ts";
 /**
  * Restore, phase one: the plan. Internal: absent from the package barrel.
  *
@@ -135,15 +136,6 @@ const pathsOf = (step: Step): unknown[] =>
 const DOT = "the path is under a dot-folder or is a dot-file";
 const UNPROVEN = "the Restore Point names it in ways that cannot be proved to be one file or two";
 
-/** Why `target` may not be touched under `base`, or null when it may. */
-function refusalBelow(base: string, target: string, what: string): string | null {
-  const rel = relative(base, target);
-  if (rel === "") return `${what} is the root itself`;
-  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return `${what} is outside the root`;
-  if (rel.split(sep).some((segment) => segment.startsWith("."))) return `${what} is under a dot-folder or is a dot-file`;
-  return null;
-}
-
 /** One run of the model over the steps, in execution order. */
 class Run {
   readonly operations: PlannedOperation[] = [];
@@ -228,16 +220,16 @@ class Run {
   }
 
   /** Resolve a journal path in the model: once, to a folder identity and a name. */
-  private async walk(written: unknown, absentIfNoFolder = false): Promise<Located> {
+  private async walk(written: unknown, absentIfNoFolder = false, trashSource = false): Promise<Located> {
     try {
-      return await this.walkPlain(written, absentIfNoFolder);
+      return await this.walkPlain(written, absentIfNoFolder, trashSource);
     } catch (error) {
       if (error instanceof Refuse) error.path ??= written;
       throw error;
     }
   }
 
-  private async walkPlain(written: unknown, absentIfNoFolder: boolean): Promise<Located> {
+  private async walkPlain(written: unknown, absentIfNoFolder: boolean, trashSource: boolean): Promise<Located> {
     if (typeof written !== "string" || !isAbsolute(written)) return refuse("not an absolute path");
     if (written.length > PATH_SHOWN_LIMIT) refuse(`the path is longer than ${PATH_SHOWN_LIMIT} characters`);
     if (UNSHOWABLE.test(written)) refuse("the path holds control characters or characters that do not show");
@@ -249,18 +241,22 @@ class Run {
     const given = resolve(written);
     // As written: inside the root as the host named it, or as it really is.
     const bases = [this.view.root, this.realRoot];
-    const asWritten = bases.map((base) => refusalBelow(base, given, "the path"));
+    const asWritten = bases.map((base) => refusalBelow(base, given, "the path", { trashSource }));
     const inside = asWritten.indexOf(null);
     if (inside === -1) refuse(asWritten[0]!);
     let segments = relative(bases[inside]!, given).split(sep);
+    trashSource = trashSource && segments[0] === ".bridle-trash";
     let folder = this.rootFolder;
     let through = new Set([folder.token]);
     let links = 0;
     for (let index = 0; ; index += 1) {
       const segment = segments[index]!;
-      if (segment.startsWith(".")) refuse(DOT);
+      const trashFolder = trashSource && index === 0 && segment === ".bridle-trash";
+      if (dotNameRefused(segment, index, trashSource)) refuse(DOT);
       const found = await this.lookup(folder, segment, written);
-      if (found.name.startsWith(".")) refuse(DOT);
+      if (dotNameRefused(found.name, index, trashFolder)) refuse(DOT);
+      const linked = linkRefusal(found.entry?.kind === "link", trashSource ? "trash-source" : "restore-parent");
+      if (linked) refuse(linked);
       if (found.entry?.disk && found.entry.disk.path === this.view.storeDir) refuse("the path is in the snapshot store");
       if (index === segments.length - 1) {
         return { written, parent: folder, name: found.name, entry: found.entry, real: join(folder.simPath, found.name), through };
@@ -395,7 +391,7 @@ class Run {
 
   private async moveBack(position: number, fromPath: unknown, toPath: unknown): Promise<void> {
     const source = { record: "undo-action" as const, position };
-    const from = await this.walk(fromPath, true);
+    const from = await this.walk(fromPath, true, true);
     const to = await this.walk(toPath);
     const entry = from.entry;
     if (!entry) {
@@ -408,7 +404,8 @@ class Run {
       return;
     }
     if (!entry.disk) return refuse("an undo step would move a file this restore creates", fromPath);
-    if (entry.kind === "link") refuse("an undo step would move a link", fromPath);
+    const linked = linkRefusal(entry.kind === "link", "move-source");
+    if (linked) refuse(linked, fromPath);
     if (entry.kind === "folder") {
       if (to.through.has(entry.token)) refuse("an undo step would move a folder into itself", toPath);
     } else {

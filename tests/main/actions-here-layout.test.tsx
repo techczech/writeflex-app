@@ -56,7 +56,7 @@ const FOLDER_ROWS = ['folder.newFile', 'folder.newFolder', 'folder.rename', 'fol
 /** [place, state, the offered ids in order, the strip's ids]. */
 const CASES: Array<[Place, EditorState | null, string[], string[]]> = [
   ['paragraph', stateAt('Every wall', 3), PROSE_ROWS, []],
-  ['selection', stateAt('Every wall', 3, 8), [INSERT, 'edit.toggleComment', 'agent.askHere', 'readAloud.start', 'turn.into', 'text.changeCase', 'edit.selectNextOccurrence'], ['edit.bold', 'edit.italic', 'edit.strikethrough', 'edit.mark', 'edit.inlineCode', 'edit.link', 'edit.clearFormatting']],
+  ['selection', stateAt('Every wall', 3, 8), [INSERT, 'edit.toggleComment', 'agent.askHere', 'readAloud.start', 'scratchpad.sendCopy', 'scratchpad.cut', 'turn.into', 'text.changeCase', 'edit.selectNextOccurrence'], ['edit.bold', 'edit.italic', 'edit.strikethrough', 'edit.mark', 'edit.inlineCode', 'edit.link', 'edit.clearFormatting']],
   ['heading', stateAt('The wall builders', 3), HEADING_ROWS, []],
   ['heading-top', stateAt('The long way', 3, 0).update({ selection: { anchor: DOC.indexOf('# The long way') + 4 } }).state, HEADING_ROWS, []],
   ['list-item', stateAt('first item', 3), LIST_ROWS, []],

@@ -79,8 +79,8 @@ test('N2: duplicate candidate titles both read into the order by path and five r
 
   const first = await readPlan(ws, 'report')
   expect(first?.parts.map((part) => [part.title, part.path])).toEqual([
-    ['./contents/01-first', 'report/contents/01-first.md'],
-    ['./contents/02-second', 'report/contents/02-second.md'],
+    ['Report', 'report/contents/01-first.md'],
+    ['Report', 'report/contents/02-second.md'],
   ])
   expect(first?.unlisted).toEqual([])
   const originalSource = await read(indexPath)
@@ -353,38 +353,20 @@ test('the first materialisation does not create a backup for a manifest that did
   expect(await exists(manifestBackupPath)).toBe(false)
 })
 
-test('duplicate titles do not block Folio outline operations on unrelated parts and explain how to resolve the duplicate', async () => {
-  const index = [
-    '# Report',
-    '',
-    '## Running order',
-    '',
-    '- [[Notes]]',
-    '- [[Notes]]',
-    '- [[Alpha]]',
-    '- [[Beta]]',
-    '- [[Draft]]',
-    '',
-  ].join('\n')
-  await write(indexPath, index)
+test('duplicate file membership requires explicit repair before other structure changes', async () => {
+  const source = '## Running order\n- [[Notes]]\n- [[Notes]]\n- [[Alpha]]\n- [[Beta]]\n'
+  await write(indexPath, source)
   await write('report/contents/01-notes.md', '# Notes\n')
   await write('report/contents/03-alpha.md', '# Alpha\n')
   await write('report/contents/04-beta.md', '# Beta\n')
-  const manifest = await writeManifest([
-    { path: '01-notes.md' },
-    { path: '03-alpha.md' },
-    { path: '04-beta.md' },
-  ])
-
-  await insertPart(ws, 'report', 5, { title: 'Close' })
-  await movePart(ws, 'report', 3, 2)
-  await removePart(ws, 'report', 5)
-  const materialised = await materialisePart(ws, 'report', 4)
-
-  expect(materialised.path).toBe('report/contents/05-draft.md')
-  expect(materialised.plan.parts.map((part) => part.title)).toEqual(['Notes', 'Notes', 'Beta', 'Alpha', 'Draft'])
+  const manifest = await writeManifest([{ path: '01-notes.md' }, { path: '03-alpha.md' }, { path: '04-beta.md' }])
+  await expect(insertPart(ws, 'report', 4, { title: 'Close' })).rejects.toThrow(/duplicate/i)
+  expect(await read(indexPath)).toBe(source)
   expect(await read(manifestPath)).toBe(manifest)
-  await expect(materialisePart(ws, 'report', 0)).rejects.toThrow(/duplicate.*title.*Notes.*rename or remove/i)
+  await removePart(ws, 'report', 0)
+  const moved = await movePart(ws, 'report', 2, 1)
+  expect(moved.parts.map(part => part.title)).toEqual(['Notes', 'Beta', 'Alpha'])
+  expect(await read('report/contents/01-notes.md')).toBe('# Notes\n')
 })
 
 test('ordered Folio outline writes renumber from the original start while unordered markers stay unordered', async () => {

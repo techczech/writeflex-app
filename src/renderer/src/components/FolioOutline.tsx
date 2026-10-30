@@ -1,5 +1,7 @@
+import { declaresSectionPage, sectionMembership } from '../../../shared/folio-sections'
+import { setEvidenceDrag } from '../folio-evidence-transfer'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
-import { BookMarked, BookOpen, ChevronDown, FileText, ListOrdered, ListPlus, Plus } from 'lucide-react'
+import { BookMarked, BookOpen, ChevronDown, FileText, Lightbulb, ListOrdered, ListPlus, Plus } from 'lucide-react'
 import { usePieceDrag } from './folio-piece-drag'
 import { ORDER_IN_PLAN_LINE, addAllTooltip, addName, addTooltip, gripName, putBackWhy, type FocusedFolioRow } from '../../../shared/folio-running-order'
 import type { FolioOutline, FolioOutlineFile } from '../../../preload'
@@ -33,9 +35,9 @@ type FolioOutlinePartProps = {
   /** Collapse state per row key: a row absent from the map follows its default (the open file starts expanded). */
   expanded: ReadonlyMap<string, boolean>
   onToggle: (key: string, open: boolean) => void
-  onOpenFile: (path: string) => void
+  onOpenFile: (path: string, isPart?: boolean) => void
   /** Land the caret on a line of another file (opens it first). */
-  onJumpToFile: (path: string, line: number) => void
+  onJumpToFile: (path: string, line: number, isPart?: boolean) => void
   /** Move the caret to a heading of the open file. */
   onJumpOpen: (from: number) => void
   listRef: RefObject<HTMLDivElement>
@@ -117,10 +119,11 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
     title: titleOf(file),
     mode: modeOf(file),
     frontMatter: file.frontMatter === true,
+    sectionPage: file.path === openPath && fromBuffer && bufferText != null ? declaresSectionPage(bufferText) : file.sectionPage === true,
     headings: file.path === openPath && fromBuffer
       ? bufferHeadings.map((heading) => ({ level: heading.level, text: heading.text, from: heading.from }))
       : file.headings.map((heading) => ({ level: heading.level, text: heading.text, line: heading.line })),
-  }))), [outline, titleOf, modeOf, openPath, fromBuffer, bufferHeadings])
+  }))), [outline, titleOf, modeOf, openPath, fromBuffer, bufferHeadings, bufferText])
 
   const childrenOf = useCallback((file: FolioOutlineFile, flowPart: FlowPart<HeadingRow> | undefined): HeadingRow[] => {
     const mode = modeOf(file)
@@ -158,26 +161,35 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
 
   const isOpen = (key: string, isOpenFile: boolean): boolean => filtering || (expanded.get(key) ?? isOpenFile)
 
+  const sectionOf = (index: number) => flow.parts[index]?.role === 'section'
+  const owners = sectionMembership(outline.pieces.map((file, index) => ({ frontMatter: file.frontMatter, sectionPage: sectionOf(index) })))
   type Entry = { file: FolioOutlineFile; key: string; kind: 'piece' | 'also'; index: number; headings: HeadingRow[]; count: number; isExpanded: boolean; canExpand: boolean; tooLarge: boolean; continues: boolean; depth: number }
   const entryOf = (file: FolioOutlineFile, key: string, kind: 'piece' | 'also', index: number): Entry => {
     const flowPart = kind === 'piece' ? flow.parts[index] : undefined
     const all = childrenOf(file, flowPart)
     const headings = filtering ? all.filter((heading) => heading.text.toLowerCase().includes(needle)) : all
     const isOpenPath = file.path === openPath
-    const count = all.length
+    const members = kind === 'piece' && sectionOf(index) && !file.frontMatter ? owners.filter(owner => owner === index).length : 0
+    const count = all.length + members
     const tooLarge = file.tooLarge === true && !isOpenPath
     const continues = flowPart?.role === 'continues'
-    return { file, key, kind, index, headings, count, tooLarge, continues, depth: flowPart?.depth ?? 0, canExpand: headings.length > 0 || count > 0 || tooLarge, isExpanded: isOpen(key, isOpenPath) }
+    return { file, key, kind, index, headings, count, tooLarge, continues, depth: flowPart?.depth ?? 0, canExpand: headings.length > 0 || count > 0 || tooLarge, isExpanded: isOpen(key, isOpenPath || (members > 0 && owners.some((owner, i) => owner === index && outline.pieces[i].path === openPath))) }
   }
-  const allPieceEntries = outline.pieces.map((file, index) => ({ file, index })).filter(({ file }) => keep(file)).map(({ file, index }) => entryOf(file, pieceKey(index, file.path), 'piece', index))
+  const kept = outline.pieces.map(file => keep(file))
+  const ancestorSections = new Set(owners.filter((_, index) => kept[index]))
+  const allPieceEntries = outline.pieces.map((file, index) => ({ file, index })).filter(({ index }) => kept[index] || (filtering && ancestorSections.has(index))).map(({ file, index }) => entryOf(file, pieceKey(index, file.path), 'piece', index))
   const frontEntries = allPieceEntries.filter((entry) => entry.file.frontMatter === true)
-  const pieceEntries = allPieceEntries.filter((entry) => entry.file.frontMatter !== true)
+  const pieceEntries = allPieceEntries.filter((entry) => {
+    if (entry.file.frontMatter) return false
+    const owner = owners[entry.index]
+    return filtering || owner === null || isOpen(pieceKey(owner, outline.pieces[owner].path), outline.pieces[owner].path === openPath || owners.some((value, i) => value === owner && outline.pieces[i].path === openPath))
+  })
   const alsoEntries: Entry[] = []
   const entries = [...frontEntries, ...pieceEntries, ...alsoEntries]
 
   // The rows a key press can reach, in order (headings only under an expanded file).
   const rows: FolioKeyRow[] = entries.flatMap((entry) => [
-    { key: entry.key, file: true, ...(entry.canExpand ? { expanded: entry.isExpanded } : {}) },
+    { key: entry.key, file: true, ...(entry.kind === 'piece' && owners[entry.index] !== null ? { parent: pieceKey(owners[entry.index]!, outline.pieces[owners[entry.index]!].path) } : {}), ...(entry.canExpand ? { expanded: entry.isExpanded } : {}) },
     ...(entry.isExpanded ? (entry.tooLarge ? [`${entry.key}:h0`] : entry.headings.map((_, at) => `${entry.key}:h${at}`)).map((key) => ({ key, file: false, parent: entry.key })) : []),
   ])
   const openKey = open.pieces[0] !== undefined ? pieceKey(open.pieces[0], outline.pieces[open.pieces[0]].path) : open.also !== null ? alsoKey(outline.also[open.also].path) : null
@@ -237,10 +249,6 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
     const draggable = kind === 'piece' && !front && canChange
     return (
       <div key={key} role="presentation" data-fo-box={kind === 'piece' && !front ? index : undefined} data-fo-front-box={front ? index : undefined}>
-        {kind === 'piece' && !front && (
-          // Where this file starts in the flow: a dashed line with the file name at its right end (ADR-0046, option A).
-          <div className="fo-mark" aria-hidden="true" data-fo-mark={file.path}><span>{fileNameOf(file.path)}</span></div>
-        )}
         <div
           className={`fo-row fo-piece${kind === 'also' ? ' fo-out' : ''}${continues ? ' fo-cont' : ''}${isExpanded && canExpand ? '' : ' fo-shut'}${kind === 'piece' && added.has(file.path) ? ' fo-new' : ''}${drag?.path === file.path && kind === 'piece' ? ' fo-drag-src' : ''}`}
           role="treeitem"
@@ -251,17 +259,17 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
           data-fo-path={file.path}
           data-fo-open={isOpenFile ? 'true' : undefined}
           tabIndex={key === tabStop ? 0 : -1}
-          aria-level={1}
+          aria-level={flow.sections?.length ? depth + 1 : 1}
           aria-expanded={canExpand ? isExpanded : undefined}
           aria-current={isOpenFile ? 'true' : undefined}
           aria-posinset={kind === 'piece' && !front ? contentsNumber.get(index) : undefined}
           aria-setsize={kind === 'piece' && !front ? contentsPieces.length : undefined}
-          title={title}
+          title={`${title} — ${fileNameOf(file.path)}`}
           data-fo-continues={continues ? 'true' : undefined}
-          style={continues ? { marginLeft: depth * 12 } : undefined}
+          style={depth > 0 ? { marginLeft: depth * 12 } : undefined}
           onFocus={(event) => { if (event.target === event.currentTarget) setFocusKey(key) }}
           onPointerDown={draggable ? (event) => startDrag(event, file.path) : undefined}
-          onClick={() => { if (suppressClick.current) return; setFocusKey(key); onOpenFile(file.path) }}
+          onClick={() => { if (suppressClick.current) return; setFocusKey(key); onOpenFile(file.path, kind === 'piece') }}
         >
           {kind === 'piece'
             ? (!filtering && (draggable ? <span className="fo-grip" aria-hidden="true" title={gripName(title)} /> : <span className="fo-grip fo-grip-none" aria-hidden="true" />))
@@ -275,7 +283,9 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
           </span>
           {front ? <BookOpen className="icon sm fo-fi" aria-hidden="true" /> : kind === 'piece' ? null : <FileText className="icon sm fo-fi" aria-hidden="true" />}
           <span className="fo-t">{kind === 'also' && file.under ? <span className="fo-under" data-fo-under={file.under}>{file.under}/</span> : null}{title}</span>
+          {kind === 'piece' && sectionOf(index) && !front && <span className="fo-flag fo-section-chip">Section page</span>}
           {front && <span className="fo-flag fo-front-flag" data-fo-flag="not-in-contents" title="Front matter: exported before the contents page and never listed in it. Change it in the Folio outline.">not in contents</span>}
+          {file.missing && <span className="fo-flag" title="The bound chapter file is missing.">Missing file</span>}
           {file.titleMismatch === true && <span className="fo-flag" data-fo-flag="title-differs" title={file.titleConflict ? titleConflictSentence(file.titleConflict) : 'This part’s frontmatter title differs from its heading.'}>title differs</span>}
           {kind === 'piece' && !(isExpanded && canExpand) && count > 0 && <span className="fo-c">{count}</span>}
           {kind === 'also' && canChange && file.addable === true && (
@@ -354,7 +364,7 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
               onClick={() => {
                 setFocusKey(hKey)
                 if (heading.from !== undefined) onJumpOpen(heading.from)
-                else onJumpToFile(file.path, heading.line ?? 1)
+                else onJumpToFile(file.path, heading.line ?? 1, kind === 'piece')
               }}
             >
               <span>{heading.text}</span>
@@ -392,7 +402,7 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
           </>
         )}
         <div className="fo-sec fo-pin" id="fo-grp-run" role="presentation">
-          <span>Contents · {flow.chapters} {flow.chapters === 1 ? 'chapter' : 'chapters'}</span>
+          <span>Contents · {flow.sections?.length ? `${flow.sections.length} ${flow.sections.length === 1 ? 'section' : 'sections'} · ` : ''}{flow.chapters} {flow.chapters === 1 ? 'chapter' : 'chapters'}</span>
           {canChange && !filtering && contentsPieces.length > 1 && <span className="fo-hint" data-fo-hint="true">{movingTitle ? `moving ${titleOf(movingTitle)}` : 'drag to reorder'}</span>}
         </div>
         {/* Each group's rows sit in a labelled group; the sticky headings stay direct children of the scroller. */}
@@ -410,11 +420,41 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
           {pieceEntries.flatMap((entry, at) => [dropLine(at), renderFile(entry)])}
           {dropLine(pieceEntries.length)}
         </div>
+        {outline.binder && !filtering && <FolioBinder binder={outline.binder} onOpenFile={onOpenFile} />}
         {drag && drag.label && <div className="ol-drag-label" style={{ left: drag.x + 14, top: drag.y + 14 }} aria-hidden="true">{drag.label}</div>}
       </div>
       {/* During a pointer drag nothing is announced; this speaks after a write has succeeded or been refused. */}
       <div className="fo-live" role="status" aria-live="polite" data-fo-live="true">{announcement}</div>
     </>
+  )
+}
+
+/**
+ * The binder's Research, Notes and Ideas groups under the running order (ADR-0048, spec § 4.6): files in the Folio's
+ * `research/` and `source/` folders, `feedback/` and `notes/`, and its scraps. Read-only: a click opens the file.
+ */
+export function FolioBinder({ binder, onOpenFile }: { binder: NonNullable<FolioOutline['binder']>; onOpenFile: (path: string, isPart?: boolean) => void }): JSX.Element {
+  const groups: Array<{ id: string; name: string; hint?: string; items: typeof binder.research }> = [
+    { id: 'research', name: 'Research', hint: 'research/ and source/', items: binder.research },
+    { id: 'notes', name: 'Notes', items: binder.notes },
+    { id: 'ideas', name: 'Ideas', hint: 'scraps', items: binder.ideas },
+  ]
+  return (
+    <div className="fr-binder" data-fr-binder="true">
+      {groups.filter((group) => group.items.length > 0).map((group) => (
+        <div key={group.id} role="group" aria-label={group.name} data-fr-group={group.id}>
+          <div className="fr-bh"><span>{group.name}</span><small>{group.items.length}</small>{group.hint && <small>{group.hint}</small>}</div>
+          {group.items.map((item) => (
+            item.kind === 'zotero' ? <a key={item.path} className="fr-brow" href={item.path} target="_blank" rel="noreferrer" draggable onDragStart={event => setEvidenceDrag(event.dataTransfer, { kind: 'zotero', itemTarget: item.path, label: item.name })}><FileText aria-hidden="true" /><span className="t">{item.name}</span></a> :
+            <button key={`${item.path}:${item.section ?? ''}`} type="button" className="fr-brow" title={item.path} data-fr-path={item.path} draggable={!item.section} onDragStart={event => setEvidenceDrag(event.dataTransfer, { kind: 'file', path: item.path })} onClick={() => /\.(?:md|markdown|mdx)$/i.test(item.path) ? onOpenFile(item.path) : void window.writeflex.showItem(item.path)}>
+              {item.kind === 'scrap-file' ? <Lightbulb aria-hidden="true" /> : <FileText aria-hidden="true" />}
+              <span className="t">{item.name}</span>
+              {item.scraps !== undefined && <span className="c">{item.scraps}</span>}
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
   )
 }
 

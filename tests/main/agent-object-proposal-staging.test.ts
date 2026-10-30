@@ -28,7 +28,7 @@ beforeEach(async () => {
   await writeFile(join(root, 'editing.md'), '---\ntitle: Editing Piece\nstatus: editing\ndate: 2026-07-16\n---\n\n# Editing Piece\n', 'utf8')
   ws = new Workspace(root)
   changes = new ChangeStore(ws)
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes,
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory(queue),

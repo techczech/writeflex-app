@@ -6,3 +6,5 @@ minimumReleaseAge = 604800
 # main-process unit tests so `bun test` never tries to load a Playwright spec.
 [test]
 root = "tests/main"
+# Per-run scratch root (TMPDIR points inside it; removed at exit). See tests/helpers/test-temp-root.ts.
+preload = ["./tests/main/setup-test-temp.ts"]

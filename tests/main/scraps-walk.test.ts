@@ -61,13 +61,15 @@ describe('the scraps file on disk', () => {
 describe('the editor side', () => {
   type Fake = { state: EditorState; dispatch: (spec: Parameters<EditorState['update']>[0]) => void; focus: () => void }
   const open = (doc: string, anchor: number, head = anchor, opts: { cut?: string[]; expansions?: Array<{ trigger: string; text: string }> } = {}): { view: EditorView; fake: Fake } => {
-    const extension = scrapEditing({ onCut: (text) => opts.cut?.push(text), onDrop: () => {}, expansions: () => opts.expansions ?? [], readClipboard: async () => '' })
+    const extension = scrapEditing({ onCut: () => opts.cut?.push(fake.state.sliceDoc(fake.state.selection.main.from, fake.state.selection.main.to)), onDrop: () => {}, expansions: () => opts.expansions ?? [], readClipboard: async () => '' })
     const fake = { state: EditorState.create({ doc, selection: EditorSelection.single(anchor, head), extensions: [extension] }), focus: () => {} } as Fake
     fake.dispatch = (spec) => { fake.state = fake.state.update(spec).state }
     return { view: fake as unknown as EditorView, fake }
   }
 
-  test('⌘⇧X cuts the selected prose line out of the document and hands exactly that text to the store', () => {
+  // ADR-0050: the binding hands the selection to the Scratchpad and deletes nothing itself; the text
+  // leaves only after the save, through scratchpad-controller.ts (tests/main/scratchpad-controller.test.ts).
+  test('⌘⇧X hands exactly the selected prose to the Scratchpad and leaves the document as it is until the save answers', () => {
     const doc = `# Essay\n\n${CUT}\n\nMore body.\n`
     const cut: string[] = []
     const from = doc.indexOf(CUT)
@@ -75,7 +77,7 @@ describe('the editor side', () => {
     const binding = fake.state.facet(keymap).flat().find((entry: KeyBinding) => entry.key === 'Mod-Shift-x')!
     expect(binding.run!(view)).toBe(true)
     expect(cut).toEqual([CUT])
-    expect(fake.state.doc.toString()).toBe('# Essay\n\n\n\nMore body.\n')
+    expect(fake.state.doc.toString()).toBe(doc)
   })
 
   test('⌘⇧X with nothing selected is not taken', () => {

@@ -77,6 +77,7 @@
  * app's own undo journal as interrupted, and the answer (`owner-lock-lost`) says what had been
  * changed. A file is put back only if it holds exactly what the request wrote to it.
  */
+import { reattachVersionHistory } from './version-history-reattach'
 import { statSync } from 'node:fs'
 import { isAbsolute, relative } from 'node:path'
 import { WritesPausedError } from './collection-write-gate'
@@ -162,6 +163,8 @@ export type RequestExecutorOptions = {
    *  objects the window already holds (saved-text-version.ts); `confirmOwner` throws when the app no
    *  longer holds the Collection. Absent (no stores to save into): a requested version save is refused. */
   saveVersion?: (input: VersionSaveInput, confirmOwner: () => Promise<void>) => Promise<SavedTextVersion>
+  /** Told after an explicit history attachment or its Undo changes the journal. */
+  onVersionHistoryChanged?: () => void
   /** The window's review ledger for this Collection. Shown-first requests become pending Changes in
    *  it (outside-change-ingest.ts); absent, they are left in the inbox. */
   changes?: ChangeStore
@@ -189,6 +192,8 @@ const PATH_ARGS: Record<RequestOperation, Array<{ arg: string; kind: PathKind | 
   duplicate: [{ arg: 'path', kind: 'file' }],
   note: [{ arg: 'document', kind: 'file' }],
   scrap: [{ arg: 'document', kind: 'file' }],
+  scraps: [{ arg: 'origin', kind: 'file' }],
+  scratchpad: [{ arg: 'path', kind: 'file' }],
   'create-manifest': [{ arg: 'folder', kind: 'folder', root: true }],
   capture: [{ arg: 'project', kind: 'either', root: true }],
   move: [{ arg: 'path', kind: 'file' }, { arg: 'to', kind: 'file', root: true }],
@@ -196,6 +201,8 @@ const PATH_ARGS: Record<RequestOperation, Array<{ arg: string; kind: PathKind | 
   trash: [{ arg: 'path', kind: 'file' }],
   undo: [],
   'save-version': [{ arg: 'path', kind: 'file' }],
+  'follow-history': [{ arg: 'map', kind: 'file' }],
+  'undo-history': [],
 }
 /** The arguments of a shown-first request that name a document (as cli/review-waiting.ts reads them). */
 const SHOWN_FIRST_PATH_ARGS = ['path', 'source-path'] as const
@@ -446,6 +453,17 @@ export class RequestExecutor {
     try {
       const operation = this.#table.find((candidate) => candidate.name === request.operation)!
       const view = documentOnlyView(appWorkspace)
+      if (request.operation === 'scraps' || request.operation === 'scratchpad') {
+        // Read in main, where the shared holder registry knows which editors are alive. No write
+        // session, restore point, journal intent or document-change notification for this read.
+        const result = await operation.run({
+          workspace: view.workspace, output: 'json', cwd: appWorkspace.root,
+          stdin: async () => '', openUrl: async () => { throw new CliError('A request does not open anything.', 'failed') },
+        }, request.args)
+        const reply: Reply = { version: 1, id: request.id, outcome: 'applied', at: at(), result: result.data, text: result.text }
+        if (Buffer.byteLength(JSON.stringify(reply)) > MAX_REPLY_BYTES) throw new CliError('The listing was too large to send back.', 'refused')
+        return reply
+      }
       // The app's own journal, among its records: an undo request acts on nothing the app did not write itself (cli/journal.ts).
       const journal = new Journal(appWorkspace.root, this.#place, { now: this.#now, route: 'app' })
       // Undo leaves an intent like any other change, so one stopped partway can be finished (cli/journal.ts).
@@ -461,7 +479,7 @@ export class RequestExecutor {
         // back; one whose Collection is another's now writes nothing more (cli/write-access.ts).
         confirmRollback: async () => { if (!(this.#options.holdsLock ?? this.#options.ownsCollection)()) throw new CliError(LOST) },
         // The app's own-write record, as for any change the app makes: the folder watcher does not echo it.
-        onWrite: (path) => { touched.add(path); appWorkspace.recordOwnWrite(path) },
+        onWrite: (path, expected) => { touched.add(path); appWorkspace.recordOwnWrite(path, expected) },
         // A request's write that succeeded with a notice (a second name left beside a new file): the window's
         // notice, as for the app's own saves; a notice that fails is recorded there, never thrown (workspace.ts).
         onNotice: (message) => { appWorkspace.announceWriteNotice(message) },
@@ -471,13 +489,18 @@ export class RequestExecutor {
         {
           root: appWorkspace.root, operation: request.operation, session, workspace, journal, intent, trash, now: this.#now, byApp: true,
           ...(sharing ? { sharing } : {}),
+          history: async (input) => {
+            const result = await reattachVersionHistory(appWorkspace, input, confirmOwner)
+            this.#options.onVersionHistoryChanged?.()
+            return result
+          },
           saveVersion: async (input) => {
             if (!saveVersion) throw new CliError('WriteFlex cannot save a version on request for this Collection. Nothing was saved.', 'failed')
             return saveVersion(input, confirmOwner)
           },
         },
         (write) => operation.run({
-          workspace, output: 'json', cwd: appWorkspace.root, write, records: this.#place,
+          workspace: write.workspace, output: 'json', cwd: appWorkspace.root, write, records: this.#place,
           stdin: async () => '',
           openUrl: async () => { throw new CliError('A request does not open anything.', 'failed') },
         }, request.args),

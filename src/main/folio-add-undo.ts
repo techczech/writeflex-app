@@ -25,6 +25,7 @@
  * refusal (`wroteIndex` / `wroteManifest`) so the caller still tells open buffers about it.
  */
 
+import { assertNoRelatedFolio } from './folio-declaration'
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { MANIFEST_NAME, indexNotePath } from './folio'
@@ -153,6 +154,7 @@ export async function undoRecordedAdd(ws: Workspace, dir: string, token: string,
   try { holds(indexAfter, manifestAfter) } catch (error) {
     return isChanged(error) ? STALE : couldNot(error)
   }
+  try { await assertNoRelatedFolio(ws, dir) } catch (error) { return couldNot(error) }
   if (writeIndex && indexAfter !== null) await options.beforeIndexWrite?.(indexPath)
   if (writeManifest && manifestAfter !== null) await options.beforeManifestWrite?.(manifestPath)
 

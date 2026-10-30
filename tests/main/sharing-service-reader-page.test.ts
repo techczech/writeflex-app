@@ -2,7 +2,7 @@
 // Folio (docs/design/2026-10-14-sharing-reader-page/, frames read-only, folio, link-off), the
 // "Updated" line, the "Made with WriteFlex" end line, and plain text kept plain.
 import { describe, expect, test } from 'bun:test'
-import { MADE_WITH_URL, formatUpdated, linkOffResponse, renderReaderPage } from '../../sharing-service/reader-page.ts'
+import { MADE_WITH_URL, formatUpdated, linkOffResponse, readerPageResponse, renderReaderPage } from '../../sharing-service/reader-page.ts'
 import { parsePublishBody, type PublishBody } from '../../sharing-service/share-protocol.ts'
 
 const SAVED_AT = Date.UTC(2026, 9, 14, 8, 12)
@@ -27,7 +27,7 @@ function folio(overrides: Record<string, unknown> = {}): PublishBody {
     title: 'Teaching notes, autumn term',
     chips: [{ label: 'Author', value: 'Dominik' }, { label: 'Parts', value: '3' }],
     parts: [
-      { title: 'What a reading list is for', html: '<p class="wf-paragraph">Part one text.</p><h2 class="wf-heading" id="p1-start">Start with a question</h2>', headings: [{ id: 'p1-start', text: 'Start with a question' }] },
+      { title: 'What a reading list is for', html: '<p class="wf-paragraph">Part one text.</p><h3 class="wf-heading" id="p1-start">Start with a question</h3>', headings: [{ id: 'p1-start', text: 'Start with a question' }] },
       { title: 'Setting the first week', html: '<p class="wf-paragraph">Part two text.</p>' },
       { title: 'Marking without a rubric', html: '<p class="wf-paragraph">Part three, the last words.</p>' },
     ],
@@ -51,7 +51,7 @@ describe('a shared piece', () => {
     expect(html).toContain('<div class="rp readonly">')
     expect(html).toContain('<header class="hero wf-masthead"><h1>What a reading list is for</h1><div class="meta-row"><span class="chip"><strong>Date</strong> · 12 October 2026</span>')
     expect(html).toContain('Most reading lists are written as if the reader will finish them.')
-    expect(html).not.toMatch(/notes-col|viewswitch|Under the passage|class="sidebar"/)
+    expect(html.slice(html.indexOf('<body>'))).not.toMatch(/notes-col|viewswitch|Under the passage|class="sidebar"/)
     expect(html).toContain('<title>What a reading list is for</title>')
   })
 
@@ -90,24 +90,40 @@ describe('a shared Folio', () => {
   const html = renderReaderPage(folio())
 
   test('has a contents list with the parts in running order and their headings', () => {
-    expect(html).toContain('<div class="rp readonly folio">')
-    const contents = between(html, '<aside class="sidebar" aria-label="Contents">', '</aside>')
-    expect(contents).toContain('<h2 class="sidebar-title">Teaching notes, autumn term</h2><p class="toc-label">Contents</p>')
+    expect(html).toContain('<div class="rp readonly folio" data-layout="folio">')
+    const contents = between(html, '<aside class="sidebar" aria-label="Contents" id="folio-contents">', '</aside>')
+    expect(contents).toContain('<h2 class="sidebar-title">Teaching notes, autumn term</h2>')
     const links = [...contents.matchAll(/<a class="nav-link ([a-z0-9- ]+)" href="#([^"]+)">([^<]+)<\/a>/g)].map((m) => [m[1], m[2], m[3]])
     expect(links).toEqual([
-      ['piece-link', 'part-1', '1. What a reading list is for'],
+      ['piece-link', 'part-1', 'What a reading list is for'],
       ['level-3', 'p1-start', 'Start with a question'],
-      ['piece-link', 'part-2', '2. Setting the first week'],
-      ['piece-link', 'part-3', '3. Marking without a rubric'],
+      ['piece-link', 'part-2', 'Setting the first week'],
+      ['piece-link', 'part-3', 'Marking without a rubric'],
     ])
   })
 
-  test('shows the parts in order, each with its label and title, and ends with the Made with line after the last part', () => {
+  test('adds no numbers of its own: contents entries are the heading texts, the author\'s numbers stay, and no "Part N" eyebrow is emitted', () => {
+    const numbered = renderReaderPage(folio({
+      parts: [
+        { title: '1. From producing a translation', html: '<h3 id="a">5.1 Scope</h3><p>One.</p>', headings: [{ id: 'a', text: '5.1 Scope' }] },
+        { title: 'Abstract', html: '<p>Two.</p>' },
+      ],
+    }))
+    const contents = between(numbered, '<aside class="sidebar" aria-label="Contents" id="folio-contents">', '</aside>')
+    const entries = [...contents.matchAll(/<a class="nav-link [^"]+" href="#[^"]+">([^<]*)<\/a>/g)].map((m) => m[1])
+    expect(entries).toEqual(['1. From producing a translation', '5.1 Scope', 'Abstract'])
+    expect(contents).not.toMatch(/<ol|<li|counter|::before/)
+    expect(numbered).not.toMatch(/class="plabel"|>Part \d+</)
+    expect(numbered).toContain('<section class="wf-bundle-section" id="part-1" aria-labelledby="part-1-title"><h1 class="wf-bundle-section-title" id="part-1-title">1. From producing a translation</h1>')
+  })
+
+  test('shows the parts in order, each with its title, and ends with the Made with line after the last part', () => {
     const order = ['id="part-1"', 'Part one text.', 'id="part-2"', 'Part two text.', 'id="part-3"', 'Part three, the last words.', 'Made with WriteFlex']
     const at = order.map((needle) => html.indexOf(needle))
     expect(at.every((index) => index > 0)).toBe(true)
     expect([...at].sort((a, b) => a - b)).toEqual(at)
-    expect(html).toContain('<p class="plabel">Part 2</p><h1 class="wf-bundle-section-title" id="part-2-title">Setting the first week</h1>')
+    expect(html).toContain('<section class="wf-bundle-section" id="part-2" aria-labelledby="part-2-title"><h1 class="wf-bundle-section-title" id="part-2-title">Setting the first week</h1>')
+    expect(html).not.toMatch(/class="plabel"|>Part \d+</)
     expect(html).toContain('</section><footer class="made-with">')
   })
 
@@ -143,4 +159,61 @@ describe('the "turned off" page', () => {
     expect(html).toContain('<h1>This link has been turned off</h1><p>If you still need the text, ask the person who sent you the link.</p>')
     expect(html).not.toMatch(/Shared by|Updated|Made with/)
   })
+})
+
+
+test('a first part titled as the Folio shows its text once under the cover h1, with its part anchor', () => {
+  const page = renderReaderPage(folio({ parts: [
+    { title: '  Teaching NOTES, autumn term ', html: '<p class="wf-paragraph">Opening words.</p>' },
+    { title: 'Setting the first week', html: '<p class="wf-paragraph">Part two text.</p>' },
+  ] }))
+  expect(page.match(/<h1[^>]*>Teaching notes, autumn term<\/h1>/g)?.length).toBe(1)
+  expect(page).toContain('<header class="hero wf-masthead"><h1>Teaching notes, autumn term</h1>')
+  expect(page).not.toContain('<h1 class="wf-bundle-section-title" id="part-1-title">')
+  expect(page).toContain('Opening words.')
+  expect(page).toContain('id="part-1"')
+  expect(page).toContain('<h1 class="wf-bundle-section-title" id="part-2-title">Setting the first week</h1>')
+})
+
+test('the Folio cover filters Parts chips and empty title parts without renumbering remaining anchors', () => {
+  const page = renderReaderPage(folio({ parts: [
+    { title: '  TEACHING NOTES, AUTUMN TERM ', html: '<h1>Teaching notes, autumn term</h1><p>&nbsp;</p>' },
+    { title: 'Real part', html: '<p>Words.</p>' },
+    { title: 'Teaching notes, autumn term', missing: true },
+  ] }))
+  expect(page).not.toContain('<strong>Parts</strong>')
+  expect(page).not.toContain('id="part-1"')
+  expect(page).not.toContain('href="#part-1"')
+  expect(page).toContain('id="part-2"')
+  expect(page).toContain('id="part-3"')
+  expect(page).toContain('This part is not available.')
+})
+
+test('contents derives nested sections from HTML, omits minor headings, and renders a static first open part', () => {
+  const page = renderReaderPage(folio({ parts: [{ title: 'First', html: '<h3 class="wf-heading" id="sec">Section</h3><h4 id="sub">Subsection</h4><h5 id="minor">Minor</h5>', headings: [
+    { id: 'sec', text: 'Section' }, { id: 'sub', text: 'Subsection' }, { id: 'minor', text: 'Minor' },
+  ] }, { title: 'Second', html: '<p>Text</p>' }] }))
+  const nav = between(page, '<nav', '</nav>')
+  expect(nav).toContain('<details class="nav-part" open>')
+  expect(nav).toContain('class="nav-section"')
+  expect(nav).toContain('class="nav-subsections"')
+  expect(nav).toContain('href="#sub"')
+  expect(nav).not.toContain('href="#minor"')
+  expect(page).toContain('.rp.folio[data-layout="folio"] h3.wf-heading')
+  expect(page).toContain('.rp.folio[data-layout="folio"] h4.wf-heading')
+  expect(page).toContain('.rp.folio[data-layout="folio"] h5.wf-heading')
+  expect(page).toContain('aria-controls="folio-contents"')
+  expect(page).toContain('class="current-section">Cover</span>')
+})
+
+test('every served inline script is pinned by its actual CSP hash, including navigation with comments off', async () => {
+  const response = await readerPageResponse(renderReaderPage(folio()))
+  const html = await response.text()
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+  expect(scripts.length).toBeGreaterThan(0)
+  expect(scripts.map(s => s[1]).join('')).toContain('requestAnimationFrame')
+  for (const script of scripts) {
+    const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(script[1]))
+    expect(response.headers.get('content-security-policy')).toContain(`'sha256-${Buffer.from(hash).toString('base64')}'`)
+  }
 })
