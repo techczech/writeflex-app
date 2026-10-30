@@ -76,10 +76,10 @@ test('without the manifest the nearer Index Note decides, and a file in the Foli
   })
 })
 
-test('a malformed manifest is not a Folio (the reader never infers one)', async () => {
+test('a malformed manifest still declares a Folio under the shared presence rule', async () => {
   await write(`talk/${MANIFEST_NAME}`, '{ not json')
   await write('talk/parts/01.md')
-  expect(await resolveTabGroups(ws, ['talk/parts/01.md'])).toEqual({ 'talk/parts/01.md': 'talk/parts' })
+  expect(await resolveTabGroups(ws, ['talk/parts/01.md'])).toEqual({ 'talk/parts/01.md': 'talk' })
 })
 
 test('a root manifest makes the whole workspace one group', async () => {

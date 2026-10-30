@@ -41,7 +41,7 @@ export type WikilinkPolicy = 'text' | { resolve: (target: string) => string | nu
  *    kept, so an export completes and reports rather than silently dropping (the PRD's states table).
  *  Only the resolver form can read the disk: this module is pure, so `data:` URIs are built by the
  *  caller in the main process, not here. */
-export type ImagePolicy = 'keep' | 'omit' | { resolve: (src: string) => string | null }
+export type ImagePolicy = 'keep' | 'omit' | { resolve: (src: string) => string | null; /** App preview only: a per-window wf-asset origin, never taken from Markdown. */ workspaceAssetBase?: string }
 
 /** What becomes of a ```svg fence's drawn form. THE ONE PLACE THE TWO HTML CUSTOMERS DIVERGE.
  *  - `'inline'` (the default) — the sanitised `<svg>` itself, which is right for an exported FILE:
@@ -241,7 +241,9 @@ function image(part: Extract<Inline, { kind: 'image' }>, emitter: Emitter): stri
     emitter.missingImages.push(part.src)
     return escapeHtml(part.alt)
   }
-  const safe = attributeUrl(src, 'image')
+  const base = typeof policy === 'object' ? policy.workspaceAssetBase?.replace(/\/$/, '') : undefined
+  const workspaceImage = base && /^wf-asset:\/\/[a-z0-9-]+$/i.test(base) && src.startsWith(`${base}/`) && !/[\u0000-\u0020\u007f\\]/.test(src)
+  const safe = workspaceImage ? escapeAttribute(src) : attributeUrl(src, 'image')
   if (safe === null) return escapeHtml(part.alt)
   const title = part.title ? ` title="${escapeAttribute(part.title)}"` : ''
   return `<img src="${safe}" alt="${alt}"${title} style="${STYLE.image}" />`

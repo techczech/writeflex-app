@@ -4,8 +4,7 @@ import type { Change } from '../../src/preload'
 import { describeMarginCard } from '../../src/renderer/src/app/margin-card'
 import { buildMarginModel, marginSource } from '../../src/renderer/src/app/margin-model'
 import type { MarginOutside } from '../../src/renderer/src/app/margin-outside'
-import { allowanceLimitReached } from '../../src/renderer/src/components/outside-dock-model'
-import { ReviewMarginPanel } from '../../src/renderer/src/components/ReviewMargin'
+import { MarginTop, ReviewMarginPanel } from '../../src/renderer/src/components/ReviewMargin'
 import { NotPlacedPopover } from '../../src/renderer/src/components/ReviewNotPlacedPopover'
 import { reviewLine } from '../../src/renderer/src/components/status-bar-model'
 
@@ -90,13 +89,20 @@ const summary = (over: Partial<NonNullable<MarginOutside['summary']>> = {}): Non
   limit: 200, limitPerSource: 100, undecided: 3, bySource: [{ source: 'claude-code', label: 'Claude Code', undecided: 3 }], lastLook: null, ...over,
 } as NonNullable<MarginOutside['summary']>)
 
-test('the allowance line shows only when a limit is reached (ticket 10)', () => {
-  expect(allowanceLimitReached(null)).toBe(false)
-  expect(allowanceLimitReached(summary())).toBe(false)
-  // Near the limit is not the limit.
-  expect(allowanceLimitReached(summary({ undecided: 185 }))).toBe(false)
-  expect(allowanceLimitReached(summary({ undecided: 200, lastLook: { refusedFull: 4 } as never }))).toBe(true)
-  expect(allowanceLimitReached(summary({ bySource: [{ source: 'claude-code', label: 'Claude Code', undecided: 100 }], lastLook: { refusedFull: 2 } as never }))).toBe(true)
+test('the production margin top shows reached limits or access failures, not near-limit or batch notices (ticket 10)', () => {
+  const model = buildMarginModel({ changes: [], document: DOC, view: 'margin', now: NOON })
+  const shown = (sum: MarginOutside['summary']): string => renderToStaticMarkup(<MarginTop model={model}
+    controls={{ state: { filter: {} } } as never} outside={outsideProps({ summary: sum })} />)
+  expect(shown(null)).toBe('')
+  expect(shown(summary())).toBe('')
+  expect(shown(summary({ undecided: 185 }))).toBe('')
+  expect(shown(summary({ bySource: [{ source: 'claude-code', label: 'Claude Code', undecided: 95 }] }))).toBe('')
+  expect(shown(summary({ lastLook: { left: 4, leftBecause: ['look-limit'] } as never }))).toBe('')
+  expect(shown(summary({ undecided: 200, lastLook: { refusedFull: 4 } as never }))).toContain('outside-room')
+  expect(shown(summary({ bySource: [{ source: 'claude-code', label: 'Claude Code', undecided: 100 }], lastLook: { refusedFull: 2 } as never }))).toContain('outside-room')
+  expect(shown(summary({ lastLook: { left: 4, leftBecause: ['not-held'] } as never }))).toContain('another copy of WriteFlex has this collection open')
+  expect(shown(summary({ lastLook: { left: 4, leftBecause: ['ledger-not-writable'] } as never }))).toContain('could not save')
+  expect(shown(summary({ lastLook: { left: 0, leftBecause: ['not-held'] } as never }))).toBe('')
 })
 
 test('the old head rows are gone: no arrived row and no other-pieces row above the cards; the allowance line only at a limit', () => {

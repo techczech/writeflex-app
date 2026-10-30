@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SidecarStore } from '@readflex/sidecar'
 import { documentTitle } from '../../src/main/frontmatter'
 import { createBunSqliteDriver } from '@readflex/sqlite-driver/bun'
-import { openZoteroAnnotationWriteSession, type NewZoteroAnnotation } from '@readflex/zotero-bridge'
 import {
   MAX_ANNOTATION_COMMENT_BYTES,
   MAX_ANNOTATION_POSITION_BYTES,
@@ -13,19 +12,16 @@ import {
   annotationPositionWithinCap,
   annotationPayload,
   annotationTextWithinCap,
-  areaQuotationPayload,
   citationAnnotation,
   drainOutbox,
-  drainOutboxToZotero,
-  e2eZoteroLivenessProbes,
   findExactCitationAnnotation,
   isPdfCitationPosition,
-  localAnnotationFromPayload,
   quotationComment,
   type SavedAnnotation,
   type ZoteroWriteOutcome,
   type ZoteroWriteTransport,
 } from '../../src/main/zotero-annotation-writes'
+import { pluginFields } from '../../src/main/zotero-plugin-transport'
 
 const annotation: SavedAnnotation = {
   color: '#ffd400',
@@ -115,14 +111,11 @@ describe('the verified API payload (ADR-0002)', () => {
     expect(capped).not.toContain('\uFFFD')
   })
 
-  test('a cross-page PDF position survives byte-identical through the payload and local insert', () => {
+  test('a cross-page PDF position survives byte-identical through the payload and the plugin request', () => {
     const position = '{"pageIndex":0,"rects":[[72,680,280,700]],"nextPageRects":[[72,40,280,60]]}'
     const payload = annotationPayload({ ...annotation, position }, 'ATT1')
     expect(JSON.stringify(payload.annotationPosition)).toBe(position)
-    expect(localAnnotationFromPayload(
-      { itemKey: 'CROSSPG1', libraryId: 1, parentItemKey: 'ATT1' },
-      payload,
-    )?.position).toBe(position)
+    expect(pluginFields(payload)?.position).toBe(position)
   })
 })
 
@@ -415,313 +408,6 @@ describe('draining', () => {
     expect(report.attempted).toBe(2)
     expect(sidecar.outboxDue()).toHaveLength(3)
     sidecar.close()
-  })
-})
-
-describe('the local write (ADR-0031)', () => {
-  const payload = annotationPayload(annotation, 'ATT1')
-
-  test('the API payload maps back onto the local insert with no translation', () => {
-    expect(localAnnotationFromPayload(
-      { itemKey: 'ANNKEY22', libraryId: 1, parentItemKey: 'ATT1' }, payload,
-    )).toEqual({
-      color: '#ffd400',
-      comment: 'the crux',
-      key: 'ANNKEY22',
-      libraryId: 1,
-      pageLabel: '157',
-      parentAttachmentKey: 'ATT1',
-      position: '{"pageIndex":156,"rects":[[131.8,274.1,287,283.2]]}',
-      sortIndex: '00156|000601|00268',
-      tags: ['models'],
-      text: 'the implicit models that have generally been used',
-      type: 'highlight',
-    })
-  })
-
-  test('an annotation type Zotero has no number for is not written', () => {
-    expect(localAnnotationFromPayload(
-      { itemKey: 'ANNKEY22', libraryId: 1, parentItemKey: 'ATT1' },
-      { ...payload, annotationType: 'scribble' as SavedAnnotation['type'] },
-    )).toBeNull()
-  })
-
-  test('a create is written and confirmed under the key the database actually took', async () => {
-    const sidecar = store()
-    queue(sidecar)
-    const inserted: NewZoteroAnnotation[] = []
-    const report = await drainOutboxToZotero(sidecar, () => ({
-      backupPath: '/tmp/backup.sqlite',
-      close() {},
-      databasePath: '/tmp/zotero.sqlite',
-      insert(input) {
-        inserted.push(input)
-        // The reader's key was taken, so Zotero got a different one.
-        return { itemId: 9_842, key: 'ZOTEROK2', keyReplaced: true }
-      },
-      kind: 'open',
-      schema: { system: 32, userdata: 128 },
-    }))
-    expect(report).toMatchObject({ attempted: 1, confirmed: 1, skipped: null })
-    expect(inserted[0]).toMatchObject({ libraryId: 1, parentAttachmentKey: 'ATT1', type: 'highlight' })
-    // ADR-0029 deduplicates the painted union on the key, so the one actually written is recorded.
-    expect(sidecar.outboxByStatus('confirmed')[0]?.itemKey).toBe('ZOTEROK2')
-    expect(sidecar.countOutboxWaiting()).toBe(0)
-    sidecar.close()
-  })
-
-  test('Zotero open: nothing attempted, nothing lost, and a sentence for a person', async () => {
-    const sidecar = store()
-    queue(sidecar)
-    const report = await drainOutboxToZotero(sidecar, () => ({
-      code: 'zotero-is-open',
-      details: ['A Zotero process is running: 4711 zotero'],
-      kind: 'refused',
-      reason: 'Close Zotero and this highlight will be saved to your library.',
-      signals: ['zotero-process-running'],
-    }))
-    expect(report).toMatchObject({
-      attempted: 0,
-      skipped: 'zotero-is-open',
-      skippedReason: 'Close Zotero and this highlight will be saved to your library.',
-    })
-    // Still owed, still counted, and therefore still DRAWN (ADR-0029).
-    expect(sidecar.outboxDue()).toHaveLength(1)
-    expect(sidecar.countOutboxWaiting()).toBe(1)
-    sidecar.close()
-  })
-
-  test('a schema past the pin refuses rather than guessing, and keeps the highlight', async () => {
-    const sidecar = store()
-    queue(sidecar)
-    const report = await drainOutboxToZotero(sidecar, () => ({
-      code: 'schema-drift',
-      details: ['userdata: ReadFlex is built for 128, your Zotero database reports 129'],
-      kind: 'refused',
-      reason: 'Zotero has updated its database since this version of ReadFlex was checked against it, so ReadFlex is not writing to it. Your highlight is saved here and waiting.',
-      signals: [],
-    }))
-    expect(report.skipped).toBe('schema-drift')
-    expect(sidecar.outboxDue()).toHaveLength(1)
-    sidecar.close()
-  })
-
-  test('an insert that throws keeps the highlight with its reason, and stops retrying', async () => {
-    const sidecar = store()
-    queue(sidecar)
-    const report = await drainOutboxToZotero(sidecar, () => ({
-      backupPath: '/tmp/backup.sqlite',
-      close() {},
-      databasePath: '/tmp/zotero.sqlite',
-      insert() {
-        throw new Error('The document this highlight belongs to is no longer in Zotero, so the highlight was not written.')
-      },
-      kind: 'open',
-      schema: { system: 32, userdata: 128 },
-    }))
-    expect(report).toMatchObject({ attempted: 1, rejected: 1 })
-    const failed = sidecar.outboxByStatus('failed')
-    expect(failed[0]?.lastError).toContain('no longer in Zotero')
-    // Failed is still unconfirmed, so the mark is still painted — nothing vanishes (ADR-0029).
-    expect(sidecar.outboxUnconfirmed()).toHaveLength(1)
-    sidecar.close()
-  })
-
-  test('an update is kept rather than written: ADR-0031 decides the insert and nothing else', async () => {
-    const sidecar = store()
-    sidecar.enqueueOutbox({
-      itemKey: 'EXISTING2',
-      libraryId: 1,
-      operation: 'update',
-      parentItemKey: 'ATT1',
-      payload: JSON.stringify(payload),
-    })
-    let inserts = 0
-    const report = await drainOutboxToZotero(sidecar, () => ({
-      backupPath: '/tmp/backup.sqlite',
-      close() {},
-      databasePath: '/tmp/zotero.sqlite',
-      insert() {
-        inserts += 1
-        return { itemId: 1, key: 'SHOULDNT', keyReplaced: false }
-      },
-      kind: 'open',
-      schema: { system: 32, userdata: 128 },
-    }))
-    // The insert is never even reached: writing an UPDATE as an INSERT would duplicate the
-    // annotation in Zotero, which is worse than not writing it.
-    expect(inserts).toBe(0)
-    // Kept, not refused: Zotero was never asked, so nothing is counted against it.
-    expect(report).toMatchObject({ attempted: 1, keptLocal: 1, rejected: 0, confirmed: 0 })
-    const kept = sidecar.outboxUnconfirmed()
-    expect(kept).toHaveLength(1)
-    expect(kept[0]?.lastError).toContain('not something WriteFlex does yet')
-    expect(kept[0]?.localOnly).toBe(1)
-    expect(kept[0]?.payload).toBe(JSON.stringify(payload))
-    expect(sidecar.countOutboxRejected()).toBe(0)
-    expect(sidecar.countOutboxWaiting()).toBe(0)
-    sidecar.close()
-  })
-
-  test('the private Area quotation update resolves the confirmed create and changes only its comment', async () => {
-    const sidecar = store()
-    const createPayload = {
-      ...annotationPayload({ ...annotation, comment: null, type: 'image' }, 'ATT1'),
-      readflexSourceKey: 'READERA7',
-    }
-    const create = sidecar.enqueueOutbox({
-      itemKey: 'READERA7', libraryId: 1, operation: 'create', parentItemKey: 'ATT1',
-      payload: JSON.stringify(createPayload),
-    })
-    sidecar.markOutboxConfirmed(create.id, 'ZOTEROA7')
-    sidecar.enqueueOutbox({
-      itemKey: 'READERA7', libraryId: 1, operation: 'update', parentItemKey: 'ATT1',
-      payload: JSON.stringify(areaQuotationPayload(
-        createPayload,
-        'READERA7',
-        'Quoted in "Draft one" — 1 August 2026',
-      )),
-    })
-    const calls: unknown[] = []
-    const report = await drainOutboxToZotero(sidecar, () => ({
-      backupPath: '/tmp/backup.sqlite',
-      close() {},
-      databasePath: '/tmp/zotero.sqlite',
-      insert() { throw new Error('must not insert') },
-      setImageQuotation(input) { calls.push(input); return { recorded: true } },
-      kind: 'open',
-      schema: { system: 32, userdata: 129 },
-    }))
-    expect(report).toMatchObject({ attempted: 1, confirmed: 1 })
-    expect(calls).toEqual([{
-      comment: 'Quoted in "Draft one" — 1 August 2026',
-      key: 'ZOTEROA7',
-      libraryId: 1,
-      parentAttachmentKey: 'ATT1',
-    }])
-    sidecar.close()
-  })
-
-  test('a retained pre-marker Area resolves by its confirmed canonical key', async () => {
-    const sidecar = store()
-    const createPayload = annotationPayload({ ...annotation, comment: null, type: 'image' }, 'ATT1')
-    const create = sidecar.enqueueOutbox({
-      itemKey: 'LEGACYA7', libraryId: 1, operation: 'create', parentItemKey: 'ATT1',
-      payload: JSON.stringify(createPayload),
-    })
-    sidecar.markOutboxConfirmed(create.id, 'LEGACYA7')
-    sidecar.enqueueOutbox({
-      itemKey: 'LEGACYA7', libraryId: 1, operation: 'update', parentItemKey: 'ATT1',
-      payload: JSON.stringify(areaQuotationPayload(
-        createPayload,
-        'LEGACYA7',
-        'Quoted in "Legacy draft" — 1 August 2026',
-      )),
-    })
-    const calls: unknown[] = []
-    const report = await drainOutboxToZotero(sidecar, () => ({
-      backupPath: '/tmp/backup.sqlite', close() {}, databasePath: '/tmp/zotero.sqlite',
-      insert() { throw new Error('must not insert') },
-      setImageQuotation(input) { calls.push(input); return { recorded: true } },
-      kind: 'open', schema: { system: 32, userdata: 129 },
-    }))
-    expect(report).toMatchObject({ confirmed: 1, retrying: 0 })
-    expect(calls).toHaveLength(1)
-    sidecar.close()
-  })
-
-  test('the session is closed even when the drain throws — Zotero is never held open', async () => {
-    const sidecar = store()
-    queue(sidecar)
-    let closed = 0
-    await drainOutboxToZotero(sidecar, () => ({
-      backupPath: '/tmp/backup.sqlite',
-      close() { closed += 1 },
-      databasePath: '/tmp/zotero.sqlite',
-      insert() { throw new Error('anything at all') },
-      kind: 'open',
-      schema: { system: 32, userdata: 128 },
-    }))
-    expect(closed).toBe(1)
-    sidecar.close()
-  })
-})
-
-/**
- * The seam that stops the tests consulting the machine (ADR-0031, correction).
- *
- * The proof that matters is the PAIR of behaviours, not either one alone: with the fixture probes
- * injected, "fixture says open" and "fixture says closed" must give DIFFERENT refusals. If the
- * injection ever falls back to the machine defaults, both cases get whatever `pgrep` happens to say
- * on the machine running the suite — the same answer twice — and this fails whichever way that goes.
- * That is what makes it machine-independent, and a single-case assertion would not be.
- */
-describe('fixture-scoped liveness probes (ADR-0031, correction)', () => {
-  const fixtureEnvironment = (
-    extra: NodeJS.ProcessEnv = {},
-  ): NodeJS.ProcessEnv => ({
-    WRITEFLEX_E2E: '1',
-    WRITEFLEX_E2E_ZOTERO_DIRECTORY: '/tmp/wf-fixture-library',
-    ...extra,
-  })
-
-  test('no probes outside the e2e harness — production still asks the machine', () => {
-    expect(e2eZoteroLivenessProbes({})).toBeUndefined()
-    expect(
-      e2eZoteroLivenessProbes({ WRITEFLEX_E2E_ZOTERO_DIRECTORY: '/tmp/wf-fixture-library' }),
-    ).toBeUndefined()
-  })
-
-  test('no probes without a fixture library — the seam can never speak for his real library', () => {
-    expect(e2eZoteroLivenessProbes({ WRITEFLEX_E2E: '1' })).toBeUndefined()
-    expect(
-      e2eZoteroLivenessProbes({ WRITEFLEX_E2E: '1', WRITEFLEX_E2E_ZOTERO_LIVENESS: 'open' }),
-    ).toBeUndefined()
-  })
-
-  test('a fixture library reports closed by default and open when told to', () => {
-    const closed = e2eZoteroLivenessProbes(fixtureEnvironment())
-    expect(closed?.runningZoteroProcesses?.()).toEqual([])
-    expect(closed?.processesHoldingDatabase?.('/tmp/wf-fixture-library/zotero.sqlite')).toEqual([])
-
-    const open = e2eZoteroLivenessProbes(
-      fixtureEnvironment({ WRITEFLEX_E2E_ZOTERO_LIVENESS: 'open' }),
-    )
-    expect(open?.runningZoteroProcesses?.()).not.toEqual([])
-    expect(open?.processesHoldingDatabase?.('/tmp/wf-fixture-library/zotero.sqlite')).not.toEqual([])
-  })
-
-  test('the write session refuses on the fixture’s word, not the machine’s', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'wf-liveness-'))
-    directories.push(directory)
-    const databasePath = join(directory, 'zotero.sqlite')
-    // An empty file is enough: the liveness gate runs before the schema is read, so "closed" gets
-    // past it and lands on `schema-unreadable` while "open" never reaches the schema at all.
-    writeFileSync(databasePath, '')
-
-    const refusalWith = (extra: NodeJS.ProcessEnv): string => {
-      const liveness = e2eZoteroLivenessProbes(
-        fixtureEnvironment({ WRITEFLEX_E2E_ZOTERO_DIRECTORY: directory, ...extra }),
-      )
-      const session = openZoteroAnnotationWriteSession(createBunSqliteDriver(), {
-        backupDirectory: join(directory, 'backups'),
-        databasePath,
-        ...(liveness ? { liveness } : {}),
-      })
-      if (session.kind !== 'refused') {
-        session.close()
-        return 'opened'
-      }
-      return session.code
-    }
-
-    const toldOpen = refusalWith({ WRITEFLEX_E2E_ZOTERO_LIVENESS: 'open' })
-    const toldClosed = refusalWith({})
-    expect(toldOpen).toBe('zotero-is-open')
-    expect(toldClosed).toBe('schema-unreadable')
-    // The load-bearing assertion: the two answers DIFFER. Machine defaults would return the same
-    // answer for both, whatever that answer happened to be.
-    expect(toldClosed).not.toBe(toldOpen)
   })
 })
 

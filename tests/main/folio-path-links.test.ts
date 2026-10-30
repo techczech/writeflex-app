@@ -19,7 +19,7 @@ import { MANIFEST_NAME } from '../../src/main/folio'
 import { invalidateFolioOrderFacts } from '../../src/main/folio-order-cache'
 import { folioOutline } from '../../src/main/folio-outline'
 import { folioOrderFacts } from '../../src/main/folio-order-facts'
-import { addFolioPieces } from '../../src/main/folio-running-order'
+import { addFolioPieces, removeAddedFolioPieces } from '../../src/main/folio-running-order'
 import { invalidateFolioPlaces } from '../../src/main/folio-place'
 import { forgetAddUndoRecords, readFolioDocuments, recordAdd, undoRecordedAdd } from '../../src/main/folio-add-undo'
 import { readFolioPlan } from '../../src/main/plan'
@@ -93,27 +93,27 @@ for (const index of [null, '# book\n']) {
     expect(seen.sidebarOrder).toEqual([A, B])
     expect(seen.pageNotIn).not.toContain(A)
     expect(seen.sidebarNotIn).not.toContain(A)
-    expect(seen.plan?.parts.map((part) => part.title)).toEqual(['./contents/a', 'Plain'])
+    expect(seen.plan?.parts.map((part) => part.title)).toEqual(['Has # punctuation', 'Plain'])
     // The first page change writes that line by path.
     const invoke = harness()
     await invoke('plan:move-part', { dir: DIR, from: 1, to: 0 })
-    expect(await read(INDEX)).toContain('- [[Plain]]\n- [[./contents/a]]\n')
+    expect(await read(INDEX)).toContain('- [[./contents/b.md|Plain]]\n- [[./contents/a.md|Has %23 punctuation]]\n')
     const after = await surfaces(B)
     expect(after.pageOrder).toEqual([B, A])
     expect(after.sidebarOrder).toEqual([B, A])
   })
 }
 
-test('an entry no line can name (its title and its path both unholdable) is out of the order on both surfaces alike', async () => {
+test('escaped file targets retain punctuation paths in both surfaces', async () => {
   const odd = `${DIR}/contents/x#1.md`
   await write(odd, '# Bad | title\n')
   await write(B, '# Plain\n')
   await manifestFolio(['x#1.md', 'b.md'], null)
   const seen = await surfaces(B)
-  expect(seen.pageOrder).toEqual([B])
-  expect(seen.sidebarOrder).toEqual([B])
-  expect(seen.pageNotIn).toContain(odd)
-  expect(seen.sidebarNotIn).toContain(odd)
+  expect(seen.pageOrder).toEqual([odd, B])
+  expect(seen.sidebarOrder).toEqual([odd, B])
+  expect(seen.pageNotIn).not.toContain(odd)
+  expect(seen.sidebarNotIn).not.toContain(odd)
 })
 
 // ---- 3. Path first ----
@@ -319,43 +319,18 @@ test('an Add Undo removes an Index Note the Add created only while it holds exac
 
 // ---- 5. Sidebar Add only for a file the resulting order can name (Sol round 3 finding 1) ----
 
-test('a manifest-only Folio: a file no line can name is not offered, and Add refuses it by name; Add all adds the rest', async () => {
+test('a manifest-only Folio accepts punctuation paths and Undo restores its exact bytes', async () => {
   const odd = `${DIR}/contents/x#1.md`
   await write(A, '# Alpha\n')
   await write(odd, '# Bad | title\n')
-  await write(B, '# Beta\n')
   await manifestFolio(['a.md'], null)
-  fresh()
-  const facts = await folioOrderFacts(ws, DIR)
-  expect(facts.changeable).toBe(true)
-  expect(facts.addable).toEqual([B])
-  const outline = await folioOutline(ws, A)
-  expect(outline?.also.find((file) => file.path === odd)?.addable).toBe(false)
-  expect(outline?.also.find((file) => file.path === B)?.addable).toBe(true)
-
-  const manifest = await read(MANIFEST)
-  const alone = await addFolioPieces(ws, DIR, { paths: [odd], expected: [A] })
-  expect(alone.result).toMatchObject({ ok: false, stale: false })
-  expect(alone.result.ok ? '' : alone.result.message).toContain('“x#1.md” was not added')
-  expect(await read(MANIFEST)).toBe(manifest)
-
-  const invoke = harness()
-  const added = await invoke('plan:add-parts', { dir: DIR, paths: [B, odd], expected: [{ title: 'Alpha', path: A }] }) as { ok: boolean; skipped?: string[]; note?: string; undoToken?: string; parts?: Array<{ path: string }> }
-  expect(added.ok).toBe(true)
-  expect(added.skipped).toEqual([odd])
-  expect(added.note).toContain('“x#1.md” was not added')
-  expect(added.parts?.map((part) => part.path)).toEqual([A, B])
-  expect(await read(MANIFEST)).not.toContain('x#1')
-  // What Add said is what both surfaces show after a refresh.
-  const seen = await surfaces(A)
-  expect(seen.pageOrder).toEqual([A, B])
-  expect(seen.sidebarOrder).toEqual([A, B])
-  expect(seen.sidebarNotIn).toContain(odd)
-  expect(seen.pageNotIn).toContain(odd)
-  // Undo takes back only what was added.
-  const undone = await invoke('plan:remove-added', { dir: DIR, token: added.undoToken }) as { ok: boolean }
-  expect(undone.ok).toBe(true)
-  expect(await read(MANIFEST)).toBe(manifest)
+  const before = await read(MANIFEST)
+  const added = await addFolioPieces(ws, DIR, { paths: [odd], expected: [A] })
+  expect(added.result).toMatchObject({ ok: true, order: [A, odd] })
+  expect(await Bun.file(join(root, INDEX)).exists()).toBe(false)
+  if (!added.result.ok || !added.result.undoToken) throw new Error('No Undo token')
+  expect((await removeAddedFolioPieces(ws, DIR, { token: added.result.undoToken })).result).toMatchObject({ ok: true })
+  expect(await read(MANIFEST)).toBe(before)
 })
 
 test('a manifest-only Folio: a file whose title a line cannot hold is offered, and once added shows on both surfaces', async () => {
@@ -370,20 +345,17 @@ test('a manifest-only Folio: a file whose title a line cannot hold is offered, a
   const seen = await surfaces(A)
   expect(seen.pageOrder).toEqual([A, odd])
   expect(seen.sidebarOrder).toEqual([A, odd])
-  expect(seen.plan?.parts.map((part) => part.title)).toEqual(['Alpha', './contents/odd'])
+  expect(seen.plan?.parts.map((part) => part.title)).toEqual(['Alpha', 'Bad | title'])
 })
 
-test('a Folio with an Index Note: a file no line can name is not offered and its Put back is refused', async () => {
+test('an Index Note Folio leaves an unsafe filename unpinned when its title cannot name it', async () => {
   const odd = `${DIR}/contents/x#1.md`
   await write(A, '# Alpha\n')
   await write(odd, '# Bad | title\n')
   await manifestFolio(['a.md'], '# book\n\n## Running order\n\n- [[Alpha]]\n')
   fresh()
   expect((await folioOrderFacts(ws, DIR)).addable).toEqual([])
-  const plan = await readFolioPlan(ws, DIR)
-  expect(plan?.unlisted.find((part) => part.path === odd)?.putBackRefusal).toMatch(/No running-order line can name this file/)
-  const index = await read(INDEX)
-  const alone = await addFolioPieces(ws, DIR, { paths: [odd], expected: [A] })
-  expect(alone.result.ok ? '' : alone.result.message).toContain('“x#1.md” was not added')
-  expect(await read(INDEX)).toBe(index)
+  const added = await addFolioPieces(ws, DIR, { paths: [odd], expected: [A] })
+  expect(added.result).toMatchObject({ ok: false })
+  expect(await read(INDEX)).not.toContain('%23')
 })

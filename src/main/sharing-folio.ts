@@ -1,3 +1,4 @@
+import { folioDeclaration } from './folio-declaration'
 // A Folio as it is published to a link (sharing ticket 09; spec sections 4.2, 6.1 rows "Folio part …",
 // 8 "What is published").
 //
@@ -20,13 +21,8 @@
 // on this Mac, stays the same when the running order changes, and a note's block hint (`id:<key>-…`,
 // the reader page's anchoring) says which part the note was written on (ticket 07 routes by it).
 //
-// The Folio's title and chips come from its Index Note (its title, and the Date, Status and Author of
-// its frontmatter, read as the piece rendering reads a piece: hidden comments first). Without a title
-// there, the title is "Folio": never a folder's name (spec section 8: not the file path, not the
-// collection name; review round 1, finding 1). The Index Note is read only when where it really lives
-// passes the rules a part passes: inside the Folio's folder once links are resolved, no dot-folder and
-// no `agent-notes` on the way (review round 1, finding 2); otherwise the Folio publishes without it
-// (the neutral title, no chips). Nothing else of the Index Note is published.
+// Title resolution follows the export, through sharing-eligible reads only. The title page is the
+// cover, not a published body part. Details metadata overrides its chips field by field.
 //
 // The Folio's manifest, and the Index Note where it decides whether a folder without a manifest is a
 // Folio, are read only when the one source rule allows it (sharing-source-eligibility.ts
@@ -41,17 +37,20 @@ import { randomBytes } from 'node:crypto'
 import { lstatSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, posix, relative, sep } from 'node:path'
 import {
-  fallbackFolioParts, indexNotePath, manifestEntryPointsOutsideFolio, manifestFilePathCandidates, readManifest, resolveManifestFilePath,
+  fallbackFolioParts, indexNotePath, manifestEntryPointsOutsideFolio, manifestFilePathCandidates, manifestPartEntries, readManifest,
 } from './folio'
 import { normalisedFolioDir } from './folio-dir'
 import { indexDeclaresPlan } from './folio-place'
-import { parseFrontmatter } from './frontmatter'
+import { exportCollectionTitle } from './export-title'
+import { folioFrontMatter } from './folio-front-matter'
 import { isEligibleFolioMetadata, isEligiblePiece, isSharablePiece } from './sharing-source-eligibility'
 import { chipsOf, oneLine, renderPieceForSharing, withoutHiddenComments, type RenderedPiece, type RemotePictureFetch, type SharedPicture } from './sharing-render'
 import { Workspace } from './workspace'
 import { isAgentInstructionsName } from '../shared/folio-agent-files'
+import { isRoomSupportName } from '../shared/folio-part-name'
 import { MANIFEST_NAME } from '../shared/folio-constants'
-import { firstBodyHeading, titleFromFileName } from '../shared/folio-part-title'
+import { frontmatterBlock } from '../shared/markdown/frontmatter'
+import { titleFromFileName, withoutOwnHeading } from '../shared/folio-part-title'
 import { uniquePieces } from '../shared/folio-place'
 import { SHARE_LIMITS } from '../../sharing-service/share-protocol.ts'
 
@@ -132,8 +131,9 @@ async function sharedIndexDeclaresPlan(ws: Workspace, root: string, dir: string)
 export async function isFolio(root: string, dir: string): Promise<boolean> {
   const ws = new Workspace(root)
   try {
-    if (await sharedManifest(ws, root, dir)) return true
-    return await sharedIndexDeclaresPlan(ws, root, dir)
+    metadataReadable(root, posix.join(dir, MANIFEST_NAME))
+    if (!folioDeclaration(ws, dir).manifest) metadataReadable(root, indexNotePath(ws, dir))
+    return folioDeclaration(ws, dir).isFolio
   } catch {
     return false
   }
@@ -145,14 +145,20 @@ export async function isFolio(root: string, dir: string): Promise<boolean> {
  */
 export async function folioRunningOrder(root: string, dir: string): Promise<FolioEntry[] | null> {
   const ws = new Workspace(root)
+  if (!await isFolio(root, dir)) {
+    // Preserve metadata refusal rather than turning an unreadable source into an empty export.
+    metadataReadable(root, posix.join(dir, MANIFEST_NAME))
+    metadataReadable(root, indexNotePath(ws, dir))
+    return null
+  }
   const manifest = await sharedManifest(ws, root, dir)
   let entries: FolioEntry[]
   if (manifest) {
     const present = new Set((await ws.listFilesIn(dir)).map((file) => file.path))
-    entries = manifest.files.flatMap((file): FolioEntry[] => {
+    // The logical order (`manifestPartEntries`): a room support file is never published, found or missing, whatever the manifest says (I-9).
+    entries = manifestPartEntries(dir, manifest, present).flatMap(({ file, path }): FolioEntry[] => {
       if (manifestEntryPointsOutsideFolio(dir, manifest, file)) return []
-      const path = resolveManifestFilePath(dir, manifest, file, present)
-      if (path) return isAgentInstructionsName(path) ? [] : [{ path, missing: false }]
+      if (path) return isAgentInstructionsName(path) || isRoomSupportName(path) ? [] : [{ path, missing: false }]
       // Not on disk: its place, where the manifest's first reading of it would put it (content_root first).
       const place = manifestFilePathCandidates(dir, manifest, file)[0]
       if (!place || isAgentInstructionsName(place) || !writersPlace(place)) return []
@@ -185,7 +191,7 @@ export function partKeysFor(entries: readonly FolioEntry[], kept: Readonly<Recor
   return keys
 }
 
-/** The published title of a Folio whose Index Note gives none: never a folder's name (review round 1, finding 1). */
+/** The sharing fallback when no export title resolves: never a folder's name. */
 export const FOLIO_TITLE = 'Folio'
 
 /** `rel` (a path from one real location to another) stays inside the first one. */
@@ -211,18 +217,43 @@ export function indexNoteReadable(root: string, dir: string, path: string): bool
   }
 }
 
-/** The Folio's title and chips, from its Index Note when it has one that may be read; else "Folio" and no chips. */
-async function folioHead(ws: Workspace, root: string, dir: string): Promise<{ title: string; chips: RenderedFolio['chips']; savedAt: number }> {
-  const neutral = { title: FOLIO_TITLE, chips: [], savedAt: 0 }
-  const path = indexNotePath(ws, dir)
-  if (!indexNoteReadable(root, dir, path)) return neutral
-  try {
-    const { content: raw, file } = await ws.readFile(path)
-    const content = withoutHiddenComments(raw)
-    const title = parseFrontmatter(content)?.title?.trim() || firstBodyHeading(content)?.text || FOLIO_TITLE
-    return { title: oneLine(title, SHARE_LIMITS.titleChars) || FOLIO_TITLE, chips: chipsOf(content), savedAt: Math.round(file.modifiedAt) }
-  } catch {
-    return neutral
+/** Metadata reads keep sharing eligibility and hidden-comment removal even through file-facts. */
+export function sharingMetadataWorkspace(root: string, dir: string): Workspace {
+  const ws = new Workspace(root)
+  const readFile = ws.readFile.bind(ws)
+  const manifestPath = posix.join(dir, MANIFEST_NAME)
+  // file-facts.ts usesCache must bypass its raw disk cache when readFile is overridden.
+  ws.readFile = async (path) => {
+    const eligible = path === manifestPath ? isEligibleFolioMetadata(root, path)
+      : indexNoteReadable(root, dir, path) && isEligibleFolioMetadata(root, path)
+    if (!eligible) throw new FolioMetadataRefused()
+    const result = await readFile(path)
+    return { ...result, content: path === manifestPath ? result.content : withoutHiddenComments(result.content) }
+  }
+  return ws
+}
+
+/** Reuse the export readers through a workspace whose reads enforce sharing's source rules. */
+async function folioHead(root: string, dir: string, entries: readonly FolioEntry[]): Promise<{
+  title: string; chips: RenderedFolio['chips']; savedAt: number; titlePage: string | null; emptyCover: boolean
+}> {
+  const ws = sharingMetadataWorkspace(root, dir)
+  const front = await folioFrontMatter(ws, dir)
+  const titlePage = front.titlePage && entries.some(entry => entry.path === front.titlePage && !entry.missing)
+    ? front.titlePage : null
+  const cover = titlePage ? await ws.readFile(titlePage).catch(() => null) : null
+  const index = await ws.readFile(indexNotePath(ws, dir)).catch(() => null)
+  const chips = new Map((cover ? chipsOf(cover.content) : []).map(chip => [chip.label, chip]))
+  for (const chip of index ? chipsOf(index.content) : []) chips.set(chip.label, chip)
+  const title = await exportCollectionTitle(ws, dir, new Map(index ? [[indexNotePath(ws, dir), index.content]] : []), FOLIO_TITLE, { frontMatter: { ...front, titlePage: cover ? titlePage : null }, skipUnreadable: true })
+  const coverBody = cover && titlePage ? withoutOwnHeading(cover.content, titlePage) : ''
+  const emptyCover = !coverBody.slice(frontmatterBlock(coverBody)?.end ?? 0).trim()
+  return {
+    title: oneLine(title, SHARE_LIMITS.titleChars) || FOLIO_TITLE,
+    chips: [...chips.values()],
+    savedAt: Math.round(Math.max(cover?.file.modifiedAt ?? 0, index?.file.modifiedAt ?? 0)),
+    titlePage: cover ? titlePage : null,
+    emptyCover,
   }
 }
 
@@ -250,13 +281,15 @@ export async function renderFolioForSharing(
 ): Promise<RenderedFolio> {
   const ws = new Workspace(root)
   const renderPart = ports.renderPart ?? renderPieceForSharing
-  const head = await folioHead(ws, root, dir)
+  const head = await folioHead(root, dir, entries)
   const pictures = new Map<string, SharedPicture>()
   let refusedPictures = 0
   const manifestPath = posix.join(dir, MANIFEST_NAME)
   let savedAt = Math.max(head.savedAt, isEligibleFolioMetadata(root, manifestPath) ? await savedTime(ws, manifestPath) : 0)
   const parts: RenderedFolioPart[] = []
-  for (const entry of entries) {
+  const ordered = [...entries.filter(entry => entry.path === head.titlePage), ...entries.filter(entry => entry.path !== head.titlePage)]
+  for (const entry of ordered) {
+    if (entry.path === head.titlePage && head.emptyCover && entries.length > 1) continue
     const key = keys[entry.path]
     const fallbackTitle = oneLine(titleFromFileName(entry.path), SHARE_LIMITS.titleChars) || 'Untitled'
     let rendered: RenderedPiece | null = null
@@ -275,7 +308,7 @@ export async function renderFolioForSharing(
     savedAt = Math.max(savedAt, rendered.savedAt)
     parts.push({ path: entry.path, key, title: rendered.title, missing: false, html: rendered.html, headings: rendered.headings })
   }
-  const chips = [...head.chips, { label: 'Parts', value: String(parts.length) }].slice(0, SHARE_LIMITS.chips)
+  const chips = head.chips.slice(0, SHARE_LIMITS.chips)
   return { title: head.title, chips, savedAt, parts, pictures: [...pictures.values()], refusedPictures }
 }
 

@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // Publishing follows the piece when the command line moves it or sends it to the Trash (sharing
 // ticket 04; orchestrator ruling round 1, R-F; Fable ruling after Sol round 3, rules 1 to 6). Collection
 // closed in WriteFlex: the command line, under its owner lock, leaves one signal per link in the app's
@@ -452,3 +453,6 @@ describe('the Collection open in WriteFlex: the app carries the command out and 
     }
   })
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

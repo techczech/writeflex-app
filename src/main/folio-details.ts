@@ -1,3 +1,4 @@
+import { isSectionExportField } from '../shared/folio-sections'
 /**
  * The Folio outline's Details card (0.26 ticket 4): reading the seven fields, the one write that changes one of
  * them, and the Undo of that write. Every field the card or its pickers (ticket 5) change goes through
@@ -220,7 +221,7 @@ export async function readFolioDetails(ws: Workspace, dir: string): Promise<Foli
  * `text` with frontmatter `field` set to `value`, or its line(s) removed for null. Only that key's lines change.
  * Throws (with a sentence naming `path`) when the header is in a form the strict writer cannot change safely.
  */
-export function withFolioDetail(text: string, field: FolioDetailField, value: string | null, path = 'document'): string {
+export function withFolioDetail(text: string, field: string, value: string | null, path = 'document'): string {
   if (value !== null) return setFrontmatterKeys(text, { [field]: value }, path)
   const removed = removeFrontmatterKeys(text, [field], path)
   const block = frontmatterBlock(text)
@@ -247,14 +248,14 @@ export type SetFolioDetailRequest = { field: unknown; value: unknown; basis: unk
  */
 export async function setFolioDetail(ws: Workspace, dir: string, request: SetFolioDetailRequest, options: Pick<PlanWriteOptions, 'beforeIndexWrite'> = {}): Promise<FolioDetailAnswer> {
   const { field, value, basis } = request
-  if (!isFolioDetailField(field)) return refusal('invalid', 'That is not one of the Folio’s details, so nothing was changed.')
-  if (value !== null && typeof value !== 'string') return refusal('invalid', `The ${FOLIO_DETAIL_LABEL[field].toLocaleLowerCase()} must be text, so nothing was changed.`)
+  if (!isFolioDetailField(field) && !isSectionExportField(field)) return refusal('invalid', 'That is not one of the Folio’s details, so nothing was changed.')
+  if (value !== null && typeof value !== 'string') return refusal('invalid', `The ${(isSectionExportField(field) ? field : FOLIO_DETAIL_LABEL[field]).toLocaleLowerCase()} must be text, so nothing was changed.`)
   if (typeof value === 'string' && value.length > FOLIO_DETAIL_MAX_LENGTH) {
-    return refusal('invalid', `The ${FOLIO_DETAIL_LABEL[field].toLocaleLowerCase()} is longer than ${FOLIO_DETAIL_MAX_LENGTH.toLocaleString('en-GB')} characters, so nothing was changed.`)
+    return refusal('invalid', `The ${(isSectionExportField(field) ? field : FOLIO_DETAIL_LABEL[field]).toLocaleLowerCase()} is longer than ${FOLIO_DETAIL_MAX_LENGTH.toLocaleString('en-GB')} characters, so nothing was changed.`)
   }
   if (typeof basis !== 'string') return refusal('invalid', 'WriteFlex did not know which version of the Index Note it read, so nothing was changed.')
   const next = normaliseFolioDetailValue(value as string | null)
-  const wrong = folioDetailValueRefusal(field, next)
+  const wrong = isSectionExportField(field) ? (next !== null && next !== 'true' && next !== 'false' ? 'Choose on or off for this export option.' : null) : folioDetailValueRefusal(field, next)
   if (wrong) return refusal('invalid', wrong)
 
   return withPlanLock(ws, dir, async () => {

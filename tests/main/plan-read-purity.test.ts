@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -128,7 +129,7 @@ test('an empty manifest exposes direct Markdown files as ordered unlisted parts 
   ])
   expect(adopted.parts[0].role).toBe('appendix')
   expect(adopted.unlisted.map((part) => part.title)).toEqual(['Strategy framework', 'Key strategic moves'])
-  expect(await read(indexPath)).toBe(`${index}- [[Understanding AI in 2026]] #appendix\n`)
+  expect(await read(indexPath)).toBe(pinnedIndex(`${index}- [[Understanding AI in 2026]] #appendix\n`, {"Understanding AI in 2026":"./01_understanding-ai-in-2026.md|Understanding AI in 2026"}))
   expect((JSON.parse(await read(manifestPath)) as { files: Array<{ path: string; role?: string }> }).files).toEqual([
     { path: '01_understanding-ai-in-2026.md', role: 'appendix' },
   ])
@@ -159,7 +160,7 @@ test('adoptPart appends one unlisted part with derivable gloss and role, and rej
     { title: 'Beta', gloss: 'two', role: 'appendix' },
   ])
   expect(adopted.unlisted).toEqual([])
-  expect(await read(indexPath)).toBe(`${index}- [[Beta]] — two #appendix\n`)
+  expect(await read(indexPath)).toBe(pinnedIndex(`${index}- [[Beta]] — two #appendix\n`, {"Beta":"./contents/02-beta.md|Beta","Alpha":"./contents/01-alpha.md|Alpha"}))
   expect(await read(manifestPath)).toBe(manifest)
   expect(checkpoints).toEqual([indexPath])
   expect(await read(`${indexPath}.writeflex-backup`)).toBe(index)

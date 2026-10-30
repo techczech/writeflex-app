@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // The publisher (src/main/sharing-publisher.ts; sharing ticket 03): save → publish, and nothing for a
 // piece with no link that is on; several links each with their own settings; turning off closes the
 // page for readers; a failed publish keeps the last good time and offers Retry; a new copy is published
@@ -473,3 +474,6 @@ describe('pictures the service says it is missing', () => {
     expect((await w.readerPage(shareId)).text).not.toContain('elsewhere')
   })
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

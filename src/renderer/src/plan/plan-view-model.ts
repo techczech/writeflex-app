@@ -37,7 +37,7 @@ export function buildPlanRows(plan: Plan, collectionRows: CollectionRow[]): Plan
       number: frontMatter ? 0 : ++contents,
       index,
       frontMatter,
-      written: part.path !== null,
+      written: part.path !== null && !part.resolution,
       stage: metadata ? planStageForStatus(metadata.status) : null,
       words: metadata?.words ?? null,
     }

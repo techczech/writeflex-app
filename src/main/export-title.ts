@@ -1,8 +1,8 @@
 /** Export titles are declared metadata, independent of the heading-derived editor listing (ADR-0034).
  * Never substitute an on-disk locator for a reader-facing title. Reading never repairs source files. */
 import { documentTitle, parseFrontmatter } from './frontmatter'
-import { collectionCoverPaths, folioPieces, indexNotePath, readManifest, resolveManifestFilePath } from './folio'
-import { folioFrontMatter } from './folio-front-matter'
+import { collectionCoverPaths, folioPieces, indexNotePath, readManifest, titleMatterPath } from './folio'
+import { folioFrontMatter, type FolioFrontMatter } from './folio-front-matter'
 import { partTitle } from '../shared/folio-part-title'
 import { isAgentInstructionsName } from '../shared/folio-agent-files'
 import type { Workspace } from './workspace'
@@ -41,32 +41,41 @@ export function exportDocumentTitle(source: string, folioPartPath?: string): str
  * the older fallbacks (title-matter and cover metadata, then those documents' headings). Title matter and the title
  * page use the same path and containment rules as every other Folio reader. `buffers`: open, unsaved texts by path.
  */
-export async function exportCollectionTitle(workspace: Workspace, dir: string, buffers: ReadonlyMap<string, string> = new Map()): Promise<string> {
+export async function exportCollectionTitle(workspace: Workspace, dir: string, buffers: ReadonlyMap<string, string> = new Map(), fallback?: string, options: { frontMatter?: FolioFrontMatter; skipUnreadable?: boolean } = {}): Promise<string> {
   const manifest = await readManifest(workspace, dir)
   const present = new Set((await workspace.listFiles()).map(file => file.path))
-  const read = async (path: string): Promise<string | null> => {
+  const readNote = async (path: string): Promise<string | null> => {
     if (buffers.has(path)) return buffers.get(path)!
     if (!present.has(path)) return null
     try { return (await workspace.readFile(path)).content } catch { return null }
   }
-  const index = await read(indexNotePath(workspace, dir))
+  const read = async (path: string): Promise<string | null> => {
+    if (buffers.has(path)) return buffers.get(path)!
+    if (!present.has(path)) return null
+    try { return (await workspace.readFile(path)).content } catch (error) { if (options.skipUnreadable) return null; throw error }
+  }
+  // The Index Note is read leniently: a listed Index Note that cannot be read falls back to the next title.
+  const index = await readNote(indexNotePath(workspace, dir))
   const details = index === null ? null : declaredTitle(index)
   if (details) return details
-  const page = await exportTitlePage(workspace, dir)
+  const page = options.frontMatter ? options.frontMatter.titlePage : await exportTitlePage(workspace, dir)
   const pageSource = page && !isAgentInstructionsName(page) ? await read(page) : null
   const pageTitle = pageSource === null ? null : declaredTitle(pageSource)
   if (pageTitle) return pageTitle
   const title = manifest?.title === undefined ? null : normaliseExportTitle(manifest.title)
   if (title) return title
-  const titleMatter = manifest?.titleMatter
-    ? resolveManifestFilePath(dir, manifest, { path: manifest.titleMatter }, present)
-    : null
+  // `titleMatterPath`: the one resolver of `title_matter`, which never names a room support file (§ 23 r6-1).
+  const titleMatter = manifest ? titleMatterPath(dir, manifest, present) : null
   const paths = [...new Set([
     ...(titleMatter && !isAgentInstructionsName(titleMatter) ? [titleMatter] : []),
     ...collectionCoverPaths(workspace, dir).filter(path => present.has(path) || buffers.has(path)),
   ])]
   const sources: string[] = []
-  for (const path of paths) sources.push(buffers.get(path) ?? (await workspace.readFile(path)).content)
+  for (const path of paths) {
+    const source = buffers.get(path)
+    if (source !== undefined) { sources.push(source); continue }
+    try { sources.push((await workspace.readFile(path)).content) } catch (error) { if (!options.skipUnreadable) throw error }
+  }
   for (const source of sources) {
     const title = declaredTitle(source)
     if (title) return title
@@ -75,7 +84,7 @@ export async function exportCollectionTitle(workspace: Workspace, dir: string, b
     const title = headingTitle(source)
     if (title) return title
   }
-  return manifest ? 'Untitled Folio' : 'Untitled collection'
+  return fallback ?? (manifest ? 'Untitled Folio' : 'Untitled collection')
 }
 
 /** The title page an export of the Folio at `dir` draws as its cover (folio-front-matter.ts, by the export's own

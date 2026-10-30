@@ -1,3 +1,4 @@
+import { bindToolDiscovery, createToolDiscovery } from "./tool-discovery.ts";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -11,7 +12,7 @@ import { InMemoryModelsStore } from "@earendil-works/pi-ai";
 import type { Usage } from "@earendil-works/pi-ai/compat";
 import { BridleEventEmitter } from "./events.ts";
 import type { TurnId } from "./events.ts";
-import { assertWireNamesUnique, buildSystemPrompt, scopedCapabilities, wireName, type PromptComposition } from "./manifest.ts";
+import { assertWireNamesUnique, buildSystemPrompt, discoverManifestTools, wireName, type PromptComposition } from "./manifest.ts";
 import { executeCapabilityDetailed, freezeTouchedPaths, type ExecutorDeps } from "./executor.ts";
 import type { AgentTrigger, ApprovalDenialReason, Capability, CapabilityResult, Manifest } from "./types.ts";
 import { prepareAuthProvider, type BridleAuth } from "./auth.ts";
@@ -233,9 +234,12 @@ export function createPiEventRelay(opts: {
   toolOutcomes: Map<string, ToolRelayOutcome>;
   toolPathResolutions?: Map<string, TouchedPathsResolution>;
   toolCallIdentity?: (toolCallId: string, toolWireName: string) => ToolCallIdentityClassification;
-  onAssistantMessage?: (text: string) => void;
+  onAssistantMessage?: (text: string, toolCallIds: readonly string[]) => void;
+  onAssistantStatus?: (message: { stopReason: string; errorMessage?: string }) => void;
+  onRetryStart?: () => void;
   onReasoning?: (reasoning: string) => void;
   onUsage?: (usage: Usage, stopReason: string) => void;
+  onAssistantFailure?: (stopReason: "error" | "aborted", errorMessage?: string) => void;
   onRelayAudit?: (entry: { type: string; payload: unknown }) => void;
 }): PiEventRelay {
   const thinkingByTurn = new Map<TurnId, { summary: string; lastEmit: number; timer?: ReturnType<typeof setTimeout> }>();
@@ -258,6 +262,7 @@ export function createPiEventRelay(opts: {
       opts.onRelayAudit?.({ type: `relay.${event.type}`, payload });
     }
     const turnId = opts.activeTurn();
+    if (event.type === "auto_retry_start" && turnId) opts.onRetryStart?.();
     if (event.type === "turn_end" || event.type === "agent_end") {
       toolPathResolutions.clear();
     }
@@ -295,8 +300,12 @@ export function createPiEventRelay(opts: {
       opts.onReasoning?.(reasoning);
       const text = assistantText(event.message);
       opts.events.emit({ type: "assistant_message", turnId, text });
-      opts.onAssistantMessage?.(text);
-      opts.onUsage?.(event.message.usage, event.message.stopReason);
+      opts.onAssistantMessage?.(text, event.message.content.flatMap((part) => part.type === "toolCall" ? [part.id] : []));
+      opts.onAssistantStatus?.(event.message);
+      if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+        opts.onAssistantFailure?.(event.message.stopReason, event.message.errorMessage);
+      }
+      if (event.message.usage) opts.onUsage?.(event.message.usage, event.message.stopReason);
       return;
     }
     if (event.type === "tool_execution_start" && turnId) {
@@ -412,6 +421,7 @@ export function assembleSessionConfig(manifest: Manifest, opts: SessionAssemblyO
   systemPrompt: string;
   toolNames: string[];
   customTools: ToolDefinition[];
+  discovery: ReturnType<typeof createToolDiscovery>;
   loaderConfig: {
     cwd: string;
     agentDir: string;
@@ -424,9 +434,8 @@ export function assembleSessionConfig(manifest: Manifest, opts: SessionAssemblyO
   };
 } {
   assertWireNamesUnique(manifest.capabilities.map((capability) => capability.name));
-  const capabilities = composition?.activeSkill
-    ? scopedCapabilities(manifest, composition.activeSkill)
-    : manifest.capabilities;
+  const discovery = discoverManifestTools(manifest, composition);
+  assertWireNamesUnique(discovery.capabilities.map((capability) => capability.name));
   const systemPrompt = buildSystemPrompt(manifest, composition);
   // Pi 0.83 stopped appending the date but ADR-0025 fixes Bridle's recorded
   // prompt tail as date + cwd. Keep the date in the locked loader input; Pi
@@ -434,8 +443,9 @@ export function assembleSessionConfig(manifest: Manifest, opts: SessionAssemblyO
   const loaderSystemPrompt = `${systemPrompt}\nCurrent date: ${currentLocalDate()}`;
   return {
     systemPrompt,
-    toolNames: capabilities.map((capability) => wireName(capability.name)),
-    customTools: capabilities.map((capability) => capabilityToPiTool(capability, opts.runCapability)),
+    discovery,
+    toolNames: discovery.visible().map((capability) => wireName(capability.name)),
+    customTools: discovery.capabilities.map((capability) => capabilityToPiTool(capability, opts.runCapability)),
     loaderConfig: {
       cwd: manifest.workspaceRoot ?? opts.agentDir,
       agentDir: opts.agentDir,
@@ -525,6 +535,8 @@ export async function createBridleSession(opts: {
   };
   const assembled = assembleSessionConfig(opts.manifest, { agentDir: opts.agentDir, runCapability: runner }, opts.composition);
 
+  for (const cap of assembled.discovery.capabilities) capabilities.set(cap.name, cap);
+
   const model = opts.provider && opts.modelId
     ? (opts.modelService ?? createModelService({
       auth: opts.auth,
@@ -550,7 +562,7 @@ export async function createBridleSession(opts: {
     model: model ?? undefined,
     thinkingLevel: opts.thinkingLevel,
     // Explicit allowlist: only manifest capabilities exist (ADR-0003); built-ins are excluded by omission.
-    tools: assembled.toolNames,
+    tools: assembled.customTools.map((tool) => tool.name),
     customTools: assembled.customTools,
     resourceLoader: loader,
     sessionManager: opts.sessionDir
@@ -563,6 +575,7 @@ export async function createBridleSession(opts: {
     responseIdentities.observe({ type: "message_end", message } as AgentSessionEvent);
   }
   session.subscribe(responseIdentities.observe);
+  bindToolDiscovery(session, assembled.discovery, wireName);
   sessionId = session.sessionId;
 
   return { session, capabilities, toolOutcomes, toolPathResolutions, toolCallIdentity: responseIdentities.classify };

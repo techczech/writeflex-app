@@ -15,7 +15,7 @@
 // Browser JavaScript kept as a string; see reader-runtime-text.ts. It runs after part 1, inside one
 // function, with `rp` (the page's root element) defined. Reader text is only ever set with
 // textContent or text nodes.
-export const READER_RUNTIME_UI = String.raw`
+export const READER_RUNTIME_HARDENING = String.raw`
 /* ---------- links out of the page never carry this address ---------- */
 // The author's text is not sanitised: a <meta name="referrer"> in it would loosen the page's
 // no-referrer policy, so any such element outside <head> is removed, and every link says so too.
@@ -24,6 +24,9 @@ export const READER_RUNTIME_UI = String.raw`
   a.setAttribute('rel', ((a.getAttribute('rel') || '') + ' noopener noreferrer').trim());
   a.setAttribute('referrerpolicy', 'no-referrer');
 });
+`
+
+export const READER_RUNTIME_UI = String.raw`
 if (rp.getAttribute('data-comments') !== 'on') return;
 
 function kid(parent, tag, cls) {
@@ -98,7 +101,7 @@ function keepSent() { save(KEY + 'notes', sent); }
 function keepOutbox() { save(KEY + 'outbox', outbox); }
 
 var state = { view: 'margin', composer: null, offline: navigator.onLine === false, linkOff: false, fold: {}, flushing: false };
-var narrow = window.matchMedia ? window.matchMedia('(max-width: 1099px)') : null;
+var narrow = window.matchMedia ? window.matchMedia(rp.getAttribute('data-layout') === 'folio' ? '(max-width: 1199px)' : '(max-width: 1099px)') : null;
 
 /* ---------- elements ---------- */
 var ICONS = {
@@ -310,13 +313,13 @@ function composerFor(c) {
     area.rows = c.kind === 'note' ? 4 : 3;
     area.maxLength = 4000;
     area.value = c.text;
-    var lab = h('label', 'lab', c.kind === 'note' ? 'Your comment' : 'Change the words');
+    var lab = h('label', 'lab', c.kind === 'note' ? 'Your comment' : 'Edit selected text here');
     lab.htmlFor = area.id;
     var sendBtn = button('primary', 'send', [icon('send', 14), 'Send'], '\u2318\u21b5');
     var parts = [h('header', 'ch', icon(c.kind === 'note' ? 'note' : 'pencil', 16), h('b', '', c.kind === 'note' ? 'Comment' : 'Propose edit'))];
     if (c.kind === 'note') parts.push(h('p', 'cq', h('span', 'lab', 'On these words'), h('q', '', q)));
     parts.push(lab, area);
-    if (c.kind === 'edit') parts.push(h('span', 'lab dif-lab', 'Your change, word by word'), h('div', 'difbox'));
+    if (c.kind === 'edit') parts.push(h('span', 'lab dif-lab', 'Preview of changes'), h('div', 'difbox'));
     parts.push(h('div', 'acts', sendBtn, button('ghost', 'cancel', ['Cancel'], 'Esc')));
     el = h('section', 'nitem comp k-' + c.kind);
     parts.forEach(function (p) { el.appendChild(p); });

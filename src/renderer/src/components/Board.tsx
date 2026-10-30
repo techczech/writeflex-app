@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import { ArrowRight, Bot, Check, Clock3, Columns3, Eye, FilePlus2, Flame, Folder, ListOrdered, ListPlus, ListTree, MoreHorizontal } from 'lucide-react'
-import type { BoardStepResult, DrawerScrap, FileReadResult, Offcut, QueryRow } from '../../../preload'
+import type { BoardStepResult, DrawerScrap, Offcut, QueryRow } from '../../../preload'
 import { REFERENCE_STATUS_ORDER, UNSORTED_STATUS } from '../../../shared/collection-status'
 import { projectionQuerySource } from '../../../shared/query-source'
 import { humanReadableError } from '../error-text'
@@ -14,6 +14,8 @@ import type { QueryInsertionContext } from './Rail'
 import { useDragAutoScroll } from './useDragAutoScroll'
 
 export type BoardProps = {
+  /** The embedded Folio utility has a distinct name from its status Board. */
+  label?: string
   dir: string
   name: string
   filter: string
@@ -22,7 +24,9 @@ export type BoardProps = {
   onStatus: (message: string) => void
   /** List the sources of the selected card's piece (palette command "List this piece's sources"). */
   onListSources?: (path: string, dir: string) => void
-  onPieceChanged: (file: FileReadResult) => void
+  /** Move a piece to a status through the app's flushed status route (setPieceStatusFlushed, D-STA-1): its
+   *  unsaved text is written first and the editor takes main's text. Rejects with the reason when refused. */
+  setPieceStatus: (dir: string, path: string, status: string) => Promise<void>
   seenStatuses: Set<string>
   onFolderPieceSelected: (selection: { dir: string; folderPath: string; mode: 'one' } | null) => void
   onQueryContext: (context: QueryInsertionContext) => void
@@ -37,7 +41,7 @@ function includesFilter(row: QueryRow, filter: string): boolean {
 }
 
 /** The Board page is a renderer-only projection of collection.query('', …), never a second engine. */
-export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, onListSources, onPieceChanged, seenStatuses, onFolderPieceSelected, onQueryContext, onInsertQuery, onOpenPlan, onOpenCollection }: BoardProps): JSX.Element {
+export function Board({ label = 'Board', dir, name, filter, onOpenPiece, onNewPiece, onStatus, onListSources, setPieceStatus, seenStatuses, onFolderPieceSelected, onQueryContext, onInsertQuery, onOpenPlan, onOpenCollection }: BoardProps): JSX.Element {
   const [isFolio, setIsFolio] = useState(false)
   const [savedOrder, setSavedOrder] = useState(() => columnOrder(dir))
   const [selectedColumn, setSelectedColumn] = useState<string | null>(null)
@@ -106,7 +110,7 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
     setColumnMenu(null)
     setIsFolio(false)
     let cancelled = false
-    const readFolio = () => { void window.writeflex.readFolio?.(dir).then((folio) => { if (!cancelled) setIsFolio(folio !== null) }).catch(() => { if (!cancelled) setIsFolio(false) }) }
+    const readFolio = () => { void window.writeflex.readFolioDeclaration(dir).then((folio) => { if (!cancelled) setIsFolio(folio.isFolio) }).catch(() => { if (!cancelled) setIsFolio(false) }) }
     readFolio()
     const dispose = window.writeflex.collection.onChanged(readFolio)
     setShowOffcuts(!offcutsHidden(dir))
@@ -169,8 +173,7 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
     setMoving(true)
     setSelectedPath(path)
     try {
-      const saved = await window.writeflex.collection.setStatus(dir, path, status)
-      onPieceChanged(saved)
+      await setPieceStatus(dir, path, status)
       await reload()
     } catch (error: unknown) {
       onStatus(humanReadableError(error, 'Could not move that Piece to the new stage.'))
@@ -180,7 +183,7 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
       setOverStatus(null)
       requestAnimationFrame(() => rootRef.current?.focus())
     }
-  }, [dir, moving, onPieceChanged, onStatus, reload, rows])
+  }, [dir, moving, onStatus, reload, rows, setPieceStatus])
 
   const moveStage = useCallback((direction: 1 | -1) => {
     if (!selectedPath) return
@@ -358,7 +361,7 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
     }
     else if (command === 'list-sources') {
       if (selectedPath && onListSources) onListSources(selectedPath, dir)
-      else onStatus('Select a card on the Board first.')
+      else onStatus(label === 'Board' ? 'Select a card on the Board first.' : `Select a card in ${label} first.`)
     }
     else if (command === 'undo-step') {
       if (activity?.stepId) void undoStep(activity.stepId)
@@ -456,10 +459,10 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
     event.dataTransfer.setData('text/plain', path)
   }
 
-  if (loading) return <div className="board-wrap board-loading" aria-label="Loading Board" />
+  if (loading) return <div className="board-wrap board-loading" aria-label={`Loading ${label}`} />
 
   return (
-    <div className="board-wrap" ref={rootRef} tabIndex={0} onKeyDown={onKeyDown} aria-label={`Board — ${name}`}>
+    <div className="board-wrap" ref={rootRef} tabIndex={0} onKeyDown={onKeyDown} aria-label={`${label} — ${name}`}>
       <div className="board-head">
         <h1>{name}</h1>
         <span className="bh-count">{shownRows.length} {shownRows.length === 1 ? 'piece' : 'pieces'} · {columns.length} stages{showOffcuts ? ` · ${offcuts.length} ${offcuts.length === 1 ? 'offcut' : 'offcuts'}` : ''} · {sources.length} {sources.length === 1 ? 'source' : 'sources'} · {shownRows.length} shown</span>
@@ -478,18 +481,18 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
         </div>
         <div className="seg-view" aria-label="Collection projection">
           <button type="button" aria-pressed="false" onClick={onOpenCollection}><Folder aria-hidden="true" /> {isFolio ? 'Folio' : 'List'}</button>
-          <button type="button" aria-pressed="true"><Columns3 aria-hidden="true" /> Board</button>
+          <button type="button" aria-pressed="true"><Columns3 aria-hidden="true" /> {label}</button>
           {isFolio && <button type="button" aria-pressed="false" onClick={onOpenPlan}><ListOrdered aria-hidden="true" /> Folio outline</button>}
           <button type="button" disabled title="Outline comes in a later wave"><ListTree aria-hidden="true" /> Outline</button>
         </div>
       </div>
       <div className="board-projnote">
-        one query · <span className="pj">rail</span><span className="pj on">board</span><span className="pj">in-doc query</span>
+        one query · <span className="pj">rail</span><span className="pj on">{label.toLowerCase()}</span><span className="pj">in-doc query</span>
       </div>
 
       {error ? (
         <div className="board-empty" role="alert">
-          <h2>The Board could not load</h2>
+          <h2>{label === 'Board' ? 'The Board could not load' : `${label} could not load`}</h2>
           <p>The collection query did not complete. Your files have not been changed.</p>
           <button className="btn" type="button" onClick={() => void reload()}>Try again</button>
         </div>
@@ -497,7 +500,7 @@ export function Board({ dir, name, filter, onOpenPiece, onNewPiece, onStatus, on
         <div className="board-empty">
           <div className="art" aria-hidden="true">{REFERENCE_STATUS_ORDER.slice(0, 4).map((status) => <span className="ph" key={status} />)}</div>
           <h2>No pipeline yet</h2>
-          <p>This collection has no pieces yet. Create the first document and its frontmatter status will place it on the Board.</p>
+          <p>{label === 'Board' ? 'This collection has no pieces yet. Create the first document and its frontmatter status will place it on the Board.' : 'This collection has no pieces yet. Create the first document to see its sources and offcuts here.'}</p>
           <div className="pattern" aria-label="Reference pipeline">
             {REFERENCE_STATUS_ORDER.map((status, index) => (
               <span key={status} className="pattern-stage">

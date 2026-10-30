@@ -1,4 +1,5 @@
 import { MARKDOWN_FENCE_LINE } from '../../../shared/markdown/fences'
+import { stripFlags } from '../../../shared/markdown/flags'
 
 /** Options shared by every counter in this module. */
 export type CountOptions = {
@@ -71,7 +72,7 @@ function proseSource(text: string, options: SourceOptions = {}): string {
  * counted; fence-marker lines contribute no prose and are dropped either way).
  */
 export function countWords(text: string, options: CountOptions = {}): number {
-  const source = proseSource(text, { excludeCommentLines: options.excludeCommentLines })
+  const source = proseSource(stripFlags(text), { excludeCommentLines: options.excludeCommentLines })
   return (source.match(WORD_RE) ?? []).length
 }
 
@@ -99,8 +100,9 @@ function countParagraphsIn(source: string): number {
  * variant, not once per unit: `prose` (words / characters / paragraphs keep fenced code) and
  * `proseNoCode` (sentence splitting drops it). The old shape re-scanned the whole document four times.
  */
-export function countUnits(text: string, options: CountOptions = {}): UnitCounts {
+export function countUnits(rawText: string, options: CountOptions = {}): UnitCounts {
   const { excludeCommentLines } = options
+  const text = stripFlags(rawText) // a flag's tag is not prose (spec D-FLAG-5)
   const prose = proseSource(text, { excludeCommentLines })
   const proseNoCode = proseSource(text, { excludeCommentLines, excludeCode: true })
   const words = (prose.match(WORD_RE) ?? []).length

@@ -152,6 +152,7 @@ describe('hide switches write the complete rule list (ticket 02 fix round)', () 
     const settings = { hidden: draftToCreateInput(draft).hidden!, supportFolders: [...DEFAULT_SUPPORT_FOLDERS] }
     const files = ['README.md', 'essay.md', 'essay (1).md', 'AGENTS.md']
     const index = detectVaultWorks({ rootName: 'v', files, folders: [], manifests: [] }, settings, {
+      declaration: () => ({ isFolio: false, manifest: false, runningOrder: false, repairNeeded: false }),
       markdown: (path) => markdownFactsFrom('# T', path, 'T'),
       manifest: () => null,
     })

@@ -34,6 +34,17 @@ afterEach(async () => {
   await fx.dispose()
 })
 
+// Large fixtures own removal within their existing body budget. The short afterEach remains
+// the backstop; capture the fixture so a timed-out continuation cannot clean up a later fixture.
+async function finishBulkFixture(fixture: WriteFixture): Promise<void> {
+  const ownedApp = app?.workspace.root === fixture.root ? app : undefined
+  try { await ownedApp?.close() }
+  finally {
+    if (app === ownedApp) app = undefined
+    await fixture.dispose()
+  }
+}
+
 const open = async (options: Partial<RequestExecutorOptions> = {}): Promise<AppSide> => (app = await openAsApp(fx, { changes: new ChangeStore(new Workspace(fx.root)), ...options }))
 const ledgerIds = async (): Promise<Array<string | undefined>> => (await new ChangeStore(new Workspace(fx.root)).list()).map((change) => outsideRequestOf(change)?.id)
 const INSERT = (text: string) => ({ path: 'notes.md', text, source: 'claude-code' })
@@ -52,19 +63,22 @@ const numbered = (count: number, name: (index: number) => string): string[] => A
 // ── Bounds ──────────────────────────────────────────────────────────────────────────────────────
 
 test('an inbox of 10,000 stray names: one look takes at most the listing limit of them, says the listing was cut, and never grows what it remembers', async () => {
-  const side = await open()
-  await fill(INBOX_DIR, numbered(10_000, (index) => `stray-${String(index).padStart(5, '0')}.bin`))
-  const look = await side.executor.drain()
-  expect(look.cut).toEqual(['inbox'])
-  expect(look.ignored.length).toBe(MAX_ENTRIES_LISTED)
-  expect(look.handled).toEqual([])
-  // Nothing was removed or renamed: stray files are not the app's.
-  expect((await readdir(join(fx.root, INBOX_DIR))).length).toBe(10_000)
-  // The watch tells each ignored name once and keeps at most so many names, however many looks meet however many names.
-  const told = new ToldOnce()
-  for (let round = 0; round < 3; round += 1) for (const ignored of look.ignored) told.first(`ignored:${round}:${ignored.name}`)
-  expect(told.size).toBe(MAX_NAMES_REMEMBERED)
-  expect(side.executor.remembered).toEqual({ repeated: 0, deferred: 0 })
+  const fixture = fx
+  try {
+    const side = await open()
+    await fill(INBOX_DIR, numbered(10_000, (index) => `stray-${String(index).padStart(5, '0')}.bin`))
+    const look = await side.executor.drain()
+    expect(look.cut).toEqual(['inbox'])
+    expect(look.ignored.length).toBe(MAX_ENTRIES_LISTED)
+    expect(look.handled).toEqual([])
+    // Nothing was removed or renamed: stray files are not the app's.
+    expect((await readdir(join(fx.root, INBOX_DIR))).length).toBe(10_000)
+    // The watch tells each ignored name once and keeps at most so many names, however many looks meet however many names.
+    const told = new ToldOnce()
+    for (let round = 0; round < 3; round += 1) for (const ignored of look.ignored) told.first(`ignored:${round}:${ignored.name}`)
+    expect(told.size).toBe(MAX_NAMES_REMEMBERED)
+    expect(side.executor.remembered).toEqual({ repeated: 0, deferred: 0 })
+  } finally { await finishBulkFixture(fixture) }
 }, 120_000)
 
 test('what is told once is kept to a count, the oldest forgotten first; a name still remembered is not told again', () => {
@@ -83,50 +97,59 @@ test('what is told once is kept to a count, the oldest forgotten first; a name s
 })
 
 test('requests answered again from their record are remembered up to a count, however many are met', async () => {
-  const side = await open()
-  await mkdir(fx.handledDir, { recursive: true, mode: 0o700 })
-  // Three inboxes' worth of requests that each have a receipt and a file that cannot be removed (a
-  // folder stands at the name), so each is remembered as answered again: more than is ever kept.
-  const perRound = Math.ceil(MAX_NAMES_REMEMBERED / 3) + 100
-  let met = 0
-  for (let round = 0; round < 3; round += 1) {
-    const ids = numbered(perRound, (index) => newRequestId(new Date(Date.UTC(2026, round, 1) + index * 1000)))
-    for (let from = 0; from < ids.length; from += 250) {
-      await Promise.all(ids.slice(from, from + 250).map(async (id) => {
-        await writeFile(join(fx.handledDir, `${id}.json`), JSON.stringify({ version: 1, id, at: new Date().toISOString() }))
-        await mkdir(join(fx.root, INBOX_DIR, `${id}.json`), { recursive: true })
-      }))
+  const fixture = fx
+  try {
+    const side = await open()
+    await mkdir(fx.handledDir, { recursive: true, mode: 0o700 })
+    // Three inboxes' worth of requests that each have a receipt and a file that cannot be removed (a
+    // folder stands at the name), so each is remembered as answered again: more than is ever kept.
+    const perRound = Math.ceil(MAX_NAMES_REMEMBERED / 3) + 100
+    let met = 0
+    for (let round = 0; round < 3; round += 1) {
+      const ids = numbered(perRound, (index) => newRequestId(new Date(Date.UTC(2026, round, 1) + index * 1000)))
+      for (let from = 0; from < ids.length; from += 250) {
+        await Promise.all(ids.slice(from, from + 250).map(async (id) => {
+          await writeFile(join(fx.handledDir, `${id}.json`), JSON.stringify({ version: 1, id, at: new Date().toISOString() }))
+          await mkdir(join(fx.root, INBOX_DIR, `${id}.json`), { recursive: true })
+        }))
+      }
+      for (let looks = 0; looks < Math.ceil(perRound / MAX_REQUESTS_PER_PASS); looks += 1) {
+        met += (await side.executor.drain()).handled.length
+        expect(side.executor.remembered.repeated).toBeLessThanOrEqual(MAX_NAMES_REMEMBERED)
+      }
+      await rm(join(fx.root, INBOX_DIR), { recursive: true, force: true })
     }
-    for (let looks = 0; looks < Math.ceil(perRound / MAX_REQUESTS_PER_PASS); looks += 1) {
-      met += (await side.executor.drain()).handled.length
-      expect(side.executor.remembered.repeated).toBeLessThanOrEqual(MAX_NAMES_REMEMBERED)
-    }
-    await rm(join(fx.root, INBOX_DIR), { recursive: true, force: true })
-  }
-  expect(met).toBeGreaterThan(MAX_NAMES_REMEMBERED)
-  expect(side.executor.remembered.repeated).toBe(MAX_NAMES_REMEMBERED)
+    expect(met).toBeGreaterThan(MAX_NAMES_REMEMBERED)
+    expect(side.executor.remembered.repeated).toBe(MAX_NAMES_REMEMBERED)
+  } finally { await finishBulkFixture(fixture) }
 }, 240_000)
 
 test('clearing the outbox is bounded too: a look removes what is stale among the entries it lists, says the listing was cut, and the next look goes on', async () => {
-  const side = await open()
-  const old = new Date(Date.now() - STALE_FILE_MS - 60_000)
-  const replies = numbered(MAX_ENTRIES_LISTED + 300, (index) => `${newRequestId(new Date(Date.UTC(2026, 0, 1) + index * 1000))}.json`)
-  await fill(OUTBOX_DIR, replies, old)
-  const first = await side.executor.drain()
-  expect(first.cut).toEqual(['outbox'])
-  expect((await readdir(join(fx.root, OUTBOX_DIR))).length).toBe(300)
-  const second = await side.executor.drain()
-  expect(second.cut).toBeUndefined()
-  expect(await readdir(join(fx.root, OUTBOX_DIR))).toEqual([])
+  const fixture = fx
+  try {
+    const side = await open()
+    const old = new Date(Date.now() - STALE_FILE_MS - 60_000)
+    const replies = numbered(MAX_ENTRIES_LISTED + 300, (index) => `${newRequestId(new Date(Date.UTC(2026, 0, 1) + index * 1000))}.json`)
+    await fill(OUTBOX_DIR, replies, old)
+    const first = await side.executor.drain()
+    expect(first.cut).toEqual(['outbox'])
+    expect((await readdir(join(fx.root, OUTBOX_DIR))).length).toBe(300)
+    const second = await side.executor.drain()
+    expect(second.cut).toBeUndefined()
+    expect(await readdir(join(fx.root, OUTBOX_DIR))).toEqual([])
+  } finally { await finishBulkFixture(fixture) }
 }, 120_000)
 
 test('the stale-temporary sweep lists the inbox up to the limit: what is stale beyond it goes at the next run', async () => {
-  const old = new Date(Date.now() - STALE_TEMPORARY_MS - 60_000)
-  const stale = numbered(MAX_ENTRIES_LISTED + 120, (index) => `.${newRequestId(new Date(Date.UTC(2026, 0, 1) + index * 1000))}.json.0a1b2c3d.tmp`)
-  await fill(INBOX_DIR, stale, old)
-  expect((await removeStaleTemporaryFiles(fx.root)).length).toBe(MAX_ENTRIES_LISTED)
-  expect((await removeStaleTemporaryFiles(fx.root)).length).toBe(120)
-  expect(await readdir(join(fx.root, INBOX_DIR))).toEqual([])
+  const fixture = fx
+  try {
+    const old = new Date(Date.now() - STALE_TEMPORARY_MS - 60_000)
+    const stale = numbered(MAX_ENTRIES_LISTED + 120, (index) => `.${newRequestId(new Date(Date.UTC(2026, 0, 1) + index * 1000))}.json.0a1b2c3d.tmp`)
+    await fill(INBOX_DIR, stale, old)
+    expect((await removeStaleTemporaryFiles(fx.root)).length).toBe(MAX_ENTRIES_LISTED)
+    expect((await removeStaleTemporaryFiles(fx.root)).length).toBe(120)
+    expect(await readdir(join(fx.root, INBOX_DIR))).toEqual([])
+  } finally { await finishBulkFixture(fixture) }
 }, 120_000)
 
 // ── The claim before read ───────────────────────────────────────────────────────────────────────

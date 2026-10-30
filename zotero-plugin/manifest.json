@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2,
+  "name": "WriteFlex for Zotero",
+  "version": "1.0.0",
+  "description": "Saves highlights made in WriteFlex's Reading Room into your Zotero library while Zotero is open.",
+  "author": "Dominik Lukeš",
+  "applications": {
+    "zotero": {
+      "id": "writeflex@dominiklukes.net",
+      "update_url": "https://raw.githubusercontent.com/techczech/writeflex-app/main/zotero-plugin/updates.json",
+      "strict_min_version": "7.0",
+      "strict_max_version": "11.*"
+    }
+  }
+}

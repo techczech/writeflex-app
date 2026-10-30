@@ -22,12 +22,16 @@
  * renamed onto a name where an EMPTY folder appeared in that instant takes its place (nothing is in
  * an empty folder to lose). Only a program on this Mac can do either.
  */
+import { guardFolioWrite, guardFolioFolderMove, finishFolioMove, guardFolioRemoval, carriesSetAsideIndex } from './folio-declaration'
+import { readDocumentBytesGuarded } from './guarded-document-read'
+import { withVersionMove } from './version-moves'
 import { link, lstat, rename, unlink } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, join, posix } from 'node:path'
 import { assertCollectionWritable } from './collection-write-gate'
 import type { PathKind } from './document-path'
 import { NO_HARD_LINKS, realDocumentParent, type WriteSeams } from './guarded-document-write'
 import type { Workspace } from './workspace'
+import { fileIdentityOf, type FileIdentity } from './workspace-watcher'
 
 export type GuardedMoveCode = 'outside' | 'hidden' | 'missing' | 'is-a-link' | 'wrong-kind' | 'not-the-same' | 'into-itself' | 'exists' | 'no-folder' | 'swapped'
 
@@ -50,10 +54,15 @@ export class GuardedMoveRefused extends Error {
   }
 }
 
-type GuardedWorkspace = Pick<Workspace, 'root' | 'classifyPath' | 'absolute'>
+type GuardedWorkspace = Pick<Workspace, 'root' | 'classifyPath' | 'absolute' | 'relative'> & Partial<Pick<Workspace, 'exclusiveAll'>>
 
 /** Which file or folder a name stands for: its device and inode, which a rename keeps and a replacement does not. */
 export type PathIdentity = { dev: number; ino: number }
+
+/** What `beforeCommit` is told: the identity of what is moved, looked at immediately before the move (the state
+ *  the move leaves at the new name), and whether the old name stays its name too (a change of letter case only, on
+ *  a disk that ignores case). What the app records as its own write (D-WATCH-1). */
+export type MoveCommit = { moved: FileIdentity; sameName: boolean }
 
 const errorCode = (error: unknown): string | undefined => (error as NodeJS.ErrnoException | undefined)?.code
 
@@ -70,7 +79,18 @@ export async function moveDocumentGuarded(
   from: string,
   to: string,
   kind: PathKind,
-  options: { seams?: WriteSeams; expect?: PathIdentity; beforeCommit?: () => void } = {},
+  options: { seams?: WriteSeams; expect?: PathIdentity; beforeCommit?: (commit: MoveCommit) => void } = {},
+): Promise<void> {
+  const run = () => moveDocumentGuardedHeld(ws, from, to, kind, options)
+  return ws.exclusiveAll ? ws.exclusiveAll(run) : run()
+}
+
+async function moveDocumentGuardedHeld(
+  ws: GuardedWorkspace,
+  from: string,
+  to: string,
+  kind: PathKind,
+  options: { seams?: WriteSeams; expect?: PathIdentity; beforeCommit?: (commit: MoveCommit) => void } = {},
 ): Promise<void> {
   assertCollectionWritable(ws.root)
   const judged = (path: string): string => {
@@ -96,31 +116,41 @@ export async function moveDocumentGuarded(
   }
   const fromFolder = await realParent(absoluteFrom, from)
   const toFolder = await realParent(absoluteTo, to)
+  if (kind === 'file') guardFolioRemoval(ws, from)
+  if (kind === 'file') {
+    const carriesSetAsideNote = carriesSetAsideIndex(ws, from, to)
+    if (!carriesSetAsideNote) await guardFolioWrite(ws, to, async () => (await readDocumentBytesGuarded(ws, from)).bytes)
+  } else await guardFolioFolderMove(ws, from, to)
   await options.seams?.betweenCheckAndWrite?.(from)
 
   // Judged again after the gap, and addressed by the real folders from here on.
   if (await realParent(absoluteFrom, from) !== fromFolder || await realParent(absoluteTo, to) !== toFolder) throw new GuardedMoveRefused('swapped', from, kind)
   const realFrom = join(fromFolder, basename(absoluteFrom))
   const realTo = join(toFolder, basename(absoluteTo))
-  const again = await lstat(realFrom).catch(() => null)
-  if (!again || again.isSymbolicLink() || again.ino !== source.ino || again.dev !== source.dev) throw new GuardedMoveRefused('swapped', from, kind)
-  options.beforeCommit?.()
-  if (kind === 'folder' || caseOnly) {
-    await rename(realFrom, realTo)
-    return
-  }
-  try {
-    // A hard link fails when the name is taken, where a rename would silently replace the file there.
-    await link(realFrom, realTo)
-  } catch (error) {
-    if (errorCode(error) === 'EEXIST') throw new GuardedMoveRefused('exists', to, kind)
-    if (!NO_HARD_LINKS.has(errorCode(error) ?? '')) throw error
-    // No hard links on this disk (the link made nothing): the name is checked free, and then
-    // `beforeCommit` runs again, so that nothing is awaited between it and the rename that commits.
-    if (await lstat(realTo).catch(() => null)) throw new GuardedMoveRefused('exists', to, kind)
-    options.beforeCommit?.()
-    await rename(realFrom, realTo)
-    return
-  }
-  await unlink(realFrom)
+  const again = await lstat(realFrom, { bigint: true }).catch(() => null)
+  if (!again || again.isSymbolicLink() || Number(again.ino) !== source.ino || Number(again.dev) !== source.dev) throw new GuardedMoveRefused('swapped', from, kind)
+  const commit: MoveCommit = { moved: fileIdentityOf(again), sameName: caseOnly }
+  // The Folio guard above refuses before the history intent is recorded.
+  await withVersionMove(ws.root, from, to, async () => {
+    options.beforeCommit?.(commit)
+    if (kind === 'folder' || caseOnly) {
+      await rename(realFrom, realTo)
+      return
+    }
+    try {
+      // A hard link fails when the name is taken, where a rename would silently replace the file there.
+      await link(realFrom, realTo)
+    } catch (error) {
+      if (errorCode(error) === 'EEXIST') throw new GuardedMoveRefused('exists', to, kind)
+      if (!NO_HARD_LINKS.has(errorCode(error) ?? '')) throw error
+      // No hard links on this disk (the link made nothing): the name is checked free, and then
+      // `beforeCommit` runs again, so that nothing is awaited between it and the rename that commits.
+      if (await lstat(realTo).catch(() => null)) throw new GuardedMoveRefused('exists', to, kind)
+      options.beforeCommit?.(commit)
+      await rename(realFrom, realTo)
+      return
+    }
+    await unlink(realFrom)
+  })
+  await finishFolioMove(ws, from, to)
 }

@@ -176,7 +176,7 @@ beforeEach(async () => {
   ws = new Workspace(root)
   changes = new ChangeStore(ws)
   invalidateFolioPlaces(root)
-  agent = await WorkspaceAgent.create({ workspace: ws, appDataDir: appData, changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
+  agent = await WorkspaceAgent.create({ mode: 'work', workspace: ws, appDataDir: appData, changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
 })
 afterEach(async () => {
   agent?.dispose()

@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 /**
  * The one chapter order for part files, the Add-all sheet's order and keyboard moves, and the
  * one-write reorder behind "Sort by chapter number" and its Undo (the on-disk formats do not change).
@@ -170,7 +171,7 @@ test('reorder writes the new order to both documents in one go, changes no forma
   const undone = await reorderFolioPieces(ws, DIR, { order: expected, expected: target })
   expect(undone.result).toEqual({ ok: true, changed: true, order: expected })
   expect(await read(MANIFEST)).toBe(manifestBefore)
-  expect(await read(INDEX)).toBe(indexBefore)
+  expect(await read(INDEX)).toBe(pinnedIndex(indexBefore, Object.fromEntries(['doslov', 'kapitola-10', 'kapitola-2', 'kapitola-1'].map(name => [name, `./${name}.md|${name}`]))))
 })
 
 test('reorder refuses a stale order and a non-permutation, writing nothing', async () => {

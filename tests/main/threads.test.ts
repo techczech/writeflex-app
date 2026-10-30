@@ -77,6 +77,7 @@ async function makeManager(
     listedModels?: { listed: Array<{ provider: string; id: string }>; available: Array<{ provider: string; id: string }> }
     /** Production's modelsReady seam: the startup discovery. */
     modelsReady?: Promise<unknown> | (() => Promise<unknown>)
+    modelService?: Pick<import('@bridle/core').BridleModelService, 'recommendedModel' | 'resolveSavedModel'>
     switchInForceModel?: { provider: string; id: string }
   } = {},
 ): Promise<Harness> {
@@ -89,6 +90,7 @@ async function makeManager(
     index: new ThreadIndex(join(userData, 'threads', 'index.json')),
     skills,
     defaults: () => ({ ...options.defaults }),
+    modelService: options.modelService,
     ...(options.availableModels ? {
       isModelAvailable: (provider: string, modelId: string) => options.availableModels!.some((model) => model.provider === provider && model.id === modelId),
     } : {}),
@@ -106,7 +108,7 @@ async function makeManager(
     machineInstructionsPath: join(userData, 'no-such-instructions.md'),
     createAgent: async ({ appDataDir, composition, defaults }) => {
       harness.bootDefaults.push({ ...defaults })
-      const agent = await WorkspaceAgent.create({
+      const agent = await WorkspaceAgent.create({ mode: 'work',
         workspace: new Workspace(root),
         appDataDir,
         onTrace: () => {},
@@ -706,7 +708,7 @@ test('an older slower activation can never leave the exposed agent pointing at t
     index: new DelayedIndex(file, 'slow-chat'),
     skills: registry,
     machineInstructionsPath: join(userData, 'no-such-instructions.md'),
-    createAgent: ({ appDataDir, composition }) => WorkspaceAgent.create({
+    createAgent: ({ appDataDir, composition }) => WorkspaceAgent.create({ mode: 'work',
       workspace: new Workspace(root), appDataDir,
       onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
       sessionFactory: scriptedSessionFactory(queue),
@@ -969,7 +971,7 @@ test('disposal during the first bind leaves no orphan record', async () => {
   const manager = new ThreadManager({
     userDataDir: userData, workspaceRoot: root, index, skills: registry,
     machineInstructionsPath: join(userData, 'no-such-instructions.md'),
-    createAgent: ({ appDataDir, composition }) => WorkspaceAgent.create({
+    createAgent: ({ appDataDir, composition }) => WorkspaceAgent.create({ mode: 'work',
       workspace: new Workspace(root), appDataDir,
       onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
       sessionFactory: scriptedSessionFactory(queue),
@@ -1024,7 +1026,7 @@ test('run-as-is REUSE path paused inside its touch refuses once disposal lands (
     userDataDir: userData, workspaceRoot: root, index, skills: registry,
     machineInstructionsPath: join(userData, 'no-such-instructions.md'),
     createAgent: async ({ appDataDir, composition }) => {
-      const agent = await WorkspaceAgent.create({
+      const agent = await WorkspaceAgent.create({ mode: 'work',
         workspace: new Workspace(root), appDataDir,
         onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
         sessionFactory: scriptedSessionFactory(queue),
@@ -1077,4 +1079,52 @@ test('skillDisplayName renders CONTENT.md register', () => {
   expect(skillDisplayName('copy-edit')).toBe('Copy-edit')
   expect(skillDisplayName('review')).toBe('Review')
   expect(existsSync(root)).toBe(true)
+})
+
+
+test('a new chat uses Bridle’s recommendation and a retired saved model uses its saved-model resolver', async () => {
+  const models = [{ provider: 'openai-codex', id: 'first-listed' }, { provider: 'openai-codex', id: 'recommended' }]
+  const resolved: string[] = []
+  const harness = await makeManager(undefined, {
+    listedModels: { listed: models, available: models },
+    modelService: {
+      recommendedModel: () => 'recommended',
+      resolveSavedModel: (_provider, saved) => { resolved.push(saved); return { modelId: 'recommended', reason: { code: 'saved-model-not-offered', savedId: saved, replacementId: 'recommended' } } },
+    },
+  })
+  try {
+    await harness.manager.bind(); await harness.manager.activeReady()
+    expect(harness.manager.activeRecord()?.model?.id).toBe('recommended')
+    const index = new ThreadIndex(join(userData, 'threads', 'index.json'))
+    await index.add({ id: 'retired', workspaceRoot: root, kind: 'chat', title: 'Saved', createdAt: 1, lastActiveAt: 1, model: { provider: 'openai-codex', id: 'retired-model' }, thinkingLevel: 'medium' })
+    // The manager keeps its index in memory: create a cold manager to model reopening the saved chat.
+    await harness.manager.disposeAll()
+    const reopened = await makeManager(undefined, {
+      listedModels: { listed: models, available: models },
+      modelService: {
+        recommendedModel: () => 'recommended',
+        resolveSavedModel: (_provider, saved) => { resolved.push(saved); return { modelId: 'recommended' } },
+      },
+    })
+    try {
+      await reopened.manager.bind(); await reopened.manager.activate('retired'); await reopened.manager.activeReady()
+      expect(resolved).toContain('retired-model')
+      expect(reopened.manager.activeRecord()?.model?.id).toBe('recommended')
+      expect(reopened.manager.activeModelNotice()).toContain('retired-model is no longer available')
+    } finally { await reopened.manager.disposeAll() }
+  } finally { await harness.manager.disposeAll() }
+})
+
+
+test('scoped scripted turns do not enable deferred tools when their catalogue is already small', async () => {
+  const harness = await makeManager()
+  try {
+    await harness.manager.bind(); await harness.manager.activeReady()
+    await harness.manager.openSkillThread('copy-edit')
+    const agent = await harness.manager.activeReady()
+    expect(agent).toBeTruthy()
+    const script = agent!.scriptedTurn([{ cap: 'files.read', input: { path: 'a.md' } }])
+    expect(script.rounds).toHaveLength(2)
+    expect(script.rounds[0]).toMatchObject({ kind: 'tool-calls', calls: [{ name: 'files.read' }] })
+  } finally { await harness.manager.disposeAll() }
 })

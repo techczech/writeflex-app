@@ -51,8 +51,11 @@ export const REPLY_WAIT_MS = 10_000
  * requestable export would let that machine make this app write a file anywhere the user can. The
  * command line exports by itself instead (export-operation.ts).
  */
-export const REQUEST_OPERATIONS = ['create', 'create-folder', 'duplicate', 'note', 'scrap', 'create-manifest', 'capture', 'move', 'move-folder', 'trash', 'undo', 'save-version'] as const
-export type RequestOperation = (typeof REQUEST_OPERATIONS)[number]
+export const REQUEST_OPERATIONS = ['create', 'create-folder', 'duplicate', 'note', 'scrap', 'create-manifest', 'capture', 'move', 'move-folder', 'trash', 'undo', 'save-version', 'follow-history', 'undo-history'] as const
+// Placement liveness belongs to the running main process. This single read uses the same signed
+// request/reply route; it grants no document write access. Other reads remain local.
+export const READ_REQUEST_OPERATIONS = ['scraps', 'scratchpad'] as const
+export type RequestOperation = (typeof REQUEST_OPERATIONS)[number] | (typeof READ_REQUEST_OPERATIONS)[number]
 
 /** Arguments that exist only at the terminal and never travel: piped text arrives as the text itself. */
 const NOT_SENT = new Set(['stdin', 'list'])
@@ -95,7 +98,7 @@ export function requestTime(id: string): number | null {
 export type WriteRequest = { version: 1; id: string; operation: RequestOperation | ShownFirstOperation; args: ParsedArgs }
 
 /** Every operation a request file may name: the direct writes, and the shown-first ones (review-format.ts). */
-export const isRequestable = (operation: string): boolean => (REQUEST_OPERATIONS as readonly string[]).includes(operation) || isShownFirst(operation)
+export const isRequestable = (operation: string): boolean => (REQUEST_OPERATIONS as readonly string[]).includes(operation) || (READ_REQUEST_OPERATIONS as readonly string[]).includes(operation) || isShownFirst(operation)
 
 export type Reply = {
   version: 1

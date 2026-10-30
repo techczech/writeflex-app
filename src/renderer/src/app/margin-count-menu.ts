@@ -4,6 +4,8 @@ import { marginFits } from './margin-geometry'
 import { categoryLabel } from '../components/change-review'
 import type { HeadFilterState } from './margin-head-state'
 import { reviewModeOf, toggleMode } from './margin-mode'
+import type { OutsideSourceRow } from './outside-source-bulk'
+import type { OutsideSource } from '../../../preload'
 
 /**
  * The count menu (ADR-0046, frames `filter-who`, `narrow-1000`, `component-sheet`): what the count in the status bar's
@@ -24,6 +26,8 @@ export type CountMenuAction =
   | { type: 'toggle-margin' }
   /** Save version…: the existing `file.nameVersion` command and its naming dialog. */
   | { type: 'save-version' }
+  /** Accept all / Decline all from one outside source, across the collection: opens its confirm sheet. */
+  | { type: 'outside-source'; action: 'accept' | 'decline'; source: OutsideSource }
 
 export type CountMenuIcon =
   | 'next' | 'previous' | 'next-piece' | 'accept' | 'done' | 'decline' | 'send-back'
@@ -79,6 +83,9 @@ export type CountMenuInput = {
   /** The counts beside Settled today, My edits and Show quiet fixes, from the review model (ticket 08: in a mode the
    *  model is the mode's). Omitted: read from `model`. */
   viewCounts?: ViewCounts
+  /** Outside sources with changes waiting anywhere in the collection (never readers): one Accept all and one
+   *  Decline all row each, under "From outside, across this collection". */
+  outsideSources?: readonly OutsideSourceRow[]
 }
 
 export type ViewCounts = { settled: number; mine: number; quiet: number }
@@ -148,6 +155,18 @@ export function countMenu(input: CountMenuInput): CountMenuRow[] {
   if (pickedShown === 0 && targets.declinable.length > 0) item({ id: 'decline-all', label: 'Decline all…', icon: 'decline', shortcut: chords.declineAll, enabled: true, action: { type: 'decline' } })
   const agentShown = [...model.cards, ...model.unplaced].some((shown) => shown.source.type === 'agent')
   if (agentShown) item({ id: 'send-back', label: 'Send back to the agent…', icon: 'send-back', shortcut: chords.sendBack, enabled: true, action: { type: 'send-back' } })
+
+  // From outside, across the whole collection (not only this piece): each source's changes, accepted or declined at once.
+  const sources = input.outsideSources ?? []
+  if (sources.length > 0) {
+    separate()
+    rows.push({ kind: 'heading', label: 'From outside, across this collection' })
+    for (const source of sources) {
+      const acceptable = source.undecided - source.moves
+      if (acceptable > 0) item({ id: `outside-accept:${source.source}`, label: `Accept all ${acceptable} from ${source.label}…`, icon: 'accept', enabled: true, action: { type: 'outside-source', action: 'accept', source: source.source } })
+      item({ id: `outside-decline:${source.source}`, label: `Decline all ${source.undecided} from ${source.label}…`, icon: 'decline', enabled: true, action: { type: 'outside-source', action: 'decline', source: source.source } })
+    }
+  }
 
   // Who: one choice among Everyone, each source, and under a source its links or requests.
   separate()

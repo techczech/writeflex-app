@@ -1,24 +1,34 @@
+/** App verbs and their shared guarded write routes. */
+import { withFolioNotices, folioDeclaration, activateFolioDeclaration } from '../folio-declaration'
+import { restoredFolioMessage, folioConversionTouchedPaths, writeRestoredFolioInstructions, prepareMakeFolio, restoreTurnedBackFolio, TURN_BACK_DESCRIPTION, recordFolioInstructionOwnership, turnBackIntoCollection } from '../folio-conversion'
+import { readBytes } from '../cli/guarded-fs'
+import { createHash } from 'node:crypto'
+import { previewVersionMap, historyPath } from '../version-moves'
+import { reattachVersionHistory } from '../version-history-reattach'
 import { realpathSync } from 'node:fs'
 import { posix, sep } from 'node:path'
 import { Type } from 'typebox'
 import type { Capability, CapabilityContext } from '@bridle/core'
-import { ChangedSinceRead, DocumentChangedError, normaliseMarkdownPath, SavedButNotReadBack, Workspace, type FileReadResult, type SaveFileOptions } from '../workspace'
+import { ChangedSinceRead, DocumentChangedError, NotADocumentPathError, normaliseMarkdownPath, SavedButNotReadBack, Workspace, type FileReadResult, type OperationWrite, type SaveFileOptions } from '../workspace'
+import { rollBackOperationWrites, rollbackMessage } from '../operation-rollback'
 import { fingerprintOfRead } from '../guarded-document-read'
-import { FOLIO_BACKUP_NAME, FOLIO_OWNERSHIP_NAME, MANIFEST_NAME, assertManifestAbsent, draftManifest } from '../folio'
-import { TURN_BACK_DESCRIPTION, recordFolioInstructionOwnership, turnBackIntoCollection } from '../folio-conversion'
+import { MANIFEST_NAME, assertManifestAbsent } from '../folio'
 import { writeFolioAgentInstructions } from '../folio-agent-instructions'
-import { AGENTS_FILE, CLAUDE_FILE } from '../../shared/folio-agent-files'
 import { scrapsPathFor } from '../scraps'
-import { prepareOffcutPromotion, writeMaterial } from '../board-material'
+import { scratchpadReadVerbs } from './scratchpad-reads'
+import { scratchpadReferenceVerbs } from './scratchpad-references'
+import { scratchpadInsertVerbs } from './scratchpad-insert'
+import { scratchpadExternalVerbs } from './scratchpad-external'
+import { listScrapsWithScratchpad } from '../scrap-listing'
+import { prepareOffcutPromotion, recordLosslessBoardCopy, writeMaterial } from '../board-material'
 import { prepareSourceAttach } from '../source-attach'
 import { describeListing, readPieceSources } from '../piece-sources'
 import { compareParts, readPlanForAgent } from '../plan-agent-reads'
 import { prepareProposal, runPlanOperations } from '../plan-proposal'
-import { createAgentNote, createFileNoteRefusal, planAgentNotePath, NOTES_CREATE, type AgentNoteInput } from '../agent-note-create'
+import { createAgentNote, createFileNoteRefusal, planAgentNotePath, NOTES_CREATE, type AgentNoteInput, AGENT_NOTE_DIR as NOTE_FOLDER } from '../agent-note-create'
 import { objectBlock, validateObjectMarkup } from '../../shared/object-markup'
 import { formatRenameRepairMessage } from '../../shared/rename-repair-message'
 import { applyRenameRepair, failedRenameRepairResult, type RenameRepairResult } from '../rename-repair'
-import { AGENT_NOTE_DIR as NOTE_FOLDER } from '../agent-note-create'
 import { listWidgetsInFile } from '../widgets'
 import { resolveWidgetFileForInsert } from '../widget-insert'
 import { planWidgetCreate, undoWidgetFile, writeWidgetFile, WIDGET_WRITE_SWITCHED_OFF, type CreatedWidgetFile } from '../widget-create'
@@ -48,7 +58,6 @@ export type Verb = Omit<Capability, 'name' | 'description' | 'execute'> & {
 /** What a save is told so that it refuses, writing nothing, when the document no longer holds the bytes `source` read. */
 const unchangedSince = (source: FileReadResult): SaveFileOptions => ({ expect: { fingerprint: fingerprintOfRead(source) } })
 
-
 // Read/beyond-parity verbs have no exact UI command. Existing proposal floors also preserve
 // frontmatter staging; correcting metadata posture is outside this behaviour-preserving ticket.
 export function buildVerbTable(
@@ -57,11 +66,28 @@ export function buildVerbTable(
   /** The live permission switches (the policy's own filter). A verb that writes a file reads it again at the write. */
   permitted?: (name: string) => boolean,
 ): Verb[] {
+  /**
+   * The one read rule for a path an agent or the command line names (Sol review r1 M6): a document the sidebar would
+   * show (`Workspace.classifyPath`: the typed path and its real place on disk), never a file in a hidden folder (a
+   * Folio's `.folio-bin`, `.writeflex`, `.git`, ...), whichever Workspace this table was built over. The agent's own
+   * Workspace (document-only-workspace.ts) refuses the same; this holds for every other caller too. A non-string
+   * path, and one outside the Workspace or not there, are left to the verb's own checks (they refuse them, in their
+   * own words). Throws `NotADocumentPathError`.
+   */
+  const agentReadable = (path: unknown, kind: 'file' | 'folder' = 'file'): void => {
+    if (typeof path !== 'string' || (kind === 'folder' && path.replace(/^\/+|\/+$/g, '') === '')) return
+    if (workspace.classifyPath(path, kind) === 'hidden') throw new NotADocumentPathError(path, 'hidden')
+  }
+  /** `workspace.readFile`, after `agentReadable`. */
+  const readDocument = (path: string): Promise<FileReadResult> => {
+    agentReadable(path)
+    return workspace.readFile(path)
+  }
   /** The document text with the proposed embed line in it; throws the refusal's sentence (outside the Workspace, not HTML, no such widget). */
   const widgetInsertText = async (input: WidgetsInsertInput): Promise<{ read: string; next: string }> => {
     const resolved = await resolveWidgetFileForInsert(workspace.root, input.file)
     if (!resolved.ok) throw new Error(resolved.message)
-    const source = await workspace.readFile(input.path)
+    const source = await readDocument(input.path)
     return { read: source.content, next: insertWidgetInText(source.content, relativeEmbedPath(source.file.path, resolved.relativePath), input.position ?? 'end') }
   }
   /** A refusal's sentence without the machine's folder names in it: fs errors quote absolute paths, and this text goes to the agent. */
@@ -71,7 +97,58 @@ export function buildVerbTable(
     try { realRoot = realpathSync(workspace.root) } catch { /* the lexical root is still stripped */ }
     return [realRoot, workspace.root].reduce((message, root) => message.split(`${root}${sep}`).join('').split(root).join('the Workspace'), text)
   }
+  // Bridle passes this same input object from preview through its interactive broker to run.
+  // Keep approval evidence private and one-shot: the agent cannot supply its own digest.
+  const historyApprovals = new WeakMap<object, { map: string; hash: string; plan: string }>()
+  const mapHash = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
+  const displayName = (name: string): string => name.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, char => `\\u${char.codePointAt(0)!.toString(16).padStart(4, '0')}`)
   const verbs: Verb[] = [
+    ...scratchpadReadVerbs(workspace, services?.scraps ?? null),
+    ...scratchpadReferenceVerbs(workspace, services?.scraps ?? null, services),
+    ...scratchpadInsertVerbs(workspace, services?.scraps ?? null, services),
+    ...scratchpadExternalVerbs(workspace, services?.scraps ?? null),
+    {
+      id: 'history.follow', class: 'content', posture: 'approval', asks: true, agentOnly: true, label: 'reattach version history', risk: 'write',
+      describe: 'Explicitly reattach version history after outside moves. Read a workspace-relative TSV map (old_path, tab, new_path); report refused rows and an undo id. Writes only .writeflex/versions.jsonl.',
+      parameters: Type.Object({ map: Type.String() }),
+      preview: async (input: { map: string }) => {
+        historyApprovals.delete(input)
+        const bytes = await readBytes(workspace, historyPath(input.map))
+        const plan = previewVersionMap(workspace.root, bytes.toString('utf8'))
+        historyApprovals.set(input, { map: input.map, hash: mapHash(bytes), plan: JSON.stringify(plan) })
+        const rows = [
+          ...plan.accepted.map(row => ({ ...row, text: `Accepted (line ${row.line}): ${displayName(row.from)} → ${displayName(row.to)}` })),
+          ...plan.refused.map(row => ({ ...row, text: `Refused (line ${row.line}): ${displayName(row.from)} → ${displayName(row.to)} — ${displayName(row.reason)}` })),
+        ].sort((a, b) => a.line - b.line)
+        return `Reattach history: ${plan.accepted.length} accepted, ${plan.refused.length} refused (${rows.length} rows)\n${rows.map(row => row.text).join('\n')}`
+      },
+      // Always ask, even under allow/stage or adoption: approval binds the exact previewed map.
+      // Append-only app bookkeeping has its own exact inverse; never snapshot/rewrite this journal.
+      touchedPaths: () => [],
+      run: async (_ctx, input: { map: string }) => {
+        try {
+          const approval = historyApprovals.get(input)
+          historyApprovals.delete(input)
+          if (!approval) throw new Error('Preview the history map before approval. Nothing was written.')
+          const result = await workspace.exclusiveAll(() => reattachVersionHistory(workspace, input, async () => {}, approval))
+          services?.onVersionHistoryChanged?.()
+          return { text: plainMessage(JSON.stringify(result)), details: result }
+        } catch (error) { return fail(plainMessage(error)) }
+      },
+    },
+    {
+      id: 'history.undo_follow', class: 'content', posture: 'approval', agentOnly: true, label: 'undo history attachment', risk: 'write',
+      describe: 'Undo an explicit version history attachment by its undo id; refuses if any attached version has moved again.',
+      parameters: Type.Object({ undo: Type.String() }),
+      touchedPaths: () => [],
+      run: async (_ctx, input: { undo: string }) => {
+        try {
+          const result = await workspace.exclusiveAll(() => reattachVersionHistory(workspace, input, async () => {}))
+          services?.onVersionHistoryChanged?.()
+          return { text: plainMessage(JSON.stringify(result)), details: result }
+        } catch (error) { return fail(plainMessage(error)) }
+      },
+    },
     {
       id: 'files.list', class: 'content', posture: 'direct', agentOnly: true, label: 'list files', risk: 'read',
       describe: 'List every Markdown file in the Workspace (relative paths).',
@@ -86,17 +163,24 @@ export function buildVerbTable(
       describe: 'Read a Markdown file from the Workspace, including reference material the writer keeps under research/ (the Sources pane) — read it there for context before drafting.',
       parameters: Type.Object({ path: Type.String({ description: 'Relative Markdown file path' }) }),
       run: async (_ctx, input: { path: string }) => {
-        const file = await workspace.readFile(input.path)
+        let file: FileReadResult
+        try {
+          file = await readDocument(input.path)
+        } catch (error) {
+          if (error instanceof NotADocumentPathError) return fail(error.message)
+          throw error
+        }
         services?.onFileRead?.(workspace.absolute(input.path))
         return { text: file.content, details: { file } }
       }
     },
     {
       id: 'plan.read', class: 'content', posture: 'direct', agentOnly: true, label: 'read report plan', risk: 'read',
-      describe: 'Read a report folder\'s plan: its running order (each part\'s title, gloss, role, workspace-relative file or null for an unwritten part, word count, and whether the file exists), the Markdown files under the Folio\'s content_root that are NOT in the running order (strays), and whether the folder has an Index Note. Reads only; start any work on a report as a whole here.',
+      describe: 'Read a report folder\'s plan: its running order (each part\'s title, gloss, role, workspace-relative file or null for an unwritten part, word count, whether the file exists, synopsis, label, priority, status and open flags), the Markdown files under the Folio\'s content_root that are NOT in the running order (strays), and whether the folder has an Index Note. Reads only; start any work on a report as a whole here.',
       parameters: Type.Object({ dir: Type.String({ description: 'Workspace-relative report folder ("" for the Workspace root)' }) }),
       run: async (_ctx, input: PlanReadInput) => {
         try {
+          agentReadable(input.dir, 'folder')
           const readout = await readPlanForAgent(workspace, input.dir)
           return { text: JSON.stringify(readout, null, 2), details: { plan: readout } }
         } catch (error) {
@@ -114,6 +198,9 @@ export function buildVerbTable(
       }),
       run: async (_ctx, input: PlanCompareInput) => {
         try {
+          agentReadable(input.dir, 'folder')
+          agentReadable(input.a)
+          agentReadable(input.b)
           const comparison = await compareParts(workspace, input.dir, input.a, input.b)
           return { text: JSON.stringify(comparison, null, 2), details: { comparison } }
         } catch (error) {
@@ -192,7 +279,7 @@ export function buildVerbTable(
       touchedPaths: (input: ProseEditInput) => [workspace.absolute(input.path)],
       run: async (_ctx, input: ProseEditInput) => {
         if (!input.oldText) return fail('oldText must not be empty; provide the exact current text to replace.')
-        const source = await workspace.readFile(input.path)
+        const source = await readDocument(input.path)
         const first = source.content.indexOf(input.oldText)
         if (first === -1) return fail(`oldText was not found in ${input.path}; re-read the file and retry with the exact current text.`)
         if (source.content.indexOf(input.oldText, first + input.oldText.length) !== -1) {
@@ -224,7 +311,7 @@ export function buildVerbTable(
         [`structure move — ${input.summary}`, '--- move', input.text, '+++ after', input.insertAfter].join('\n'),
       touchedPaths: (input: ProseMoveInput) => [workspace.absolute(input.path)],
       run: async (_ctx, input: ProseMoveInput) => {
-        const source = await workspace.readFile(input.path)
+        const source = await readDocument(input.path)
         try {
           const resolved = resolveProseMove(source.content, input)
           const saved = await workspace.saveFileOverRead(input.path, resolved.nextContent, source.content, unchangedSince(source))
@@ -259,7 +346,7 @@ export function buildVerbTable(
       touchedPaths: (input: ProseInsertInput) => [workspace.absolute(input.path)],
       run: async (_ctx, input: ProseInsertInput) => {
         if (!input.text) return fail('text must not be empty; provide the content to insert.')
-        const source = await workspace.readFile(input.path)
+        const source = await readDocument(input.path)
         try {
           const resolved = resolveProseInsert(source.content, input)
           const saved = await workspace.saveFileOverRead(input.path, resolved.nextContent, source.content, unchangedSince(source))
@@ -290,7 +377,7 @@ export function buildVerbTable(
       run: async (_ctx, input: ObjectInsertInput) => {
         try {
           validateObjectMarkup(input.kind, input.content)
-          const source = await workspace.readFile(input.path)
+          const source = await readDocument(input.path)
           const resolved = resolveProseInsert(source.content, {
             path: input.path, insertAfter: input.insertAfter ?? '', text: objectBlock(input.kind, input.content), category: 'other', summary: input.summary ?? 'Insert object',
           })
@@ -490,7 +577,7 @@ export function buildVerbTable(
       preview: async (input: WidgetsRemoveInput) => `Remove widget ${input.ordinal} from ${input.path}`,
       validateStage: async (input: WidgetsRemoveInput) => {
         try {
-          removeWidgetInText((await workspace.readFile(input.path)).content, input.ordinal)
+          removeWidgetInText((await readDocument(input.path)).content, input.ordinal)
           return { decision: 'pass' as const }
         } catch (error) {
           return { decision: 'deny' as const, reason: { code: 'writeflex-stage-validation', message: error instanceof Error ? error.message : String(error) } }
@@ -499,7 +586,7 @@ export function buildVerbTable(
       touchedPaths: (input: WidgetsRemoveInput) => [workspace.absolute(input.path)],
       run: async (_ctx, input: WidgetsRemoveInput) => {
         try {
-          const read = (await workspace.readFile(input.path)).content
+          const read = (await readDocument(input.path)).content
           const next = removeWidgetInText(read, input.ordinal)
           const saved = await workspace.saveFileOverRead(input.path, next, read)
           return ok(`Removed widget ${input.ordinal} from ${input.path}.`, saved)
@@ -556,7 +643,7 @@ export function buildVerbTable(
         const { source, destination } = renameStructuralPaths(workspace, input)
         const structuralPaths = [source, destination].filter((path): path is string => Boolean(path))
         try {
-          await workspace.readFile(input.path)
+          await readDocument(input.path)
           return (await prepareRename(workspace, input)).touchedPaths
         } catch {
           return structuralPaths
@@ -610,31 +697,38 @@ export function buildVerbTable(
     },
     {
       id: 'folio.create_manifest', class: 'content', posture: 'direct', agentOnly: true, label: 'create Folio manifest', risk: 'write',
-      describe: `Declare a folder a Folio: create its ${MANIFEST_NAME} from the folder's numbered parts — ONLY when none exists. When .folio-backup.json exists, restore it: drop entries whose files no longer exist, append new files at the end as sections, and keep everything else byte-for-byte. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.`,
+      describe: `Declare a folder a Folio: create its ${MANIFEST_NAME} from the folder's numbered parts — ONLY when none exists. When .folio-turn-back.json exists, restore unchanged originals exactly; otherwise draft a manifest and report where the parked bytes are kept. For an older .folio-backup.json without that receipt, restore it: drop missing entries, append new files as sections, and retain the other bytes. Housekeeping; applies under snapshot. If a manifest already exists, this errors — edit it as a file instead.`,
       parameters: Type.Object({ dir: Type.String({ description: 'Workspace-relative folder to make a Folio ("" for the root)' }) }),
       preview: async (input: FolioManifestInput) => {
-        let warning: string | undefined
-        const draft = await draftManifest(workspace, input.dir, message => { warning = message })
+        const { draft, warning } = await prepareMakeFolio(workspace, input.dir)
         return `${warning ? warning + '\n\n' : ''}Create a Folio manifest in ${input.dir || 'the workspace root'}\n\n${draft}`
       },
       // The manifest and the Folio's agent instructions (ticket 0.23-08), so the turn's restore point covers the instructions and their ownership record.
-      touchedPaths: (input: FolioManifestInput) => [MANIFEST_NAME, AGENTS_FILE, CLAUDE_FILE, FOLIO_OWNERSHIP_NAME].map((name) => workspace.absolute(input.dir ? posix.join(input.dir, name) : name)),
-      run: async (_ctx, input: FolioManifestInput) => {
+      touchedPaths: (input: FolioManifestInput) => folioConversionTouchedPaths(workspace, input.dir),
+      run: async (ctx, input: FolioManifestInput) => {
         try {
           await services?.prepareFolioInstructions?.(input.dir)
           await assertManifestAbsent(workspace, input.dir)
+          let { draft, warning, receiptSource } = await prepareMakeFolio(workspace, input.dir)
+          await activateFolioDeclaration(workspace, input.dir)
+          const restored = receiptSource === undefined ? null : await restoreTurnedBackFolio(workspace, input.dir, { expectedSource: receiptSource, fallback: true, declaredPaths: ctx.resolvedTouchedPaths })
+          if (restored && !folioDeclaration(workspace, input.dir).repairNeeded) {
+            const instructions = await writeRestoredFolioInstructions(workspace, input.dir, services?.checkpointFile)
+            return { text: restoredFolioMessage(instructions), details: { paths: [...restored, ...instructions] } }
+          }
+          if (!restored && receiptSource !== undefined) ({ draft, warning } = await prepareMakeFolio(workspace, input.dir))
           const path = input.dir ? posix.join(input.dir, MANIFEST_NAME) : MANIFEST_NAME
           // saveFile writes the path VERBATIM (createFile would markdown-normalise the .json to .md).
-          const saved = await workspace.saveFile(path, await draftManifest(workspace, input.dir))
+          const saved = await workspace.saveFile(path, draft)
           let instructions = ''
           try {
-            const written = await writeFolioAgentInstructions(workspace, input.dir, services?.checkpointFile)
+            const written = restored ? [] : await writeFolioAgentInstructions(workspace, input.dir, services?.checkpointFile)
             await recordFolioInstructionOwnership(workspace, input.dir, written)
             if (written.length) instructions = ` Wrote the Folio's agent instructions: ${written.join(', ')}.`
           } catch (error) {
             instructions = ` The Folio's agent instructions were not written: ${error instanceof Error ? error.message : String(error)}`
           }
-          return ok(`Drafted a Folio manifest at ${saved.file.path}.${instructions}`, saved)
+          return ok(`Drafted a Folio manifest at ${saved.file.path}.${instructions}${warning ? ` ${warning}` : ''}`, saved)
         } catch (error) {
           return fail(error instanceof Error ? error.message : String(error))
         }
@@ -645,11 +739,13 @@ export function buildVerbTable(
       describe: TURN_BACK_DESCRIPTION,
       parameters: Type.Object({ dir: Type.String() }),
       preview: async (input: FolioManifestInput) => `Turn ${input.dir || 'this Folio'} back into a collection. ${TURN_BACK_DESCRIPTION}`,
-      touchedPaths: (input: FolioManifestInput) => [MANIFEST_NAME, AGENTS_FILE, CLAUDE_FILE, FOLIO_BACKUP_NAME, FOLIO_OWNERSHIP_NAME].map(name => workspace.absolute(input.dir ? posix.join(input.dir, name) : name)),
-      run: async (_ctx, input: FolioManifestInput) => {
+      touchedPaths: (input: FolioManifestInput) => folioConversionTouchedPaths(workspace, input.dir),
+      run: async (ctx, input: FolioManifestInput) => {
         try {
           await services?.prepareFolioInstructions?.(input.dir)
-          return { text: 'Turned back into a collection.', details: { paths: await turnBackIntoCollection(workspace, input.dir, services?.trashFile) } }
+          const paths = await turnBackIntoCollection(workspace, input.dir, ctx.resolvedTouchedPaths)
+          const retired = paths.filter(path => path.includes('.folio-turn-back-retired-'))
+          return { text: `Turned back into a collection.${retired.length ? ` Earlier parked bytes are kept in ${retired[0]}.` : ''}`, details: { paths } }
         }
         catch (error) { return fail(error instanceof Error ? error.message : String(error)) }
       },
@@ -664,7 +760,7 @@ export function buildVerbTable(
         `normalise frontmatter — ${input.path}`,
       touchedPaths: (input: FrontmatterNormaliseInput) => [workspace.absolute(input.path)],
       run: async (_ctx, input: FrontmatterNormaliseInput) => {
-        const source = await workspace.readFile(input.path)
+        const source = await readDocument(input.path)
         const bom = source.content.startsWith('﻿') ? '﻿' : ''
         const text = bom ? source.content.slice(1) : source.content
         const split = frontmatterSplit(text)
@@ -691,7 +787,7 @@ export function buildVerbTable(
       touchedPaths: (input: FrontmatterSetInput) => [workspace.absolute(input.path)],
       run: async (_ctx, input: FrontmatterSetInput) => {
         if (!input.set || Object.keys(input.set).length === 0) return fail('set must name at least one frontmatter key.')
-        const source = await workspace.readFile(input.path)
+        const source = await readDocument(input.path)
         try {
           const saved = await workspace.saveFileOverRead(input.path, setFrontmatterKeys(source.content, input.set, input.path), source.content)
           return ok(`Set frontmatter on ${input.path}.`, saved)
@@ -709,6 +805,7 @@ export function buildVerbTable(
       run: async (_ctx, input: SourceListInput) => {
         try {
           // No onFileRead: the listing is not the piece's text, so the piece does not count as read.
+          agentReadable(input.path)
           const listing = await readPieceSources(workspace, { path: input.path })
           return { text: describeListing(listing), details: { sources: listing } }
         } catch (error) {
@@ -781,7 +878,7 @@ export function buildVerbTable(
         describe: 'List the writer’s scraps (cuttings set aside), optionally filtered to one origin file’s scraps.',
         parameters: Type.Object({ origin: Type.Optional(Type.String({ description: 'Filter to one file’s scraps (its workspace-relative path)' })) }),
         run: async (_ctx, input: { origin?: string }) => {
-          const items = await scraps.list(input.origin ? { origin: input.origin } : undefined)
+          const items = await listScrapsWithScratchpad(workspace, scraps, input.origin ? { origin: input.origin } : undefined)
           return { text: JSON.stringify(items, null, 2), details: { scraps: items } }
         }
       },
@@ -804,7 +901,7 @@ export function buildVerbTable(
       // floor is a proposal at every trust level — the agent never turns a scrap into an idea itself.
       {
         id: 'scraps.promote', class: 'content', posture: 'proposal', label: 'propose an idea from an offcut', risk: 'write',
-        describe: 'Propose turning ONE scrap (an offcut, from scraps.list) into an idea for a collection. Nothing is written when you call this: the writer sees the proposal and accepts or discards it. Accepting adds one wikilink line, `- [[<name as a file name>]]`, under `## Ideas` in the collection\'s tracker note (its Index Note, `_<folder>_INDEX.md`, created if absent) with the scrap\'s text quoted beneath it, and removes the scrap from its scraps file. Name the idea as the piece it could become.',
+        describe: 'Propose turning ONE scrap (an offcut, from scraps.list) into an idea for a collection. Nothing is written when you call this: the writer sees the proposal and accepts or discards it. Accepting adds one wikilink line, `- [[<name as a file name>]]`, under `## Ideas` in the collection\'s tracker note (its Index Note, `_<folder>_INDEX.md`, created if absent) with the scrap\'s text quoted beneath it, and takes the scrap out of circulation: a legacy scrap leaves its scraps file, a lossless Scratchpad text item (`p_…`, source `lossless`) is COPIED and stays in the Scratchpad as a reusable candidate, with the copy recorded on it as a historical use. Name the idea as the piece it could become.',
         parameters: Type.Object({
           dir: Type.String({ description: 'Workspace-relative collection folder ("" for the Workspace root)' }),
           origin: Type.String({ description: 'The scrap\'s origin file, as scraps.list gives it' }),
@@ -823,7 +920,10 @@ export function buildVerbTable(
         touchedPaths: async (input: ScrapPromoteInput) => {
           try {
             const plan = await prepareOffcutPromotion(workspace, { dir: input.dir, scrapsPath: scrapsPathFor(input.origin), scrapId: input.id, name: input.name })
-            return [plan.tracker.path, plan.scraps.path].map((path) => workspace.absolute(path))
+            // A lossless copy's historical-use record lives under `.writeflex`, which the snapshot
+            // restore will not write; naming it here would refuse the whole turn's undo. The tracker
+            // is the snapshot; Undo restores it and the retained candidate stays reusable.
+            return [plan.tracker.path, ...(plan.scraps ? [plan.scraps.path] : [])].map((path) => workspace.absolute(path))
           } catch {
             return []
           }
@@ -832,12 +932,32 @@ export function buildVerbTable(
           try {
             const plan = await scraps.exclusive(async () => {
               const prepared = await prepareOffcutPromotion(workspace, { dir: input.dir, scrapsPath: scrapsPathFor(input.origin), scrapId: input.id, name: input.name })
-              await writeMaterial(workspace, [prepared.tracker, prepared.scraps])
+              // This accepted promotion is one multi-write operation, as on the Board desk: the
+              // receiving documents are written first and the scrap half (a legacy scraps file, or
+              // a lossless candidate's required historical-use record) last. A refusal after a
+              // document landed rolls back only this operation's own document writes, each only
+              // while it still holds what this operation wrote (R7), still inside this scraps turn
+              // (and, on an accept, the Collection turn around it), so nothing in this app writes
+              // in between. The rollback goes through this same document-only Workspace, and the
+              // candidate's own record is never among the writes put back: it is not a receiving
+              // document, and an outside edit to it that refused the record stays as it is.
+              const documents = [prepared.tracker, ...(prepared.scraps ? [prepared.scraps] : [])]
+              const written: OperationWrite[] = []
+              try {
+                await workspace.recordingOperationWrites(written, async () => {
+                  await writeMaterial(workspace, documents)
+                  if (prepared.lossless) await recordLosslessBoardCopy(workspace, prepared.lossless, prepared.tracker.path)
+                })
+              } catch (error) {
+                const own = written.filter((write) => documents.some((document) => document.path === write.path))
+                if (own.length === 0) throw error
+                throw new Error(rollbackMessage(error instanceof Error ? error.message : String(error), await rollBackOperationWrites(workspace, own)))
+              }
               return prepared
             })
             services.onScrapsChanged?.()
-            services.notifyFilesChangedOnDisk?.([plan.tracker.path, plan.scraps.path])
-            return { text: `Made the idea [[${plan.target}]] in ${plan.tracker.path} and removed the scrap from ${plan.scraps.path}.`, details: { target: plan.target, tracker: plan.tracker.path } }
+            services.notifyFilesChangedOnDisk?.([plan.tracker.path, ...(plan.scraps ? [plan.scraps.path] : [])])
+            return { text: `Made the idea [[${plan.target}]] in ${plan.tracker.path}${plan.scraps ? ` and took the scrap out of ${plan.scraps.path}` : '; the Scratchpad item was copied and stays there for reuse'}.`, details: { target: plan.target, tracker: plan.tracker.path } }
           } catch (error) {
             return fail(error instanceof Error ? error.message : String(error))
           }
@@ -845,5 +965,11 @@ export function buildVerbTable(
       }
     )
   }
-  return verbs
+  return verbs.map(verb => {
+    const run = verb.run
+    return { ...verb, run: async (...args: Parameters<typeof run>) => {
+      const { result, notices } = await withFolioNotices(() => run(...args))
+      return notices.length ? { ...result, text: `${result.text}\n${notices.join('\n')}` } : result
+    } }
+  })
 }

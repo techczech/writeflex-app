@@ -1,3 +1,4 @@
+import { escapePlanLink } from '../shared/plan-line'
 import { stat } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { indexNotePath, MANIFEST_NAME, readManifest, resolveManifestFilePath, type Folio } from './folio'
@@ -308,7 +309,7 @@ function cachedReads(workspace: Workspace): (path: string) => Promise<FileReadRe
   }
 }
 
-type PlanTitleLink = { from: number; to: number; path: string | null }
+type PlanTitleLink = { ambiguous?: boolean; from: number; to: number; path: string | null }
 type PlanLineResolutions = Map<string, Map<number, PlanTitleLink>>
 
 function lineAtOffset(source: string, offset: number): number {
@@ -336,7 +337,7 @@ async function planLineResolutions(
     }
     resolutions.set(file.path, new Map(plan.parts.flatMap((part) => {
       const titleLink = firstLinkByLine.get(part.line)
-      return titleLink ? [[part.line, { from: titleLink.from, to: titleLink.to, path: part.path }]] : []
+      return titleLink ? [[part.line, { from: titleLink.from, to: titleLink.to, path: part.path, ...(part.resolution === 'ambiguous' ? { ambiguous: true } : {}) }]] : []
     })))
   }
   return resolutions
@@ -355,21 +356,19 @@ function referenceResolution(
     filePath: string,
     source: string,
     link: ReturnType<typeof extractWikilinks>[number],
-  ): { found: boolean; path: string | null } => {
+  ): { found: boolean; path: string | null; ambiguous?: boolean } => {
     const line = planLines.get(filePath)
     const lineNumber = lineAtOffset(source, link.from)
     const titleLink = line?.get(lineNumber)
     return titleLink?.from === link.from && titleLink.to === link.to
-      ? { found: true, path: titleLink.path }
+      ? { found: true, path: titleLink.path, ambiguous: titleLink.ambiguous }
       : { found: false, path: null }
   }
   return {
     resolve: (filePath, source, link) => {
       const scoped = planResolution(filePath, source, link)
       const workspacePath = resolveWikilinkTargetFromIndex(filePath, link.target, candidateIndex).to
-      return scoped.found
-        ? scoped.path ?? workspacePath
-        : workspacePath
+      return scoped.found ? (scoped.ambiguous ? null : scoped.path ?? workspacePath) : workspacePath
     },
     isPlanTitleLink: (filePath, source, link) => planResolution(filePath, source, link).found,
   }
@@ -566,7 +565,7 @@ export function pathLinkTargetsFor(fromFile: string, toPath: string, oldTarget: 
   if (!relative || relative === '..' || relative.startsWith('../') || posix.isAbsolute(relative)) return []
   const bare = withoutMarkdownExtension(relative)
   const forms = bare === relative ? [`./${relative}`] : [`./${bare}`, `./${relative}`]
-  return MARKDOWN_EXTENSION.test(oldTarget.split('#', 1)[0].trim()) ? forms.reverse() : forms
+  return MARKDOWN_EXTENSION.test(oldTarget.split('#', 1)[0].trim()) ? forms.reverse().map(escapePlanLink) : forms.map(escapePlanLink)
 }
 
 /** What a link to the renamed file may be rewritten as, best first. A `./` path link stays a path link while the new

@@ -31,7 +31,7 @@ async function harness(): Promise<{
   const workspace = new Workspace(root)
   const changes = new ChangeStore(workspace)
   const versions = new VersionStore(workspace)
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace,
     appDataDir: appData,
     changes,
@@ -256,4 +256,23 @@ test('naming a version folds quiet copy edits but carries held changes forward',
   expect(carriedHeld?.status).toBe('held')
   expect(carriedHeld?.versionId).toBeUndefined()
   agent.dispose()
+})
+
+test('an editor declaration set aside by the Folio rule still saves a comparable version', async () => {
+  const { mkdir } = await import('node:fs/promises')
+  const { folioDeclaration } = await import('../../src/main/folio-declaration')
+  const { workspace, agent, versions } = await harness()
+  try {
+    await mkdir(join(root, 'book/ch'), { recursive: true })
+    await writeFile(join(root, 'book/_book_INDEX.md'), '## Running order\n')
+    const path = 'book/ch/_ch_INDEX.md'
+    await writeFile(join(root, path), '# Cover\n')
+    const text = '# Chapter\n\n## Running order\n'
+    await workspace.saveEditorText(path, text, { kind: 'disk', text: '# Cover\n' })
+    expect(folioDeclaration(workspace, 'book/ch').isFolio).toBe(false)
+    const record = await saveInitialVersionOnClose({ path, workspace, agent, versions, author: { name: 'Writer' } })
+    expect(record?.snapshotId).toBeTruthy()
+    expect(await agent.readSnapshotContent(record!.snapshotId!)).toBe(text)
+    expect((await versions.list({ path }))[0].id).toBe(record!.id)
+  } finally { agent.dispose() }
 })

@@ -1,3 +1,5 @@
+import type { TurnActivity } from '@bridle/core'
+import { latestChangedTurn } from '../../../shared/assistant-turns'
 import {
   proposalEntries,
   setEntriesEnabled,
@@ -133,4 +135,12 @@ export function reducePlanCards(cards: PlanCards, action: { id: string; event: P
 /** Cards whose staleness can still change, so a folder change should re-check them. */
 export function liveCardIds(cards: PlanCards): string[] {
   return Object.values(cards).filter((card) => card.phase === 'pending' || card.phase === 'editing' || card.phase === 'loading').map((card) => card.id)
+}
+
+/** Shared target for the keyboard shortcut and the reply's Undo action. */
+export function latestUndoTarget(cards: PlanCards, turns: TurnActivity[]): { kind: 'plan' | 'turn'; id: string } | null {
+  const plan = latestUndoableCard(cards)
+  const turn = latestChangedTurn(turns)
+  if (plan && (!turn || plan.acceptedAt! > (turn.endedAt ?? turn.startedAt))) return { kind: 'plan', id: plan.id }
+  return turn ? { kind: 'turn', id: turn.turnId } : null
 }

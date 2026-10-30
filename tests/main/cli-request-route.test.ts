@@ -1,3 +1,6 @@
+import { ScratchpadStore } from '../../src/main/scratchpad-store'
+import { Workspace } from '../../src/main/workspace'
+import { configureScratchpadHolders, scratchpadHolder } from '../../src/main/scratchpad-holders'
 import { test, expect, beforeEach, afterEach } from 'bun:test'
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { existsSync, realpathSync } from 'node:fs'
@@ -24,6 +27,7 @@ beforeEach(async () => {
   outside = realpathSync(await mkdtemp(join(tmpdir(), 'wf-cli-export-')))
 })
 afterEach(async () => {
+  configureScratchpadHolders(() => [])
   await app.close()
   await fx.dispose()
   await rm(outside, { recursive: true, force: true })
@@ -72,6 +76,7 @@ test('with the app owning the Collection, each direct operation produces exactly
   const operations: string[][] = [
     ['create', 'x.md', '--content', 'New.\n'], ['create-folder', 'drafts'], ['duplicate', 'notes.md'], ['note', 'talks/york.md', '--body', 'A note.'],
     ['scrap', 'talks/york.md', '--text', 'A scrap.'], ['create-manifest', 'drafts'], ['capture', 'talks/york.md', '--kind', 'snippet', '--title', 'A line', '--body', 'A line.'], ['move', 'talks/york.md', 'talks/y.md'], ['move-folder', 'talks', 'events'],
+    ['follow-history', '--map', 'moves.tsv'], ['undo-history', 'history-attachment-id'],
     ['trash', 'notes.md'], ['undo'], ['save-version', 'notes.md', '--name', 'Before the rewrite', '--note', 'As sent to York.'],
   ]
   expect(operations.map(([name]) => name).sort()).toEqual([...REQUEST_OPERATIONS].sort())
@@ -505,4 +510,27 @@ test('a path argument is taken literally: the escaped form is not decoded, and t
   expect(refused.code).toBe(1)
   expect(refused.err).not.toMatch(RAW)
   expect(refused.err).toContain('missing\\u{1b}[2J.md')
+})
+
+
+test('CLI scraps asks the owning app for live placements and shows dead-holder candidates after it closes', async () => {
+  configureScratchpadHolders((root) => root === fx.root ? [1] : [])
+  const store = new ScratchpadStore(new Workspace(fx.root), null)
+  const item = await store.addText({ origin: 'notes.md', markdown: 'Placed cutting.', how: 'copy', by: 'writer' })
+  await store.confirmCut(item.id)
+  await store.recordUse(item.id, { useId: 'u_clilive1', path: 'notes.md', mode: 'put-back', holder: scratchpadHolder(1) })
+  const stop = app.answering()
+  try {
+    const listed = await fx.cli(['scraps'])
+    expect(listed.code).toBe(0)
+    expect(listed.json.via).toBe('app')
+    expect(listed.json.result).toMatchObject({ scraps: [] })
+    expect(await fx.journalNames()).toEqual([])
+  } finally { await stop() }
+  await app.close()
+  configureScratchpadHolders(() => [])
+  const closed = await fx.cli(['scraps'])
+  expect(closed.code).toBe(0)
+  expect(closed.json).not.toHaveProperty('via')
+  expect((closed.json.result!.scraps as Array<{ id: string }>).map((s) => s.id)).toEqual([item.id])
 })

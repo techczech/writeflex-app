@@ -105,3 +105,23 @@ test('an undo that moved the folder and its Index Note back but refused an edite
   expect(finished.json.result).toMatchObject({ undone: id, resumed: true, restored: [edited] })
   expect(await f.snapshot()).toEqual(before)
 }, withChildren(1))
+
+for (const declaration of ['_report-structure.json', '_talks_INDEX.md']) {
+  test(`move-folder refuses carrying ${declaration} into another Folio before anything moves`, async () => {
+    const text = declaration.endsWith('.json') ? '{"files": []}' : '## Running order\n- intro\n'
+    await fx.write(`talks/${declaration}`, text)
+    await fx.write('book/_report-structure.json', '{"files": []}')
+    const before = await fx.snapshot()
+    const moved = await fx.cli(['move-folder', 'talks', 'book/talks'])
+    expect(moved.json.error?.message).toContain('already occupies')
+    expect(await fx.snapshot()).toEqual(before)
+  })
+}
+test('move-folder refuses its automatic Index Note rename inside an existing Folio', async () => {
+  await fx.write('book/_report-structure.json', '{"files": []}')
+  await fx.write('talks/_talks_INDEX.md', '## Running order\n- intro\n')
+  const before = await fx.snapshot()
+  const moved = await fx.cli(['move-folder', 'talks', 'book/events'])
+  expect(moved.json.error?.message).toContain('already occupies')
+  expect(await fx.snapshot()).toEqual(before)
+})

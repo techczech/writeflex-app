@@ -1,0 +1,6 @@
+{
+  "name": "writeflex-zotero-plugin",
+  "private": true,
+  "description": "Plain scripts loaded by Zotero; CommonJS so WriteFlex's unit tests can require them.",
+  "type": "commonjs"
+}

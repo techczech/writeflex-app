@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, mkdir, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace } from '../../src/main/workspace'
-import { draftManifest, fallbackFolioParts, MANIFEST_NAME, parseManifest } from '../../src/main/folio'
+import { draftManifest, fallbackFolioParts, FOLIO_BACKUP_NAME, MANIFEST_NAME, parseManifest } from '../../src/main/folio'
 import {
   FOLIO_RULES,
   NEW_CLAUDE_FILE,
@@ -17,8 +17,9 @@ import {
   writeFolioAgentInstructions,
   withBlockAppended,
 } from '../../src/main/folio-agent-instructions'
-import { declaresRunningOrder, PLAN_BACKUP_SUFFIX } from '../../src/main/plan'
+import { declaresRunningOrder, PLAN_BACKUP_SUFFIX, readPlan } from '../../src/main/plan'
 import { PLAN_ROLES } from '../../src/shared/plan-line'
+import { isRoomSupportName } from '../../src/shared/folio-part-name'
 import { AGENTS_FILE, CLAUDE_FILE, CLAUDE_IMPORT_LINE } from '../../src/shared/folio-agent-files'
 
 let root: string
@@ -213,6 +214,7 @@ test('the maintained text states the rules the Folio code applies', async () => 
   expect(body).toContain(FOLIO_RULES.runningOrderHeading)
   // The backup suffix is the Plan's.
   expect(FOLIO_RULES.backupSuffix).toBe(PLAN_BACKUP_SUFFIX)
+  expect(FOLIO_RULES.backupRecordSuffix).toBe(`${PLAN_BACKUP_SUFFIX}.json`)
   // The WriteFlex folder is hidden from every listing.
   expect(ws.isVisiblePath(`${FOLIO_RULES.appFolder}/x/file.md`)).toBe(false)
   expect(body).toContain(`\`${FOLIO_RULES.appFolder}/\``)
@@ -247,4 +249,73 @@ test('the marker lines are the ones the parser reads, and the hash records the b
   expect(parseAgentsText('# Nothing here\n').kind).toBe('none')
   expect(AGENTS_FILE).toBe('AGENTS.md')
   expect(CLAUDE_FILE).toBe('CLAUDE.md')
+})
+
+test('the maintained text names the Folio bin and the never-delete rule, as the bin code has them', async () => {
+  const body = maintainedInstructionsBody()
+  const { FOLIO_BIN, BIN_INDEX } = await import('../../src/main/folio-bin')
+  expect(FOLIO_RULES.binFolder).toBe(FOLIO_BIN)
+  expect(FOLIO_RULES.binIndex).toBe(BIN_INDEX)
+  expect(body).toContain(`\`${FOLIO_BIN}/\``)
+  expect(body).toContain(`\`${FOLIO_BIN}/${BIN_INDEX}\``)
+  expect(body).toContain('Never delete a Folio file')
+  expect(body).toContain('Only the writer empties it, in Finder')
+  expect(body).toContain('do not use its `trash` on a part')
+  // A file in the bin is hidden from every listing (the hidden-folder rule), so it is never a part.
+  expect(ws.isVisiblePath(`${FOLIO_BIN}/01-removed.md`)).toBe(false)
+  await write(`b/01-a.md`, '# A\n')
+  await write(`b/${FOLIO_BIN}/02-removed.md`, '# R\n')
+  expect(await fallbackFolioParts(ws, 'b')).toEqual(['b/01-a.md'])
+  // The room's support files and any .canvas are never parts, and the text says so.
+  expect(isRoomSupportName('_b_EVIDENCE-AND-NOTES.md')).toBe(true)
+  expect(isRoomSupportName('_b_MAP.canvas')).toBe(true)
+  expect(isRoomSupportName('other.canvas')).toBe(true)
+  expect(body).toContain('`.canvas` files')
+  expect(body).toContain('`_<folder>_MAP.canvas`')
+})
+
+test('the maintained text defines a Folio, the five folders, moves and the Make Folio / Restore rule', () => {
+  const body = maintainedInstructionsBody()
+  expect(FOLIO_RULES.turnBackBackup).toBe(FOLIO_BACKUP_NAME)
+  expect(body).toContain(`\`${FOLIO_BACKUP_NAME}\` alone does not make a Folio`)
+  expect(body).toContain('`_<folder>_INDEX.md` with a `## Running order` list')
+  expect(body).toContain('Either one is enough')
+  expect(FOLIO_RULES.folders).toEqual(['data', 'research', 'assets', 'offcuts', 'archive'])
+  for (const name of FOLIO_RULES.folders) expect(body).toContain(`\`${name}/\``)
+  for (const name of [FOLIO_RULES.captureManifest, FOLIO_RULES.moveMap, FOLIO_RULES.archivedExports]) expect(body).toContain(`\`${name}\``)
+  expect(body).toContain('sources[].file')
+  expect(body).toContain('[Simulation: …]')
+  expect(body).toContain('git mv')
+  expect(body).toContain('Never restore from one by hand')
+  expect(body).toContain('Never write or repair the block yourself')
+  expect(body).toContain('A Folio\'s folders hold supporting material, never another Folio.')
+  expect(body).not.toContain('Captures stay flat')
+  expect(body).toContain('scout capture --project <folder> --into <sub>')
+  expect(body).toContain('scout capture --project <folder> --moved <old> <new>')
+  expect(body).toContain('Material scout did not capture may use any subfolder.')
+  expect(body).toContain('Never create a manifest or add a `## Running order` to an Index Note in any folder inside or above a Folio.')
+  expect(body).toContain('a direct file write from your own tools is not checked')
+  expect(FOLIO_RULES.turnBackReceipt).toBe('.folio-turn-back.json')
+  expect(body).toContain('Turn back parks the manifest and the Running order in `.folio-turn-back.json`; Make Folio restores them exactly; nothing is deleted.')
+  expect(body).toContain('`.folio-backup.json`, `.folio-turn-back.json` and any `.folio-turn-back-retired-<hash>.json` into `archive/` under plain names')
+})
+
+test('the running-order matching rule in the text is the Plan’s: title, else # heading, else file name', async () => {
+  expect(maintainedInstructionsBody()).toContain('the frontmatter `title`, else the first `# ` heading, else the file name')
+  await write('f/_f_INDEX.md', `# F\n\n${FOLIO_RULES.runningOrderHeading}\n\n- [[Fm Title]]\n- [[Heading Title]]\n- [[no-heading]]\n- [[./by-path.md]]\n- [[HEADING TITLE]]\n`)
+  await write('f/a.md', '---\ntitle: Fm Title\n---\n\n# Other heading\n')
+  await write('f/b.md', '# Heading Title\n')
+  await write('f/no-heading.md', '## Only a level two\n')
+  await write('f/by-path.md', '# Anything\n')
+  const plan = await readPlan(ws, 'f')
+  expect(plan?.parts.map((part) => part.path)).toEqual(['f/a.md', 'f/b.md', 'f/no-heading.md', 'f/by-path.md', 'f/b.md'])
+})
+
+test('the maintained text stays compact: at most 70 bullet lines', () => {
+  const bullets = maintainedInstructionsBody().split('\n').filter((line) => line.startsWith('- '))
+  expect(bullets.length).toBeLessThanOrEqual(70)
+})
+
+test('maintained instructions protect backup provenance sidecars', () => {
+  expect(maintainedInstructionsBody()).toContain('Any file ending `.writeflex-backup.json`')
 })

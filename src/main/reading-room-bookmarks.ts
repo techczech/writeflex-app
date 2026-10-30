@@ -51,8 +51,18 @@ export function createReadingRoomBookmarks({
 }: ReadingRoomBookmarksOptions): {
   add(input: unknown): ReadingBookmarkRow
   list(): ReadingBookmarkRow[]
+  savePosition(input: unknown): boolean
 } {
   return {
+    savePosition(input) {
+      if (!isRecord(input) || !isRecord(input.viewState)) throw new Error('Invalid Reading Room view state.')
+      const document = currentDocument()
+      // The previous iframe can emit a final debounced position after main has opened its replacement.
+      // It owns no position in the new document; refusing that stale update is an ordinary no-op.
+      if (!document || input.libraryId !== document.libraryId || input.attachmentKey !== document.attachmentKey) return false
+      store.savePosition({ itemKey: document.attachmentKey, libraryId: document.libraryId, position: JSON.stringify(input.viewState) })
+      return true
+    },
     add(input) {
       const document = activeDocument(currentDocument)
       if (!isRecord(input) || !isRecord(input.position)) {

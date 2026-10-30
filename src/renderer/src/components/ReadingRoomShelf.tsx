@@ -1,7 +1,29 @@
+import { setEvidenceDrag, useEvidenceAttachmentTarget } from '../folio-evidence-transfer'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, CircleAlert, Clock, FileText, Globe, Link2, Search } from 'lucide-react'
 import type { RecentDocumentRow, ShelfRow, ShelfSearchResult } from '../../../preload'
 import { claimKeyboard } from './claim-keyboard'
+import { ReadingRoomCollectionPicker } from './ReadingRoomCollectionPicker'
+import {
+  collectionRows,
+  resolveStoredCollection,
+  type ShelfCollectionNode,
+} from '../../../shared/shelf-collections'
+
+/** The chosen collection survives reopening the Shelf and restarts (renderer-side view state, like the
+ *  other panes' remembered layout). A collection gone from Zotero falls back silently to All. */
+const COLLECTION_STORAGE_KEY = 'writeflex.readingRoom.shelfCollection.v1'
+const NO_COLLECTIONS: ShelfCollectionNode[] = []
+
+function storedCollection(): string | null {
+  try { return window.localStorage.getItem(COLLECTION_STORAGE_KEY) } catch { return null }
+}
+function rememberCollection(id: string | null): void {
+  try {
+    if (id) window.localStorage.setItem(COLLECTION_STORAGE_KEY, id)
+    else window.localStorage.removeItem(COLLECTION_STORAGE_KEY)
+  } catch { /* the choice just is not remembered */ }
+}
 
 export type ReadingRoomShelfProps = {
   /** Bumped whenever the Shelf is raised, so the search field takes the keyboard each time. */
@@ -78,6 +100,7 @@ export function ReadingRoomShelf({
   onOpen,
   onOpenRecent,
 }: ReadingRoomShelfProps): JSX.Element {
+  const evidenceTarget = useEvidenceAttachmentTarget()
   const citing = !!onCite
   const field = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
@@ -88,6 +111,36 @@ export function ReadingRoomShelf({
   const [cursor, setCursor] = useState(0)
   const [notice, setNotice] = useState<string | null>(null)
   const [recents, setRecents] = useState<RecentDocumentRow[]>([])
+  const [nodes, setNodes] = useState<ShelfCollectionNode[]>(NO_COLLECTIONS)
+  // null until the tree has been read, so a remembered choice is never judged against an empty list.
+  const [collection, setCollection] = useState<string | null>(null)
+  const [collectionsReady, setCollectionsReady] = useState(false)
+
+  // The tree is re-read each time the Shelf is raised (the main process rebuilds with the index), and the
+  // remembered choice is resolved against it: a collection deleted in Zotero quietly becomes All.
+  useEffect(() => {
+    let live = true
+    // Bounded wait: if the tree never arrives, search proceeds with All collections.
+    const giveUp = window.setTimeout(() => { if (live) setCollectionsReady(true) }, 1500)
+    void window.writeflex.readingRoom
+      .shelfCollections()
+      .then((next) => {
+        if (!live) return
+        setNodes(next)
+        setCollection(resolveStoredCollection(storedCollection(), next))
+        setCollectionsReady(true)
+      })
+      .catch(() => { if (live) setCollectionsReady(true) })
+    return () => { live = false; window.clearTimeout(giveUp) }
+  }, [focusToken])
+  const pickerRows = useMemo(() => collectionRows(nodes), [nodes])
+  const pickerCounts = useMemo(() => new Map(nodes.map((node) => [node.id, node.count])), [nodes])
+  const chosen = pickerRows.find((row) => row.id === collection) ?? null
+  const chooseCollection = useCallback((id: string | null): void => {
+    setCollection(id)
+    rememberCollection(id)
+    window.requestAnimationFrame(() => field.current?.focus())
+  }, [])
 
   // Recents are re-read whenever the Shelf is raised, so a paper opened this session is at the front
   // the next time the user looks. Failing to read them is not worth a message — the Shelf still works.
@@ -100,15 +153,20 @@ export function ReadingRoomShelf({
 
   // Raising the Shelf over a live document competes with the reader for the keyboard, so the claim
   // retries until it sticks: without it `Search the Shelf` becomes a panel you must click into.
-  useEffect(() => claimKeyboard(() => field.current), [focusToken])
+  // It stands down while the collection picker holds the keyboard, or opening the picker straight after
+  // raising the Shelf would be undone by the claim and close the popover under the user's hands.
+  useEffect(() => claimKeyboard(() => (
+    document.activeElement?.closest('.reading-room-collection-picker') ? null : field.current
+  )), [focusToken])
 
   // Instant search: every keystroke asks the main-process index, coalesced so a fast typist issues
   // one query per pause rather than one per character. A stale reply can never overwrite a fresh one.
   useEffect(() => {
+    if (!collectionsReady) return undefined
     const token = (request.current += 1)
     const timer = window.setTimeout(() => {
       void window.writeflex.readingRoom
-        .searchShelf(query)
+        .searchShelf(query, collection)
         .then((next) => {
           if (request.current !== token) return
           setResult(next)
@@ -121,15 +179,18 @@ export function ReadingRoomShelf({
         })
     }, query === '' ? 0 : 110)
     return () => window.clearTimeout(timer)
-  }, [onError, query])
+  }, [collection, collectionsReady, onError, query])
 
   const rows = result?.rows ?? EMPTY.rows
   // Recents answer "the thing I was reading yesterday", which search cannot; they belong to the
   // BROWSE state, so typing a query replaces them with matches rather than pushing them down the page.
-  // Not while citing: a recents entry is a reading, and a citation needs a Shelf row.
+  // Not while citing: a recents entry is a reading, and a citation needs a Shelf row. Not while a
+  // collection is chosen either: recents are not filtered by collection, so showing them would put
+  // papers from outside the chosen collection above its list (hiding is clearer than filtering them,
+  // which would need the item-to-collection map in the renderer).
   const shownRecents = useMemo(
-    () => (!citing && !query.trim() ? recents : NO_RECENTS),
-    [citing, query, recents],
+    () => (!citing && !query.trim() && !collection ? recents : NO_RECENTS),
+    [citing, collection, query, recents],
   )
   const stops = useMemo<Stop[]>(() => {
     const flattened: Stop[] = []
@@ -248,23 +309,39 @@ export function ReadingRoomShelf({
   return (
     <div className="reading-room-shelf" onKeyDown={onKeyDown}>
       <div className="reading-room-shelf-filters">
-        <div className="reading-room-shelf-field">
-          <Search aria-hidden="true" />
-          <input
-            ref={field}
-            type="search"
-            role="combobox"
-            aria-expanded={stops.length > 0}
-            aria-controls="reading-room-shelf-list"
-            aria-activedescendant={active ? stopId(active) : undefined}
-            aria-label="Search the Shelf"
-            placeholder="Search your Zotero library…"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+        <div className="reading-room-shelf-searchrow">
+          <div className="reading-room-shelf-field">
+            <Search aria-hidden="true" />
+            <input
+              ref={field}
+              type="search"
+              role="combobox"
+              aria-expanded={stops.length > 0}
+              aria-controls="reading-room-shelf-list"
+              aria-activedescendant={active ? stopId(active) : undefined}
+              aria-label="Search the Shelf"
+              placeholder="Search your Zotero library…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          {pickerRows.length > 0 && (
+            <ReadingRoomCollectionPicker
+              counts={pickerCounts}
+              onChoose={chooseCollection}
+              rows={pickerRows}
+              selectedId={collection}
+            />
+          )}
         </div>
         <span className="reading-room-shelf-count">{counted}</span>
       </div>
+      {chosen && result && !result.error && (
+        <p className="reading-room-shelf-scope" data-testid="shelf-collection-scope">
+          {result.matched.toLocaleString('en-GB')} in {chosen.name}
+          {query.trim() ? ` matching “${query.trim()}”` : ''}
+        </p>
+      )}
       <div className="reading-room-shelf-list" ref={listRef}>
         <div className="reading-room-shelf-bar">
           {citing ? 'Insert a reference' : 'The Shelf'}
@@ -286,7 +363,9 @@ export function ReadingRoomShelf({
           <p className="reading-room-shelf-empty">
             {query.trim()
               ? `Nothing matches “${query.trim()}”. Try an author or a shorter phrase.`
-              : 'Your Zotero library holds no citeable items yet.'}
+              : chosen
+                ? `No items in ${chosen.name}.`
+                : 'Your Zotero library holds no citeable items yet.'}
           </p>
         )}
         <div id="reading-room-shelf-list" role="listbox" aria-label="The Shelf">
@@ -319,7 +398,7 @@ export function ReadingRoomShelf({
                   aria-selected={isActive}
                   data-openable
                   className={`reading-room-shelf-row recent${isActive ? ' on' : ''}`}
-                  onMouseDown={(event) => { event.preventDefault(); setCursor(index) }}
+                  onMouseDown={() => { setCursor(index) }}
                   onClick={() => activate(stop)}
                 >
                   <span className="reading-room-shelf-meta">
@@ -345,7 +424,7 @@ export function ReadingRoomShelf({
                   data-openable={attachment.openable}
                   title={attachment.notice ?? undefined}
                   className={`reading-room-shelf-row attachment${isActive ? ' on' : ''}${attachment.openable ? '' : ' closed'}`}
-                  onMouseDown={(event) => { event.preventDefault(); setCursor(index) }}
+                  onMouseDown={() => { setCursor(index) }}
                   onClick={() => activate(stop)}
                 >
                   <span className="reading-room-shelf-meta">
@@ -364,11 +443,13 @@ export function ReadingRoomShelf({
                 id={stopId(stop)}
                 role="option"
                 aria-selected={isActive}
+                draggable
+                onDragStart={event => setEvidenceDrag(event.dataTransfer, { kind: 'zotero', label: stop.row.authorYear || stop.row.title, itemTarget: stop.row.citationLink })}
                 data-openable={citing ? true : stop.row.openable}
                 title={stop.row.notice ?? undefined}
                 aria-expanded={stop.row.attachments.length > 1 ? open : undefined}
                 className={`reading-room-shelf-row${isActive ? ' on' : ''}${citing || stop.row.openable ? '' : ' closed'}`}
-                onMouseDown={(event) => { event.preventDefault(); setCursor(index) }}
+                onMouseDown={() => { setCursor(index) }}
                 onClick={() => activate(stop)}
               >
                 <span className="reading-room-shelf-meta">
@@ -381,6 +462,7 @@ export function ReadingRoomShelf({
                   <span className="reading-room-shelf-kind">{stop.row.badge}</span>
                 </span>
                 <span className="reading-room-shelf-title">{stop.row.title}</span>
+                {evidenceTarget && <button type="button" className="fr-linkbtn" onMouseDown={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); void evidenceTarget.attach({ kind: 'zotero', label: stop.row.authorYear || stop.row.title, itemTarget: stop.row.citationLink }) }}>Attach to {evidenceTarget.part}</button>}
               </div>,
             )
           })}

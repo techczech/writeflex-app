@@ -58,10 +58,10 @@ test('a change filed by folio-part-proposals is a part-title proposal of the add
 
 test('an agent-bridge change with category structure and summary "Add the heading “X”" is NOT a part-title proposal', async () => {
   const step: ScriptedStep = { cap: 'prose.edit', input: { path: PART, oldText: 'Costs.', newText: '# X\n\nCosts.', category: 'structure', summary: 'Add the heading “X”' } }
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes, services: { scraps: new ScrapStore(ws) },
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
-    sessionFactory: scriptedSessionFactory([{ prompt: 'Head it', rounds: [{ kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message', text: 'Done.' }] }]),
+    sessionFactory: scriptedSessionFactory([{ prompt: 'Head it', rounds: [{ kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] }, { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] }, { kind: 'message', text: 'Done.' }] }]),
   })
   await agent.runScriptedTurn('Head it', [step])
   let staged = await changes.list()

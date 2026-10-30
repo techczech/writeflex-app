@@ -17,7 +17,9 @@
  * Reads are memoised for the pass, so no file is asked for twice.
  */
 
-import { parseManifest, resolveManifestFilePath } from './folio'
+import type { FolioDeclaration } from './folio-declaration'
+import { declaresRunningOrder } from '../shared/folio-declaration'
+import { manifestPartEntries, parseManifest } from './folio'
 import { parseFrontmatter } from './frontmatter'
 import { listingTitle } from '../shared/markdown/listing-title'
 import { frontmatterBlock } from '../shared/markdown/frontmatter'
@@ -67,6 +69,7 @@ export type MarkdownFacts = {
   /** Frontmatter `status` as found; null when absent or empty. */
   status: string | null
   /** An index note's `piece:` declaration (ADR-0033 flip), lower-cased; null when none. */
+  runningOrder?: boolean
   piece: 'one' | 'many' | null
   /** A machine-stub index note (declaration plus at most a heading): never a main document. */
   stub: boolean
@@ -75,6 +78,8 @@ export type MarkdownFacts = {
 export type VaultReader = {
   /** Facts of one listed Markdown file; null when it cannot be read. */
   markdown(path: string): MarkdownFacts | null
+  /** Shared folder identity, including recorded set-aside declarations and legacy ancestry. */
+  declaration(folder: string): FolioDeclaration
   /** Raw text of the Folio manifest in `folder`; null when unreadable. */
   manifest(folder: string): string | null
 }
@@ -344,7 +349,6 @@ export function detectVaultWorks(
 ): VaultIndex {
   const files = [...new Set(tree.files)].sort()
   const fileSet = new Set(files)
-  const manifestSet = new Set(tree.manifests)
   const supportNames = new Set((settings.supportFolders ?? []).map((name) => String(name).toLocaleLowerCase()))
   const rules = compileHideRules(Array.isArray(settings.hidden) ? settings.hidden : [], warn)
 
@@ -375,6 +379,8 @@ export function detectVaultWorks(
     if (!manifestMemo.has(folder)) manifestMemo.set(folder, reader.manifest(folder))
     return manifestMemo.get(folder) ?? null
   }
+
+  const declaration = (folder: string): FolioDeclaration => reader.declaration(folder)
 
   // Which rules match a path, memoised for the pass: 0 none, 1 housekeeping only, 2 an explicit rule.
   const hideMemo = new Map<string, 0 | 1 | 2>()
@@ -504,7 +510,7 @@ export function detectVaultWorks(
     else {
       const owner = sidecarOwnerOfFolder(folder)
       if (owner) next = { kind: 'sidecar', owner }
-      else if (manifestSet.has(folder) && parseManifest(folder, manifestText(folder) ?? '') !== null) {
+      else if (declaration(folder).isFolio) {
         next = { kind: 'work', work: folioWork(folder) }
       } else {
         const index = inDir(folder, `_${name}_INDEX.md`)
@@ -533,8 +539,7 @@ export function detectVaultWorks(
     const work = newWork(folder, 'folio', main, name, manifestStatus)
     if (manifest) {
       const parts = new Set<string>()
-      for (const entry of manifest.files) {
-        const path = resolveManifestFilePath(folder, manifest, entry, fileSet)
+      for (const { path } of manifestPartEntries(folder, manifest, fileSet)) {
         if (path && !isAgentInstructionsName(path) && path !== main) parts.add(path)
       }
       work.parts = [...parts]
@@ -645,7 +650,7 @@ export function markdownFactsFrom(content: string, path: string, title: string):
     const lines = body.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
     stub = lines.length === 0 || (lines.length === 1 && /^#{1,6}\s+\S/.test(lines[0]))
   }
-  return { title, status, piece, stub, heading: hasHeading(content, path, title) }
+  return { title, status, piece, stub, runningOrder: declaresRunningOrder(content), heading: hasHeading(content, path, title) }
 }
 
 const HEADING_LIKE = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|=+[ \t]*$|-+[ \t]*$)/m

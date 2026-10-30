@@ -1,3 +1,5 @@
+import { ChangeSet, Text } from '@codemirror/state'
+import { textChanges } from '../../../shared/text-diff'
 import type { WriterPendingChange } from './writer-review'
 import { isTextChange } from '../../../shared/line-endings'
 import { basisFromBaseline, type SaveBasis } from '../../../shared/save-basis'
@@ -220,8 +222,8 @@ export function reconcileReplace(
   changes: readonly WriterPendingChange[],
   clean: string,
   next: string,
+  window = minimalReplace(clean, next),
 ): MinimalReplace | null {
-  const window = minimalReplace(clean, next)
   if (!window) return null
   const spans = changeSpans(changes)
 
@@ -263,4 +265,27 @@ export function reconcileReplace(
   }
 
   return { from: mapEdge(cleanFrom, 'start'), to: mapEdge(cleanTo, 'end'), insert }
+}
+
+/** Map disjoint external edits from derived clean text to the raw editor, preserving pending review
+ * spans between them. Expanded overlapping windows become one replacement, never overlapping edits. */
+export function reconcileChanges(changes: readonly WriterPendingChange[], clean: string, next: string): MinimalReplace[] {
+  const edits = textChanges(clean, next)
+  const spans = changeSpans(changes)
+  const windows: Array<{ from: number; to: number }> = []
+  for (const edit of edits) {
+    let { from, to } = edit
+    for (const span of spans) {
+      if (from > span.cleanFrom && from < span.cleanTo) from = span.cleanFrom
+      if (to > span.cleanFrom && to < span.cleanTo) to = span.cleanTo
+    }
+    const previous = windows.at(-1)
+    if (previous && from <= previous.to) previous.to = Math.max(previous.to, to)
+    else windows.push({ from, to })
+  }
+  const mapping = ChangeSet.of(edits, clean.length)
+  const doc = Text.of(next.split('\n'))
+  return windows.map(({ from, to }) => reconcileReplace(changes, clean, next, {
+    from, to, insert: doc.sliceString(mapping.mapPos(from, -1), mapping.mapPos(to, 1)),
+  })!)
 }

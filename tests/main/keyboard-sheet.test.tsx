@@ -106,6 +106,19 @@ describe('the tasks list the registry once', () => {
   })
 })
 
+test('file search keys stay visible in their own scope and do not claim or rebind global chords', () => {
+  const expected = [['↑', '↓'], ['↵', '⇥'], ['↵'], ['Esc']]
+  const overrides = Object.fromEntries(expected.map((_, i) => [`sheet.FileSearch.${i}`, '⌃⌥⇧⌘F']))
+  const rows = allRows(overrides)
+  for (let i = 0; i < expected.length; i += 1) {
+    const id = `sheet.FileSearch.${i}`
+    expect(commandRegistry.find((command) => command.id === id)).toMatchObject({
+      surfaces: ['sheet'], claimsChord: false, sheetSource: { kind: 'literal' }, subgroup: 'File search',
+    })
+    expect(rows.find((row) => row.id === id)?.chords).toEqual(expected[i])
+  }
+})
+
 describe('chords are the effective ones', () => {
   const row = (id: string, overrides: Record<string, string>) => allRows(overrides).find((item) => item.id === id)!
 

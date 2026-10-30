@@ -126,7 +126,7 @@ test('with a conflict copy the first turn advises and stages nothing; after "lea
     currentModelAfterApply: (_agent, provider, modelId) => ({ provider, id: modelId }),
     machineInstructionsPath: join(userData, 'no-such-instructions.md'),
     createAgent: async ({ appDataDir, composition, defaults }) => {
-      const agent = await WorkspaceAgent.create({
+      const agent = await WorkspaceAgent.create({ mode: 'work',
         workspace: new Workspace(root),
         appDataDir,
         onTrace: () => {},

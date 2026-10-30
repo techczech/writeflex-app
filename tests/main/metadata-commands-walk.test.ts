@@ -52,7 +52,7 @@ describe('scripted frontmatter.set', () => {
   test('stages a suggestion and applying it writes a canonical block on disk', async () => {
     const workspace = new Workspace(root)
     const queue: ScriptedTurn[] = []
-    const agent = await WorkspaceAgent.create({
+    const agent = await WorkspaceAgent.create({ mode: 'work',
       workspace, appDataDir: appData, changes: new ChangeStore(workspace),
       onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
       sessionFactory: scriptedSessionFactory(queue),

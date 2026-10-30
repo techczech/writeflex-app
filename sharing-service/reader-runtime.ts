@@ -10,10 +10,13 @@
 // page with comments off it only removes any <meta name="referrer"> the author's text carries and
 // marks every link no-referrer, so a link out never tells another site the page's address.
 import { READER_RUNTIME_TEXT } from './reader-runtime-text.ts'
-import { READER_RUNTIME_UI } from './reader-runtime-ui.ts'
+import { READER_RUNTIME_NAVIGATION } from './reader-runtime-navigation.ts'
+import { READER_RUNTIME_UI, READER_RUNTIME_HARDENING } from './reader-runtime-ui.ts'
 
 export const READER_PAGE_RUNTIME = '(function () {\n"use strict";\nvar rp = document.body && document.body.firstElementChild;\n'
   + 'if (!rp || !rp.classList.contains("rp")) return;\n'
+  + READER_RUNTIME_HARDENING
+  + 'try {\n' + READER_RUNTIME_NAVIGATION + '\n} catch (error) { /* Navigation must not prevent comments initialising. */ }\n'
   + READER_RUNTIME_TEXT + READER_RUNTIME_UI + '\n})();\n'
 
 let hash: Promise<string> | null = null

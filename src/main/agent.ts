@@ -1,4 +1,9 @@
+import { prepareVersionRestore, versionMovesForRestore } from './version-moves'
+import { assertCollectionWritable } from './collection-write-gate'
+import type { AssistantMode, AssistantTurnUndo, AssistantTurnsState, AssistantTurnActivity } from '../shared/assistant-turns'
+import { assistantMode, refusalMessage, isToolDiscovery, visibleAssistantTurn, latestChangedTurn } from '../shared/assistant-turns'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { folioRoomContext } from './folio-room-context'
 import { AmbientState, ambientContextItem } from './ambient'
 import { resolveWidgetFileForInsert } from './widget-insert'
 import { planWidgetCreate } from './widget-create'
@@ -8,6 +13,13 @@ import type { PromptComposition } from './threads'
 import {
   ABSENT_HASH,
   createBridle,
+  createToolDiscovery,
+  scopedCapabilities,
+  DEFAULT_OPENAI_CODEX_MODEL,
+  RestoreRefusedError,
+  RestoreIncompleteError,
+  BridleDisposedError,
+  type TurnActivity,
   scriptedSessionFactory,
   type ApprovalRequest,
   type Bridle,
@@ -21,15 +33,20 @@ import {
   type ProposalPreview,
   type TraceEvent,
 } from '@bridle/core'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { unlink } from 'node:fs/promises'
-import { posix } from 'node:path'
+import { isAbsolute, posix } from 'node:path'
 import { buildWriteFlexManifest, resolveProseInsert, resolveProseInsertAt, resolveProseMove, setFrontmatterKeys, writeflexApprovalPolicy, type CapabilityServices, type FrontmatterSetInput, type ObjectInsertInput, type ProseEditInput, type ProseInsertInput, type ProseMoveInput } from './capabilities'
 import { objectBlock } from '../shared/object-markup'
 import { queueThenTurn } from './collection-write-order'
 import { minimiseProposedReplacement } from './proposed-replacement'
 import { placeRecordedReplacement } from './recorded-placement'
-import { closedReasonOf, createsAFile, type AnchorContext, documentPathRefusal, isWholeDocumentChange, newFilePartOf, type Change, type ChangeStore, type ChangeStatus, type ClosedCode } from './changes'
+import { applyFrontmatterEdit, frontmatterEditOf } from './frontmatter-change'
+import { acceptOrder, bulkAcceptTargets, byDocument, MOVE_LEFT_REASON, type BulkAcceptOutcome } from './outside-bulk-accept'
+import type { OutsideSource } from '../shared/outside-source'
+import { closedReasonOf, createsAFile, scratchpadProposalVerb, type AnchorContext, documentPathRefusal, isWholeDocumentChange, newFilePartOf, type Change, type ChangeStore, type ChangeStatus, type ClosedCode } from './changes'
+import { prepareBoundInsert, SCRATCHPAD_INSERT_VERBS, type ScratchBoundInsert, type ScratchInsertInput } from './scratchpad-agent-insert'
+import { ScratchpadStore } from './scratchpad-store'
 import { editClassForCategory } from '../engine'
 import { ChangedSinceRead, DocumentChangedError, NotADocumentPathError, SavedButNotReadBack, documentChangedMessage, isHiddenWorkspacePath, type ChangedSinceReadRefusal, type FileReadResult, type OperationWrite, type Workspace, type WriteReceipt } from './workspace'
 import { rollBackOperationWrites } from './operation-rollback'
@@ -49,6 +66,7 @@ import { CollectionDigestCache, digestContextItem, digestReadPaths, type Collect
 import { PLAN_PROPOSE, PlanProposalDesk } from './plan-proposal-desk'
 import type { BoardDeskBridle } from './board-material-desk'
 import { prepareOffcutPromotion } from './board-material'
+import { isLosslessScrapId } from './scrap-listing'
 import { PlacementError, resolveOutsideInsert, type ScrapPromoteInput, type SourceAttachInput } from './verbs/verb-support'
 import { prepareSourceAttach } from './source-attach'
 import { scrapsPathFor, type ScrapStore } from './scraps'
@@ -78,6 +96,8 @@ export type Suggestion = { id: string; capabilityName: string; input: unknown; p
 /** One step of the e2e agent double's scripted turn (Task 15): a capability name + its input. */
 export type ScriptedStep = { cap: string; input: unknown }
 export type ScriptedTurn = Parameters<typeof scriptedSessionFactory>[0][number]
+/** `sweep: false`: after an accept, the other outside changes of the document that no longer place are left waiting, not closed (Accept all from one source). */
+export type ResolveOptions = { sweep?: boolean }
 /** `receipt`: an accept that wrote the change's file says what THIS call wrote there (its own write's
  *  receipt, never one looked up afterwards); absent when the accept wrote nothing to it.
  *  `closed`: the Change could not be applied and has been closed with `message` as its recorded reason
@@ -87,6 +107,9 @@ export type ResolveChangeResult = {
   message?: string
   closed?: true
   receipt?: WriteReceipt
+  /** An accepted agent Put back: main's typed receipt of the exact fragment written, for the
+   *  accepting editor to anchor on the transaction that takes the text. Absent otherwise. */
+  scratchPlacement?: import('../shared/scratchpad-items').ScratchPlacementReceipt
   /** An accept refused because a file changed after main read it (ChangedSinceRead): the file and what was
    *  on disk then. The renderer raises the changed-on-disk notice from this, whatever the watcher delivers
    *  (final review round 2, finding 2). */
@@ -124,7 +147,7 @@ function checkE2EScriptedTurn(script: ScriptedTurn): { ok: boolean; reason?: str
   return { ok: true }
 }
 
-export function buildE2EScriptedTurn(steps: unknown, reply = 'Staged for your review.'): ScriptedTurn {
+export function buildE2EScriptedTurn(steps: unknown, reply = 'Staged for your review.', discoverTools = true): ScriptedTurn {
   if (!Array.isArray(steps) || steps.length === 0) {
     throw new Error('Invalid e2e TurnScript: at least one capability step is required.')
   }
@@ -140,6 +163,7 @@ export function buildE2EScriptedTurn(steps: unknown, reply = 'Staged for your re
   const script: ScriptedTurn = {
     prompt: '<e2e scripted turn>',
     rounds: [
+      ...(discoverTools ? [{ kind: 'tool-calls' as const, calls: [{ name: 'tools.enable', arguments: { names: [...new Set((steps as ScriptedStep[]).map((step) => step.cap))] } }] }] : []),
       { kind: 'tool-calls', calls: (steps as ScriptedStep[]).map((step) => ({ name: step.cap, arguments: step.input })) },
       { kind: 'message', text: reply },
     ],
@@ -247,6 +271,7 @@ export function mapSessionMessages(raw: unknown[]): ChatMessage[] {
         out.push({ role: 'assistant', content: text, createdAt })
       }
     } else if (message.role === 'toolResult' || message.role === 'tool') {
+      if (isToolDiscovery(message.toolName)) continue
       const text = transcriptText
       if (text) out.push({ role: 'tool', content: text.slice(0, 2000), createdAt })
     }
@@ -384,7 +409,7 @@ export function applyRecordedMove(content: string, change: Pick<Change, 'path' |
  * no other, and it collects what the verb wants the writer told. Per call (async context), not global: two
  * accepts that interleave each see their own. Outside an accept there is no scope.
  */
-type AcceptScope = { changeId: string | null; notices: string[] }
+type AcceptScope = { changeId: string | null; notices: string[]; scratchPlacement?: import('../shared/scratchpad-items').ScratchPlacementReceipt }
 const acceptScope = new AsyncLocalStorage<AcceptScope>()
 
 /** The new file a Change showed when it was ingested, held in main's memory: the journal record can be rewritten
@@ -393,6 +418,14 @@ type ShownNewFile = { path: string; sha256: string }
 
 export class WorkspaceAgent {
   private shownAtIngest = new Map<string, ShownNewFile>()
+
+  /** The frozen Scratchpad insertion each ingested Change was reviewed as (scratchpad-agent-insert.ts):
+   *  held in main's memory like `shownAtIngest`, so a rewritten journal record cannot substitute other
+   *  bytes. A Change whose bound proof is not here (a restart, another session) is never carried out. */
+  private shownScratch = new Map<string, ScratchBoundInsert>()
+
+  /** The window's scrap store as the Scratchpad verbs see it, for staging their Changes. */
+  private scrapsStore: ScrapStore | null = null
 
   /** Maps a live staged suggestion to the (promise of the) Change it was ingested as (Task 3), so applying
    *  or discarding the suggestion moves the right record's status. The entry is claimed SYNCHRONOUSLY the
@@ -409,7 +442,11 @@ export class WorkspaceAgent {
 
   /** Serialises proposal lifecycle handling so Change ingestion always precedes renderer pushes. */
   private proposalEvents: Promise<void> = Promise.resolve()
+  private unsubscribeMode: () => void = () => {}
+  private disposed = false
+  private getMode: () => unknown = () => this.bridle.mode
   private unsubscribeEvents: () => void = () => {}
+  private scriptedToolsDeferred = false
   private readonly turnErrors = new Map<string, string>()
   private readonly ingestionFailures: ChatMessage[] = []
   private readonly restagedOrigins = new Map<string, string>()
@@ -725,7 +762,7 @@ export class WorkspaceAgent {
             provenance: 'agent',
             editClass: editClassForCategory('other'),
             category: 'other',
-            summary: `Make the idea “${(input.name as string).trim()}” from an offcut of ${input.origin as string}; the scrap leaves ${plan.scraps.path}`,
+            summary: `Make the idea “${(input.name as string).trim()}” from an offcut of ${input.origin as string}; ${plan.scraps ? `the scrap leaves ${plan.scraps.path}` : 'the Scratchpad item is copied and stays there for reuse'}`,
             oldText: plan.tracker.before ?? '',
             newText: plan.tracker.after ?? '',
             isCorrection: false,
@@ -751,6 +788,37 @@ export class WorkspaceAgent {
             isCorrection: false,
             author: WRITEFLEX_AGENT_AUTHOR,
           })
+        })()
+      } else if ((SCRATCHPAD_INSERT_VERBS as readonly string[]).includes(s.capabilityName)) {
+        // A Scratchpad insertion (ticket 04): prepared ONCE here through the store's checked
+        // preparation (or, for cite/link/quote, the canonical evidence record) and frozen beside
+        // the Change, whose text is exactly those prepared bytes. A block act reviews as an
+        // insert Change; an inline chip or link reviews over the whole document, as a widget
+        // line does. Accept runs the verb, which revalidates the frozen bound and writes only it.
+        const verb = s.capabilityName as (typeof SCRATCHPAD_INSERT_VERBS)[number]
+        const input = s.input as Partial<ScratchInsertInput> | null
+        if (!input || typeof input.id !== 'string' || typeof input.path !== 'string' || typeof input.insertAfter !== 'string') continue
+        added = (async () => {
+          const store = new ScratchpadStore(this.capabilityView.workspace, this.scrapsStore)
+          const bound = await prepareBoundInsert(this.capabilityView.workspace, store, verb, input as ScratchInsertInput)
+          const summary = verb === 'scratchpad.cite' ? `Cite ${bound.label} from the Scratchpad`
+            : verb === 'scratchpad.link' ? `Link to ${bound.label} from the Scratchpad`
+            : verb === 'scratchpad.insert_quote' ? `Insert a quote from ${bound.label}, with its citation`
+            : verb === 'scratchpad.put_back' ? `Put “${bound.label}” back from the Scratchpad`
+            : `Insert “${bound.label}” from the Scratchpad`
+          const change = verb === 'scratchpad.cite' || verb === 'scratchpad.link'
+            ? await changes.addScratchpadProposal({
+                path: bound.destPath, provenance: 'agent', editClass: 'content', category: 'other', summary,
+                oldText: bound.destContent, newText: bound.nextContent, isCorrection: false, author: WRITEFLEX_AGENT_AUTHOR,
+              }, verb)
+            : await changes.addScratchpadProposal({
+                path: bound.destPath, provenance: 'agent', editClass: 'insert', category: 'other', summary,
+                oldText: '', newText: bound.markdown, insertAfter: input.insertAfter as string,
+                isCorrection: false, author: WRITEFLEX_AGENT_AUTHOR,
+              }, verb)
+          // Frozen here, once: the accept is bound to this proof, not to a later read of anything.
+          this.shownScratch.set(change.id, bound)
+          return change
         })()
       } else {
         continue
@@ -837,7 +905,7 @@ export class WorkspaceAgent {
     const targets: string[] = []
     if (typeof input.path === 'string') targets.push(input.path)
     if (proposal.capability === 'sources.attach' && typeof input.piece === 'string') targets.push(input.piece)
-    if (proposal.capability === 'scraps.promote' && typeof input.origin === 'string') targets.push(scrapsPathFor(input.origin))
+    if (proposal.capability === 'scraps.promote' && typeof input.origin === 'string' && !(typeof input.id === 'string' && isLosslessScrapId(input.id))) targets.push(scrapsPathFor(input.origin))
     return targets.length > 0 ? targets : 'unknown'
   }
 
@@ -848,6 +916,7 @@ export class WorkspaceAgent {
    * returned. The Collection is then as it was before Accept.
    */
   private async adoptWithinDocuments(id: string): Promise<{ proposal: Proposal; refused?: string }> {
+    this.refreshMode()
     const seen = this.capabilityView.refusals.length
     let proposal: Proposal
     let thrown: unknown
@@ -1115,10 +1184,10 @@ export class WorkspaceAgent {
    * and moves the Change to accepted; discardSuggestion rejects it — so the two review surfaces never
    * disagree. Otherwise it either replays a persisted agent edit from the ledger or moves status directly.
    */
-  async resolveChange(changeId: string, action: 'accept' | 'reject'): Promise<ResolveChangeResult> {
+  async resolveChange(changeId: string, action: 'accept' | 'reject', options: ResolveOptions = {}): Promise<ResolveChangeResult> {
     // The receipts of the writes this call makes (the verb's through Bridle, or the saveFile calls below),
     // in its own async context: a write by another operation in between is never among them.
-    const { value, receipts, refusals } = await this.workspace.withWriteReceipts(() => this.resolveChangeWriting(changeId, action))
+    const { value, receipts, refusals } = await this.workspace.withWriteReceipts(() => this.resolveChangeWriting(changeId, action, options))
     // Refused because a file changed after main read it, by whichever door: said by type, not only in words.
     const refusal = refusals.at(-1)
     if (action === 'accept' && !value.applied && refusal) return { ...value, changedOnDisk: refusal }
@@ -1130,9 +1199,74 @@ export class WorkspaceAgent {
     return receipt ? { ...value, receipt } : value
   }
 
-  private async resolveChangeWriting(changeId: string, action: 'accept' | 'reject'): Promise<ResolveChangeResult> {
+  /**
+   * Accept all from one source: every undecided Change from `source`, across the Collection, each by
+   * `resolveChange(id, 'accept')`, the Accept a single click runs (its snapshot, its write, its status,
+   * its sweep), one at a time, per document in `acceptOrder` (outside-bulk-accept.ts). Before each, the
+   * Change is read again from the ledger and judged against the document as it now stands
+   * (`unplaceableIn`, the sweep's own question): one that cannot be placed is left waiting with the
+   * reason and never tried. The single Accept's sweep (closing the other outside changes of the document
+   * that no longer place) is not run, so Accept all closes nothing: what it cannot place stays waiting,
+   * and closes when the writer tries it, as before. A move is left for
+   * its own card. A Change in a document the window has open (`openPaths`) is not accepted here: the
+   * window accepts those through its own route, which keeps the editor's text and undo, in the order
+   * returned as `open`.
+   */
+  async acceptOutsideFromSource(source: OutsideSource, openPaths: readonly string[] = []): Promise<BulkAcceptOutcome> {
+    const outcome: BulkAcceptOutcome = { accepted: 0, files: [], left: [], closed: [], open: [] }
+    const changes = this.changes
+    if (!changes) return outcome
+    const open = new Set(openPaths)
+    for (const [path, group] of byDocument(bulkAcceptTargets(await changes.list(), source))) {
+      const moves = group.filter((change) => change.editClass === 'move')
+      for (const change of moves) outcome.left.push({ id: change.id, path, reason: MOVE_LEFT_REASON })
+      const rest = group.filter((change) => change.editClass !== 'move')
+      if (rest.length === 0) continue
+      const first = await this.readForPlacement(rest[0])
+      const ordered = 'content' in first ? acceptOrder(first.content, rest) : rest
+      if (open.has(path)) {
+        for (const change of ordered) outcome.open.push({ id: change.id, path })
+        continue
+      }
+      let wrote = false
+      for (const listed of ordered) {
+        const change = await changes.get(listed.id)
+        if (!change) continue
+        if (change.status !== 'pending' && change.status !== 'held') {
+          const reason = closedReasonOf(change)
+          if (reason) outcome.closed.push({ id: change.id, path, reason })
+          continue
+        }
+        const source = await this.readForPlacement(change)
+        if (!('content' in source)) {
+          outcome.left.push({ id: change.id, path, reason: 'reason' in source ? source.reason : source.changed })
+          continue
+        }
+        const unplaceable = unplaceableIn(change, source.content)
+        if (unplaceable) {
+          outcome.left.push({ id: change.id, path, reason: unplaceable.reason })
+          continue
+        }
+        // Without the sweep: a change Accept all cannot place is left waiting, never closed by it.
+        const result = await this.resolveChange(change.id, 'accept', { sweep: false })
+        if (result.applied) {
+          outcome.accepted += 1
+          wrote = true
+          continue
+        }
+        const after = await changes.get(change.id)
+        const closed = after ? closedReasonOf(after) : null
+        if (closed) outcome.closed.push({ id: change.id, path, reason: closed })
+        else outcome.left.push({ id: change.id, path, reason: result.message ?? 'It could not be placed.' })
+      }
+      if (wrote) outcome.files.push(path)
+    }
+    return outcome
+  }
+
+  private async resolveChangeWriting(changeId: string, action: 'accept' | 'reject', options: ResolveOptions): Promise<ResolveChangeResult> {
     const result = await this.resolveChangeOnce(changeId, action)
-    if (action === 'accept' && result.applied) await this.closeOutsideChangesNoLongerPlaceable(changeId)
+    if (action === 'accept' && result.applied && options.sweep !== false) await this.closeOutsideChangesNoLongerPlaceable(changeId)
     return result
   }
 
@@ -1163,6 +1297,8 @@ export class WorkspaceAgent {
     const source = await this.readForPlacement(accepted)
     if (!('content' in source)) return
     const closures = others.flatMap((change) => {
+      // A metadata change is never closed here: when the block changed under it, it waits (frontmatter-change.ts).
+      if (frontmatterEditOf(change)) return []
       const unplaceable = unplaceableIn(change, source.content)
       return unplaceable === null ? [] : [{ id: change.id, code: 'superseded' as const, reason: `Another change to ${change.path} was accepted first, and this one can no longer be placed. ${unplaceable.reason}` }]
     })
@@ -1184,12 +1320,12 @@ export class WorkspaceAgent {
   private async acceptLiveSuggestion(suggestionId: string): Promise<ResolveChangeResult> {
     // accept: the change is marked accepted only if the apply actually landed (Task 3 markChangeStatus).
     const result = await this.applySuggestion(suggestionId)
-    const details = result.details as { settlementWarning?: string; acceptNotice?: string; closed?: boolean } | undefined
+    const details = result.details as { settlementWarning?: string; acceptNotice?: string; closed?: boolean; scratchPlacement?: import('../shared/scratchpad-items').ScratchPlacementReceipt } | undefined
     // The verb's own words reach the writer: its failure text (an orphan file is named there), or what it
     // had to say about an accept that went through (saved but not read back).
     const said = [details?.acceptNotice, details?.settlementWarning ? `Change accepted, but its Agent note failed: ${details.settlementWarning}` : undefined].filter(Boolean).join(' ')
     const closed = details?.closed === true
-    return { applied: !result.isError, ...(result.isError ? { message: result.text } : said ? { message: said } : {}), ...(closed ? { closed: true as const } : {}) }
+    return { applied: !result.isError, ...(result.isError ? { message: result.text } : said ? { message: said } : {}), ...(closed ? { closed: true as const } : {}), ...(!result.isError && details?.scratchPlacement ? { scratchPlacement: details.scratchPlacement } : {}) }
   }
 
   private async resolveChangeInTurn(changeId: string, action: 'accept' | 'reject'): Promise<ResolveChangeResult> {
@@ -1260,6 +1396,13 @@ export class WorkspaceAgent {
         // proposal. Replaying the ledger record would write the embed line with no file behind it.
         return { applied: false, message: 'This proposal also creates a file and is no longer live, so nothing was written. Ask the agent for the widget again.' }
       }
+      if (scratchpadProposalVerb(change) !== null) {
+        // A Scratchpad insertion is carried out only by its verb, through the live proposal, against
+        // the proof frozen when it was staged: candidate, canonical source, widget page, destination
+        // and live owner must all be revalidated, and its use recorded. Replaying the ledger record
+        // would skip every one of those, so a Change that outlived its session refuses instead.
+        return { applied: false, message: 'This Scratchpad proposal is no longer live in this session, so nothing was written and the item stays in the Scratchpad. Ask the agent to propose it again so it can be reviewed as it stands.' }
+      }
       if (readerNoteOf(change)?.kind === 'note') {
         // A reader's note (0.24 ticket 07) changes no text: Done settles it and writes nothing.
         await this.changes.setStatus(changeId, 'accepted')
@@ -1296,6 +1439,11 @@ export class WorkspaceAgent {
         return { applied: true, ...(warning ? { message: `Change accepted, but its Agent note failed: ${warning}` } : {}) }
       }
       const written = await this.applyToDocument(change, (content) => {
+        // A change to the metadata only is placed inside the frontmatter as it stands now, whatever has
+        // happened to the writing since; this includes a whole-document record of an older build whose
+        // old and new text differ only in the frontmatter (frontmatter-change.ts).
+        const metadata = frontmatterEditOf(change)
+        if (metadata) return applyFrontmatterEdit(content, change.path, metadata)
         // A Change over the whole document is applied only to exactly the document it was made over:
         // never as a passage found inside a document that has grown since.
         if (isWholeDocumentChange(change)) return wholeDocumentMismatch(change, content) ?? change.newText
@@ -1340,6 +1488,10 @@ export class WorkspaceAgent {
   static async create(opts: {
     workspace: Workspace
     appDataDir: string
+    /** Explicit mode for standalone hosts; omission fails closed. Main supplies the live getter. */
+    mode?: AssistantMode
+    getMode?: () => unknown
+    subscribeMode?: (update: () => void) => () => void
     defaults?: { provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel }
     /** Agent Permissions (Task 17): capabilities this returns false for are excluded from the
      *  manifest at bind AND denied by the live policy (mid-session toggles bite immediately). */
@@ -1371,15 +1523,26 @@ export class WorkspaceAgent {
      *  app-wide credential file rather than the default `<appDataDir>/auth.json` (0.7a contract). */
     auth?: BridleAuth
     modelService?: BridleModelService
+    onTurnActivity?: (activity: TurnActivity) => void
   }): Promise<WorkspaceAgent> {
     const filesRead = new Set<string>()
     const { ambient = new AmbientState(opts.workspace.root), ...composition } = opts.composition ?? {}
     const shownChanges = opts.changes
     const shownAtIngest = new Map<string, ShownNewFile>()
+    const shownScratch = new Map<string, ScratchBoundInsert>()
     // Every capability, whether run in a turn or adopted from a proposal, is built over this view:
     // the rule on paths is enforced where the capability reads and writes, not predicted beforehand.
     const capabilityView = documentOnlyView(opts.workspace)
+    let scriptedToolsDeferred = false
+    const readMode = (): AssistantMode => {
+      try { return assistantMode(opts.getMode ? opts.getMode() : opts.mode) }
+      catch (error) {
+        void recordMainProcessDiagnostic('agent.mode.read-failed', { message: error instanceof Error ? error.message : String(error) })
+        return 'read-only'
+      }
+    }
     const bridle = await createBridle({
+      mode: readMode(),
       manifest: buildWriteFlexManifest(capabilityView.workspace, opts.isCapabilityEnabled, {
         ...opts.services,
         // widgets.create asks this at accept time. It answers for the ONE Change this accept is for (acceptScope,
@@ -1397,10 +1560,26 @@ export class WorkspaceAgent {
             const part = newFilePartOf(change)
             return part !== undefined && part.path === frozen.path && part.sha256 === frozen.sha256
           },
+          // The Scratchpad insertion verbs ask this at accept time, for the ONE Change this accept
+          // is for: the bound proof frozen at that Change's ingest, and only while the Change's own
+          // record still shows exactly those bytes under that verb. No other Change can vouch.
+          scratchpadBoundInsert: async (ask: { verb: string; itemId: string; destPath: string }) => {
+            const changeId = acceptScope.getStore()?.changeId
+            if (!changeId) return null
+            const frozen = shownScratch.get(changeId)
+            if (!frozen || frozen.verb !== ask.verb || frozen.itemId !== ask.itemId || frozen.destPath !== ask.destPath) return null
+            const change = await shownChanges.get(changeId)
+            if (!change || change.provenance !== 'agent' || change.path !== ask.destPath) return null
+            if (change.status !== 'pending' && change.status !== 'held') return null
+            if (scratchpadProposalVerb(change) !== ask.verb) return null
+            const shown = change.editClass === 'insert' ? frozen.markdown : frozen.nextContent
+            return change.newText === shown ? frozen : null
+          },
         } : {}),
         ...(opts.onAgentNotesChanged ? { onAgentNotesChanged: opts.onAgentNotesChanged } : {}),
         ...(composition.activeSkill?.name ? { activeSkillName: composition.activeSkill.name } : {}),
         acceptNotice: (text: string) => { acceptScope.getStore()?.notices.push(text) },
+        scratchpadPlacement: (receipt: import('../shared/scratchpad-items').ScratchPlacementReceipt) => { const scope = acceptScope.getStore(); if (scope) scope.scratchPlacement = receipt },
         onFileRead: (path) => {
           filesRead.add(path)
           opts.services?.onFileRead?.(path)
@@ -1417,12 +1596,18 @@ export class WorkspaceAgent {
       onApprovalRequest: opts.onApprovalRequest,
       onTrace: opts.onTrace,
       provider: opts.defaults?.provider ?? 'openai-codex',
-      modelId: opts.defaults?.modelId ?? 'gpt-5.5',
+      modelId: opts.defaults?.modelId ?? opts.modelService?.recommendedModel(opts.defaults?.provider ?? 'openai-codex') ?? DEFAULT_OPENAI_CODEX_MODEL,
       thinkingLevel: opts.defaults?.thinkingLevel ?? 'medium',
       // Threads (0.7b B1) promise a transcript that survives a relaunch: resume the most recent
       // session under this (per-thread) appDataDir instead of opening a fresh one per boot.
       sessionResume: 'continue-recent',
-      ...(opts.sessionFactory ? { session: opts.sessionFactory } : {}),
+      ...(opts.sessionFactory ? { session: (async (sessionOptions) => {
+        const scoped = sessionOptions.composition?.activeSkill
+          ? scopedCapabilities(sessionOptions.manifest, sessionOptions.composition.activeSkill)
+          : sessionOptions.manifest.capabilities
+        scriptedToolsDeferred = createToolDiscovery(scoped, { threshold: sessionOptions.manifest.toolSearch?.threshold }).enabled
+        return opts.sessionFactory!(sessionOptions)
+      }) satisfies BridleSessionFactory } : {}),
       ...(opts.composition ? { composition } : {}),
       ...(opts.auth ? { auth: opts.auth } : {}),
       ...(opts.modelService ? { modelService: opts.modelService } : {}),
@@ -1444,8 +1629,16 @@ export class WorkspaceAgent {
       capabilityView,
       opts.services?.scraps,
     )
+    if (opts.getMode) agent.getMode = opts.getMode
+    if (opts.subscribeMode) agent.unsubscribeMode = opts.subscribeMode(() => agent.refreshMode())
+    // Creation awaits session setup; catch any setting change during that interval.
+    agent.refreshMode()
+    agent.scriptedToolsDeferred = scriptedToolsDeferred
     agent.shownAtIngest = shownAtIngest
+    agent.shownScratch = shownScratch
+    agent.scrapsStore = opts.services?.scraps ?? null
     agent.unsubscribeEvents = bridle.events.subscribe((event) => {
+      if (event.type === 'turn.activity') opts.onTurnActivity?.(visibleAssistantTurn(event.activity))
       if (event.type === 'tool_end' && (event.result === 'ok' || event.result === 'error')) ambient.noteAgentAction()
       if (event.type === 'turn_error') agent.turnErrors.set(event.turnId, event.message)
       if (event.type !== 'proposal_created' && !(event.type === 'proposal_settled' && event.settledBy === 'agent')) return
@@ -1496,11 +1689,14 @@ export class WorkspaceAgent {
       ?? await this.digestCache.get(this.workspace, activeCollectionDir, revision, this.readThisTurn)
     const context = digestContextItem(digest)
     const ambient = ambientContextItem(snapshot)
-    this.observePromptContext?.([ambient.content, context.content].join('\n\n'))
+    const room = await folioRoomContext(this.workspace, activeCollectionDir, activeFile ?? snapshot.activeFile?.path ?? null).catch(() => null)
+    const promptContext = [ambient, context, ...(room ? [room] : [])]
+    this.observePromptContext?.(promptContext.map(item => item.content).join('\n\n'))
     this.readThisTurn = []
     this.filesRead.clear()
+    this.refreshMode()
     const result = await this.bridle.prompt(text, {
-      context: [ambient, context],
+      context: promptContext,
     })
     this.readThisTurn = digestReadPaths(this.workspace.root, [...this.filesRead])
     this.onTurnComplete?.(digestReadPaths(this.workspace.root, result.receipt.filesWritten), activeCollectionDir)
@@ -1590,6 +1786,10 @@ export class WorkspaceAgent {
       // Known by its verb: without the file main froze when this proposal was ingested, it is never carried out.
       return { text: 'This widget proposal has no reviewed file on record in this session, so nothing was written. Ask the agent for the widget again.', isError: true }
     }
+    if ((SCRATCHPAD_INSERT_VERBS as readonly string[]).includes(before.capability) && !(changeId && this.shownScratch.has(changeId))) {
+      // The same rule for a Scratchpad insertion: without the bound proof frozen at its ingest, it is never carried out.
+      return { text: 'This Scratchpad proposal has no reviewed text on record in this session, so nothing was written. Ask the agent to propose it again.', isError: true }
+    }
     if (change) {
       // The same rule as resolveChange, for the margin callout's door onto the same Change. What is
       // judged must be what is acted on: a recorded move acts on the Change's own path, but adopting a
@@ -1618,6 +1818,7 @@ export class WorkspaceAgent {
     const executionError = proposal.outcome?.isError === true
     const applied = proposal.status === 'adopted' && !executionError
     const acceptNotice = scope.notices.length ? scope.notices.join(' ') : undefined
+    const scratchPlacement = applied ? scope.scratchPlacement : undefined
     let settlementWarning: string | undefined
     if (applied) {
       await this.markChangeStatus(id, 'accepted')
@@ -1648,7 +1849,7 @@ export class WorkspaceAgent {
     return {
       // What the verb wanted the writer told about a successful accept replaces the generic line.
       text: acceptNotice ?? `Applied ${proposal.capability} proposal.`,
-      ...((file || settlementWarning || acceptNotice) ? { details: { ...(file ? { file } : {}), ...(settlementWarning ? { settlementWarning } : {}), ...(acceptNotice ? { acceptNotice } : {}) } } : {}),
+      ...((file || settlementWarning || acceptNotice || scratchPlacement) ? { details: { ...(file ? { file } : {}), ...(settlementWarning ? { settlementWarning } : {}), ...(acceptNotice ? { acceptNotice } : {}), ...(scratchPlacement ? { scratchPlacement } : {}) } } : {}),
     }
   }
 
@@ -1739,6 +1940,7 @@ export class WorkspaceAgent {
   }
 
   resolveApproval(id: string, approved: boolean): boolean {
+    this.refreshMode()
     return this.bridle.approvals.resolve(id, approved)
   }
 
@@ -1766,27 +1968,95 @@ export class WorkspaceAgent {
 
   modelCatalogue(): ModelChoice[] { return registryModels(this.bridle.models).all }
 
-  /**
-   * Undo turn: restore the newest restore point an agent turn began, and nothing else. Bridle's own
-   * restoreLastTurn falls back, before this session's first turn, to the newest restore point of any
-   * kind — which may be a host Board step, an accepted running order or a saved version. Refuses,
-   * writing nothing, when no agent turn has left a restore point. A restore the store refuses or
-   * stops part-way throws `RestoreNotCompletedError`, which says what was and was not put back.
-   */
-  async restoreLastTurn(): Promise<string[]> {
-    // One turn of the Collection's write turn, from finding the restore point to the last file put
-    // back: it runs before or after an accept or a save, never during one.
-    return this.workspace.exclusiveAll(async () => {
-      const point = latestTurnRestorePoint(await this.snapshots.entries())
-      if (!point) throw new Error(NO_TURN_TO_UNDO)
-      try {
-        return await this.snapshots.restoreTo(point, { origin: 'turn' })
-      } catch (error) {
-        if (error instanceof WritesPausedError) throw error
-        // Refused or stopped part-way: the caller is told what was and was not put back, in words.
-        throw new RestoreNotCompletedError('The last agent turn was not undone.', restoreFailure(error, this.workspace.root), error)
-      }
+  /** The existing scripted provider must discover tools only when its scoped catalogue requires it. */
+  scriptedTurn(steps: ScriptedStep[], reply?: string): ScriptedTurn {
+    return buildE2EScriptedTurn(steps, reply, this.scriptedToolsDeferred)
+  }
+
+  mode(): AssistantMode { return this.bridle.mode }
+
+  private refreshMode(): void {
+    if (this.disposed) return
+    let mode: AssistantMode = 'read-only'
+    try { mode = assistantMode(this.getMode()) }
+    catch (error) {
+      void recordMainProcessDiagnostic('agent.mode.read-failed', { message: error instanceof Error ? error.message : String(error) })
+    }
+    try { this.setMode(mode) }
+    catch (error) {
+      if (error instanceof BridleDisposedError) this.disposed = true
+      void recordMainProcessDiagnostic('agent.mode.update-failed', { message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  setMode(mode: AssistantMode): void {
+    const next = assistantMode(mode)
+    if (!this.disposed && this.bridle.mode !== next) this.bridle.setMode(next)
+  }
+
+  private visibleTurn(turn: TurnActivity): AssistantTurnActivity {
+    const visible = visibleAssistantTurn(turn)
+    const openPaths = visible.items.flatMap(item => {
+      if (!['created', 'modified', 'moved'].includes(item.kind)) return []
+      const path = item.kind === 'moved' ? item.toPath : item.path
+      if (!path) return []
+      try { return statSync(this.workspace.absolute(path)).isFile() ? [path] : [] }
+      catch { return [] }
     })
+    return { ...visible, openPaths: [...new Set(openPaths)] }
+  }
+
+  async turnState(): Promise<AssistantTurnsState> {
+    return { turns: (await this.bridle.turns.list()).map(turn => this.visibleTurn(turn)), store: this.bridle.proposalStore }
+  }
+
+  async getTurn(id: string): Promise<AssistantTurnActivity | undefined> {
+    const turn = await this.bridle.turns.get(id)
+    return turn ? this.visibleTurn(turn) : undefined
+  }
+
+  async undoTurn(id: string, includingLater = false): Promise<AssistantTurnUndo> {
+    try {
+      const result = await this.workspace.exclusiveAll(async () => {
+        assertCollectionWritable(this.workspace.root)
+        const turns = await this.bridle.turns.list()
+        const selected = turns.find(turn => turn.turnId === id)
+        const selectedTurns = selected && !selected.undo.undoneAt ? turns.filter(turn => !turn.undo.undoneAt && (turn.turnId === id || (includingLater && turn.startedAt >= selected.startedAt)))
+          .sort((a, b) => b.startedAt - a.startedAt) : []
+        const moves = versionMovesForRestore(this.workspace.root, selectedTurns)
+        const history = prepareVersionRestore(this.workspace.root, moves)
+        try { return await this.bridle.turns.undo(id, { includingLater }) }
+        finally { history.settle() }
+      })
+      this.onSuggestionsChanged(await this.suggestions())
+      return result
+    } catch (error) {
+      if (error instanceof WritesPausedError) return { undone: false, reason: 'writes-paused', message: error.message }
+      if (error instanceof BridleDisposedError) return { undone: false, reason: 'disposed' }
+      if (error instanceof RestoreIncompleteError) return {
+        undone: false, reason: 'partially-undone',
+        paths: error.notRestored.map((path) => isAbsolute(path) ? this.workspace.relative(path) : path),
+        message: restoreFailure(error, this.workspace.root).message,
+      }
+      if (error instanceof RestoreRefusedError) return {
+        undone: false, reason: ['changed-after-turn', 'journal-damaged', 'partially-undone'].includes(error.reason ?? '') ? error.reason! : 'unrestorable-file',
+        paths: error.refusals.map((refusal) => isAbsolute(refusal.path) ? this.workspace.relative(refusal.path) : refusal.path),
+        ...(!['changed-after-turn', 'journal-damaged', 'partially-undone'].includes(error.reason ?? '')
+          ? { message: restoreFailure(error, this.workspace.root).message } : {}),
+      }
+      throw error
+    }
+  }
+
+  async restoreLastTurn(): Promise<string[]> {
+    const latest = latestChangedTurn(await this.bridle.turns.list())
+    if (!latest) throw new Error(NO_TURN_TO_UNDO)
+    const result = await this.undoTurn(latest.turnId)
+    if (!result.undone) {
+      if (result.reason === 'writes-paused') throw new WritesPausedError(refusalMessage(result))
+      throw new Error(refusalMessage(result))
+    }
+    return result.paths.map((path) => this.workspace.absolute(path))
   }
 
   /**
@@ -1843,6 +2113,8 @@ export class WorkspaceAgent {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true
+    this.unsubscribeMode()
     this.unsubscribeEvents()
     this.restagedOrigins.clear()
     const proposalStartedAt = Date.now()

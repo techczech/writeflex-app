@@ -4,8 +4,8 @@
  * the document's bytes are not the ones its new text was worked out from. Seam: `Workspace.saveFile`,
  * with `documentSaveSeams.betweenCheckAndWrite` standing where another program would act.
  */
-import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { test, expect, beforeEach, afterEach, spyOn } from 'bun:test'
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fingerprintOf } from '../../src/main/guarded-document-read'
@@ -26,6 +26,8 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   delete documentSaveSeams.betweenCheckAndWrite
+  delete documentSaveSeams.afterFingerprint
+  delete documentSaveSeams.afterFingerprintRead
   for (const dir of [root, outside]) await rm(dir, { recursive: true, force: true })
 })
 
@@ -79,6 +81,55 @@ test('with expect, the save writes only over the bytes its text was worked out f
   await rm(join(root, 'notes/draft.md'))
   await expect(ws.saveFile('notes/draft.md', 'Third.\n', expectDoc)).rejects.toBeInstanceOf(DocumentChangedError)
   expect(await readdir(join(root, 'notes'))).toEqual([])
+})
+
+test('with expect, a document changed or replaced after its bytes were matched is refused in the tick of the rename: the newer version stays, no temporary file is left', async () => {
+  const expectDoc = { documentOnly: true, expect: { fingerprint: fingerprintOf(DOC) } } as const
+  const changes: Array<[string, () => Promise<void>, string]> = [
+    // Rewritten in place (same file, other bytes and size) while the checked handle closed.
+    ['rewritten', () => writeFile(join(root, 'notes/draft.md'), 'EXTERNAL NEWER VERSION\n'), 'EXTERNAL NEWER VERSION\n'],
+    // Replaced by another file of the same size (an editor's own atomic save): another inode at the name.
+    ['replaced', async () => { await writeFile(join(root, 'notes/other.tmp-x'), DOC.toUpperCase()); await rename(join(root, 'notes/other.tmp-x'), join(root, 'notes/draft.md')) }, DOC.toUpperCase()],
+  ]
+  for (const [, change, newer] of changes) {
+    await writeFile(join(root, 'notes/draft.md'), DOC)
+    documentSaveSeams.afterFingerprint = async () => { delete documentSaveSeams.afterFingerprint; await change() }
+    const refused = await ws.saveFile('notes/draft.md', 'MY STALE WRITE\n', expectDoc).then(() => null, (error: unknown) => error)
+    expect(refused).toBeInstanceOf(DocumentChangedError)
+    expect(await readFile(join(root, 'notes/draft.md'), 'utf8')).toBe(newer)
+    expect((await readdir(join(root, 'notes'))).sort()).toEqual(['draft.md'])
+  }
+})
+
+test('with expect, a document rewritten after its bytes were read but before its state was looked at again is refused: the newer version stays, no temporary file is left', async () => {
+  documentSaveSeams.afterFingerprintRead = async () => { delete documentSaveSeams.afterFingerprintRead; await writeFile(join(root, 'notes/draft.md'), 'EXTERNAL NEWER VERSION\n') }
+  const refused = await ws.saveFile('notes/draft.md', 'MY STALE WRITE\n', { documentOnly: true, expect: { fingerprint: fingerprintOf(DOC) } }).then(() => null, (error: unknown) => error)
+  expect(refused).toBeInstanceOf(DocumentChangedError)
+  expect(await readFile(join(root, 'notes/draft.md'), 'utf8')).toBe('EXTERNAL NEWER VERSION\n')
+  expect((await readdir(join(root, 'notes'))).sort()).toEqual(['draft.md'])
+})
+
+test('with expect, a document rewritten while its bytes were being read (the read returns the old bytes) is refused: the newer version stays, no temporary file is left', async () => {
+  const probe = await open(join(root, 'notes/draft.md'), 'r')
+  const handles = Object.getPrototypeOf(probe) as { readFile: (...args: unknown[]) => Promise<Buffer> }
+  await probe.close()
+  const realReadFile = handles.readFile
+  let rewritten = false
+  const spy = spyOn(handles, 'readFile').mockImplementation(async function (this: unknown, ...args: unknown[]) {
+    const bytes = await realReadFile.apply(this, args)
+    // Another program rewrites the document before the read resolves; the read hands back what it had.
+    if (!rewritten) { rewritten = true; await writeFile(join(root, 'notes/draft.md'), 'EXTERNAL NEWER VERSION\n') }
+    return bytes
+  })
+  try {
+    const refused = await ws.saveFile('notes/draft.md', 'MY STALE WRITE\n', { documentOnly: true, expect: { fingerprint: fingerprintOf(DOC) } }).then(() => null, (error: unknown) => error)
+    expect(rewritten).toBe(true)
+    expect(refused).toBeInstanceOf(DocumentChangedError)
+  } finally {
+    spy.mockRestore()
+  }
+  expect(await readFile(join(root, 'notes/draft.md'), 'utf8')).toBe('EXTERNAL NEWER VERSION\n')
+  expect((await readdir(join(root, 'notes'))).sort()).toEqual(['draft.md'])
 })
 
 test('a save that expects is a guarded save whether or not it says documentOnly; a hidden path is refused', async () => {

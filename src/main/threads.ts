@@ -1,3 +1,4 @@
+import { DEFAULT_OPENAI_CODEX_MODEL } from '@bridle/core'
 import type { AmbientState } from './ambient'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -243,6 +244,7 @@ export type ThreadManagerOptions = {
   /** Bridle's model list (`listed`) and its signed-in subset (`available`), in list order. When a
    *  thread's or the default model is not listed, the chat falls back through chooseListedModel
    *  instead of failing to start (fix 04 follow-up). Absent: every model counts as listed. */
+  modelService?: Pick<import('@bridle/core').BridleModelService, 'recommendedModel' | 'resolveSavedModel'>
   listedModels?: () => { listed: ModelRef[]; available: ModelRef[] }
   /** Settles when the model list is ready (initial discovery). Preferences are resolved and persisted
    *  only after it, so a chat never starts on a model the first discovery just removed. */
@@ -296,6 +298,8 @@ export class ThreadManager {
    */
   private runnableModel(wanted: ModelRef): ModelResolution {
     if (this.isListed(wanted)) return { kind: 'run', model: wanted, replaced: false }
+    const saved = this.opts.modelService?.resolveSavedModel(wanted.provider, wanted.id)
+    if (saved?.modelId) return { kind: 'run', model: { provider: wanted.provider, id: saved.modelId }, replaced: saved.modelId !== wanted.id }
     const resolution = chooseRunnableModel(wanted, this.opts.listedModels?.().available ?? [])
     if (resolution.kind === 'ask' && resolution.candidates.length === 0) return { kind: 'run', model: wanted, replaced: false }
     return resolution
@@ -324,7 +328,7 @@ export class ThreadManager {
     choice?: { wanted: ModelRef; candidates: ModelRef[] }
   } {
     const defaults = this.opts.defaults?.() ?? {}
-    const wanted = { provider: defaults.provider ?? 'openai-codex', id: defaults.modelId ?? 'gpt-5.5' }
+    const wanted = { provider: defaults.provider ?? 'openai-codex', id: defaults.modelId ?? this.opts.modelService?.recommendedModel(defaults.provider ?? 'openai-codex') ?? DEFAULT_OPENAI_CODEX_MODEL }
     const resolution = this.runnableModel(wanted)
     const thinkingLevel = defaults.thinkingLevel ?? 'medium'
     if (resolution.kind === 'ask') return { model: wanted, thinkingLevel, choice: { wanted, candidates: resolution.candidates } }

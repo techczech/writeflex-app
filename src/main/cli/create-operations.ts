@@ -4,6 +4,7 @@
  * WriteSession. A new file is never journalled (undo does not delete); adding a scrap to an existing
  * scraps file changes that file, so it is.
  */
+import { activateFolioDeclaration } from '../folio-declaration'
 import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, posix, relative } from 'node:path'
 import { AGENT_NOTE_BASENAME, createAgentNote } from '../agent-note-create'
@@ -191,7 +192,10 @@ export const CREATE_OPERATIONS: Operation[] = [
       } catch (error) {
         throw new CliError(error instanceof Error ? error.message : String(error))
       }
-      await writeAccess(ctx).session.create(path, draft)
+      await ctx.workspace.exclusiveAll(async () => {
+        await writeAccess(ctx).session.create(path, draft)
+        await activateFolioDeclaration(ctx.workspace, folder)
+      })
       return applied(`Created ${path}`, { path, manifest: JSON.parse(draft) as unknown })
     },
   },

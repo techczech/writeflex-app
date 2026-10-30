@@ -72,7 +72,7 @@ async function managerWithReply(reply: string): Promise<{
         prompt: '<skill edit test>',
         rounds: [{ kind: 'message', text: reply }],
       }]
-      const agent = await WorkspaceAgent.create({
+      const agent = await WorkspaceAgent.create({ mode: 'work',
         workspace: new Workspace(workspaceRoot),
         appDataDir,
         composition,

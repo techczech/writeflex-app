@@ -270,7 +270,7 @@ test('with the app closed, a pending replace on a document the command line then
   const appData = await mkdtemp(join(tmpdir(), 'wf-cli-follow-agent-'))
   const workspace = new Workspace(fx.root)
   const changes = new ChangeStore(workspace)
-  const agent = await WorkspaceAgent.create({ workspace, appDataDir: appData, changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
+  const agent = await WorkspaceAgent.create({ mode: 'work', workspace, appDataDir: appData, changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
   try {
     expect(await agent.resolveChange(pending.id, 'accept')).toMatchObject({ applied: true })
   } finally {

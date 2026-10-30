@@ -1,9 +1,12 @@
+import { setEvidenceDrag, useEvidenceAttachmentTarget } from '../folio-evidence-transfer'
+import type { EvidenceTransfer } from '../../../shared/folio-evidence-transfer'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CircleAlert, Search, SquareDashed, Tag, Users } from 'lucide-react'
 import type { HighlightRow, HighlightsResult } from '../../../preload'
 import { claimKeyboard } from './claim-keyboard'
 
 export type ReadingRoomHighlightsProps = {
+  evidenceSource?: { itemTarget: string; label: string; baseLink: string }
   /** Bumped whenever the view is raised, so the filter field takes the keyboard each time. */
   focusToken: number
   /** The document whose marks these are, for the section bar. */
@@ -61,6 +64,7 @@ function matches(
 }
 
 export function ReadingRoomHighlights({
+  evidenceSource,
   authorYear,
   banner,
   focusToken,
@@ -68,6 +72,12 @@ export function ReadingRoomHighlights({
   onError,
   onJump,
 }: ReadingRoomHighlightsProps): JSX.Element {
+  const evidenceTarget = useEvidenceAttachmentTarget()
+  const sourceFor = (row: HighlightRow): EvidenceTransfer | null => evidenceSource ? {
+    kind: 'zotero', itemTarget: evidenceSource.itemTarget, label: evidenceSource.label, pending: !row.zoteroKey,
+    ...(row.zoteroKey ? { annotation: { target: `${evidenceSource.baseLink}?annotation=${row.zoteroKey}`, label: row.pageLabel ? `${evidenceSource.label}, p. ${row.pageLabel}` : evidenceSource.label } } : {}),
+  } : null
+
   const field = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
   const [result, setResult] = useState<HighlightsResult | null>(null)
@@ -207,11 +217,13 @@ export function ReadingRoomHighlights({
             <div
               key={row.key}
               id={`highlight-${row.key}`}
+              draggable={Boolean(evidenceSource)}
+              onDragStart={event => { const source = sourceFor(row); if (source) setEvidenceDrag(event.dataTransfer, source) }}
               role="option"
               aria-selected={index === activeIndex}
               className={`reading-room-shelf-row${index === activeIndex ? ' on' : ''}`}
               title="Go to it"
-              onMouseDown={(event) => { event.preventDefault(); setCursor(index) }}
+              onMouseDown={(event) => { if (!evidenceSource) event.preventDefault(); setCursor(index) }}
               onClick={() => onJump(row)}
             >
               <span className="reading-room-shelf-meta">
@@ -231,7 +243,7 @@ export function ReadingRoomHighlights({
                 {row.keptHere && (
                   <span
                     className="reading-room-highlights-kept"
-                    title="You edited this highlight here. The edit is saved in WriteFlex; changing a highlight inside Zotero is not built yet."
+                    title="You edited this highlight here. The edit is saved in WriteFlex and is not sent to Zotero."
                   >
                     kept here, not yet in Zotero
                   </span>
@@ -240,6 +252,7 @@ export function ReadingRoomHighlights({
               <span className={`reading-room-shelf-title${row.bodyKind === 'quote' ? ' quote' : ''}`}>
                 {row.bodyKind === 'quote' ? `“${row.body}”` : row.body}
               </span>
+              {evidenceTarget && evidenceSource && <button type="button" className="fr-linkbtn" onMouseDown={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); const source = sourceFor(row); if (source) void evidenceTarget.attach(source) }}>Attach to {evidenceTarget.part}</button>}
               {row.comment && (
                 <span className="reading-room-highlights-comment">{row.comment}</span>
               )}

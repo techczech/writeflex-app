@@ -114,7 +114,7 @@ test('plan.read lists the running order in order, weighs each part, and names st
   expect(result.isError).toBeFalsy()
   const readout = JSON.parse(result.text) as AgentPlanReadout
   expect(readout).toEqual((result.details as { plan: AgentPlanReadout }).plan)
-  expect(readout).toEqual({
+  expect({ ...readout, parts: readout.parts.map(({ synopsis, label, priority, status, openFlags, evidenceCount, ...legacy }) => legacy) }).toEqual({
     dir: 'report',
     hasIndexNote: true,
     indexPath: 'report/_report_INDEX.md',
@@ -146,7 +146,7 @@ test('plan.read on a folder with no Index Note and an empty manifest reports eve
 test('plan.read looks for strays recursively under content_root and nowhere else', async () => {
   const readout = JSON.parse((await run('plan.read', { dir: 'book' })).text) as AgentPlanReadout
   expect(readout.contentRoot).toBe('contents')
-  expect(readout.parts).toEqual([
+  expect(readout.parts.map(({ synopsis, label, priority, status, openFlags, evidenceCount, ...legacy }) => legacy)).toEqual([
     { title: 'Opening', gloss: null, role: 'section', path: 'book/contents/01-opening.md', words: 3, exists: true },
   ])
   expect(readout.strays).toEqual([{ path: 'book/contents/extra/deep-stray.md', title: 'Deep stray', words: 4 }])

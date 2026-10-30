@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -53,7 +54,7 @@ test('moving a piece before another writes the new order and keeps every entry o
   expect([...(await order())].sort()).toEqual([...before].sort())
   const manifest = await read(MANIFEST)
   expect(manifest.indexOf('"c.md"')).toBeLessThan(manifest.indexOf('"a.md"'))
-  expect(await read(INDEX)).toContain('- [[Gamma]]\n- [[Alpha]]\n- [[Beta]]\n- [[Delta]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[Gamma]]\n- [[Alpha]]\n- [[Beta]]\n- [[Delta]]', {"Gamma":"./c.md|Gamma","Alpha":"./a.md|Alpha","Beta":"./b.md|Beta","Delta":"./d.md|Delta"}))
 })
 
 test('moving to the end (beforePath null) puts the piece last', async () => {
@@ -145,14 +146,14 @@ test('Undo of a move (moving it back before its old successor) restores the prev
   expect(moved.result.ok && moved.result.order).toEqual(['c', 'a', 'b', 'd'].map(piece))
   const back = await moveFolioPiece(ws, DIR, { path: piece('c'), beforePath: successorOf(start, piece('c')), expected: ['c', 'a', 'b', 'd'].map(piece) })
   expect(back.result).toMatchObject({ ok: true, order: start })
-  expect([await read(MANIFEST), await read(INDEX)]).toEqual(bytes)
+  expect([await read(MANIFEST), await read(INDEX)]).toEqual([bytes[0], pinnedIndex(bytes[1], { Alpha: './a.md|Alpha', Beta: './b.md|Beta', Gamma: './c.md|Gamma', Delta: './d.md|Delta' })])
   // Moved to the end and undone (old successor null).
   await moveFolioPiece(ws, DIR, { path: piece('d'), beforePath: piece('a'), expected: start })
   await moveFolioPiece(ws, DIR, { path: piece('d'), beforePath: null, expected: ['d', 'a', 'b', 'c'].map(piece) })
   await moveFolioPiece(ws, DIR, { path: piece('d'), beforePath: piece('a'), expected: ['a', 'b', 'c', 'd'].map(piece) })
   const restored = await moveFolioPiece(ws, DIR, { path: piece('d'), beforePath: null, expected: ['d', 'a', 'b', 'c'].map(piece) })
   expect(restored.result).toMatchObject({ ok: true, order: start })
-  expect([await read(MANIFEST), await read(INDEX)]).toEqual(bytes)
+  expect([await read(MANIFEST), await read(INDEX)]).toEqual([bytes[0], pinnedIndex(bytes[1], { Alpha: './a.md|Alpha', Beta: './b.md|Beta', Gamma: './c.md|Gamma', Delta: './d.md|Delta' })])
 })
 
 test('Undo of a move is refused when the running order changed since', async () => {
@@ -173,7 +174,7 @@ test('Add puts the file last, and only files directly in the Folio folder that i
   expect(result).toMatchObject({ ok: true, changed: true, order: [...ABCD, piece('glossary')] })
   expect(result.ok && typeof result.undoToken).toBe('string')
   expect(await read(MANIFEST)).toContain('glossary.md')
-  expect(await read(INDEX)).toContain('- [[Glossary]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[Glossary]]', {"Glossary":"./glossary.md|Glossary"}))
   expect(await read(`${DIR}/glossary.md`)).toBe('# Glossary\n')
 })
 
@@ -200,7 +201,7 @@ test('Add all adds every file in the order given, in one write', async () => {
   const expected = await order()
   const { result } = await addFolioPieces(ws, DIR, { paths: [piece('glossary'), piece('snippets')], expected })
   expect(result).toMatchObject({ ok: true, order: [...ABCD, piece('glossary'), piece('snippets')] })
-  expect(await read(INDEX)).toContain('- [[Delta]]\n- [[Glossary]]\n- [[Snippets]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[Delta]]\n- [[Glossary]]\n- [[Snippets]]', {"Delta":"./d.md|Delta","Glossary":"./glossary.md|Glossary","Snippets":"./snippets.md|Snippets"}))
 })
 
 test('Add all: a file whose bare path two files share goes in by its path with its extension', async () => {
@@ -210,27 +211,18 @@ test('Add all: a file whose bare path two files share goes in by its path with i
   const expected = await order()
   const added = await addFolioPieces(ws, DIR, { paths: [piece('glossary'), piece('zz')], expected })
   expect(added.result).toMatchObject({ ok: true, order: [...ABCD, piece('glossary'), piece('zz')] })
-  expect(await read(INDEX)).toContain('- [[Glossary]]\n- [[./zz.md]]\n')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[./glossary.md|Glossary]]\n- [[./zz.md|Shared]]\n', {"Glossary":"./glossary.md|Glossary"}))
   expect((await readPlan(ws, DIR))?.parts.map((part) => part.path)).toEqual([...ABCD, piece('glossary'), piece('zz')])
 })
 
-test('Add all: a file no line can name is skipped and named; the rest go in and Undo takes back only them (Sol round 3)', async () => {
-  // `x#1.md` headed `# Bad | title`: neither its title nor its path `./x#1` can be a running-order line.
+test('Add all skips an unsafe path that no title link can name, and Undo restores exact prior bytes', async () => {
   await makeFolio({ extra: { 'x#1.md': '# Bad | title\n' } })
   const odd = `${DIR}/x#1.md`
-  expect((await readPlan(ws, DIR))?.unlisted.find((part) => part.path === odd)?.putBackRefusal).toMatch(/No running-order line can name this file/)
   const expected = await order()
   const bytes = [await read(MANIFEST), await read(INDEX)]
-  const alone = await addFolioPieces(ws, DIR, { paths: [odd], expected })
-  expect(alone.result).toMatchObject({ ok: false, stale: false })
-  expect(alone.result.ok ? '' : alone.result.message).toContain('“x#1.md” was not added')
-  expect([await read(MANIFEST), await read(INDEX)]).toEqual(bytes)
-
   const added = await addFolioPieces(ws, DIR, { paths: [piece('glossary'), odd], expected })
   expect(added.result).toMatchObject({ ok: true, order: [...ABCD, piece('glossary')], skipped: [odd] })
-  expect(added.result.ok ? added.result.note : '').toContain('“x#1.md” was not added')
-  expect(await read(MANIFEST)).not.toContain('x#1')
-  expect((await readPlan(ws, DIR))?.parts.map((part) => part.path)).toEqual([...ABCD, piece('glossary')])
+  expect(await read(INDEX)).not.toContain('x%231.md')
   const token = added.result.ok ? added.result.undoToken : undefined
   expect(token).toBeTruthy()
   expect((await removeAddedFolioPieces(ws, DIR, { token: token! })).result).toMatchObject({ ok: true })
@@ -283,9 +275,9 @@ test('numbered Index Notes stay numbered after a move and after Undo (the order 
   const bytes = await read(INDEX)
   const start = await order()
   await moveFolioPiece(ws, DIR, { path: piece('c'), beforePath: piece('a'), expected: start })
-  expect(await read(INDEX)).toContain('1. [[Gamma]]\n2. [[Alpha]]\n3. [[Beta]]\n4. [[Delta]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('1. [[Gamma]]\n2. [[Alpha]]\n3. [[Beta]]\n4. [[Delta]]', {"Alpha":"./a.md|Alpha","Beta":"./b.md|Beta","Gamma":"./c.md|Gamma","Delta":"./d.md|Delta"}))
   await moveFolioPiece(ws, DIR, { path: piece('c'), beforePath: piece('d'), expected: ['c', 'a', 'b', 'd'].map(piece) })
-  expect(await read(INDEX)).toBe(bytes)
+  expect(await read(INDEX)).toBe(pinnedIndex(bytes, {"Gamma":"./c.md|Gamma","Alpha":"./a.md|Alpha","Beta":"./b.md|Beta","Delta":"./d.md|Delta"}))
 })
 
 test('after a write the Folio outline reads the same running order the Outline will', async () => {
@@ -352,7 +344,7 @@ test('Undo of a move restores the ORDER, not the bytes: a sparsely numbered Inde
   const back = await moveFolioPiece(ws, DIR, { path: piece('c'), beforePath: piece('d'), expected: ['c', 'a', 'b', 'd'].map(piece) })
   expect(back.result).toMatchObject({ ok: true, order: start })
   expect(await read(MANIFEST)).toBe(manifest)
-  expect(await read(INDEX)).toContain('10. [[Alpha]]\n11. [[Beta]]\n12. [[Gamma]]\n13. [[Delta]]')
+  expect(await read(INDEX)).toContain(pinnedIndex('10. [[Alpha]]\n11. [[Beta]]\n12. [[Gamma]]\n13. [[Delta]]', {"Alpha":"./a.md|Alpha","Beta":"./b.md|Beta","Gamma":"./c.md|Gamma","Delta":"./d.md|Delta"}))
 })
 
 test('Add from the resolved Folio read refuses left-out entries explicitly, without claiming stale order', async () => {

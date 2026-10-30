@@ -12,6 +12,7 @@
  * written text (in the tick of the unlink), a removed file made again only by an exclusive create.
  */
 
+import { lstatSync, readFileSync, rmdirSync } from 'node:fs'
 import { DiskChangedUnderBuffer, NameTaken, SavedButNotReadBack, type OperationWrite, type Workspace } from './workspace'
 
 export type RollbackOutcome = {
@@ -45,6 +46,22 @@ export async function rollBackOperationWrites(ws: Workspace, log: readonly Opera
   // The rollback's writes are not the operation's, nor receipts or refusals of the call that asked for it.
   await ws.outsideCallRecords(async () => {
     for (const write of netWrites(log).reverse()) {
+      if (write.createdFolder) {
+        try {
+          const absolute = ws.absolute(write.path)
+          const now = lstatSync(absolute)
+          if (now.isDirectory() && now.dev === write.createdFolder.dev && now.ino === write.createdFolder.ino) rmdirSync(absolute)
+        } catch { /* Missing, replaced or non-empty folders stay untouched. */ }
+        continue
+      }
+      if (write.removeAfterRestore) {
+        const dependency = write.removeAfterRestore
+        // A refused put-back must retain the only surviving copy of the evidence.
+        try {
+          if (!outcome.restored.includes(dependency.path)
+            || !readFileSync(ws.absolute(dependency.path)).equals(Buffer.from(dependency.bytes))) continue
+        } catch { continue }
+      }
       if (write.unknown) {
         outcome.failed.push({ path: write.path, reason: 'what it held before could not be read' })
         continue

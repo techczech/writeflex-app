@@ -118,9 +118,10 @@ export function documentOnlyView(ws: Workspace): DocumentOnlyView {
       judge(path)
       return real(() => ws.saveFileOverRead(path, next, read, { ...options, documentOnly: true }))
     },
-    removeFileOverRead(path: string, read: string): void {
+    // The pin (`inFolder`) a caller passes is passed on (Folio room ticket 02): judged here, re-checked in the unlink's tick.
+    removeFileOverRead(path: string, read: string, options: Pick<SaveFileOptions, 'inFolder'> = {}): void {
       judge(path)
-      ws.removeFileOverRead(path, read)
+      ws.removeFileOverRead(path, read, options)
     },
     commitOnlyOver(path: string, basis: SaveBasis): () => void {
       judge(path)
@@ -130,9 +131,9 @@ export function documentOnlyView(ws: Workspace): DocumentOnlyView {
       judge(path)
       return ws.assertOnDisk(path, basis)
     },
-    async createFile(path: string, content: string) {
+    async createFile(path: string, content: string, options: Pick<SaveFileOptions, 'documentOnly' | 'inFolder'> = {}) {
       judge(normaliseMarkdownPath(path))
-      return real(() => ws.createFile(path, content, { documentOnly: true }))
+      return real(() => ws.createFile(path, content, { ...options, documentOnly: true }))
     },
     async duplicateFile(path: string) {
       judge(path) // the copy lands beside it, in the folder just judged

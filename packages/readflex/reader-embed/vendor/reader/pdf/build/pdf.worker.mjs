@@ -1823,6 +1823,60 @@ function make_cssRGB(ptr) {
 
 ;// ./external/qcms/qcms.js
 
+let wasm;
+const cachedTextDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', {
+  ignoreBOM: true,
+  fatal: true
+}) : {
+  decode: () => {
+    throw Error('TextDecoder not available');
+  }
+};
+if (typeof TextDecoder !== 'undefined') {
+  cachedTextDecoder.decode();
+}
+;
+let cachedUint8ArrayMemory0 = null;
+function getUint8ArrayMemory0() {
+  if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
+    cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
+  }
+  return cachedUint8ArrayMemory0;
+}
+function getStringFromWasm0(ptr, len) {
+  ptr = ptr >>> 0;
+  return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
+}
+let WASM_VECTOR_LEN = 0;
+function passArray8ToWasm0(arg, malloc) {
+  const ptr = malloc(arg.length * 1, 1) >>> 0;
+  getUint8ArrayMemory0().set(arg, ptr / 1);
+  WASM_VECTOR_LEN = arg.length;
+  return ptr;
+}
+function qcms_convert_array(transformer, src) {
+  const ptr0 = passArray8ToWasm0(src, wasm.__wbindgen_malloc);
+  const len0 = WASM_VECTOR_LEN;
+  wasm.qcms_convert_array(transformer, ptr0, len0);
+}
+function qcms_drop_transformer(transformer) {
+  wasm.qcms_drop_transformer(transformer);
+}
+function qcms_convert_four(transformer, src1, src2, src3, src4, css) {
+  wasm.qcms_convert_four(transformer, src1, src2, src3, src4, css);
+}
+function qcms_convert_one(transformer, src, css) {
+  wasm.qcms_convert_one(transformer, src, css);
+}
+function qcms_transformer_from_memory(mem, in_type, intent) {
+  const ptr0 = passArray8ToWasm0(mem, wasm.__wbindgen_malloc);
+  const len0 = WASM_VECTOR_LEN;
+  const ret = wasm.qcms_transformer_from_memory(ptr0, len0, in_type, intent);
+  return ret >>> 0;
+}
+function qcms_convert_three(transformer, src1, src2, src3, css) {
+  wasm.qcms_convert_three(transformer, src1, src2, src3, css);
+}
 const DataType = Object.freeze({
   RGB8: 0,
   "0": "RGB8",
@@ -1847,112 +1901,13 @@ const Intent = Object.freeze({
   AbsoluteColorimetric: 3,
   "3": "AbsoluteColorimetric"
 });
-function qcms_convert_array(transformer, src) {
-  const ptr0 = passArray8ToWasm0(src, wasm.__wbindgen_malloc);
-  const len0 = WASM_VECTOR_LEN;
-  wasm.qcms_convert_array(transformer, ptr0, len0);
-}
-function qcms_convert_four(transformer, src1, src2, src3, src4, css) {
-  wasm.qcms_convert_four(transformer, src1, src2, src3, src4, css);
-}
-function qcms_convert_one(transformer, src, css) {
-  wasm.qcms_convert_one(transformer, src, css);
-}
-function qcms_convert_three(transformer, src1, src2, src3, css) {
-  wasm.qcms_convert_three(transformer, src1, src2, src3, css);
-}
-function qcms_drop_transformer(transformer) {
-  wasm.qcms_drop_transformer(transformer);
-}
-function qcms_transformer_from_memory(mem, in_type, intent) {
-  const ptr0 = passArray8ToWasm0(mem, wasm.__wbindgen_malloc);
-  const len0 = WASM_VECTOR_LEN;
-  const ret = wasm.qcms_transformer_from_memory(ptr0, len0, in_type, intent);
-  return ret >>> 0;
-}
-function __wbg_get_imports() {
-  const import0 = {
-    __proto__: null,
-    __wbg___wbindgen_throw_6b64449b9b9ed33c: function (arg0, arg1) {
-      throw new Error(getStringFromWasm0(arg0, arg1));
-    },
-    __wbg_copy_result_0d15f3bf9d9012ae: function (arg0, arg1) {
-      copy_result(arg0 >>> 0, arg1 >>> 0);
-    },
-    __wbg_copy_rgb_0106d9d9464fce43: function (arg0) {
-      copy_rgb(arg0 >>> 0);
-    },
-    __wbg_make_cssRGB_8e24b34f71f5363e: function (arg0) {
-      make_cssRGB(arg0 >>> 0);
-    },
-    __wbindgen_init_externref_table: function () {
-      const table = wasm.__wbindgen_externrefs;
-      const offset = table.grow(4);
-      table.set(0, undefined);
-      table.set(offset + 0, undefined);
-      table.set(offset + 1, null);
-      table.set(offset + 2, true);
-      table.set(offset + 3, false);
-    }
-  };
-  return {
-    __proto__: null,
-    "./qcms_bg.js": import0
-  };
-}
-function getStringFromWasm0(ptr, len) {
-  ptr = ptr >>> 0;
-  return decodeText(ptr, len);
-}
-let cachedUint8ArrayMemory0 = null;
-function getUint8ArrayMemory0() {
-  if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
-    cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
-  }
-  return cachedUint8ArrayMemory0;
-}
-function passArray8ToWasm0(arg, malloc) {
-  const ptr = malloc(arg.length * 1, 1) >>> 0;
-  getUint8ArrayMemory0().set(arg, ptr / 1);
-  WASM_VECTOR_LEN = arg.length;
-  return ptr;
-}
-let cachedTextDecoder = new TextDecoder('utf-8', {
-  ignoreBOM: true,
-  fatal: true
-});
-cachedTextDecoder.decode();
-const MAX_SAFARI_DECODE_BYTES = 2146435072;
-let numBytesDecoded = 0;
-function decodeText(ptr, len) {
-  numBytesDecoded += len;
-  if (numBytesDecoded >= MAX_SAFARI_DECODE_BYTES) {
-    cachedTextDecoder = new TextDecoder('utf-8', {
-      ignoreBOM: true,
-      fatal: true
-    });
-    cachedTextDecoder.decode();
-    numBytesDecoded = len;
-  }
-  return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
-}
-let WASM_VECTOR_LEN = 0;
-let wasmModule, wasm;
-function __wbg_finalize_init(instance, module) {
-  wasm = instance.exports;
-  wasmModule = module;
-  cachedUint8ArrayMemory0 = null;
-  wasm.__wbindgen_start();
-  return wasm;
-}
 async function __wbg_load(module, imports) {
   if (typeof Response === 'function' && module instanceof Response) {
     if (typeof WebAssembly.instantiateStreaming === 'function') {
       try {
         return await WebAssembly.instantiateStreaming(module, imports);
       } catch (e) {
-        const validResponse = module.ok && expectedResponseType(module.type);
-        if (validResponse && module.headers.get('Content-Type') !== 'application/wasm') {
+        if (module.headers.get('Content-Type') != 'application/wasm') {
           console.warn("`WebAssembly.instantiateStreaming` failed because your server does not serve Wasm with `application/wasm` MIME type. Falling back to `WebAssembly.instantiate` which is slower. Original error:\n", e);
         } else {
           throw e;
@@ -1972,19 +1927,44 @@ async function __wbg_load(module, imports) {
       return instance;
     }
   }
-  function expectedResponseType(type) {
-    switch (type) {
-      case 'basic':
-      case 'cors':
-      case 'default':
-        return true;
-    }
-    return false;
-  }
+}
+function __wbg_get_imports() {
+  const imports = {};
+  imports.wbg = {};
+  imports.wbg.__wbg_copyresult_b08ee7d273f295dd = function (arg0, arg1) {
+    copy_result(arg0 >>> 0, arg1 >>> 0);
+  };
+  imports.wbg.__wbg_copyrgb_d60ce17bb05d9b67 = function (arg0) {
+    copy_rgb(arg0 >>> 0);
+  };
+  imports.wbg.__wbg_makecssRGB_893bf0cd9fdb302d = function (arg0) {
+    make_cssRGB(arg0 >>> 0);
+  };
+  imports.wbg.__wbindgen_init_externref_table = function () {
+    const table = wasm.__wbindgen_export_0;
+    const offset = table.grow(4);
+    table.set(0, undefined);
+    table.set(offset + 0, undefined);
+    table.set(offset + 1, null);
+    table.set(offset + 2, true);
+    table.set(offset + 3, false);
+  };
+  imports.wbg.__wbindgen_throw = function (arg0, arg1) {
+    throw new Error(getStringFromWasm0(arg0, arg1));
+  };
+  return imports;
+}
+function __wbg_init_memory(imports, memory) {}
+function __wbg_finalize_init(instance, module) {
+  wasm = instance.exports;
+  __wbg_init.__wbindgen_wasm_module = module;
+  cachedUint8ArrayMemory0 = null;
+  wasm.__wbindgen_start();
+  return wasm;
 }
 function initSync(module) {
   if (wasm !== undefined) return wasm;
-  if (module !== undefined) {
+  if (typeof module !== 'undefined') {
     if (Object.getPrototypeOf(module) === Object.prototype) {
       ({
         module
@@ -1994,6 +1974,7 @@ function initSync(module) {
     }
   }
   const imports = __wbg_get_imports();
+  __wbg_init_memory(imports);
   if (!(module instanceof WebAssembly.Module)) {
     module = new WebAssembly.Module(module);
   }
@@ -2002,7 +1983,7 @@ function initSync(module) {
 }
 async function __wbg_init(module_or_path) {
   if (wasm !== undefined) return wasm;
-  if (module_or_path !== undefined) {
+  if (typeof module_or_path !== 'undefined') {
     if (Object.getPrototypeOf(module_or_path) === Object.prototype) {
       ({
         module_or_path
@@ -2015,6 +1996,7 @@ async function __wbg_init(module_or_path) {
   if (typeof module_or_path === 'string' || typeof Request === 'function' && module_or_path instanceof Request || typeof URL === 'function' && module_or_path instanceof URL) {
     module_or_path = fetch(module_or_path);
   }
+  __wbg_init_memory(imports);
   const {
     instance,
     module
@@ -2022,6 +2004,7 @@ async function __wbg_init(module_or_path) {
   return __wbg_finalize_init(instance, module);
 }
 
+/* harmony default export */ const qcms = ((/* unused pure expression or super */ null && (__wbg_init)));
 ;// ./src/shared/math_clamp.js
 function MathClamp(v, min, max) {
   return Math.min(Math.max(v, min), max);
@@ -5960,9 +5943,9 @@ async function OpenJPEG(moduleArg = {}) {
   var wasmBinary;
   var ABORT = false;
   var EXITSTATUS;
-  class EmscriptenEH {}
-  class EmscriptenSjLj extends EmscriptenEH {}
   var readyPromiseResolve, readyPromiseReject;
+  var HEAP8, HEAPU8, HEAP16, HEAPU16, HEAP32, HEAPU32, HEAPF32, HEAPF64;
+  var HEAP64, HEAPU64;
   var runtimeInitialized = false;
   function updateMemoryViews() {
     var b = wasmMemory.buffer;
@@ -6001,7 +5984,7 @@ async function OpenJPEG(moduleArg = {}) {
   }
   function abort(what) {
     Module["onAbort"]?.(what);
-    what = `Aborted(${what})`;
+    what = "Aborted(" + what + ")";
     err(what);
     ABORT = true;
     what += ". Build with -sASSERTIONS for more info.";
@@ -6037,16 +6020,6 @@ async function OpenJPEG(moduleArg = {}) {
       this.status = status;
     }
   }
-  var HEAP16;
-  var HEAP32;
-  var HEAP64;
-  var HEAP8;
-  var HEAPF32;
-  var HEAPF64;
-  var HEAPU16;
-  var HEAPU32;
-  var HEAPU64;
-  var HEAPU8;
   var callRuntimeCallbacks = callbacks => {
     while (callbacks.length > 0) {
       callbacks.shift()(Module);
@@ -6426,13 +6399,13 @@ async function OpenJPEG(moduleArg = {}) {
     __indirect_function_table = wasmExports["__indirect_function_table"];
   }
   var wasmImports = {
-    m: __abort_js,
-    l: __emscripten_runtime_keepalive_clear,
-    i: __setitimer_js,
+    k: __abort_js,
+    j: __emscripten_runtime_keepalive_clear,
+    l: __setitimer_js,
     f: _copy_pixels_1,
     e: _copy_pixels_3,
     d: _copy_pixels_4,
-    j: _emscripten_resize_heap,
+    m: _emscripten_resize_heap,
     o: _environ_get,
     p: _environ_sizes_get,
     n: _fd_seek,
@@ -6440,7 +6413,7 @@ async function OpenJPEG(moduleArg = {}) {
     q: _gray_to_rgba,
     h: _graya_to_rgba,
     c: _jsPrintWarning,
-    k: _proc_exit,
+    i: _proc_exit,
     g: _rgb_to_rgba,
     a: _storeErrorMessage
   };

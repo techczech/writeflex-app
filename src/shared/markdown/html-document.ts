@@ -78,7 +78,7 @@ export type HtmlDocumentDesign = 'a' | 'b'
 export type HtmlContentsRow = { anchor: string; text: string; depth: number; chapter: boolean }
 export type HtmlOutlineHeading = { level: number; text: string; anchor: string }
 export type HtmlFrontmatterValue = string | number | readonly string[]
-export type HtmlDocumentSection = { anchor: string; title: string; body: string }
+export type HtmlDocumentSection = { anchor: string; title: string; body: string; ownPage?: boolean }
 /** A title page: its title, its rendered body, and its own selected header fields (for the chips, when shown). */
 export type HtmlDocumentCover = {
   title: string
@@ -159,7 +159,7 @@ function fill(template: string, values: Readonly<Record<string, () => string>>):
     Object.hasOwn(values, name) ? values[name]() : placeholder)
 }
 
-function escapeAttribute(text: string): string {
+export function escapeAttribute(text: string): string {
   return escapeHtml(text).replace(/"/g, '&quot;')
 }
 
@@ -251,13 +251,14 @@ function documentBody(parts: DocumentParts, sidebar: boolean): string {
     ? [{ anchor: TITLE_PAGE_ANCHOR, title: parts.cover.title, body: parts.cover.body }]
     : []
   return [...titlePage, ...(parts.frontMatter ?? []), ...parts.sections].map((section, index) => {
-    const rendered = fill(template, {
+    let rendered = fill(template, {
       anchor: () => escapeAttribute(section.anchor),
-      'section-style': () => PLAIN_BUNDLE_STYLES.section,
+      'section-style': () => (section.ownPage ? 'break-before:page;break-after:page;page-break-before:always;page-break-after:always;' : '') + PLAIN_BUNDLE_STYLES.section,
       'title-style': () => PLAIN_BUNDLE_STYLES.title,
       title: () => escapeHtml(section.title),
       body: () => section.body,
     })
+    if (section.ownPage && sidebar) rendered = rendered.replace('<section ', '<section style="break-before:page;break-after:page;page-break-before:always;page-break-after:always" ')
     const divider = fill(plainBundleDividerTemplate, { 'divider-style': () => PLAIN_BUNDLE_STYLES.divider })
     return sidebar || index === 0 ? rendered : `${divider}${rendered}`
   }).join('\n')

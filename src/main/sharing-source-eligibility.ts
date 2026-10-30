@@ -22,6 +22,7 @@
 import { realpathSync, statSync } from 'node:fs'
 import { isAbsolute, normalize, relative, resolve, sep } from 'node:path'
 import { classifyDocumentPath, realLocation } from './document-path'
+import { resolvesToRoomSupportFile } from './room-support-target'
 
 /** A piece path a window may name: relative, inside its Workspace, a Markdown file. */
 export function piecePath(value: unknown): string | null {
@@ -43,7 +44,9 @@ const inSupportFolder = (rel: string): boolean => rel.split(/[\\/]/).slice(0, -1
  * ticket 11, P1: a link at the path to `agent-notes/` is a support file, as one to `.bridle/` is hidden).
  */
 export function isSharablePiece(root: string, path: string): boolean {
-  return inWritersPlace(root, path)
+  // The Folio room's evidence-and-notes and map files are never published, under any route (I-9): judged on
+  // the name as requested and on the file it really opens (a part replaced by a link to the evidence file).
+  return !resolvesToRoomSupportFile(root, path) && inWritersPlace(root, path)
 }
 
 /**
@@ -82,9 +85,10 @@ function metadataPath(value: string): string | null {
 /**
  * A Folio's metadata file (its manifest or its Index Note, `path` relative to `root`) sharing may read
  * now: a clean path, where a writer's file may be as typed and where it really lives (no dot-folder, no
- * `agent-notes`, inside the Collection), a file on disk. The metadata counterpart of isEligiblePiece:
- * no `.md` required (Sol review round 4 of ticket 11, P1-2).
+ * `agent-notes`, inside the Collection), not a Folio room support file by name or by the file a link really
+ * opens, a file on disk. The metadata counterpart of isEligiblePiece: no `.md` required (Sol review round 4 of
+ * ticket 11, P1-2).
  */
 export function isEligibleFolioMetadata(root: string, path: string): boolean {
-  return metadataPath(path) === path && inWritersPlace(root, path) && isFileOnDisk(root, path)
+  return metadataPath(path) === path && !resolvesToRoomSupportFile(root, path) && inWritersPlace(root, path) && isFileOnDisk(root, path)
 }

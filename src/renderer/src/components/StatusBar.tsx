@@ -134,7 +134,8 @@ export type StatusBarProps = {
   /** The transient action flash (the mockup's #statusFlash), shown in the right cluster. */
   status: string
   /** One button on the flash (Undo after a running-order change). */
-  statusAction?: { label: string; run: () => void } | null
+  statusAction?: { label: string; run: () => void; kind?: 'folio-order' | 'scratchpad' } | null
+  onStatusHover?: (hovered: boolean) => void
   /**
    * Highlights a drain can still hand to Zotero. The status-bar slot is deliberately the only place
    * their transport state appears (ADR-0029): there is still no badge or colour change on a mark.
@@ -147,12 +148,12 @@ export type StatusBarProps = {
    */
   outboxRejected: number
   /**
-   * True when the last attempt was refused because Zotero is open — the one refusal the user can act on. It
+   * True when the last attempt found Zotero not open — the wait the user can end by opening it. It
    * changes the button's words, not whether it works: pressing it still RE-CHECKS (ADR-0036 amendment),
-   * because by the time the user reads the label the user may already have quit Zotero, and a control that refuses
+   * because by the time the user reads the label the user may already have opened Zotero, and a control that refuses
    * on stale state teaches distrust.
    */
-  outboxNeedsZoteroClosed: boolean
+  outboxNeedsZoteroOpen: boolean
   /**
    * Hand the waiting highlights to Zotero now. ADR-0036 amendment, the user's idea: the pending indicator and
    * the sync action are ONE surface — a message explains, a button resolves — so the user never has to know
@@ -267,12 +268,13 @@ export function StatusBar({
   writerMode,
   outboxWaiting,
   outboxRejected,
-  outboxNeedsZoteroClosed,
+  outboxNeedsZoteroOpen,
   onSyncHighlights,
   onOpenRejectedHighlights,
   session,
   status,
   statusAction = null,
+  onStatusHover,
   version,
   collectionName = null,
   onMessageAgent = () => {},
@@ -307,6 +309,13 @@ export function StatusBar({
   const [unit, setUnit] = useState<Unit>(() => loadUnit(workspaceRoot))
   const [layout, setLayout] = useState(EMPTY_LAYOUT)
   const barRef = useRef<HTMLDivElement>(null)
+  const noticeRef = useRef<HTMLSpanElement>(null)
+  useStatusBarLayoutEffect(() => {
+    if (statusAction?.kind !== 'folio-order' || !noticeRef.current) return
+    // The new notice must exist and have its final geometry before checking a stationary pointer.
+    noticeRef.current.getBoundingClientRect()
+    onStatusHover?.(noticeRef.current.matches(':hover'))
+  }, [status, statusAction, onStatusHover, layout])
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
   const [adjustingTarget, setAdjustingTarget] = useState(false)
   const [targetText, setTargetText] = useState('')
@@ -411,9 +420,9 @@ export function StatusBar({
       next.push({
         id: 'zotero-waiting',
         kind: 'zotero-waiting',
-        label: `${syncLabel}${outboxNeedsZoteroClosed ? ' — needs Zotero closed' : ''}`,
-        title: outboxNeedsZoteroClosed
-          ? 'Close Zotero and press this — your highlights are saved here until it takes them'
+        label: `${syncLabel}${outboxNeedsZoteroOpen ? ' — needs Zotero open' : ''}`,
+        title: outboxNeedsZoteroOpen
+          ? 'Open Zotero and press this — your highlights are saved here until it takes them'
           : 'Write the waiting highlights into your Zotero library',
         onSelect: onSyncHighlights,
       })
@@ -430,7 +439,7 @@ export function StatusBar({
       })
     }
     return next
-  }, [fileName, onOpenRejectedHighlights, onSyncHighlights, outboxNeedsZoteroClosed, outboxRejected, outboxWaiting, saveState])
+  }, [fileName, onOpenRejectedHighlights, onSyncHighlights, outboxNeedsZoteroOpen, outboxRejected, outboxWaiting, saveState])
 
   const modeIds = useMemo<StatusBarModeId[]>(() => {
     const ids: StatusBarModeId[] = []
@@ -853,8 +862,8 @@ export function StatusBar({
         </button>
       )}
       {status && (
-        <span className="status-flash" role="status" data-sb-resident>
-          {status}
+        <span ref={noticeRef} className={`status-flash${statusAction ? ' status-flash-inline' : ''}`} role="status" data-sb-resident onMouseEnter={() => onStatusHover?.(true)} onMouseLeave={() => onStatusHover?.(false)}>
+          <span className="status-flash-message" title={status}>{status}</span>
           {statusAction && <button type="button" className="status-flash-undo" onClick={statusAction.run}>{statusAction.label}</button>}
         </span>
       )}

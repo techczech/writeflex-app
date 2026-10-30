@@ -5,6 +5,8 @@ import type { EditorViewMode } from '../editor/view-mode'
 import type { WriterReviewMode } from '../editor/writer-review'
 
 export type ToolbarProps = {
+  sidebarShortcut?: string
+  panelsShortcut?: string
   sidebarOpen: boolean
   onToggleSidebar: () => void
   panelsOpen: boolean
@@ -72,6 +74,8 @@ export function documentIdentityLabel(documentName?: string | null, collectionNa
  * windows.ts. Only controls with live handlers render here.
  */
 export function Toolbar({
+  sidebarShortcut = '⌘[',
+  panelsShortcut = '⌘]',
   sidebarOpen,
   onToggleSidebar,
   panelsOpen,
@@ -157,12 +161,12 @@ export function Toolbar({
       <button
         className="tbtn"
         aria-pressed={sidebarOpen}
-        title="Toggle sidebar (⌘0)"
+        title={`Toggle sidebar (${sidebarShortcut})`}
         aria-label="Toggle sidebar"
         onClick={onToggleSidebar}
       >
         <PanelLeft className="icon" />
-        <span className="chord" aria-hidden="true">⌘0</span>
+        <span className="chord" aria-hidden="true">{sidebarShortcut}</span>
       </button>
       <button
         className="tbtn"
@@ -194,8 +198,8 @@ export function Toolbar({
       )}
       <div className="tabstrip" role="tablist" aria-label="Open tabs">{children}</div>
       {folioName && onOpenFolioPlan && (
-        <button type="button" className="planbtn" aria-label={`Open the Folio outline for ${folioName}`} title={`Open the Folio outline for ${folioName}`} onClick={onOpenFolioPlan}>
-          <ListOrdered className="icon sm" /><span className="pb-plan">Folio outline</span><span className="pb-name">{folioName}</span>
+        <button type="button" className="planbtn" aria-label={`Manage Folio ${folioName}`} title={`Manage Folio ${folioName}`} onClick={onOpenFolioPlan}>
+          <ListOrdered className="icon sm" /><span className="pb-plan">Manage Folio</span><span className="pb-name">{folioName}</span>
         </button>
       )}
 
@@ -292,12 +296,12 @@ export function Toolbar({
         <button
           className="tbtn"
           aria-pressed={panelsOpen}
-          title="Panels — Agent ⌘J · Scratchpad ⇧⌘J · Versions ⌘3"
+          title={`Toggle right pane (${panelsShortcut})`}
           aria-label="Toggle panels"
           onClick={onTogglePanels}
         >
           <PanelRight className="icon" />
-          <span className="chord" aria-hidden="true">⌘J</span>
+          <span className="chord" aria-hidden="true">{panelsShortcut}</span>
         </button>
       </div>
     </div>

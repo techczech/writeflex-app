@@ -242,8 +242,8 @@ describe('resuming and joining', () => {
     expect(fake.accounts.acc1.script!.build).toBe(SHARING_SERVICE_BUILD)
   })
 
-  test('ticket 12 and the Inline word: a build-7 service is offered the update to build 10, which says Comments and Inline', async () => {
-    expect(SHARING_SERVICE_BUILD).toBe(10)
+  test('ticket 12 and the Inline word: a build-7 service is offered the update to build 13, which says Comments and Inline', async () => {
+    expect(SHARING_SERVICE_BUILD).toBe(13)
     const fake = createFakeCloudflare({
       tokens: { [TOKEN]: { status: 'active', accounts: ['acc1'], workers: 'edit' } },
       accounts: { acc1: { name: 'Shared account', subdomain: 'shared', script: newScript(7) } },
@@ -253,9 +253,9 @@ describe('resuming and joining', () => {
     await first.setup.checkToken(TOKEN)
     await first.setup.setUp()
     const now = world({ fake, build: SHARING_SERVICE_BUILD, secrets: first.secrets, settingsPath: first.settingsPath })
-    expect((await now.setup.status({ askService: true })).service).toEqual({ installedBuild: 7, appBuild: 10, compare: 'update' })
+    expect((await now.setup.status({ askService: true })).service).toEqual({ installedBuild: 7, appBuild: 13, compare: 'update' })
     expect(await now.setup.setUp()).toMatchObject({ ok: true, notice: UPDATED_NOTICE })
-    expect(fake.accounts.acc1.script!.build).toBe(10)
+    expect(fake.accounts.acc1.script!.build).toBe(13)
   })
 
   test('a service from a newer WriteFlex: nothing is sent over it', async () => {

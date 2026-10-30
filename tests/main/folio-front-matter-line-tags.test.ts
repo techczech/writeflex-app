@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 // A `#front-matter` line tag is a sufficient front-matter marker on its own (ADR-0046): another role tag on the same
 // line (`#front-matter #summary`, either order) never takes the part out of front matter. The Plan, the Outline
 // (sidebar) facts and the HTML export read it alike; a move out of the leading block is refused; writes that do not
@@ -84,8 +85,8 @@ test('a write to another line keeps the #front-matter #summary line byte for byt
   await folio(['- [[A]] #front-matter #summary', '- [[B]]'])
   await setPartRole('r', 1, 'appendix')
   const index = await read(INDEX)
-  expect(index).toContain('- [[A]] #front-matter #summary\n')
-  expect(index).toContain('- [[B]] #appendix\n')
+  expect(index).toContain(pinnedIndex('- [[A]] #front-matter #summary\n', {"A":"./a.md|A","B":"./b.md|B"}))
+  expect(index).toContain(pinnedIndex('- [[B]] #appendix\n', {"A":"./a.md|A","B":"./b.md|B"}))
   expect((await readPlan(ws, 'r'))!.parts.map((part) => part.role)).toEqual(['front-matter', 'appendix'])
 })
 
@@ -104,6 +105,6 @@ test('the role menu: Front matter on a #front-matter #summary part changes nothi
   // gets that role tag alone and the part goes to the start of the contents.
   await write(INDEX, before)
   await setPartRole('r', 0, 'appendix')
-  expect(await read(INDEX)).toContain('- [[A]] #appendix\n')
+  expect(await read(INDEX)).toContain(pinnedIndex('- [[A]] #appendix\n', {"A":"./a.md|A"}))
   expect((await readPlan(ws, 'r'))!.parts.map((part) => [part.title, part.role])).toEqual([['A', 'appendix'], ['B', 'section']])
 })

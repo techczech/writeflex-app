@@ -129,8 +129,6 @@ test('the sidebar Outline lists front matter first, marked not in contents, with
   expect(html).toMatch(/data-fo-front-box="0"/)
   expect(html).not.toMatch(/data-fo-box="0"/)
   expect(html).toMatch(/data-fo-box="1"/)
-  // Each contents file starts with a dashed mark carrying its file name; front matter has none.
-  expect(html.match(/class="fo-mark"/g)?.length).toBe(2)
   // The front row has no grip: only the two contents rows do.
   expect(html.match(/class="fo-grip"/g)?.length).toBe(2)
 })

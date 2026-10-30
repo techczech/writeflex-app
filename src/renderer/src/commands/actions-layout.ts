@@ -13,7 +13,7 @@
 import {
   ArrowUpDown, Bold, CaseSensitive, ChevronsDownUp, ClipboardCopy, Columns2, Copy, ExternalLink, Eye, FileText, FilePlus, FolderInput, FolderOpen, FolderPlus, Focus,
   Hash, Heading as HeadingIcon, Highlighter, IndentDecrease, IndentIncrease, Italic, Link as LinkIcon, List, ListChecks, ListOrdered, ListPlus, ListTree, MessageSquare, Network, PencilLine,
-  Pilcrow, Pin, Replace, SquareCheck, SquarePen, SquarePlus, Strikethrough, TextQuote, TextSelect, Trash2, Type, Upload, Volume2, Workflow, Code, Table as TableIcon, Sparkles, CopyPlus, RemoveFormatting,
+  Pilcrow, Pin, Replace, SquareCheck, SquarePen, SquarePlus, StickyNote, Strikethrough, TextQuote, TextSelect, Trash2, Type, Upload, Volume2, Workflow, Code, Table as TableIcon, Sparkles, CopyPlus, RemoveFormatting,
   type LucideIcon,
 } from 'lucide-react'
 import { INSERT_OBJECT_ROW } from './command-places'
@@ -175,6 +175,7 @@ export const LAYOUTS: Readonly<Record<Place, readonly LayoutItem[]>> = {
     { kind: 'strip', caption: 'Format', cells: FORMAT_CELLS },
     INSERT, SEP,
     COMMENT, ask('selection'), readAloud('Read aloud'), SEP,
+    row('scratchpad.sendCopy', StickyNote, 'Send a copy to Scratchpad'), row('scratchpad.cut', StickyNote, 'Cut to Scratchpad'), SEP,
     TURN_INTO.selection!, CHANGE_CASE, row('edit.selectNextOccurrence', TextSelect, 'Select next occurrence'),
   ],
   heading: HEADING_ROWS(TURN_INTO.heading, 'heading'),

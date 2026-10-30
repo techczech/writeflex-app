@@ -65,10 +65,12 @@ test('the preload exposes the write hooks only when main passed the argument', a
 // and a malformed value never stops registration (review S2: parsed when a save asks).
 const saveProbe = (isPackaged: boolean): string => String.raw`
   import { mock } from 'bun:test'
-  import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+  import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
   const root = await mkdtemp(join(tmpdir(), 'writeflex-e2e-hooks-'))
+  process.env.WRITEFLEX_E2E_SOURCE_HOME = join(root, 'synthetic-source-home')
+  await mkdir(process.env.WRITEFLEX_E2E_SOURCE_HOME)
   process.resourcesPath = root // a packaged main reads its sound pack from here; nothing is read in this probe
   const handlers = new Map()
   const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: (channel) => handlers.delete(channel) }

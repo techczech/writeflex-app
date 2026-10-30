@@ -1,3 +1,4 @@
+import { VersionStore } from '../../src/main/versions'
 /**
  * The own-folder step of Create and insert (contracts §14 C5, all amendments; locked drawing
  * docs/design/2026-10-20-folio-on-widget-insert/), against a real temporary Workspace:
@@ -730,4 +731,29 @@ describe('Review r4: a refused copy stops the folders\' removal too', () => {
     expect(lstatSync(join(root, W, 'Course notes/visualisations')).isDirectory()).toBe(true)
     expect(existsSync(join(root, copy))).toBe(true)
   })
+})
+
+test('an own-folder widget cannot declare a Folio under an Index-Note-only ancestor', async () => {
+  const { ws, root } = workspace(workshop())
+  const facts = await factsOf(ws)
+  writeFileSync(join(root, `_${posix.basename(root)}_INDEX.md`), '## Running order\n')
+  const before = snapshot(root)
+  const result = await create(ws, new StandardWidgetUndoDesk(), choice(facts))
+  expect(result).toMatchObject({ ok: false, message: expect.stringContaining('already occupies this folder tree') })
+  expect(snapshot(root)).toEqual(before)
+})
+
+test('widget folder moves and their guarded Undo carry document versions', async () => {
+  const { ws } = workspace(workshop())
+  const versions = new VersionStore(ws)
+  const from = `${W}/course-notes.md`
+  const first = await versions.append({ path: from, name: 'Before widget', author: { name: 'Writer' } })
+  const desk = new StandardWidgetUndoDesk()
+  const result = await create(ws, desk, choice(await factsOf(ws)))
+  if (!result.ok) throw new Error(result.message)
+  expect((await versions.list({ path: result.documentPath }))[0].id).toBe(first.id)
+  expect(await versions.list({ path: from })).toEqual([])
+  const undone = await desk.undo(ws, result.undoId)
+  expect(undone.ok).toBe(true)
+  expect((await versions.list({ path: from }))[0].id).toBe(first.id)
 })

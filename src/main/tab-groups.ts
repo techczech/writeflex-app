@@ -11,7 +11,8 @@
 
 import { stat } from 'node:fs/promises'
 import { posix } from 'node:path'
-import { collectionCoverPaths, readManifest } from './folio'
+import { collectionCoverPaths } from './folio'
+import { folioDeclaration } from './folio-declaration'
 import type { Workspace } from './workspace'
 
 /** Most paths one call resolves; the renderer asks for its open tabs, never the whole tree. */
@@ -58,7 +59,7 @@ export async function resolveTabGroups(ws: GroupWorkspace, paths: readonly strin
   const cover = new Map<string, Promise<boolean>>()
   const isFolio = (dir: string): Promise<boolean> => {
     let known = folio.get(dir)
-    if (!known) folio.set(dir, known = readManifest(ws, dir).then((manifest) => manifest !== null, () => false))
+    if (!known) folio.set(dir, known = Promise.resolve().then(() => folioDeclaration(ws, dir).isFolio).catch(() => false))
     return known
   }
   const hasCover = (dir: string): Promise<boolean> => {

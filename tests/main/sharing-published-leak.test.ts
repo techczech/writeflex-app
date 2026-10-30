@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // Leaves nothing behind (sharing ticket 03; spec section 8 "What is published", test matrix row
 // "Leaves nothing behind"): the HTML-export leak harness, extended for sharing, run on what the
 // publisher actually sent to the service (the publish JSON, every request on the wire) and on the
@@ -227,3 +228,6 @@ test('a Folio: the payload, the wire and the reader page carry none of what the 
   expect(tables.query('SELECT COUNT(*) AS n FROM images').get()).toEqual({ n: 0 })
   expect(tables.query('SELECT COUNT(*) AS n FROM page_chunks').get()).toEqual({ n: 0 })
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

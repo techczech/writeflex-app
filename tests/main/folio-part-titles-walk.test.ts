@@ -72,7 +72,7 @@ test('opening the Folio stages one pending change (the missing heading), writes 
   const pending = (await changes.list({ status: 'pending' }))[0]
   expect(isAddHeadingProposal(pending)).toBe(true)
   expect(pending.author?.name).toBe('WriteFlex')
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, changes,
     onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),

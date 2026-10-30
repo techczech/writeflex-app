@@ -32,6 +32,7 @@ test('uses the mock Bridle lane for e2e and builds the fixed honest TurnScript',
   }])).toEqual({
     prompt: '<e2e scripted turn>',
     rounds: [
+      { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: ['files.list'] } }] },
       { kind: 'tool-calls', calls: [{ name: 'files.list', arguments: { path: '' } }] },
       { kind: 'message', text: 'Staged for your review.' },
     ],
@@ -41,6 +42,7 @@ test('uses the mock Bridle lane for e2e and builds the fixed honest TurnScript',
     input: { path: '' },
   }], '# Formatted reply')).toMatchObject({
     rounds: [
+      { kind: 'tool-calls' },
       { kind: 'tool-calls' },
       { kind: 'message', text: '# Formatted reply' },
     ],
@@ -56,7 +58,7 @@ test('rejects an invalid e2e TurnScript before it can be queued', () => {
 
 test('an empty factory queue accepts two turns lazily in push order on one session', async () => {
   const queue: ScriptedTurn[] = []
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root),
     appDataDir: appData,
     onTrace: () => {},
@@ -88,7 +90,7 @@ test('undoing an agent rename restores the file and every reference repaired in 
   await writeFile(join(root, 'second-ref.md'), 'Again [[old]].\n')
   const steps = [{ cap: 'housekeeping.rename_file', input: { path: 'old.md', newPath: 'new.md' } }]
   const queue = [buildE2EScriptedTurn(steps)]
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root),
     appDataDir: appData,
     onTrace: () => {},
@@ -126,7 +128,7 @@ test('a completed turn reports the model and reasoning level that actually ran i
     created.session.setThinkingLevel = () => {}
     return created
   }
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root),
     appDataDir: appData,
     defaults: { provider: 'openai-codex', modelId: 'gpt-5.4', thinkingLevel: 'medium' },
@@ -155,7 +157,7 @@ test('a rejected thinking-level change is surfaced and leaves Bridle in force', 
     created.session.setThinkingLevel = () => { throw new Error('The provider refused high reasoning.') }
     return created
   }
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: rejectsThinkingChanges,
@@ -187,7 +189,7 @@ test('registryModels uses Bridle model-service discovery and every listed family
 })
 
 test('an unlisted model is refused by Bridle with its named human-readable error', async () => {
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory([]),
@@ -206,7 +208,7 @@ test('an unlisted model is refused by Bridle with its named human-readable error
 
 test('a turn receipt exposes only files actually opened by read tools in the Digest', async () => {
   const queue: ScriptedTurn[] = []
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     sessionFactory: scriptedSessionFactory(queue),
@@ -222,7 +224,7 @@ test('a turn receipt exposes only files actually opened by read tools in the Dig
 test('the following turn receives the previous turn file read under the truthful Digest label', async () => {
   const queue: ScriptedTurn[] = []
   const injected: string[] = []
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     observePromptContext: (content) => injected.push(content),
@@ -245,7 +247,7 @@ test('prompt self-primes a current Digest after the boot cache revision becomes 
   const queue: ScriptedTurn[] = []
   const injected: string[] = []
   let revision = 0
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     getCollectionRevision: () => revision,
     observePromptContext: (content) => injected.push(content),
@@ -268,7 +270,7 @@ test('a primed Digest survives a revision bump and is used without a mid-turn re
   const queue: ScriptedTurn[] = []
   const injected: string[] = []
   let revision = 0
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     getCollectionRevision: () => revision,
     observePromptContext: (content) => injected.push(content),
@@ -299,7 +301,7 @@ test('a turn scoped to Essays invalidates Notes from its real write and the next
   const bump = (paths: string[], activeDir: string) => {
     for (const dir of collectionDirsForPaths([...paths, activeDir])) revisions.set(dir, (revisions.get(dir) ?? 0) + 1)
   }
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     getCollectionRevision: (dir) => revisions.get(dir) ?? 0,
     onTurnComplete: bump,
@@ -325,7 +327,7 @@ test('a real nested write invalidates both its Collection and parent Collection 
   await writeFile(join(root, 'Essays', 'draft.md'), '# Draft\n')
   const queue: ScriptedTurn[] = []
   const revisions = new Map<string, number>()
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     getCollectionRevision: (dir) => revisions.get(dir) ?? 0,
     onTurnComplete: (paths, activeDir) => {
@@ -345,7 +347,7 @@ test('a real nested write invalidates both its Collection and parent Collection 
 })
 
 test('a prompt that throws after taking a prepared Digest leaves no cache pin', async () => {
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     observePromptContext: () => { throw new Error('forced context observer failure') },
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
@@ -389,7 +391,7 @@ test('maps a proposed Bridle text diff onto the frozen renderer suggestion wire 
 })
 
 test('create() opens the snapshot store in <root>/.bridle (history-on-open) and exposes model surface', async () => {
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: new Workspace(root), appDataDir: appData,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {}
   })
@@ -408,6 +410,7 @@ function fixedScript(text: string, steps: ScriptedStep[]): Parameters<typeof scr
   return [{
     prompt: text,
     rounds: [
+      { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: steps.map((step) => step.cap) } }] },
       { kind: 'tool-calls', calls: steps.map((step) => ({ name: step.cap, arguments: step.input as Record<string, unknown> })) },
       { kind: 'message', text: 'Scripted turn complete.' },
     ],
@@ -417,7 +420,7 @@ function fixedScript(text: string, steps: ScriptedStep[]): Parameters<typeof scr
 async function makeLedgerAgent(script?: { text: string; steps: ScriptedStep[] }): Promise<{ agent: WorkspaceAgent; workspace: Workspace; changes: ChangeStore }> {
   const workspace = new Workspace(root)
   const changes = new ChangeStore(workspace)
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace,
     appDataDir: appData,
     changes,
@@ -597,7 +600,7 @@ test('invalid scripted objects.insert is a corrective tool result, not a failed 
   const traces: unknown[] = []
   const workspace = new Workspace(root)
   const changes = new ChangeStore(workspace)
-  const agent = await WorkspaceAgent.create({
+  const agent = await WorkspaceAgent.create({ mode: 'work',
     workspace,
     appDataDir: appData,
     changes,
@@ -1236,7 +1239,7 @@ test('ambient is model-visible exactly once before the Digest and never enters t
     created.session.prompt = (text, options) => { modelTexts.push(text); return prompt(text, options) }
     return created
   }
-  const agent = await WorkspaceAgent.create({ workspace: new Workspace(root), appDataDir: appData,
+  const agent = await WorkspaceAgent.create({ mode: 'work', workspace: new Workspace(root), appDataDir: appData,
     composition: { ambient }, sessionFactory: factory,
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
   try {

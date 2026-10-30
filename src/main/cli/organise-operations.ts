@@ -5,6 +5,8 @@
  * by the WriteSession and remembered for undo. A repair that fails partway is put back by the caller
  * (write-access.ts) and reported as refused.
  */
+import { guardFolioFolderMove } from '../folio-declaration'
+
 import { lstatSync, statSync } from 'node:fs'
 import { posix } from 'node:path'
 import { MANIFEST_NAME, indexNotePath, readManifest, resolveManifestFilePath } from '../folio'
@@ -174,6 +176,7 @@ export const ORGANISE_OPERATIONS: Operation[] = [
       const indexMove = renamesIndex ? [{ from: `${to}/${posix.basename(oldIndex)}`, to: newIndex, kind: 'file' as const, sizeAt: oldIndex }] : []
       const where = (path: string): string => (path === from || path.startsWith(`${from}/`) ? now(path) : path)
       access.journal.budget(plannedRecord(ws, [{ from, to, kind: 'folder' }, ...indexMove], rewrites, where))
+      await guardFolioFolderMove(ws, from, to, renamesIndex)
       await access.session.move(from, to, 'folder')
       // Same operation, same journal entry: one undo reverses the folder and its Index Note together.
       if (renamesIndex) await access.session.move(`${to}/${posix.basename(oldIndex)}`, newIndex, 'file')

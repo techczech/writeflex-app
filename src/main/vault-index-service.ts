@@ -7,7 +7,7 @@
  *
  * The service is the seam the `vault:index` IPC call and the `vault:index-changed` push stand on.
  */
-
+import { folioDeclaration } from './folio-declaration'
 import { createHash } from 'node:crypto'
 import { mkdir, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
@@ -103,7 +103,6 @@ export class VaultIndexService {
     }
   }
 
-
   /**
    * Run detection now and cache the result. Concurrent calls join the computation in flight when no
    * invalidation came since it started; after one, they wait for it to settle and start a new pass, so a
@@ -186,7 +185,7 @@ export class VaultIndexService {
       return facts
     }
     const tree = { rootName: basename(root), files: listed.map((file) => file.path), folders, manifests }
-    const reader = { markdown: factsOf, manifest: (folder: string) => manifestTexts.get(folder) ?? null }
+    const reader = { declaration: (folder: string) => folioDeclaration(ws, folder), markdown: factsOf, manifest: (folder: string) => manifestTexts.get(folder) ?? null }
     const warn = (message: string): void => console.warn(`${message} (${root})`)
     let index = detectVaultWorks(tree, settings, reader, warn)
     for (let pass = 1; asked.size > 0 && pass < MAX_DETECT_PASSES; pass += 1) {

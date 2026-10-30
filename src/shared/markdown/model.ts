@@ -21,6 +21,7 @@ import {
   wikilinkRanges,
   type Wikilink,
 } from './dialect'
+import { isFlagComment, stripFlags } from './flags'
 import { embedLine } from './embed-line'
 import { numberingOfFirst, ordinalOf, type FancyNumbering, type ListDelimiter } from './fancy-lists'
 
@@ -166,7 +167,7 @@ function inlineRange(node: SyntaxNode, from: number, to: number, ctx: Context): 
     const childStart = child && child.from < to ? child.from : to
     if (link && link.from <= childStart) {
       parts.push({ kind: 'text', text: ctx.src.slice(pos, link.from) })
-      parts.push({ kind: 'wikilink', target: link.target, label: link.label })
+      parts.push({ kind: 'wikilink', target: link.target, label: stripFlags(link.label) })
       pos = link.to
       continue
     }
@@ -206,7 +207,13 @@ function inlineNode(node: SyntaxNode, ctx: Context): Inline[] {
     case 'Emphasis': return [{ kind: 'emphasis', children: delimited(node, ctx) }]
     case 'StrongEmphasis': return [{ kind: 'strong', children: delimited(node, ctx) }]
     case 'Strikethrough': return [{ kind: 'strike', children: delimited(node, ctx) }]
-    case 'Highlight': return [{ kind: 'mark', children: delimited(node, ctx) }]
+    case 'Highlight': {
+      // A flag (`==words==<!--flag:kind-->`) is not a highlight in any output: its words are plain text
+      // here, and the Comment after it emits nothing, so no emitter needs to know flags exist.
+      const next = node.nextSibling
+      if (next && next.name === 'Comment' && next.from === node.to && isFlagComment(ctx.src.slice(next.from, next.to))) return delimited(node, ctx)
+      return [{ kind: 'mark', children: delimited(node, ctx) }]
+    }
     case 'InlineCode': {
       const marks = children(node).filter((child) => child.name === 'CodeMark')
       const open = marks[0], close = marks[marks.length - 1]
@@ -220,7 +227,7 @@ function inlineNode(node: SyntaxNode, ctx: Context): Inline[] {
       return [{
         kind: 'image',
         src: url ? unwrapUrl(url) : '',
-        alt: ctx.src.slice(label.from, label.to),
+        alt: stripFlags(ctx.src.slice(label.from, label.to)),
         ...(title ? { title: title.slice(1, -1) } : {}),
       }]
     }
@@ -278,7 +285,7 @@ function link(node: SyntaxNode, ctx: Context): Inline {
     }
   }
   // Nothing to point at: the brackets stay as the writer typed them. Never a dead anchor.
-  return { kind: 'text', text: ctx.src.slice(node.from, node.to) }
+  return { kind: 'text', text: stripFlags(ctx.src.slice(node.from, node.to)) }
 }
 
 /** Assign (or reuse) a footnote number and record one more mark pointing at it. A `[^label]`

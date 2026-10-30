@@ -46,7 +46,7 @@ async function collection() {
 async function withAgent(c: Awaited<ReturnType<typeof collection>>) {
   const appData = await mkdtemp(join(tmpdir(), 'wf-reader-replies-data-'))
   roots.push(appData)
-  const agent = await WorkspaceAgent.create({ workspace: c.workspace, appDataDir: appData, changes: c.changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
+  const agent = await WorkspaceAgent.create({ mode: 'work', workspace: c.workspace, appDataDir: appData, changes: c.changes, onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
   agents.push(agent)
   return agent
 }

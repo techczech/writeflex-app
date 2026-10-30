@@ -24,7 +24,7 @@
  * by a link: a first append may create an EMPTY file in the link's target; the check on the handle
  * then refuses and no byte is written.
  */
-import { constants } from 'node:fs'
+import { constants, closeSync, fsyncSync, fstatSync, lstatSync, openSync, realpathSync, readSync, statSync, writeSync } from 'node:fs'
 import { lstat, open, stat, realpath, type FileHandle } from 'node:fs/promises'
 import { join, posix } from 'node:path'
 
@@ -51,7 +51,7 @@ const NOT_A_FILE = new Set(['ELOOP', 'EMLINK', 'EFTYPE', 'ENXIO', 'EISDIR', 'ENO
 
 /** Open for appending: the existing file, or a new one when nothing stands at the name. */
 async function openForAppend(abs: string, rel: string): Promise<FileHandle> {
-  const append = constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  const append = constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK
   const refused = (error: unknown): unknown => (NOT_A_FILE.has(code(error) ?? '') ? new StoreAppendRefused(rel, NOT_ORDINARY) : error)
   // Twice at most: a first append made by another writer of this process between our two opens
   // (EEXIST on the create) is then appended to like any existing journal.
@@ -109,8 +109,40 @@ export async function appendStoreLine(root: string, rel: string, text: string): 
   const handle = await openForAppend(join(folder.path, name), rel)
   try {
     await assertChecked(handle, root, rel, name, folder)
-    await handle.writeFile(text, 'utf8')
+    const opened = await handle.stat()
+    const tail = Buffer.alloc(1)
+    const needsBreak = opened.size > 0 && (await handle.read(tail, 0, 1, opened.size - 1)).bytesRead === 1 && tail[0] !== 10
+    await handle.writeFile(`${needsBreak ? '\n' : ''}${text}`, 'utf8')
+    await handle.sync()
   } finally {
     await handle.close().catch(() => {})
   }
+}
+
+/** Synchronous counterpart for moves whose pinned commit and rollback cannot yield. */
+export function appendStoreLineSync(root: string, rel: string, text: string): void {
+  const parts = rel.split('/')
+  if (parts.length !== 2 || parts[0] !== STORE_FOLDER || !parts[1] || parts[1] === '.' || parts[1] === '..' || rel.includes('\\')) throw new Error('Invalid store path.')
+  const folderPath = join(realpathSync(root), STORE_FOLDER)
+  const folder = lstatSync(folderPath)
+  if (!folder.isDirectory() || !sameFile(folder, statSync(join(root, STORE_FOLDER)))) throw new StoreAppendRefused(rel, NOT_IN_STORE)
+  const path = join(folderPath, parts[1])
+  const flags = constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  let fd: number
+  try { fd = openSync(path, flags) } catch (error) {
+    if (code(error) !== 'ENOENT') throw error
+    fd = openSync(path, flags | constants.O_CREAT | constants.O_EXCL, 0o644)
+  }
+  try {
+    const opened = fstatSync(fd)
+    if (!opened.isFile()) throw new StoreAppendRefused(rel, NOT_ORDINARY)
+    if (opened.nlink !== 1) throw new StoreAppendRefused(rel, TWO_NAMES)
+    if (!sameFile(folder, lstatSync(folderPath)) || !sameFile(folder, statSync(join(root, STORE_FOLDER))) || !sameFile(opened, lstatSync(path))) throw new StoreAppendRefused(rel, NOT_IN_STORE)
+    const tail = Buffer.alloc(1)
+    const needsBreak = opened.size > 0 && readSync(fd, tail, 0, 1, opened.size - 1) === 1 && tail[0] !== 10
+    const bytes = Buffer.from(`${needsBreak ? '\n' : ''}${text}`)
+    let offset = 0
+    while (offset < bytes.length) offset += writeSync(fd, bytes, offset)
+    fsyncSync(fd)
+  } finally { closeSync(fd) }
 }

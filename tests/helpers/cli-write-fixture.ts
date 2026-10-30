@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { trackScratch } from './scratch-dirs'
 import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -65,10 +66,10 @@ async function walk(root: string, dir: string, out: Record<string, string>): Pro
 }
 
 export async function writeFixture(): Promise<WriteFixture> {
-  const root = realpathSync(await mkdtemp(join(tmpdir(), 'wf-cli-write-')))
-  const trashed = realpathSync(await mkdtemp(join(tmpdir(), 'wf-cli-trash-')))
+  const root = trackScratch(realpathSync(await mkdtemp(join(tmpdir(), 'wf-cli-write-'))))
+  const trashed = trackScratch(realpathSync(await mkdtemp(join(tmpdir(), 'wf-cli-trash-'))))
   // Laid out as the real one is: the release app's folder, with room for the beta's beside it.
-  const support = realpathSync(await mkdtemp(join(tmpdir(), 'wf-cli-appdata-')))
+  const support = trackScratch(realpathSync(await mkdtemp(join(tmpdir(), 'wf-cli-appdata-'))))
   const appData = join(support, 'writeflex-desktop')
   const otherAppData = join(support, 'writeflex-desktop-beta')
   await mkdir(appData, { mode: 0o700 })

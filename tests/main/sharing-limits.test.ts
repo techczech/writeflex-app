@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // 0.24 ticket 07, part 2, at the Sharing page's seam (src/main/sharing-piece-ipc.ts `sharing:notes`,
 // `sharing:clear-handled`, `sharing:raise-limit`, `sharing:set-comments`) over the real publisher, the
 // real collector and the real sharing service in memory. Spec 4.6 (notes waiting, notes handled) and
@@ -296,3 +297,6 @@ test('ticket 11, review round 1 F1: Clear handled notes marks the cleared notes\
   expect(await gone(open.id)).toBeUndefined()
   t.run.dispose()
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { DOCK_WIDTH } from '../../../shared/scratchpad-layout'
 
 export type LeftPaneTab = 'files' | 'outline' | 'search'
 
@@ -120,6 +121,9 @@ export type PaneLayoutDeps = {
   onRightTabOpened: (tab: RightPaneTab) => void
   /** The person has opened the Guide tab (the title-bar Guide button): it is last in the row. */
   guideShown?: boolean
+  /** The Scratchpad is actually docked, rather than floating or collapsed. */
+  scratchpadDocked?: boolean
+  viewportWidth?: number
 }
 
 export type PaneLayout = {
@@ -153,7 +157,13 @@ export function usePaneLayout(deps: PaneLayoutDeps): PaneLayout {
   const [leftPaneCollapsed, setLeftPaneCollapsed] = useState(false)
   const [rightPaneCollapsed, setRightPaneCollapsed] = useState(false)
   const [leftPaneWidth, setLeftPaneWidth] = useState<number>(() => readPaneWidth('wf:leftPaneWidth', 268))
-  const [rightPaneWidth, setRightPaneWidth] = useState<number>(() => readPaneWidth('wf:rightPaneWidth', 340))
+  const [ordinaryRightPaneWidth, setRightPaneWidth] = useState<number>(() => readPaneWidth('wf:rightPaneWidth', 340))
+  const [scratchpadPaneWidth, setScratchpadPaneWidth] = useState<number>(() => readPaneWidth('wf:scratchpadPaneWidth', DOCK_WIDTH))
+  const scratchpadDocked = rightTab === 'scratchpad' && deps.scratchpadDocked === true
+  // The viewport limits the displayed dock, never the person's saved requested width.
+  const rightPaneWidth = scratchpadDocked
+    ? Math.min(scratchpadPaneWidth, (deps.viewportWidth ?? window.innerWidth) * 0.6)
+    : ordinaryRightPaneWidth
 
   const depsRef = useRef(deps)
   depsRef.current = deps
@@ -188,10 +198,13 @@ export function usePaneLayout(deps: PaneLayoutDeps): PaneLayout {
     (side: 'left' | 'right') => (e: React.PointerEvent) => {
       e.preventDefault()
       const startX = e.clientX
-      const set = side === 'left' ? setLeftPaneWidth : setRightPaneWidth
+      // Capture the destination at pointer-down; switching tabs mid-drag must not redirect it.
+      const resizingScratchpad = side === 'right' && scratchpadDocked
+      const set = side === 'left' ? setLeftPaneWidth : resizingScratchpad ? setScratchpadPaneWidth : setRightPaneWidth
+      const key = side === 'left' ? 'wf:leftPaneWidth' : resizingScratchpad ? 'wf:scratchpadPaneWidth' : 'wf:rightPaneWidth'
       const startW = side === 'left' ? leftPaneWidth : rightPaneWidth
       const sign = side === 'left' ? 1 : -1
-      let latest = startW
+      let latest = resizingScratchpad ? scratchpadPaneWidth : startW
       const move = (ev: PointerEvent): void => {
         latest = Math.max(PANE_MIN, Math.min(PANE_MAX, startW + sign * (ev.clientX - startX)))
         set(latest)
@@ -201,7 +214,7 @@ export function usePaneLayout(deps: PaneLayoutDeps): PaneLayout {
         window.removeEventListener('pointerup', up)
         document.body.style.cursor = ''
         try {
-          localStorage.setItem(side === 'left' ? 'wf:leftPaneWidth' : 'wf:rightPaneWidth', String(Math.round(latest)))
+          localStorage.setItem(key, String(Math.round(latest)))
         } catch {
           /* localStorage may be unavailable; the live width still applies for the session. */
         }
@@ -210,7 +223,7 @@ export function usePaneLayout(deps: PaneLayoutDeps): PaneLayout {
       window.addEventListener('pointerup', up)
       document.body.style.cursor = 'col-resize'
     },
-    [leftPaneWidth, rightPaneWidth],
+    [leftPaneWidth, rightPaneWidth, scratchpadDocked, scratchpadPaneWidth],
   )
 
   return {

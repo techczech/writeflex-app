@@ -12,7 +12,9 @@
  * writes a plan. Undo lives in the desk (board-material-desk.ts), which snapshots before writing.
  */
 
+import { isLosslessScrapId } from './scrap-listing'
 import { existsSync, readFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { indexNotePath } from './folio'
@@ -118,7 +120,14 @@ export function appendToPieceText(content: string, text: string): string {
   return `${content}${gap}${body}${eol}`
 }
 
-export type OffcutPromotionPlan = { target: string; tracker: MaterialWrite; scraps: MaterialWrite }
+/** A lossless Scratchpad text item a plan copies from (spec P4 copy-for-reuse): no scraps file is
+ *  written and the candidate is retained; after the receiving document lands, the copy is recorded
+ *  on the item as a historical use. `markdown` is the exact payload this plan was prepared from —
+ *  the captured authority execution is held to, so a payload changed since cannot be re-authorised
+ *  by a later read. See recordLosslessBoardCopy. */
+export type LosslessBoardTake = { id: string; markdown: string }
+
+export type OffcutPromotionPlan = { target: string; tracker: MaterialWrite; scraps: MaterialWrite | null; lossless?: LosslessBoardTake }
 
 /**
  * The pure promote plan: scrap + name → the tracker's new text and the scraps file's new text.
@@ -146,7 +155,37 @@ export function planOffcutPromotion(input: {
   }
 }
 
-export type ScrapAppendPlan = { piece: MaterialWrite; scraps: MaterialWrite }
+export type ScrapAppendPlan = { piece: MaterialWrite; scraps: MaterialWrite | null; lossless?: LosslessBoardTake }
+
+/** Append a lossless item's exact payload to a piece: only the blank-line separation before it and a
+ *  final line ending after it are added; the payload's own bytes (line endings included) are kept. */
+export function appendExactText(content: string, text: string): string {
+  if (content === '') return text
+  const eol = lineEnding(content)
+  const gap = content.endsWith(`${eol}${eol}`) ? '' : content.endsWith('\n') ? eol : `${eol}${eol}`
+  const joined = `${content}${gap}${text}`
+  return joined.endsWith('\n') ? joined : `${joined}${eol}`
+}
+
+/** The lossless item a Board step may take, read through the Scratchpad store's checked authority
+ *  (loaded on first use, as in scrap-listing.ts, so Board imports stay light). */
+async function boardTextItem(ws: Workspace, id: string): Promise<{ markdown: string; origin: string }> {
+  const { ScratchpadStore } = await import('./scratchpad-store')
+  const item = await new ScratchpadStore(ws, null).boardTextItem(id)
+  return { markdown: item.markdown, origin: item.origin.path }
+}
+
+/**
+ * The scrap half of a Board/agent copy step for a lossless item, run AFTER the receiving document
+ * is written and inside the caller's restore ownership (the Board desk, or the accepted agent
+ * proposal's own exclusive write): the store records the actual copy as a historical use through
+ * its checked writer and RETAINS the candidate. Undo of the step restores the receiving document
+ * only; this record is never rolled back over outside metadata edits.
+ */
+export async function recordLosslessBoardCopy(ws: Workspace, take: LosslessBoardTake, destination: string): Promise<void> {
+  const { ScratchpadStore } = await import('./scratchpad-store')
+  await new ScratchpadStore(ws, null).recordBoardCopy(take.id, destination, `u_${Date.now().toString(36)}${randomBytes(4).toString('hex')}`, take.markdown)
+}
 
 /** The pure append plan: scrap → the piece's new text (scrap at its end) and the scraps file's new text. */
 export function planScrapAppend(input: { piecePath: string; piece: string; scrapsPath: string; scraps: string; scrapId: string }): ScrapAppendPlan {
@@ -175,6 +214,26 @@ function isInside(dir: string, path: string): boolean {
 /** Read the tracker and scraps file and plan the promotion; refuses before anything is written. */
 export async function prepareOffcutPromotion(ws: Workspace, input: PromoteOffcutInput): Promise<OffcutPromotionPlan> {
   const dir = input.dir.replace(/^\/+|\/+$/g, '')
+  if (isLosslessScrapId(input.scrapId)) {
+    // A lossless text item (ticket 04): the tracker quote is its exact payload, and the copy is
+    // copied (the candidate is retained) instead of a scraps file being rewritten.
+    const item = await boardTextItem(ws, input.scrapId)
+    if (!isInside(dir, item.origin)) throw new Error('That offcut is not in this collection.')
+    const target = ideaTarget(input.name)
+    if (!target) throw new Error('Give the idea a name first.')
+    const clash = (await ws.listFiles()).find((file) => isInside(dir, file.path) && !isScrapsPath(file.path)
+      && posix.basename(file.path).replace(MARKDOWN_EXTENSION, '').toLocaleLowerCase() === target)
+    if (clash) throw new Error(`A piece named “${input.name.trim()}” already exists in this collection (${clash.path}). Choose another name.`)
+    const trackerPath = indexNotePath(ws, dir)
+    const tracker = await readOptional(ws, trackerPath)
+    if (tracker !== null && trackerLinksTo(tracker, target)) throw new Error(`“${input.name.trim()}” is already in the tracker note. Choose another name.`)
+    return {
+      target,
+      tracker: { path: trackerPath, before: tracker, after: addIdeaToTracker(tracker, collectionName(ws, dir), ideaEntryLines(target, item.markdown)) },
+      scraps: null,
+      lossless: { id: input.scrapId, markdown: item.markdown },
+    }
+  }
   if (!isScrapsPath(input.scrapsPath) || !isInside(dir, input.scrapsPath)) throw new Error('That offcut is not in this collection.')
   const scraps = await readOptional(ws, input.scrapsPath)
   if (scraps === null) throw new Error('That offcut is gone: its scraps file no longer exists.')
@@ -201,6 +260,21 @@ export async function prepareScrapAppend(ws: Workspace, input: AppendScrapInput)
   if (!MARKDOWN_EXTENSION.test(input.piece) || isScrapsPath(input.piece)) throw new Error('A scrap can only be added to a piece.')
   const piece = await readOptional(ws, input.piece)
   if (piece === null) throw new Error(`${input.piece} no longer exists.`)
+  if (isLosslessScrapId(input.scrapId)) {
+    // A lossless text item (ticket 04): its exact payload is appended and the candidate is
+    // retained for reuse. Like a drawer scrap, it belongs to the piece it came from.
+    const item = await boardTextItem(ws, input.scrapId)
+    if (item.origin !== input.piece) throw new Error('That item was set aside from another piece, so it was left as it is. Insert a copy from the Scratchpad to use it here.')
+    if (!item.markdown.trim()) throw new Error('That scrap is empty; there is nothing to add.')
+    const heading = /^#\s+(.+?)\s*#*\s*$/m.exec(piece.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, ''))?.[1]
+    const pieceTitle = parseFrontmatter(piece)?.title?.trim() || heading || posix.basename(input.piece).replace(MARKDOWN_EXTENSION, '')
+    return {
+      piece: { path: input.piece, before: piece, after: appendExactText(piece, item.markdown) },
+      scraps: null,
+      lossless: { id: input.scrapId, markdown: item.markdown },
+      pieceTitle,
+    }
+  }
   const scrapsPath = scrapsPathFor(input.piece)
   const scraps = await readOptional(ws, scrapsPath)
   if (scraps === null) throw new Error('That scrap is gone: its scraps file no longer exists.')

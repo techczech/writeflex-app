@@ -9,6 +9,8 @@ import { languages } from '@codemirror/language-data'
 import type { QueryResult, QueryRow } from '../../../preload'
 import { QUERY_SORTABLE_FIELDS, compactQuerySummary, formatQueryDate, queryStatusBadgeClass, rewriteQuerySortLine, type QuerySortableField } from './query-object'
 import { sanitiseSvg } from '../../../shared/sanitise-svg'
+import { sameMetadataProposals } from './metadata-proposals'
+import type { MetadataProposal } from '../app/metadata-proposal'
 
 // The full language-data registry (Codex's sandbox couldn't install it; the coordinator swapped the
 // three-language stopgap for the real thing). Every description lazy-loads its parser on first use.
@@ -142,8 +144,8 @@ export class TableWidget extends LivePreviewWidget {
 }
 
 export class FrontmatterWidget extends LivePreviewWidget {
-  constructor(source: string, selected: boolean, readonly pending: boolean, readonly documentPath: string | null = null, private readonly editMetadata?: (view: EditorView) => void) { super(source, selected) }
-  eq(other: WidgetType): boolean { return other instanceof FrontmatterWidget && other.source === this.source && other.selected === this.selected && other.pending === this.pending && other.documentPath === this.documentPath }
+  constructor(source: string, selected: boolean, readonly pending: boolean, readonly documentPath: string | null = null, private readonly editMetadata?: (view: EditorView) => void, readonly proposals: readonly MetadataProposal[] = []) { super(source, selected) }
+  eq(other: WidgetType): boolean { return other instanceof FrontmatterWidget && other.source === this.source && other.selected === this.selected && other.pending === this.pending && other.documentPath === this.documentPath && sameMetadataProposals(other.proposals, this.proposals) }
   private panel?: ReturnType<typeof mountFrontmatterEditor>
   toDOM(view: EditorView): HTMLElement {
     this.panel?.destroy?.()
@@ -163,11 +165,40 @@ export class FrontmatterWidget extends LivePreviewWidget {
     }
     this.panel = mountFrontmatterEditor(inner, { workspace: metadataWorkspace(view.dom), path: this.documentPath, readonly: true, edit: editMetadata })
     shell.append(this.panel.element)
+    markProposedFields(shell, this.panel.element, this.proposals)
     return shell
   }
   ignoreEvent(event: Event): boolean { return !!(event.target as HTMLElement)?.closest('button,input,select,.metadata-help') || super.ignoreEvent(event) }
   destroy(): void { this.panel?.destroy?.() }
 
+}
+
+/** "Proposed by Claude Code: draft → final" on each field a waiting edit would change; a field it would add is listed under the panel. */
+function markProposedFields(shell: HTMLElement, panel: HTMLElement, proposals: readonly MetadataProposal[]): void {
+  if (proposals.length === 0) return
+  const added: HTMLElement[] = []
+  for (const proposal of proposals) {
+    const line = document.createElement('p')
+    line.className = 'metadata-proposal'
+    line.dataset.metadataProposal = proposal.key
+    line.dataset.cid = proposal.id
+    const was = proposal.before === null ? '' : proposal.before
+    const now = proposal.after === null ? 'removed' : proposal.after
+    line.textContent = proposal.before === null
+      ? `${proposal.key}: ${now} · proposed by ${proposal.by}`
+      : `Proposed by ${proposal.by}: ${was || '(empty)'} → ${now || '(empty)'}`
+    const field = [...panel.querySelectorAll<HTMLElement>('[data-metadata-key]')].find((element) => element.dataset.metadataKey === proposal.key)
+    if (field && proposal.before !== null) {
+      field.classList.add('has-proposal')
+      field.append(line)
+    } else added.push(line)
+  }
+  if (added.length > 0) {
+    const list = document.createElement('div')
+    list.className = 'metadata-proposals'
+    list.append(...added)
+    shell.append(list)
+  }
 }
 
 export class CodeWidget extends LivePreviewWidget {

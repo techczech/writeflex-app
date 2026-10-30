@@ -245,6 +245,9 @@ test('plain text: a write-kind result begins with the fixed line of its outcome;
   const silent = await plain(['create', 'd.md'])
   expect(silent.code).toBe(3)
   expect(first(silent.out)).toBe('Sent to WriteFlex, not confirmed:')
+  // Settle that deliberately unanswered Create (including its first version) before asserting
+  // a separate Insert's reply; the executor drains serially, so the old work can consume its wait.
+  await app.executor.drain()
   const stop = app.answering()
   try {
     const now = await plain(['insert', 'notes.md', '--text', 'More.', '--source', 'codex'])

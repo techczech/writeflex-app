@@ -44,6 +44,12 @@ export const MENU_ACTION_COMMANDS: Readonly<Record<string, string>> = {
   'archive-search': 'archive.search',
   'name-version': 'file.nameVersion',
   'redo': 'edit.redo',
+  'open-scratchpad': 'app.scratchpad',
+  'scratchpad-send-copy': 'scratchpad.sendCopy',
+  'scratchpad-cut': 'scratchpad.cut',
+  'scratchpad-insert-copy': 'scratchpad.insertCopy',
+  'scratchpad-compare': 'scratchpad.compare',
+  'scratchpad-search': 'scratchpad.focusSearch',
 }
 
 /** Listen for runs; returns the stop function. */

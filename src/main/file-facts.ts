@@ -33,9 +33,26 @@ export const FACTS_READ_CONCURRENCY = 16
 
 type ReadableWorkspace = Pick<Workspace, 'readFile'>
 
+/**
+ * Views of the app's own Workspace that read exactly as it does (folio-workspace.ts `FolioWorkspace`: every reading
+ * member is the Workspace's own, bound to it). A bound method is a new function, so the identity check below cannot
+ * see that it reads as the Workspace; the view says so here instead, once, when it is made (spec folio-workspace § 5).
+ */
+const readsAsWorkspace = new WeakSet<object>()
+
+/** Say that `view` reads the disk exactly as the Workspace it wraps, whose `readFile` is the class's own. */
+export function markReadsAsWorkspace(view: object): void {
+  readsAsWorkspace.add(view)
+}
+
 /** Whether the Workspace reads the disk as the search cache does (no overriding `readFile`). */
 function usesCache(ws: ReadableWorkspace): ws is Workspace {
-  return ws instanceof Workspace && ws.readFile === Workspace.prototype.readFile
+  return ws instanceof Workspace && (ws.readFile === Workspace.prototype.readFile || readsAsWorkspace.has(ws))
+}
+
+/** A read-only snapshot keeps the underlying workspace's cache policy, including overlay refusal. */
+export function inheritWorkspaceFacts(view: object, workspace: ReadableWorkspace): void {
+  if (usesCache(workspace)) markReadsAsWorkspace(view)
 }
 
 function uncached(content: string): FileFacts {

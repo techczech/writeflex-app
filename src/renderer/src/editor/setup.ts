@@ -46,6 +46,7 @@ import { editorViewMode, type EditorViewMode } from './view-mode'
 import { wikilinks, type WikilinkRange } from './wikilinks'
 import { markdownLinkOpener } from './markdown-link-open'
 import { wikilinkPicker, type WikilinkCompletionPiece } from './wikilink-autocomplete'
+import { flagEditing } from './flag-actions'
 import { diaryRecordedBlock } from './diary-recorded'
 
 /**
@@ -187,6 +188,7 @@ export function baseExtensions(opts: BaseExtensionOpts): Extension[] {
     compareHighlights,
     writerReviewing(),
     editorViewMode(opts.initialViewMode),
+    flagEditing,
     EditorView.lineWrapping,
     listTypography,
     // Lettered and roman lists (docs/design/2026-09-27-checkbox-lists, frames 5–6): Return continues
@@ -220,7 +222,8 @@ export function baseExtensions(opts: BaseExtensionOpts): Extension[] {
     // closeBracketsKeymap first so Backspace deletes an auto-inserted pair before defaultKeymap.
     // searchKeymap's own Mod-d is dropped: ⌘D belongs to the resolver-built chord keymap (T6), and
     // a static duplicate would keep firing selectNextOccurrence after the writer moved the chord.
-    keymap.of([...closeBracketsKeymap, ...historyKeymap, ...searchKeymap.filter((binding) => binding.key !== 'Mod-d'), ...defaultKeymap]),
+    // Plain Command brackets belong to the shell's pane toggles, never editor indentation.
+    keymap.of([...closeBracketsKeymap, ...historyKeymap, ...searchKeymap.filter((binding) => binding.key !== 'Mod-d'), ...defaultKeymap.filter(binding => binding.key !== 'Mod-[' && binding.key !== 'Mod-]')]),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) opts.onDocumentTransaction?.()
       const writerChanged = writerReviewChanged(update)

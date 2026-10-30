@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { PlanProposalCard, type PlanProposalCardActions } from '../../src/renderer/src/components/PlanProposalCard'
 import { AgentReply } from '../../src/renderer/src/components/AgentPanel'
-import { emptyPlanCard, latestUndoableCard, reducePlanCard, type PlanCard } from '../../src/renderer/src/hooks/plan-proposal-cards'
+import { emptyPlanCard, latestUndoableCard, latestUndoTarget, reducePlanCard, type PlanCard } from '../../src/renderer/src/hooks/plan-proposal-cards'
 import type { PlanProposalView, ProposalBasis } from '../../src/shared/plan-proposal'
 
 const noop = () => {}
@@ -166,4 +166,12 @@ test('the Agent pane renders a plan.propose staged row as the proposal card', ()
   )
   expect(html).toContain('Proposed running order')
   expect(html).not.toContain('Waiting for your review')
+})
+
+
+test('shared keyboard and reply undo choose the most recent change by time', () => {
+  const turn = { turnId: 'written', startedAt: 10, endedAt: 20, counts: { read: 0, created: 1, modified: 0, moved: 0, trashed: 0, deleted: 0 }, undo: { available: true } } as import('@bridle/core').TurnActivity
+  expect(latestUndoTarget({ p1: { ...accepted, acceptedAt: 30 } }, [turn])).toEqual({ kind: 'plan', id: accepted.id })
+  expect(latestUndoTarget({ p1: { ...accepted, acceptedAt: 15 } }, [turn])).toEqual({ kind: 'turn', id: 'written' })
+  expect(latestUndoTarget({ p1: { ...accepted, acceptedAt: 30 } }, [])).toEqual({ kind: 'plan', id: accepted.id })
 })

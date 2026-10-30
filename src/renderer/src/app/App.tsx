@@ -1,4 +1,9 @@
+import type { ScratchMode } from '../../../shared/scratchpad-layout'
+import { createNoticeTimer } from './notice-timer'
+import { ROOM_ON_SCREEN_EVENT, roomOnScreen } from '../plan/room-on-screen'
+import { flushRoomPending } from '../folio-room-pending'
 import { addCollectionBatchToFolio, runCollectionBatch } from './collection-bulk'
+import { setPieceStatusFlushed } from './piece-status'
 import { COLLECTION_PAGE_COMMANDS, collectionPageMenuCommand, dispatchCollectionPageCommand } from '../components/collection-page-commands'
 import { flushUntilClean, type CloseFlushResult } from './close-flush'
 import { researchCaptureTarget } from './research-capture-target'
@@ -15,7 +20,7 @@ import { isolateHistory, redo, undo, undoDepth } from '@codemirror/commands'
 import type { AgentObjectNote, AttributedChange, Change, CollectionTarget, ExplicitSessionState, FileReadResult, ProseEditInput, RenameFileResult, Scrap, SearchMatch, SettingValue, ShelfRow, SkillMeta, Suggestion, ThreadRunComplete, Version, VersionCompareEndpointId, VersionCompareResult } from '../../../preload'
 import type { ClipboardKind, FileRenamePlan } from '../../../preload'
 import type { ReadingRoomWriteRefusal, ReadingRoomWriteResult } from '../../../preload'
-import { createOutboxSyncRunner } from '../reading-room-sync'
+import { createOutboxSyncRunner, outboxResultAnnouncement } from '../reading-room-sync'
 import { applyReadingRoomSetting } from '../reading-room-settings'
 import { humanReadableError } from '../error-text'
 import {
@@ -62,6 +67,10 @@ import {
   Link,
   List,
   ListFilter,
+  LayoutGrid,
+  ListTree,
+  FileText,
+  Columns2,
   ListOrdered,
   ListPlus,
   LocateFixed,
@@ -140,7 +149,7 @@ import { ReadingRoom, type ReaderSelection } from '../components/ReadingRoom'
 import { effectiveFocusMode, FOCUS_CHIP_NAMES, normaliseFocusMode, normaliseLeadStyle, type FocusMode, type LeadStyle } from '../editor/focus-modes'
 import { resolveChangeRange } from '../editor/change-marks'
 import { jumpToBlock } from '../editor/live-preview'
-import { noteDocumentInteraction, noteFileOpened, OUTLINE_SWITCH_IDLE, type OpenSource, type OutlineSwitchState } from './outline-switch'
+import { noteDocumentInteraction, noteFileOpened, OUTLINE_SWITCH_IDLE, folioSidebarLayout, type OpenSource, type OutlineSwitchState } from './outline-switch'
 import { askFolioPlace } from './folio-place-request'
 import { useFolioRunningOrder, type FlashAction } from './folio-running-order'
 import { planDirFor } from './plan-dir'
@@ -213,15 +222,20 @@ import { useVaultPresence } from '../hooks/useVaultPresence'
 import { useVaultSidebarPrefs } from '../hooks/useVaultSidebarPrefs'
 import type { SwitcherChoice } from '../components/VaultSwitcherMenu'
 import { SWITCH_CLOSE_TIMED_OUT_MESSAGE, switchStayedMessage, type CloseKept, type RootSwitchTarget } from '../../../shared/vault-switcher'
-import { dispatchPlanCommand } from '../plan/plan-commands'
+import { runAsPlanShortcut, dispatchPlanCommand, type PlanCommandName } from '../plan/plan-commands'
 import { dispatchBoardCommand } from '../components/board-commands'
 import { PieceSourcesPopover } from '../components/PieceSources'
 import { Board } from '../components/Board'
 import { Rail, type QueryInsertionContext } from '../components/Rail'
 import { InsertQueryConfirm } from '../components/InsertQueryConfirm'
 import { folioOpenTarget, readFolioOpenParts } from '../components/FolioOpenButton'
+import { ROOM_VIEW_EVENT } from '../components/FolioRoom'
+import { ROOM_VIEWS, WORKSPACE_TAB_CHORDS } from '../../../shared/folio-room'
+import { folderIsFolio } from './folio-routing'
+import { dispatchSidebar } from '../plan/folio-sidebar'
 import { exportPlaceFor } from './export-collection-dir'
 import { OutlinePane, type OutlineRequest } from '../components/OutlinePane'
+import { RoomBinderSwitch } from '../components/RoomBinderPane'
 import { CommandPalette, type AppCommand } from '../components/CommandPalette'
 import { WidgetPicker } from '../components/WidgetPicker'
 import { StandardWidgetWorkbench, type WorkbenchStep } from '../components/StandardWidgetWorkbench'
@@ -235,7 +249,9 @@ import { AgentNotes } from '../components/AgentNotes'
 import { SkillCompletionToast, orderSkills, skillDisplayName, type SkillToast } from '../components/AgentSkillSurfaces'
 import { REPORT_SKILL, REPORT_SKILL_COMMAND, skillLaunchTarget } from '../plan/report-skill'
 import { SkillsManager, SkillProvenanceBelt, activeSkillForPath } from '../components/SkillsManager'
-import { ScratchpadPane } from '../components/ScratchpadPane'
+import { SourcesSection } from '../components/SourcesSection'
+import { ScratchpadHost, type ScratchpadHostApi } from '../scratchpad/ScratchpadHost'
+import { isLosslessItemId as isLosslessScrapId } from '../../../shared/scratchpad-items'
 import { VersionsPane } from '../components/VersionsPane'
 import { summariseRun } from '../../../engine'
 import { ComparePane } from '../components/ComparePane'
@@ -295,6 +311,7 @@ import { countMenu, viewCountsOf, whoChipLabel, withoutWho, type CountMenuAction
 import { batchProgress, bulkTargets, declineQuestion, EMPTY_BATCH, nextBatch, runTargets, sendBackScope, visibleSelection, waitingEditIds, type DeclineQuestion, type ReviewBatch, type SendBackScope } from './margin-bulk'
 import { EMPTY_HEAD_FILTER, type HeadFilterState } from './margin-head-state'
 import { useDismissedNotApplied, useOutsideDock } from './outside-dock'
+import { useOutsideSourceBulk } from './use-outside-source-bulk'
 import { reviseSuggestionWithWarning } from './revise-suggestion'
 import { findLiveSuggestionForChange } from './change-suggestion-match'
 import { ReviewCursor, owedReveal } from './review-cursor'
@@ -523,6 +540,9 @@ export default function App(): JSX.Element {
   const [hideInserts, setHideInserts] = useState(false)
   const [changes, setChanges] = useState<Change[]>([])
   const [versions, setVersions] = useState<Version[]>([])
+  const [waitingHistory, setWaitingHistory] = useState<Array<{ from: string; count: number }>>([])
+  const [historyAttachments, setHistoryAttachments] = useState<Array<{ from: string; to: string }>>([])
+  const [historyAttachmentUndo, setHistoryAttachmentUndo] = useState<{ path: string; id: string; files: number } | null>(null)
   const [versionCompare, setVersionCompare] = useState<VersionCompareResult | null>(null)
   const [versionCompareLoading, setVersionCompareLoading] = useState(false)
   const [versionCompareError, setVersionCompareError] = useState('')
@@ -541,6 +561,8 @@ export default function App(): JSX.Element {
   const marginControlRef = useRef<MarginControl | null>(null)
   const marginCommandRef = useRef<(what: 'focus' | 'accept' | 'decline' | 'send-back') => void>(() => {})
   const runMarginCommand = useCallback((what: 'focus' | 'accept' | 'decline' | 'send-back') => marginCommandRef.current(what), [])
+  // Accept all / Decline all from one outside source (use-outside-source-bulk.ts), for the palette rows below; set once the hook runs.
+  const outsideSourceBulkRef = useRef<(action: 'accept' | 'decline') => void>(() => {})
   // Show or hide the review margin (⇧⌥⌘M), remembered for this window. Hidden, ⇧⌘C shows it again.
   const [marginHidden, setMarginHidden] = useState<boolean>(() => { try { return window.localStorage.getItem('writeflex-margin-hidden') === '1' } catch { return false } })
   const toggleMargin = useCallback(() => {
@@ -591,6 +613,8 @@ export default function App(): JSX.Element {
   const [guideWanted, setGuideWanted] = useState(0)
   const openGuideTabRef = useRef<() => void>(() => {})
   const [removeExampleOpen, setRemoveExampleOpen] = useState(false)
+  const [scratchpadMode, setScratchpadMode] = useState<ScratchMode>('collapsed')
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const {
     leftTab,
     rightTab,
@@ -608,6 +632,8 @@ export default function App(): JSX.Element {
     startPaneResize,
   } = usePaneLayout({
     guideShown: guideInRow,
+    scratchpadDocked: scratchpadMode === 'docked',
+    viewportWidth,
     onLeftTabOpened: (tab) => {
       if (tab === 'outline') setOutlineOpen(true)
     },
@@ -618,7 +644,6 @@ export default function App(): JSX.Element {
   })
   // The narrow-window rule (ticket 07, state 34): with the Guide open and the window too narrow to keep the
   // editor at 560px beside both panes, the Files pane closes — once per narrowing.
-  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   useEffect(() => {
     const onResize = (): void => setViewportWidth(window.innerWidth)
     window.addEventListener('resize', onResize)
@@ -676,7 +701,15 @@ export default function App(): JSX.Element {
   } | null>(null)
   // The "List this piece's sources" popover (scraps ticket 04): the piece, and its collection when the Board knows it.
   const [pieceSourcesRequest, setPieceSourcesRequest] = useState<{ path: string; dir?: string } | null>(null)
-  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, close, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, boardDir, (path) => unsaved.textOf(path) !== undefined)
+  const restoredIdentityRoot = useRef(root)
+  restoredIdentityRoot.current = root
+  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, close, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, boardDir, (path) => unsaved.textOf(path) !== undefined, path => {
+    if (path.includes('://')) return
+    const restoredRoot = root
+    void window.writeflex.readFolioPlace(path).then(place => {
+      if (place && restoredIdentityRoot.current === restoredRoot) void requestIdentityLinks.current(place.dir)
+    }).catch(error => console.warn('Could not check the restored Folio’s chapter links.', error))
+  })
   const [visibleTabStripPaths, setVisibleTabStripPaths] = useState<string[]>([])
   const [modeDrawerOpen, setModeDrawerOpen] = useState(false)
   const [distractionFree, setDistractionFree] = useState(false)
@@ -706,10 +739,40 @@ export default function App(): JSX.Element {
   // editor. Opening/activating/cycling any tab exits the collection — so every doc-navigation path
   // clears it in ONE place by wrapping the useTabs actions, rather than sprinkling resets at call sites.
   const [collectionDir, setCollectionDir] = useState<string | null>(null)
+  const requestIdentityLinks = useRef<(dir: string, force?: boolean) => Promise<boolean>>(async () => false)
+  // A conversion Undo belongs only to the last action in its collection. Refs expire
+  // synchronously when notifications arrive, before any captured key can steal a room Undo.
+  const turnBackUndo = useRef<{ dir: string; root: typeof root } | null>(null)
+  const [folioEditingDir, setFolioEditingDir] = useState<string | null>(null)
+  const [workspaceFolioDir, setWorkspaceFolioDir] = useState<string | null>(roomOnScreen)
+  const borrowedSidebar = useRef<Parameters<typeof folioSidebarLayout>[0]>(null)
+  useEffect(() => {
+    const onRoom = (event: Event): void => setWorkspaceFolioDir((event as CustomEvent<string | null>).detail)
+    window.addEventListener(ROOM_ON_SCREEN_EVENT, onRoom)
+    return () => window.removeEventListener(ROOM_ON_SCREEN_EVENT, onRoom)
+  }, [])
+  const sidebarFolioDir = workspaceFolioDir ?? folioEditingDir
+  useEffect(() => {
+    const next = folioSidebarLayout(borrowedSidebar.current, sidebarFolioDir, { tab: leftTab, collapsed: leftPaneCollapsed })
+    borrowedSidebar.current = next.saved
+    if (next.layout) {
+      openLeftTab(next.layout.tab)
+      if (next.layout.collapsed) collapseLeftPane()
+    }
+  }, [sidebarFolioDir, leftTab, leftPaneCollapsed, openLeftTab, collapseLeftPane])
+
   const [openPlanRequested, setOpenPlanRequested] = useState(false)
+  // The Folio room's text pane (Text view and Split): the file it wants shown in THIS editor, while the collection overlay stays up.
+  // The room puts the editor over its text box (folio-room.css); nothing here clears collectionDir.
+  const [roomTextPath, setRoomTextPath] = useState<string | null>(null)
+  const roomTextRef = useRef<string | null>(null)
+  roomTextRef.current = roomTextPath
   const [folioPlace, setFolioPlace] = useState<FolioPlace | null>(null)
   const folioPlaceRequest = useRef(0)
   const [boardFilter, setBoardFilter] = useState('')
+  // The Board shown inside a Folio's Cards tab (ADR-0049 slice 2, until the folders tree): its palette commands work while it shows.
+  const [folioBoardShown, setFolioBoardShown] = useState(false)
+  const boardCommandsOn = boardActive || folioBoardShown
   const [selectedFolderPiece, setSelectedFolderPiece] = useState<{ dir: string; folderPath: string; mode: 'one' | 'many' } | null>(null)
   const [folderPieceChoices, setFolderPieceChoices] = useState<FolderPieceChoice[]>([])
   const [sidebarCollectionSummary, setSidebarCollectionSummary] = useState<{ pieceCount: number; folderPiecePaths: Set<string> } | null>(null)
@@ -753,6 +816,17 @@ export default function App(): JSX.Element {
   useEffect(() => window.writeflex.onFileChangedOnDisk((paths) => {
     if (paths.some((path) => path.endsWith(MANIFEST_NAME))) refreshFolioPlace()
   }), [refreshFolioPlace])
+  // Every part-opening route uses the persistent editor and the Folio contents sidebar.
+  useEffect(() => {
+    if (collectionDir !== null) { setFolioEditingDir(null); return }
+    if (folioPlace?.kind === 'piece') {
+      if (folioEditingDir !== folioPlace.dir) {
+        setFolioEditingDir(folioPlace.dir)
+        setOutlineRequest(current => ({ tick: (current?.tick ?? 0) + 1, action: 'showFolio' }))
+      }
+    }
+    else setFolioEditingDir(null)
+  }, [folioPlace, collectionDir, folioEditingDir])
   // Opening a Folio checks its parts' titles once (main remembers it per window): proposals wait in the Changes.
   const folioPlaceDir = folioPlace?.dir
   useEffect(() => {
@@ -933,6 +1007,9 @@ export default function App(): JSX.Element {
   const showAgentNotesTab = useCallback(() => openRightTab('agent-notes'), [openRightTab])
   const agent = useAgent({ onWorkspaceChanged: handleAgentWorkspaceChange, onNoteCreated: showAgentNotesTab, activeFile: active, activeCollectionDir: shownCollectionDir ?? '' })
   const historicalActive = historicalView !== null
+  // Read by the floating Scratchpad after its awaits: a saved version or session recall is never written to.
+  const historicalActiveRef = useRef(historicalActive)
+  historicalActiveRef.current = historicalActive
   const compareActive = compareView !== null
   const compareToEditable = compareView ? compareToColumnMode(compareView.toId) === 'editable-working' : false
   const insertionTarget = lastEditablePath && tabs.includes(lastEditablePath) ? lastEditablePath : null
@@ -1005,9 +1082,13 @@ export default function App(): JSX.Element {
   const revealSource = useCallback((path: string) => void window.writeflex.showItem(path).catch(() => {}), [])
   const scrapsRef = useRef<Scrap[]>([])
   scrapsRef.current = scraps.scraps
-  // The Scratchpad-tab request (⇧⌘J / palette / a cut). `focus` lands the keyboard in the filter (⇧⌘J);
-  // a cut opens the tab with focus:false so the writer's caret stays in the editor.
+  // The Scratchpad-tab request (the rail tab, Send original to Scratchpad). `focus` lands the keyboard in
+  // the Agent panel's embedded scraps filter; ⇧⌘J and ⌘⇧X now go to the floating Scratchpad (ADR-0050).
   const [scratchpadRequest, setScratchpadRequest] = useState<{ tick: number; focus: boolean }>({ tick: 0, focus: false })
+  // The floating Scratchpad (ADR-0050): one instance, mounted below; App only forwards keys and commands.
+  const scratchpadApi = useRef<ScratchpadHostApi | null>(null)
+  const [scratchpadDockSlot, setScratchpadDockSlot] = useState<HTMLElement | null>(null)
+  const openScratchpadDock = useCallback(() => openRightTab('scratchpad'), [openRightTab])
   const openScratchpad = useCallback((focus: boolean) => {
     openRightTab('scratchpad')
     setScratchpadRequest((r) => ({ tick: r.tick + 1, focus }))
@@ -1032,6 +1113,7 @@ export default function App(): JSX.Element {
   }, [openRightTab])
 
   // Late-bound writer-facing report for a structured main-process refusal: flash is declared below.
+  const dismissFolioNoticeRef = useRef<(() => void) | null>(null)
   const flashRef = useRef<((message: string) => void) | null>(null)
   const guardRefusalPath = useRef<string | null>(null)
   // Why the last write of each path was refused, in the words the writer was shown: a closing window
@@ -1137,6 +1219,9 @@ export default function App(): JSX.Element {
     if (!editor) return null
     return activeRef.current === path && loadedPath.current === path ? editor.currentDoc() ?? null : editor.docFor(path) ?? null
   }, [])
+  // The Scratchpad inventory's buffer: RAW editor text plus its excluded old-role spans, never the
+  // persistence projection above — inventory positions must address the editor the writer sees.
+  const scratchpadBufferNow = useCallback((path: string) => editorRef.current?.inventoryBufferFor(path) ?? null, [])
 
   const setSaveFailed = useCallback((path: string, failed: boolean) => {
     setSaveFailures((current) => {
@@ -1270,10 +1355,10 @@ export default function App(): JSX.Element {
   )
 
   useEffect(() => window.writeflex.onFolioFlushRequested(({ id, dir }) => {
-    const paths = ['AGENTS.md', 'CLAUDE.md'].map(name => dir ? `${dir}/${name}` : name)
+    const paths = ['AGENTS.md', 'CLAUDE.md', '_report-structure.json', `_${dir.split('/').at(-1) || root?.split('/').at(-1)}_INDEX.md`].map(name => dir ? `${dir}/${name}` : name)
     void flushPaths(paths).then(result => window.writeflex.replyFolioFlush(id, result.status === 'saved'))
       .catch(() => { void window.writeflex.replyFolioFlush(id, false) })
-  }), [flushPaths])
+  }), [flushPaths, root])
 
   const queueLiveCompareRefresh = useCallback((path: string) => {
     if (!shouldRefreshWorkingCompare(compareViewRef.current, activeRef.current, path)) return
@@ -1320,6 +1405,8 @@ export default function App(): JSX.Element {
   const lastWriterEditAt = useRef<string>()
   const handleDocChanged = useCallback(
     (path: string, doc: string, beforeDoc: string) => {
+      if (doc !== beforeDoc) dismissFolioNoticeRef.current?.()
+      if (doc !== beforeDoc && turnBackUndo.current && (turnBackUndo.current.dir === '' || path.startsWith(`${turnBackUndo.current.dir}/`))) turnBackUndo.current = null
       lastWriterEditAt.current = new Date().toISOString()
       // The owner counts the change (its generation) and holds the latest text where a broken app cannot
       // take it; `dirty` is the dot (the text differs from the baseline). A transaction that left the text
@@ -1327,6 +1414,7 @@ export default function App(): JSX.Element {
       // document: counted, it would make a saved buffer unsaved with nothing to write, and a main write's
       // route would then refuse to replace it (document-owner plan, parcel 2a).
       const dirty = doc === beforeDoc ? owner.isDirty(path) : owner.edited(path, doc)
+      if (doc !== beforeDoc) scratchpadApi.current?.documentChanged()
       if (doc !== beforeDoc) scheduleTitleConflictReadRef.current?.()
       if (dirty) {
         // Only a genuine writer mutation feeds either session tracker. Buffer loads, reloads, agent
@@ -1352,9 +1440,22 @@ export default function App(): JSX.Element {
   // whose real surface arrives in a later task. Auto-clears after the mockup's 3.2s window.
   const [status, setStatus] = useState('')
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // A flash can carry one action (Undo after a running-order change). It stays until the next flash replaces it.
+  // Folio notices expire independently of the running-order Undo step.
   const [statusAction, setStatusAction] = useState<FlashAction | null>(null)
+  const folioNoticeVisible = useRef(false)
+  const folioNoticeTimer = useRef<ReturnType<typeof createNoticeTimer> | null>(null)
+  if (!folioNoticeTimer.current) folioNoticeTimer.current = createNoticeTimer(() => {
+    folioNoticeVisible.current = false; setStatus(''); setStatusAction(null)
+  })
+  const dismissFolioNotice = useCallback(() => {
+    if (!folioNoticeVisible.current) return
+    folioNoticeVisible.current = false; folioNoticeTimer.current?.clear()
+    setStatus(''); setStatusAction(null)
+  }, [])
+  dismissFolioNoticeRef.current = dismissFolioNotice
+  useEffect(() => { dismissFolioNotice() }, [active, dismissFolioNotice])
   const flash = useCallback((message: string) => {
+    folioNoticeVisible.current = false; folioNoticeTimer.current?.clear()
     setStatus(message)
     setStatusAction(null)
     if (flashTimer.current) clearTimeout(flashTimer.current)
@@ -1365,9 +1466,15 @@ export default function App(): JSX.Element {
     if (flashTimer.current) clearTimeout(flashTimer.current)
     setStatus(message)
     setStatusAction(action)
+    folioNoticeVisible.current = action.kind === 'folio-order'
+    folioNoticeTimer.current?.clear()
+    if (folioNoticeVisible.current) folioNoticeTimer.current?.start()
   }, [flash])
+  const sayFolioOrder = useCallback((message: string, action?: FlashAction) => {
+    flashWithAction(message, action ? { ...action, kind: 'folio-order' } : undefined)
+  }, [flashWithAction])
   flashRef.current = flash
-  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current) }, [])
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); folioNoticeTimer.current?.clear() }, [])
   useEffect(() => window.writeflex.onDiaryError((message) => flash(humanReadableError(new Error(message), 'Could not update the Diary.'))), [flash])
   // The example was removed or brought back, in this window or another (ticket 10): the Guide tab leaves
   // the row (it returns first when the example is shown again), main is asked for the context again, and a
@@ -1469,6 +1576,15 @@ export default function App(): JSX.Element {
         return
       }
       const targetDir = collectionDir ?? (boardActive ? boardDir : current ? await collectionDirFor(current) : activeCollectionDir)
+      // A Folio has no Board of its own (ADR-0049): its status lanes are Cards, grouped by status, in the workspace.
+      if (await folderIsFolio(targetDir, window.writeflex)) {
+        await window.writeflex.folioRoom.setState(targetDir, { view: 'cards', split: false, cardsByStatus: true }).catch(() => undefined)
+        if (collectionDir === targetDir) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'status-lanes' }))
+        setSelectedFolderPiece(null)
+        setOpenPlanRequested(true)
+        setCollectionDir(targetDir)
+        return
+      }
       setCollectionDir(null)
       setOpenPlanRequested(false)
       setSelectedFolderPiece(null)
@@ -1505,18 +1621,27 @@ export default function App(): JSX.Element {
         if (editable) activateTab(editable)
         else close(BOARD_TAB_ID)
       }
+      await window.writeflex.folioRoom.setState(targetDir, { view: 'outline', split: false, ...(current ? { selected: { title: '', path: current } } : {}) }).catch(error => { console.warn('Could not remember the Folio view; opening Manage Folio anyway.', error) })
+      if (collectionDir === targetDir) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'outline' }))
       setSelectedFolderPiece(null)
       setOpenPlanRequested(true)
       setCollectionDir(targetDir)
+      void requestIdentityLinks.current(targetDir)
     })()
   }, [activeCollectionDir, activateTab, boardActive, boardDir, close, collectionDir, flash, lastEditablePath, flushPaths])
   // The palette and the Board/Collection buttons call this with no argument: the folder is then found as before.
   const openPlan = useCallback(() => openPlanIn(), [openPlanIn])
   const openFolioPlan = useCallback(() => { if (folioPlace) openPlanIn(folioPlace.dir) }, [folioPlace, openPlanIn])
-  // Open Folio (the Folio page's big button and the palette command): open a part AND show the sidebar Outline in its Folio part.
-  const openFolioAt = useCallback((path: string) => { open(path); requestOutline('showFolio') }, [open, requestOutline])
-  // The Folio the palette command works on: the dashboard on screen, else the open file's Folio.
+  // All Open Folio entry points share the explicit editor route, including the header's menu.
   const openFolioDir = collectionDir ?? folioPlace?.dir ?? null
+  const openFolioAt = useCallback((path: string) => {
+    if (openFolioDir === null) return
+    borrowedSidebar.current ??= { tab: leftTab, collapsed: leftPaneCollapsed }
+    setFolioEditingDir(openFolioDir)
+    open(path)
+    requestOutline('showFolio')
+    void requestIdentityLinks.current(openFolioDir)
+  }, [openFolioDir, open, requestOutline, leftTab, leftPaneCollapsed])
   const openFolio = useCallback(() => {
     if (openFolioDir === null) return
     void readFolioOpenParts(openFolioDir).then((parts) => {
@@ -1530,11 +1655,12 @@ export default function App(): JSX.Element {
   // Late-bound: the reconciliation with the disk is declared below.
   const reconcileWithDiskRef = useRef<((paths: string[]) => Promise<void>) | null>(null)
   const folioRunningOrder = useFolioRunningOrder({
-    say: flashWithAction,
+    say: sayFolioOrder,
+    onChangeStart: dismissFolioNotice,
     // The Undo step belongs to the Folio it was made in: this workspace, and the open file's Folio folder
     // (the Outline) or the folder whose Plan is on screen (the Plan's Sort and Add all).
     root: root ?? null,
-    openDir: folioPlace?.dir ?? null,
+    openDir: folioPlace?.dir ?? folioEditingDir ?? null,
     planDir: collectionDir,
     // Every open buffer of the Folio (its Index Note and its pieces, active or not) is saved first, and the
     // request then takes its turn in the save queue of each of them, so no save interleaves with it. With the
@@ -1566,6 +1692,7 @@ export default function App(): JSX.Element {
     }, call),
     refresh: () => setFolioRefreshTick((tick) => tick + 1),
   })
+  requestIdentityLinks.current = folioRunningOrder.openIdentity
   // Title-conflict buttons (2026-10-19). The Plan's and the Outline's fixes are main's writes, with one Undo
   // step (title-conflict-actions.ts); a part open with unsaved edits is refused. The open document's bar edits
   // the buffer instead: one CodeMirror transaction, undone with ⌘Z, never a disk write under the buffer.
@@ -1661,10 +1788,10 @@ export default function App(): JSX.Element {
     if (command === 'add') await folioRunningOrder.addPieces(seen, [{ path: target.path, title: target.title }])
     else await folioRunningOrder.movePiece(seen, target.path, target.beforePath)
   }, [flash, folioRunningOrder])
-  // The status bar's Undo is the running-order step's (the only flash with an action). Once that step
-  // cannot be used for the Folio on screen (another Folio or none came up), the line and its button go.
+  // Folio Undo leaves when its step cannot be used in the Folio on screen. Scratchpad Undo owns a
+  // durable item and remains available independently of the running order.
   useEffect(() => {
-    if (folioRunningOrder.canUndo || titleConflictActions.canUndo || !statusAction) return
+    if (folioRunningOrder.canUndo || titleConflictActions.canUndo || !statusAction || statusAction.kind === 'scratchpad') return
     setStatusAction(null)
     setStatus('')
   }, [folioRunningOrder.canUndo, titleConflictActions.canUndo, statusAction])
@@ -2096,9 +2223,17 @@ export default function App(): JSX.Element {
       return []
     }
     try {
-      const list = await window.writeflex.listVersions({ path })
+      const [list, attachments, attachmentUndo, waiting] = await Promise.all([
+        window.writeflex.listVersions({ path }),
+        window.writeflex.historyAttachmentSuggestions(path).catch(() => []),
+        window.writeflex.historyAttachmentUndo(path).catch(() => null),
+        window.writeflex.waitingVersionHistory().catch(() => []),
+      ])
       if (activeRef.current !== path) return []
       setVersions(list)
+      setWaitingHistory(waiting)
+      setHistoryAttachments(attachments)
+      setHistoryAttachmentUndo(attachmentUndo ? { path, ...attachmentUndo } : null)
       return list
     } catch {
       if (activeRef.current === path) setVersions([])
@@ -2113,6 +2248,8 @@ export default function App(): JSX.Element {
     setChanges([])
     setChangesPath(null)
     setVersions([])
+    setWaitingHistory([])
+    setHistoryAttachments([])
     setVersionCompare(null)
     setVersionCompareError('')
     void reloadChanges()
@@ -2517,7 +2654,7 @@ export default function App(): JSX.Element {
   // outside changes of OTHER documents, the ledger's counts, the arrival notice and the writer's
   // dismissed "could not be applied" records. `dockChanges` stays the open document's list, so every
   // run action below (accept all, discard, by kind, the keys) acts on the open document only.
-  const outsideDock = useOutsideDock(active, root)
+  const outsideDock = useOutsideDock(active, root, sidebarFolioDir)
   const dismissedNotApplied = useDismissedNotApplied(root)
   // A card for a document that is not open: open it, then select the change once its list has loaded.
   const changeToSelectOnLoad = useRef<string | null>(null)
@@ -2720,15 +2857,25 @@ export default function App(): JSX.Element {
     await reloadChanges()
     flash('Returned change to Unreviewed edits — document unchanged')
   }, [flash, reloadChanges])
+  // The original wording goes to the floating Scratchpad's lossless store as a copy from that document
+  // (ADR-0050): exact bytes, never the legacy heading grammar. The store refuses what it cannot keep.
   const sendChangeOriginalToScratchpad = useCallback(async (change: Change): Promise<void> => {
-    const added = await sendOriginalToScratchpad(change, scraps)
+    const bound = typeof root === 'string' && root !== '' ? root : null
+    const lossless = {
+      add: async (origin: string, text: string) => {
+        if (!bound) return null
+        const reply = await window.writeflex.scratchpad.sendText({ root: bound, origin, markdown: text }).catch(() => null)
+        return reply?.ok ? reply.item : null
+      },
+    }
+    const added = await sendOriginalToScratchpad(change, lossless)
     if (!added) {
       flash('Could not send the original to Scratchpad')
       return
     }
     openScratchpad(false)
     flash('Original sent to Scratchpad — document unchanged')
-  }, [flash, openScratchpad, scraps])
+  }, [flash, openScratchpad, root])
   const selectedLedgerChange = useCallback(
     () => changes.find((change) => change.id === selectedChangeId) ?? null,
     [changes, selectedChangeId],
@@ -2860,11 +3007,25 @@ export default function App(): JSX.Element {
         if (editable) activateTab(editable)
         else close(BOARD_TAB_ID)
       }
+      if (await folderIsFolio(dir, window.writeflex)) {
+        const parts = await readFolioOpenParts(dir)
+        const stored = await window.writeflex.folioRoom.getState(dir)
+        const target = parts.find(part => part.path === stored.selected?.path)?.path ?? folioOpenTarget(parts)
+        if (target) {
+          borrowedSidebar.current ??= { tab: leftTab, collapsed: leftPaneCollapsed }
+          setFolioEditingDir(dir)
+          open(target)
+          requestOutline('showFolio')
+          void requestIdentityLinks.current(dir)
+          return
+        }
+      }
       setSelectedFolderPiece(null)
       setOpenPlanRequested(false)
       setCollectionDir(dir)
+      if (await folderIsFolio(dir, window.writeflex)) void requestIdentityLinks.current(dir)
     })()
-  }, [flash, flushPaths, boardActive, lastEditablePath, activateTab, close])
+  }, [flash, flushPaths, boardActive, lastEditablePath, activateTab, close, open, requestOutline, leftTab, leftPaneCollapsed])
   // The Folder dashboard command: the Files tree's keyboard-focused folder row, else the open file's folder,
   // else the whole collection (the same ruling as the New file target, minus a file row's parent).
   const openFolderDashboard = useCallback(() => {
@@ -2916,76 +3077,135 @@ export default function App(): JSX.Element {
   )
 
   const startNestedFolio = useCallback((dir: string) => {
-    void window.writeflex.createNestedFolio(dir).then((child) => { void refresh(); openPlanIn(child) })
+    void window.writeflex.readFolioDir(dir).then(parent => {
+      if (parent !== null) throw new Error('This folder is already inside a Folio.')
+      return window.writeflex.createNestedFolio(dir)
+    }).then((child) => { void refresh(); openPlanIn(child) })
       .catch((error) => flash(humanReadableError(error, 'Could not create a new Folio.')))
   }, [refresh, openPlanIn, flash])
+  const [collectionFolioParent, setCollectionFolioParent] = useState<{ dir: string; root: typeof root; folio: string | null } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    if (collectionDir !== null) void window.writeflex.readFolioDir(collectionDir).then(folio => {
+      if (!cancelled) setCollectionFolioParent({ dir: collectionDir, root, folio })
+    }).catch(() => { if (!cancelled) setCollectionFolioParent(null) })
+    return () => { cancelled = true }
+  }, [collectionDir, root, savedTick])
+  const canStartCollectionFolio = collectionDir !== null && collectionFolioParent?.dir === collectionDir && collectionFolioParent.root === root && collectionFolioParent.folio === null
   const conversionTarget = collectionDir ?? (boardActive ? boardDir : folioPlace?.dir ?? null)
   const [conversionFolio, setConversionFolio] = useState<{ dir: string; root: typeof root } | null>(null)
   useEffect(() => {
     let cancelled = false
     setConversionFolio(null)
-    if (conversionTarget !== null) void window.writeflex.readFolio(conversionTarget).then(folio => {
-      if (!cancelled && folio) setConversionFolio({ dir: conversionTarget, root })
+    if (conversionTarget !== null) void window.writeflex.readFolioDeclaration(conversionTarget).then(folio => {
+      if (!cancelled && (folio.isFolio || folio.repairNeeded)) setConversionFolio({ dir: conversionTarget, root })
     }).catch(() => {})
     return () => { cancelled = true }
   }, [conversionTarget, root, savedTick])
   const canTurnBack = conversionFolio !== null && conversionFolio.dir === conversionTarget && conversionFolio.root === root
   useEffect(() => {
-    void window.writeflex.setCollectionPageActive(collectionDir !== null, collectionDir !== null && canTurnBack)
-  }, [collectionDir, canTurnBack])
+    void window.writeflex.setCollectionPageActive(collectionDir !== null, collectionDir !== null && canTurnBack, canStartCollectionFolio)
+  }, [collectionDir, canTurnBack, canStartCollectionFolio])
   useEffect(() => () => { void window.writeflex.setCollectionPageActive(false) }, [])
+  useEffect(() => {
+    if (turnBackUndo.current && (turnBackUndo.current.root !== root || turnBackUndo.current.dir !== collectionDir)) turnBackUndo.current = null
+  }, [root, collectionDir])
+  useEffect(() => {
+    const clear = () => { turnBackUndo.current = null }
+    const changed = (paths: string[]) => {
+      const token = turnBackUndo.current
+      if (token && paths.some(path => token.dir === '' || path === token.dir || path.startsWith(`${token.dir}/`))) clear()
+    }
+    const offCollection = window.writeflex.onCollectionChanged(change => {
+      if (change) changed([change.ownSave.path])
+      else clear() // An unscoped change may include this folder.
+    })
+    const offDisk = window.writeflex.onFileChangedOnDisk(changed)
+    return () => { offCollection(); offDisk() }
+  }, [])
+  const undoTurnBack = useCallback(() => {
+    const token = turnBackUndo.current
+    if (!token || token.root !== root || collectionDir !== token.dir) return
+    void (async () => {
+      if ((await flushPaths(['AGENTS.md', 'CLAUDE.md', '_report-structure.json', `_${token.dir.split('/').at(-1) || root?.split('/').at(-1)}_INDEX.md`].map(name => token.dir ? `${token.dir}/${name}` : name))).status !== 'saved') return
+      if (turnBackUndo.current !== token) return
+      turnBackUndo.current = null
+      if (await window.writeflex.undoTurnBack(token.dir)) {
+        openCollection(token.dir)
+        turnBackUndo.current = null
+        flash('Restored the Folio, running order and instructions exactly.')
+      }
+    })().catch(error => flash(humanReadableError(error, 'Could not undo Turn back.')))
+  }, [turnBackUndo, root, collectionDir, flushPaths, openCollection, flash])
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.key.toLowerCase() !== 'z' || !turnBackUndo.current || turnBackUndo.current.root !== root || collectionDir !== turnBackUndo.current.dir) return
+      if ((event.target as HTMLElement)?.closest('input, textarea, [contenteditable="true"], .cm-editor')) return
+      event.preventDefault(); event.stopImmediatePropagation(); undoTurnBack()
+    }
+    window.addEventListener('keydown', handler, true)
+    return () => window.removeEventListener('keydown', handler, true)
+  }, [turnBackUndo, root, collectionDir, undoTurnBack])
   const turnBackFolio = useCallback(() => {
     if (!canTurnBack || conversionTarget === null) return
     const dir = conversionTarget
     void (async () => {
-      const paths = ['AGENTS.md', 'CLAUDE.md'].map(name => dir ? `${dir}/${name}` : name)
+      const paths = ['AGENTS.md', 'CLAUDE.md', `_${dir.split('/').at(-1) || root?.split('/').at(-1)}_INDEX.md`].map(name => dir ? `${dir}/${name}` : name)
       if ((await flushPaths(paths)).status !== 'saved') { flash('Could not save the instructions. The Folio stayed as it was.'); return }
-      if (await window.writeflex.turnBackIntoCollection(dir)) {
+      const turnedBack = await window.writeflex.turnBackIntoCollection(dir)
+      if (turnedBack) {
         setOpenPlanRequested(false)
         openCollection(dir)
-        flash('Turned back into a collection. Make a Folio can turn it into a Folio again.')
+        turnBackUndo.current = { dir, root }
+        flash(typeof turnedBack === 'string' ? turnedBack : 'Turned back into a collection; the running order and Folio instructions were saved. Undo restores them.')
       }
     })().catch(error => flash(humanReadableError(error, 'Could not turn this Folio back into a collection.')))
-  }, [canTurnBack, conversionTarget, flushPaths, flash, openCollection])
+  }, [canTurnBack, conversionTarget, root, flushPaths, flash, openCollection])
 
-  // --- Scrap actions (Task 20) ---
-  // ⌘⇧X already removed the selection through a normal (undoable) editor transaction; App stores the
-  // text against the active document and opens the Scratchpad tab so the cutting is seen to land. The
-  // caret stays in the editor (focus:false), so writing is uninterrupted.
-  const handleCutToScrap = useCallback(
-    (text: string) => {
-      const origin = loadedPath.current ?? active
-      if (!origin) return
-      void scraps.add(origin, text)
-      openScratchpad(false)
-      flash('Cut to Scratchpad')
-    },
-    [active, scraps.add, openScratchpad, flash],
-  )
-  // The mouse path for ⌘⇧X (the pane's + button): cut the editor's current selection.
-  const cutSelectionToScrap = useCallback(() => {
-    const view = editorRef.current?.view()
-    if (!view) return
-    const { from, to } = view.state.selection.main
-    if (from === to) {
-      flash('Select text first, then cut it to a scrap')
+  // --- Scrap actions (Task 20, ADR-0050) ---
+  // ⌘⇧X and the old pane's + button both go through the floating Scratchpad's controller: the exact text
+  // is saved first and the unchanged span removed only after (scratchpad-controller.ts). ⌘Z restores it.
+  const handleCutToScrap = useCallback(() => { void scratchpadApi.current?.cut() }, [])
+  // The native menu's Scratchpad items run the same registered commands as the palette (ticket 04).
+  useEffect(() => window.writeflex.onMenuAction((action) => {
+    if (action === 'open-scratchpad') scratchpadApi.current?.toggle()
+    else if (action === 'scratchpad-send-copy') void scratchpadApi.current?.sendCopy()
+    else if (action === 'scratchpad-cut') void scratchpadApi.current?.cut()
+    else if (action === 'scratchpad-insert-copy') scratchpadApi.current?.insertSelected()
+    else if (action === 'scratchpad-compare') scratchpadApi.current?.compareTicked()
+    else if (action === 'scratchpad-search') scratchpadApi.current?.focusSearch()
+  }), [])
+  const cutSelectionToScrap = handleCutToScrap
+  // A scrap dropped into the document (the editor already inserted its text): remove it from the store.
+  // A floating Scratchpad item (p_…) is never removed: the editor left its text out and the Scratchpad
+  // inserts a copy at the drop point, with its anchor and its links carried (scratchpad-controller.ts).
+  const handleScrapDropped = useCallback((id: string) => {
+    if (isLosslessScrapId(id)) { scratchpadApi.current?.insertById(id); return }
+    void scraps.remove(id)
+  }, [scraps.remove])
+  const removeScrap = useCallback((id: string) => {
+    if (isLosslessScrapId(id)) {
+      const bound = typeof root === 'string' && root !== '' ? root : null
+      if (!bound) return
+      void window.writeflex.scratchpad.setStatus({ root: bound, ids: [id], status: 'rejected' }).then((reply) => {
+        flash(reply.ok ? 'Moved to Rejected in the Scratchpad. Nothing was deleted.' : `Nothing was changed: ${reply.error}`)
+      })
       return
     }
-    const text = view.state.sliceDoc(from, to)
-    view.dispatch({ changes: { from, to, insert: '' }, selection: { anchor: from } })
-    view.focus()
-    handleCutToScrap(text)
-  }, [flash, handleCutToScrap])
-  // A scrap dropped into the document (the editor already inserted its text): remove it from the store.
-  const handleScrapDropped = useCallback((id: string) => void scraps.remove(id), [scraps.remove])
-  const removeScrap = useCallback((id: string) => void scraps.remove(id), [scraps.remove])
+    void scraps.remove(id)
+  }, [scraps.remove, root, flash])
   // The keyboard path for drag-into-document (the tile's ⏎ / Insert button): insert at the caret and
   // remove the scrap — the same net effect as a drop.
   const insertScrapAtCursor = useCallback(
     (scrap: Scrap) => {
+      if (isLosslessScrapId(scrap.id)) { scratchpadApi.current?.insertById(scrap.id); return }
       const view = editorRef.current?.view()
       if (!view) {
         flash('Open a document to insert a scrap')
+        return
+      }
+      if (view.state.readOnly) {
+        flash('This is a saved version, so the scrap was not inserted. Return to the current text first.')
         return
       }
       const pos = view.state.selection.main.head
@@ -3473,17 +3693,12 @@ export default function App(): JSX.Element {
     if (result.keptLocal?.created) {
       flash(result.keptLocal.reason)
     }
-    if (
-      wasWaiting > 0
-      && result.waiting === 0
-      && !result.keptLocal?.created
-    ) {
-      flash('New highlights synced to Zotero.')
-    }
+    const announcement = outboxResultAnnouncement(wasWaiting, result)
+    if (announcement) flash(announcement)
   }, [flash])
   /**
    * Hand the waiting highlights to Zotero now — the status bar's button (ADR-0036 amendment). It always
-   * RE-CHECKS: the user may have quit Zotero since the label was drawn, and a control that refused on the
+   * RE-CHECKS: the user may have opened Zotero since the label was drawn, and a control that refused on the
    * state it was rendered with would teach him not to trust it.
    */
   const outboxSync = useMemo(
@@ -3511,6 +3726,11 @@ export default function App(): JSX.Element {
   useEffect(() => {
     return window.writeflex.onWindowFocused(syncHighlightsAutomatically)
   }, [syncHighlightsAutomatically])
+  // The main process wrote what was waiting when Zotero quit (or was refused trying): same landing
+  // place as any write result, so the count, the notice and the "synced" flash all follow.
+  useEffect(() => {
+    return window.writeflex.readingRoom.onOutboxChanged(noteWriteResult)
+  }, [noteWriteResult])
 
   /** Words left the reader. The Zotero create waits until those words actually enter a draft. */
   const noteReaderSelection = useCallback((selection: ReaderSelection | null): void => {
@@ -5014,6 +5234,11 @@ export default function App(): JSX.Element {
   // The command list the palette (⇧⌘P) lists: the editor's paletteCommands mapped to icons + display
   // shortcuts, plus app-level actions. Typewriter routes through App's toggle (so the status chip
   // + flash update, not just the CM compartment); every other editor command runs against the view.
+  const runFolioPlanCommand = useCallback((command: PlanCommandName): void => {
+    if (['details', 'role', 'agents-both', 'agents-agents', 'agents-claude', 'front-matter-choose', 'not-in-outline-toggle', 'adopt', 'adopt-front-matter'].includes(command)) openLeftTab('outline')
+    dispatchPlanCommand(command)
+  }, [openLeftTab])
+
   const paletteCommandList = useMemo<AppCommand[]>(() => {
     const editorState = editorRef.current?.view()?.state
     const editorRows: AppCommand[] = commandRegistry.filter((command) => command.surfaces.includes('palette') && command.run && (!command.when || (editorState && command.when(editorState)))).map((pc) => ({
@@ -5052,6 +5277,8 @@ export default function App(): JSX.Element {
       { id: 'navigation.previousBlock', label: 'Previous rendered block', icon: ChevronLeft, keys: '⌃⌘↑', run: () => { const view = editorRef.current?.view(); if (view) jumpToBlock(view, -1) } },
       { id: HIDE_STRIKES_COMMAND.id, label: HIDE_STRIKES_COMMAND.label, icon: Highlighter, run: toggleHideStrikes },
       { id: HIDE_INSERTS_COMMAND.id, label: HIDE_INSERTS_COMMAND.label, icon: Highlighter, run: toggleHideInserts },
+      { id: 'view.toggleLeftPane', label: 'Show/hide left sidebar', icon: LayoutPanelLeft, keys: '⌘[', run: toggleLeftPane },
+      { id: 'view.toggleRightPane', label: 'Show/hide right pane', icon: Columns3, keys: '⌘]', run: toggleRightPane },
       { id: 'view.files', label: 'Open Files', icon: LayoutPanelLeft, keys: '⇧⌘E', run: openFilesTab },
       { id: ACTION_BAR_COMMAND.id, label: ACTION_BAR_COMMAND.label, icon: PanelTop, run: toggleActionBar },
       { id: CONFIGURE_ACTION_BAR_COMMAND.id, label: CONFIGURE_ACTION_BAR_COMMAND.label, icon: SlidersHorizontal, run: () => setConfigureActionBarOpen(true) },
@@ -5072,6 +5299,7 @@ export default function App(): JSX.Element {
       { id: 'vault.writingOnly', label: registryCommand('vault.writingOnly').label, icon: ListFilter, checked: rootIsVault === true ? vaultPrefs.writingOnly : undefined, disabled: rootIsVault !== true, disabledReason: 'This folder is not a vault', run: () => chooseVaultPrefs({ writingOnly: !vaultPrefs.writingOnly }) },
       { id: 'vault.showTitles', label: registryCommand('vault.showTitles').label, icon: Heading, checked: rootIsVault === true ? vaultPrefs.titles : undefined, disabled: rootIsVault !== true, disabledReason: 'This folder is not a vault', run: () => chooseVaultPrefs({ titles: !vaultPrefs.titles }) },
       { id: 'plan.open', label: 'Open Folio outline', icon: ListOrdered, run: openPlan },
+      { id: 'folio.linkFiles', label: registryCommand('folio.linkFiles').label, icon: BookOpen, disabled: openFolioDir === null, disabledReason: 'Open a Folio first', run: () => { if (openFolioDir !== null) void requestIdentityLinks.current(openFolioDir, true) } },
       { id: 'folio.open', label: registryCommand('folio.open').label, icon: BookOpen, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: openFolio },
       { id: 'research.capture', label: registryCommand('research.capture').label, icon: BookOpenCheck, disabled: researchProject == null, disabledReason: 'Open a Piece or a Folio first', run: openResearchCapture },
       { id: 'folio.movePieceUp', label: registryCommand('folio.movePieceUp').label, icon: ArrowUp, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('up') } },
@@ -5081,18 +5309,18 @@ export default function App(): JSX.Element {
       { id: 'folio.undoLastChange', label: registryCommand('folio.undoLastChange').label, icon: Undo2, disabled: !folioRunningOrder.canUndo, disabledReason: 'There is no running-order change to undo', run: () => { void folioRunningOrder.undo() } },
       { id: 'folio.previousPiece', label: 'Previous piece in Folio', icon: ChevronLeft, disabled: !folioPlace?.previous, disabledReason: 'This file has no previous piece in a Folio', run: () => { if (folioPlace?.previous) open(folioPlace.previous.path) } },
       { id: 'folio.nextPiece', label: 'Next piece in Folio', icon: ChevronRight, disabled: !folioPlace?.next, disabledReason: 'This file has no next piece in a Folio', run: () => { if (folioPlace?.next) open(folioPlace.next.path) } },
-      { id: 'board.makeIdeaFromOffcut', label: 'Make idea from offcut', icon: Lightbulb, disabled: !boardActive, disabledReason: 'Open the Board and select an offcut first', run: () => dispatchBoardCommand('make-idea') },
-      { id: 'board.toggleOffcuts', label: 'Show / Hide offcuts', icon: Columns3, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-offcuts') },
-      { id: 'board.undoMaterialStep', label: 'Undo last offcut, scrap or source step', icon: Undo2, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('undo-step') },
-      { id: 'board.moveColumnLeft', label: 'Move column left', icon: ChevronLeft, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-left') },
-      { id: 'board.moveColumnRight', label: 'Move column right', icon: ChevronRight, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-right') },
-      ...COLLECTION_PAGE_COMMANDS.filter(([name]) => name !== 'bulk-folio' || (collectionDir !== null && canTurnBack)).map(([name, label]) => ({ id: `collection.page.${name}`, label, icon: FolderOpen, disabled: collectionDir === null, disabledReason: 'Open a collection first', run: () => dispatchCollectionPageCommand(name) })),
+      { id: 'board.makeIdeaFromOffcut', label: 'Make idea from offcut', icon: Lightbulb, disabled: !boardCommandsOn, disabledReason: 'Open the Board and select an offcut first', run: () => dispatchBoardCommand('make-idea') },
+      { id: 'board.toggleOffcuts', label: 'Show / Hide offcuts', icon: Columns3, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-offcuts') },
+      { id: 'board.undoMaterialStep', label: 'Undo last offcut, scrap or source step', icon: Undo2, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('undo-step') },
+      { id: 'board.moveColumnLeft', label: 'Move column left', icon: ChevronLeft, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-left') },
+      { id: 'board.moveColumnRight', label: 'Move column right', icon: ChevronRight, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-right') },
+      ...COLLECTION_PAGE_COMMANDS.filter(([name]) => (name !== 'bulk-folio' || (collectionDir !== null && canTurnBack)) && (name !== 'make-folio' || canStartCollectionFolio)).map(([name, label]) => ({ id: `collection.page.${name}`, label, icon: FolderOpen, disabled: collectionDir === null, disabledReason: 'Open a collection first', run: () => dispatchCollectionPageCommand(name) })),
       { id: 'collection.newDocument', label: 'New document', icon: FilePlus2, disabled: !root, disabledReason: 'Open a folder first', run: () => { void newPiece(collectionDir ?? (boardActive ? boardDir : activeCollectionDir)) } },
-      { id: 'collection.startFolio', label: 'Start a Folio outline', icon: BookOpen, disabled: collectionDir === null || canTurnBack, disabledReason: canTurnBack ? "Folios can't contain another Folio from here." : 'Open a collection first', run: () => { if (collectionDir !== null) startNestedFolio(collectionDir) } },
+      { id: 'collection.startFolio', label: 'Start a Folio outline', icon: BookOpen, disabled: !canStartCollectionFolio, disabledReason: collectionDir !== null ? "Folios can't contain another Folio from here." : 'Open a collection first', run: () => { if (collectionDir !== null) startNestedFolio(collectionDir) } },
       { id: 'folio.turnBack', label: 'Turn back into a collection', icon: FolderOpen, disabled: !canTurnBack, disabledReason: 'Open a Folio first', run: turnBackFolio },
-      { id: 'board.toggleSources', label: 'Show / Hide sources', icon: PanelRightOpen, disabled: !boardActive, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-sources') },
-      { id: 'piece.listSources', label: 'List this piece\'s sources', icon: Link, disabled: !boardActive && !active, disabledReason: 'Open a piece or the Board first', run: () => { if (boardActive) dispatchBoardCommand('list-sources'); else if (active) setPieceSourcesRequest({ path: active }) } },
-      { id: 'board.attachSource', label: 'Attach source…', icon: Link, disabled: !boardActive, disabledReason: 'Open the Board and select a source first', run: () => dispatchBoardCommand('attach-source') },
+      { id: 'board.toggleSources', label: 'Show / Hide sources', icon: PanelRightOpen, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-sources') },
+      { id: 'piece.listSources', label: 'List this piece\'s sources', icon: Link, disabled: !boardCommandsOn && !active, disabledReason: 'Open a piece or the Board first', run: () => { if (boardCommandsOn) dispatchBoardCommand('list-sources'); else if (active) setPieceSourcesRequest({ path: active }) } },
+      { id: 'board.attachSource', label: 'Attach source…', icon: Link, disabled: !boardCommandsOn, disabledReason: 'Open the Board and select a source first', run: () => dispatchBoardCommand('attach-source') },
       {
         id: 'skill.run.report-structure',
         label: registryCommand(REPORT_SKILL_COMMAND).label,
@@ -5101,27 +5329,30 @@ export default function App(): JSX.Element {
         disabledReason: 'Focus a folder first',
         run: () => { if (folderFocus) helpWithReport(folderFocus.path) },
       },
-      { id: 'plan.addPart', label: 'Add a Folio outline part', icon: Plus, keys: 'N', disabled: collectionDir === null, disabledReason: 'Open a Collection first', run: () => dispatchPlanCommand('add') },
-      { id: 'plan.adoptPart', label: 'Add existing part to Folio outline', icon: Plus, keys: 'A', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('adopt') },
-      { id: 'plan.adoptAsFrontMatter', label: 'Add existing part to Folio outline as front matter', icon: Plus, keys: 'F', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('adopt-front-matter') },
-      { id: 'plan.addAllFromFolder', label: registryCommand('plan.addAllFromFolder').label, icon: ListPlus, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('add-all') },
-      { id: 'plan.sortByChapter', label: registryCommand('plan.sortByChapter').label, icon: ListOrdered, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('sort') },
-      { id: 'plan.moveUp', label: 'Move Folio outline part up', icon: ChevronLeft, keys: '⌥↑', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('move-up') },
-      { id: 'plan.moveDown', label: 'Move Folio outline part down', icon: ChevronRight, keys: '⌥↓', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('move-down') },
-      { id: 'plan.materialise', label: 'Open or write Folio outline part', icon: FilePlus2, keys: '↵', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('open-part') },
-      { id: 'plan.removePart', label: 'Remove part from Folio outline', icon: X, keys: '⌘⌫', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('remove') },
-      { id: 'plan.role', label: registryCommand('plan.role').label, icon: ListOrdered, keys: 'R', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('role') },
-      { id: 'plan.writeAgentInstructions', label: registryCommand('plan.writeAgentInstructions').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('agents-both') },
-      { id: 'plan.writeAgentsFile', label: registryCommand('plan.writeAgentsFile').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('agents-agents') },
-      { id: 'plan.writeClaudeFile', label: registryCommand('plan.writeClaudeFile').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('agents-claude') },
-      { id: 'plan.chooseFrontMatter', label: registryCommand('plan.chooseFrontMatter').label, icon: BookOpen, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('front-matter-choose') },
-      { id: 'plan.toggleNotInOutline', label: registryCommand('plan.toggleNotInOutline').label, icon: ListOrdered, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('not-in-outline-toggle') },
-      { id: 'plan.details', label: registryCommand('plan.details').label, icon: Info, keys: 'D', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('details') },
+      ...ROOM_VIEWS.map((view) => ({ id: `folio.room.${view}`, label: registryCommand(`folio.room.${view}`).label, icon: view === 'text' ? FileText : view === 'cards' ? LayoutGrid : ListTree, keys: WORKSPACE_TAB_CHORDS[view], disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: view })) })),
+      { id: 'folio.room.inspector', label: registryCommand('folio.room.inspector').label, icon: ListTree, keys: '⌥⌘I', disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => { openLeftTab('outline'); dispatchSidebar('toggle-inspector') } },
+      { id: 'folio.room.split', label: 'Folio room: Text beside the cards', icon: Columns2, keys: '⌥S', disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'split' })) },
+      { id: 'plan.addPart', label: 'Add a Folio outline part', icon: Plus, keys: 'N', disabled: collectionDir === null, disabledReason: 'Open a Collection first', run: () => runFolioPlanCommand('add') },
+      { id: 'plan.adoptPart', label: 'Add existing part to Folio outline', icon: Plus, keys: 'A', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('adopt') },
+      { id: 'plan.adoptAsFrontMatter', label: 'Add existing part to Folio outline as front matter', icon: Plus, keys: 'F', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('adopt-front-matter') },
+      { id: 'plan.addAllFromFolder', label: registryCommand('plan.addAllFromFolder').label, icon: ListPlus, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('add-all') },
+      { id: 'plan.sortByChapter', label: registryCommand('plan.sortByChapter').label, icon: ListOrdered, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('sort') },
+      { id: 'plan.moveUp', label: 'Move Folio outline part up', icon: ChevronLeft, keys: '⌥↑', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('move-up') },
+      { id: 'plan.moveDown', label: 'Move Folio outline part down', icon: ChevronRight, keys: '⌥↓', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('move-down') },
+      { id: 'plan.materialise', label: 'Open or write Folio outline part', icon: FilePlus2, keys: '↵', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('open-part') },
+      { id: 'plan.removePart', label: 'Remove part from Folio outline', icon: X, keys: '⌘⌫', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('remove') },
+      { id: 'plan.role', label: registryCommand('plan.role').label, icon: ListOrdered, keys: 'R', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('role') },
+      { id: 'plan.writeAgentInstructions', label: registryCommand('plan.writeAgentInstructions').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('agents-both') },
+      { id: 'plan.writeAgentsFile', label: registryCommand('plan.writeAgentsFile').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('agents-agents') },
+      { id: 'plan.writeClaudeFile', label: registryCommand('plan.writeClaudeFile').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('agents-claude') },
+      { id: 'plan.chooseFrontMatter', label: registryCommand('plan.chooseFrontMatter').label, icon: BookOpen, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('front-matter-choose') },
+      { id: 'plan.toggleNotInOutline', label: registryCommand('plan.toggleNotInOutline').label, icon: ListOrdered, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('not-in-outline-toggle') },
+      { id: 'plan.details', label: registryCommand('plan.details').label, icon: Info, keys: 'D', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('details') },
       // Title-conflict buttons: on the Plan, the selected part (or every part); elsewhere, the open document's bar.
-      { id: 'title.useHeadingAsTitle', label: registryCommand('title.useHeadingAsTitle').label, icon: Heading, keys: '⌃⌥⌘H', disabled: collectionDir === null && !shownTitleConflict, disabledReason: 'The title and the heading already match', run: () => { if (collectionDir !== null) dispatchPlanCommand('title-heading-to-title'); else fixOpenDocumentTitle('heading-to-title') } },
-      { id: 'title.useTitleAsHeading', label: registryCommand('title.useTitleAsHeading').label, icon: Heading, keys: '⌃⌥⌘T', disabled: collectionDir === null && !shownTitleConflict && !titleHeadingCanBeInserted, disabledReason: openDocumentIsPart ? 'The title and the heading already match, or this part does not start with a heading (the change that adds one is in the Changes)' : 'The title and the heading already match, or there is no title to add as the heading', run: () => { if (collectionDir !== null) dispatchPlanCommand('title-title-to-heading'); else fixOpenDocumentTitle('title-to-heading') } },
-      { id: 'title.useHeadingsAsTitlesAll', label: registryCommand('title.useHeadingsAsTitlesAll').label, icon: Heading, keys: '⌃⌥⇧⌘H', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('titles-heading-to-title') },
-      { id: 'title.useTitlesAsHeadingsAll', label: registryCommand('title.useTitlesAsHeadingsAll').label, icon: Heading, keys: '⌃⌥⇧⌘T', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => dispatchPlanCommand('titles-title-to-heading') },
+      { id: 'title.useHeadingAsTitle', label: registryCommand('title.useHeadingAsTitle').label, icon: Heading, keys: '⌃⌥⌘H', disabled: collectionDir === null && !shownTitleConflict, disabledReason: 'The title and the heading already match', run: () => { if (collectionDir !== null) runFolioPlanCommand('title-heading-to-title'); else fixOpenDocumentTitle('heading-to-title') } },
+      { id: 'title.useTitleAsHeading', label: registryCommand('title.useTitleAsHeading').label, icon: Heading, keys: '⌃⌥⌘T', disabled: collectionDir === null && !shownTitleConflict && !titleHeadingCanBeInserted, disabledReason: openDocumentIsPart ? 'The title and the heading already match, or this part does not start with a heading (the change that adds one is in the Changes)' : 'The title and the heading already match, or there is no title to add as the heading', run: () => { if (collectionDir !== null) runFolioPlanCommand('title-title-to-heading'); else fixOpenDocumentTitle('title-to-heading') } },
+      { id: 'title.useHeadingsAsTitlesAll', label: registryCommand('title.useHeadingsAsTitlesAll').label, icon: Heading, keys: '⌃⌥⇧⌘H', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('titles-heading-to-title') },
+      { id: 'title.useTitlesAsHeadingsAll', label: registryCommand('title.useTitlesAsHeadingsAll').label, icon: Heading, keys: '⌃⌥⇧⌘T', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('titles-title-to-heading') },
       { id: 'title.dismissConflictBar', label: registryCommand('title.dismissConflictBar').label, icon: X, keys: '⌃⌥⌘X', disabled: !shownTitleConflict, disabledReason: 'There is no title-differs bar on this document', run: dismissOpenTitleConflict },
       { id: 'title.undoLastChange', label: registryCommand('title.undoLastChange').label, icon: Undo2, keys: '⌃⌥⌘Z', disabled: !titleConflictActions.canUndo, disabledReason: 'There is no title change from the Folio outline or the Outline to undo (in the document, ⌘Z undoes it)', run: () => { void titleConflictActions.undo() } },
       {
@@ -5341,13 +5572,24 @@ export default function App(): JSX.Element {
       { id: 'idea.capture', label: 'Capture an idea', icon: Plus, keys: '⇧⌘N', run: openCapture },
       { id: 'idea.materialise', label: 'Materialise dead wikilink', icon: Plus, keys: '⌘↵', run: runMaterialiseCommand },
       { id: 'navigation.followWikilink', label: 'Follow wikilink', icon: Link, keys: '⌥↵', run: followWikilink },
-      { id: 'app.scratchpad', label: 'Open Scratchpad', icon: StickyNote, keys: '⇧⌘J', run: () => openScratchpad(true) },
+      { id: 'app.scratchpad', label: 'Open Scratchpad', icon: StickyNote, keys: '⇧⌘J', run: () => scratchpadApi.current?.toggle() },
+      { id: 'scratchpad.sendCopy', label: registryCommand('scratchpad.sendCopy').label, icon: StickyNote, run: () => { void scratchpadApi.current?.sendCopy() } },
+      { id: 'scratchpad.cut', label: registryCommand('scratchpad.cut').label, icon: StickyNote, run: () => { void scratchpadApi.current?.cut() } },
+      { id: 'scratchpad.insertCopy', label: registryCommand('scratchpad.insertCopy').label, icon: StickyNote, run: () => scratchpadApi.current?.insertSelected() },
+      { id: 'scratchpad.putBack', label: registryCommand('scratchpad.putBack').label, icon: StickyNote, run: () => scratchpadApi.current?.putBackSelected() },
+      { id: 'scratchpad.compare', label: registryCommand('scratchpad.compare').label, icon: StickyNote, run: () => scratchpadApi.current?.compareTicked() },
+      { id: 'scratchpad.preview', label: registryCommand('scratchpad.preview').label, icon: StickyNote, run: () => scratchpadApi.current?.previewSelected() },
+      { id: 'scratchpad.reject', label: registryCommand('scratchpad.reject').label, icon: StickyNote, run: () => scratchpadApi.current?.rejectSelected() },
+      { id: 'scratchpad.moveBack', label: registryCommand('scratchpad.moveBack').label, icon: StickyNote, run: () => scratchpadApi.current?.moveBackSelected() },
+      { id: 'scratchpad.markDone', label: registryCommand('scratchpad.markDone').label, icon: StickyNote, run: () => scratchpadApi.current?.toggleDoneSelected() },
+      { id: 'scratchpad.focusSearch', label: registryCommand('scratchpad.focusSearch').label, icon: StickyNote, run: () => scratchpadApi.current?.focusSearch() },
       { id: 'app.agent', label: 'Open Agent', icon: Sparkles, keys: '⌘J', run: () => focusComposer() },
       { id: 'agent.askHere', label: 'Ask the agent about this…', icon: Sparkles, run: askHere },
       { id: 'threads.new', label: 'Start a new conversation', icon: MessageSquare, run: () => requestAgentAction('new-conversation') },
       { id: 'threads.switcher', label: 'Show conversations', icon: MessageSquare, run: () => requestAgentAction('show-conversations') },
       { id: 'threads.closeCurrent', label: 'Close the current conversation', icon: X, run: () => requestAgentAction('close-current-conversation') },
       { id: 'agent.switchModel', label: 'Switch the model for this chat', icon: Sparkles, run: () => openAgentConfiguration('model') },
+      { id: 'agent.setMode', label: 'Set assistant mode', icon: Sparkles, run: () => openAgentConfiguration('mode') },
       { id: 'agent.setThinking', label: 'Set the reasoning level for this chat', icon: AlignCenterVertical, run: () => openAgentConfiguration('thinking') },
       { id: 'agent.refreshModels', label: 'Refresh models', icon: RefreshCw, run: () => { void runRefreshModelsCommand(window.writeflex.refreshModels, flash) } },
       { id: 'agent.manageAccounts', label: 'Manage assistant accounts', icon: Settings, run: () => openSettings('sec-account') },
@@ -5357,6 +5599,8 @@ export default function App(): JSX.Element {
       { id: 'review.acceptAll', label: 'Accept all shown, or the selected', icon: Check, keys: '⇧⌘A', run: () => runMarginCommand('accept') },
       { id: 'review.declineAll', label: 'Decline all shown, or the selected', icon: X, keys: '⇧⌘⌫', run: () => runMarginCommand('decline') },
       { id: 'review.sendBack', label: 'Send the review back to the agent', icon: Send, keys: '⇧⌘R', run: () => runMarginCommand('send-back') },
+      { id: 'review.acceptAllFromSource', label: 'Accept all from one agent…', icon: Check, run: () => outsideSourceBulkRef.current('accept') },
+      { id: 'review.declineAllFromSource', label: 'Decline all from one agent…', icon: X, run: () => outsideSourceBulkRef.current('decline') },
       { id: 'review.nextChange', label: 'Next change', icon: ChevronRight, run: () => { stepReview(1) } },
       { id: 'review.nextPieceWaiting', label: 'Next piece with items waiting', icon: ChevronRight, keys: '⌃⌥⌘G', run: () => nextPieceWithItems() },
       { id: 'review.previousChange', label: 'Previous change', icon: ChevronLeft, run: () => { stepReview(-1) } },
@@ -5445,6 +5689,8 @@ export default function App(): JSX.Element {
     toggleHideInserts,
     runEditorCommand,
     openFilesTab,
+    toggleLeftPane,
+    toggleRightPane,
     toggleActionBar,
     focusSidebarFilter,
     openOpenTabs,
@@ -5456,12 +5702,14 @@ export default function App(): JSX.Element {
     activeCollectionDir,
     startNestedFolio,
     canTurnBack,
+    canStartCollectionFolio,
     turnBackFolio,
     openPlan,
     openFolio,
     openFolioDir,
     folioPlace,
     runFolioCommand,
+    runFolioPlanCommand,
     folioRunningOrder,
     open,
     helpWithReport,
@@ -5626,7 +5874,7 @@ export default function App(): JSX.Element {
       // Chord-specific behaviour where the key historically did more than the palette row:
       // ⇧⌘F also lands the keyboard in the search field (the toggleSearch contract).
       index.set(canonicalChord(chord), row.id === 'app.search' ? toggleSearch : row.run)
-      if (row.id.startsWith('collection.page.') || ['collection.newDocument', 'collection.startFolio', 'folio.turnBack'].includes(row.id)) collectionChords.add(canonicalChord(chord))
+      if (row.id.startsWith('collection.page.') || row.id.startsWith('folio.room.') || row.id.startsWith('plan.') || row.id.startsWith('title.') || row.id === 'collection.openBoard' || ['collection.newDocument', 'collection.startFolio', 'folio.turnBack'].includes(row.id)) collectionChords.add(canonicalChord(chord))
       if (BACKSPACE_APP_CHORDS.has(row.id)) backspace.set(canonicalChord(chord), row.run)
     }
     collectionChordsRef.current = collectionChords
@@ -5640,20 +5888,29 @@ export default function App(): JSX.Element {
       const chord = eventToChord(e) ?? (backspace && backspaceChordIndexRef.current.has(backspace) ? backspace : null)
       if (!chord) return
       const disclosureChord = resolveChord('statusbar.disclosure', shortcutOverrides)
+      const paneChord = ['view.toggleLeftPane', 'view.toggleRightPane'].some(id => chord === resolveChord(id, shortcutOverrides))
       const paletteChord = chord === resolveChord('app.quickOpen', shortcutOverrides) || chord === resolveChord('app.commandPalette', shortcutOverrides)
-      if (overlayOpenRef.current && !paletteChord && !(overlayActive === 'statusDisclosure' && chord === disclosureChord) && !(collectionDir !== null && overlayActive === null && !document.querySelector('.cv-sheet') && collectionChordsRef.current.has(chord))) return
+      // The room's text pane is the app's editor on screen: its own keys (⌘S and the rest) work while focus is in it.
+      if (overlayOpenRef.current && !paletteChord && !(paneChord && overlayActive === null && !configureActionBarOpen && !document.querySelector('.cv-sheet')) && !(roomTextRef.current !== null && overlayActive === null && (e.target as Element | null)?.closest?.('.cm-editor')) && !(overlayActive === 'statusDisclosure' && chord === disclosureChord) && !(collectionDir !== null && overlayActive === null && !document.querySelector('.cv-sheet') && collectionChordsRef.current.has(chord))) return
       // The archive dock owns its keys (⏎, ⌘⏎, ⇧↑/⇧↓ …) while focus is in it: only its own toggle and
       // the palettes still reach the app chord table, so ⌘⏎ inserts a link rather than materialising.
       if (archiveSearchOpenRef.current && (e.target as Element | null)?.closest?.('.archive-dock')
-        && !paletteChord && chord !== resolveChord('archive.search', shortcutOverrides)) return
+        && !paneChord && !paletteChord && chord !== resolveChord('archive.search', shortcutOverrides)) return
       const run = chord === backspace ? backspaceChordIndexRef.current.get(chord) : appChordIndexRef.current.get(chord)
       if (!run) return
+      // The room's Text and Split panes are the editor: its line-move keys must reach CodeMirror,
+      // rather than being prevented here and then refused as running-order moves by the room.
+      if (roomTextRef.current !== null && (e.target as Element | null)?.closest?.('.cm-editor')
+        && ['plan.moveUp', 'plan.moveDown'].some(id => chord === resolveChord(id, shortcutOverrides))) return
+      if (chord === resolveChord('plan.removePart', shortcutOverrides) && (e.target as Element | null)?.closest?.('input, textarea, select, [contenteditable="true"], .cm-editor')) return
       e.preventDefault()
-      run()
+      // Pane chords belong to the shell, before editor or room event containment.
+      if (paneChord) e.stopImmediatePropagation()
+      runAsPlanShortcut(run)
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [overlayActive, overlayOpenRef, shortcutOverrides, collectionDir])
+  }, [overlayActive, overlayOpenRef, shortcutOverrides, collectionDir, configureActionBarOpen])
 
   // The Reading Room's vendored reader owns the keyboard once a document has focus, so its seam
   // forwards the modified chords it does not want (ReadFlex ADR-0028). They run through the SAME
@@ -5814,7 +6071,9 @@ export default function App(): JSX.Element {
     void reloadPopulation().catch(() => { if (!cancelled) setWikilinkCompletionPieces([]) })
     const dispose = window.writeflex.collection.onChanged((event) => {
       if (!collectionSurfaceMountedRef.current && event.paths.length > 0 && event.paths.every((path) => path === active)) return
-      void reloadPopulation()
+      // A file can leave between the query's listing and its read (a part moved into the Folio bin): that re-read
+      // fails, the last list stays, and the next change notice reads again. Uncaught, it took the window down.
+      void reloadPopulation().catch(() => undefined)
     })
     return () => { cancelled = true; dispose() }
   }, [active, loadedFile])
@@ -5918,6 +6177,7 @@ export default function App(): JSX.Element {
         const sayClosing = setTimeout(() => {
           if (flashTimer.current) clearTimeout(flashTimer.current)
           flashTimer.current = null
+          dismissFolioNoticeRef.current?.()
           setStatus(CLOSING_STATUS)
         }, CLOSING_STATUS_AFTER_MS)
         try {
@@ -5939,10 +6199,13 @@ export default function App(): JSX.Element {
             // review round 2): the window must not go before the ledger has them.
             flush: async () => {
               const flushed = await flushEveryDirtyBuffer(failedPaths)
+              const room = await flushRoomPending()
+              failedPaths.push(...room.failed)
+              const combined = { flushed: [...new Set([...flushed.flushed, ...room.flushed])], failed: flushed.failed + room.failed.length, clean: flushed.clean && room.failed.length === 0 }
               // A record the ledger refused does not keep the window open; it is logged (round 3, S3).
               const { failed: unrecorded } = await flushWriterChangesNow()
               if (unrecorded.length > 0) void reportRendererError(new Error(`Close: writer-review records could not be written for ${unrecorded.join(', ')}`))
-              return flushed
+              return combined
             },
             checkpoint: (flushed) => closeCheckpointOrder(flushed, changed, tabsRef.current.filter((path) => !isSurfaceTabId(path))),
             // The window is going: every open document is detached in the turn the close is sent, so no
@@ -6035,14 +6298,16 @@ export default function App(): JSX.Element {
   useEffect(
     () =>
       window.writeflex.onMenuAction((action) => {
-        if (action === 'open-files') openFilesTab()
+        if (action === 'toggle-left-pane') toggleLeftPane()
+        else if (action === 'toggle-right-pane') toggleRightPane()
+        else if (action === 'open-files') openFilesTab()
         else if (action === 'toggle-outline') toggleOutline()
         else if (action === 'focus-review-margin') runMarginCommand('focus')
         else if (action === 'switch-margin-view') switchMarginView()
         else if (action === 'toggle-margin') toggleMargin()
         else if (action === 'open-versions') openRightTab('versions')
       }),
-    [openFilesTab, toggleOutline, openRightTab, runMarginCommand, switchMarginView, toggleMargin],
+    [toggleLeftPane, toggleRightPane, openFilesTab, toggleOutline, openRightTab, runMarginCommand, switchMarginView, toggleMargin],
   )
 
   // The View menu's Toggle Typewriter item (⌘T, registerAccelerator:false) routes here on click.
@@ -6161,24 +6426,6 @@ export default function App(): JSX.Element {
   // (browse the active file's folder — a replacement gesture, the tab strip never grows) are
   // dispatched by the T6 chord table.
 
-  // CH-1 pane collapse keys. Use e.code for layout stability; these are the only keyboard closes for
-  // the left and right panes. Alt remains reserved for folder browsing above.
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      if (overlayOpenRef.current) return
-      if (!(e.metaKey || e.ctrlKey) || (e.metaKey && e.ctrlKey) || e.shiftKey || e.altKey) return
-      if (e.code === 'BracketLeft') {
-        e.preventDefault()
-        toggleLeftPane()
-      } else if (e.code === 'BracketRight') {
-        e.preventDefault()
-        toggleRightPane()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown, true)
-    return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [overlayOpenRef, toggleLeftPane, toggleRightPane])
-
   // ⌘⇧Z is context-sensitive by design (ADR-0009 cheat-sheet: Undo agent turn): with focus inside
   // the agent panel it undoes the agent's last turn; anywhere else the keystroke falls through to
   // CM6's own historyKeymap (editor redo). menu.ts registers Edit ▸ Redo with
@@ -6220,6 +6467,7 @@ export default function App(): JSX.Element {
         // Edit ▸ Undo is not a native role (menu.ts): the Details card undoes by its own token and handles its own
         // click; anywhere else the click is the browser's own text undo, as the role was.
         if (action === 'undo') {
+          if (turnBackUndo.current && turnBackUndo.current.root === root && collectionDir === turnBackUndo.current.dir && !document.activeElement?.closest('input, textarea, [contenteditable="true"], .cm-editor')) { undoTurnBack(); return }
           if (document.activeElement?.closest('[data-folio-details]')) return
           if (document.activeElement?.closest('.cm-editor')) runEditorCommand(undo)
           else document.execCommand('undo')
@@ -6229,7 +6477,7 @@ export default function App(): JSX.Element {
         if (document.querySelector('.agent')?.contains(document.activeElement)) agent.undoTurn()
         else runEditorCommand(redo)
       }),
-    [agent.undoTurn, runEditorCommand],
+    [agent.undoTurn, runEditorCommand, turnBackUndo, root, collectionDir, undoTurnBack],
   )
 
   // ⌘T (Toggle Typewriter) is dispatched by the T6 chord table — menu.ts keeps the item at
@@ -6358,16 +6606,16 @@ export default function App(): JSX.Element {
   }, [root, overlayActive, openCheatSheet, closeCheatSheet])
 
   // The locked View + Navigation keys the native zoom roles used to shadow (menu.ts now stands
-  // aside): ⌘0 toggle sidebar, ⌘1 focus editor, ⌘+/⌘− prose size, ⌥⌘+/⌥⌘− line width, ⌥⌘0 reset.
+  // aside): ⌘1 focus editor, ⌘+/⌘− prose size, ⌥⌘+/⌥⌘− line width, ⌥⌘0 reset.
   // e.code (not e.key) for the ⌥ variants — Option remaps the produced character on macOS
   // (⌥0 → 'º'), while the physical Digit0/Equal/Minus codes stay stable.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       if (overlayOpenRef.current) return // an open sheet owns the keyboard (useOverlayGuard)
       if (!(e.metaKey || e.ctrlKey) || (e.metaKey && e.ctrlKey)) return
-      if (e.code === 'Digit0' && !e.shiftKey) {
+      if (e.code === 'Digit0' && e.altKey && !e.shiftKey) {
         e.preventDefault()
-        e.altKey ? resetProseZoom() : toggleSidebar()
+        resetProseZoom()
       } else if (e.code === 'Digit1' && !e.altKey && !e.shiftKey) {
         e.preventDefault()
         focusEditor()
@@ -6461,6 +6709,14 @@ export default function App(): JSX.Element {
     },
     [close, owner, cancelAutosaveFor, setSaveFailed, setSaveSlow, flash, clearFileWriterState, clearExternalDiskNotice],
   )
+
+  // The room's text pane asks for a part's file: open it as any open does (a tab, the editor's own buffer, saves and conflict handling),
+  // but stay in the room. Reading and showing the file writes nothing to the Folio.
+  useEffect(() => {
+    if (roomTextPath === null || collectionDir === null) return
+    noteOpenSource(roomTextPath, 'other')
+    openTab(roomTextPath)
+  }, [roomTextPath, collectionDir, openTab, noteOpenSource])
 
   // ⌘W is natively owned by the File menu (menu.ts registers CmdOrCtrl+W → 'close-tab', unlike the
   // registerAccelerator:false items), so it arrives as a menu action rather than a keydown.
@@ -6934,6 +7190,35 @@ export default function App(): JSX.Element {
     [owner, raiseForOutside],
   )
 
+  // The Board's status move: the shared flushed route (D-STA-1), never the IPC on its own.
+  const setBoardPieceStatus = useCallback(
+    async (dir: string, path: string, status: string): Promise<void> => {
+      await setPieceStatusFlushed(owner, window.writeflex.collection.setStatus, dir, path, status)
+    },
+    [owner],
+  )
+
+  /** The Board for a Folio, drawn inside its workspace's Cards tab: the same Board, its offcuts, Sources rail and Undo included. */
+  const renderFolioBoard = (folio: { dir: string; name: string; onLeave: () => void; onOutline: () => void }): JSX.Element => (
+    <Board
+      label="Sources and offcuts"
+      dir={folio.dir}
+      name={folio.name}
+      filter=""
+      onOpenPiece={open}
+      onNewPiece={newPiece}
+      onStatus={flash}
+      onListSources={(path, sourceDir) => setPieceSourcesRequest({ path, dir: sourceDir })}
+      setPieceStatus={setBoardPieceStatus}
+      seenStatuses={boardSeenStatusesRef.current}
+      onFolderPieceSelected={setSelectedFolderPiece}
+      onQueryContext={updateQueryInsertionContext}
+      onInsertQuery={requestQueryInsertion}
+      onOpenPlan={folio.onOutline}
+      onOpenCollection={folio.onLeave}
+    />
+  )
+
   // Accepting a change in an open document is a route of the document owner (resolution-routes.ts).
   const acceptThroughOwner = useCallback(
     <A extends AcceptAnswer,>(path: string, id: string, resolve: () => Promise<A>): Promise<AcceptRouteResult<A>> => {
@@ -6950,7 +7235,7 @@ export default function App(): JSX.Element {
       return acceptRoute({
         owner,
         bufferOf: bufferNow,
-        recordInEditor: (p, changeId, resolvedContent) => editorRef.current?.recordSuggestionResolution(p, changeId, 'accept', resolvedContent) === true,
+        recordInEditor: (p, changeId, resolvedContent, scratchPlacement) => editorRef.current?.recordSuggestionResolution(p, changeId, 'accept', resolvedContent, scratchPlacement) === true,
         // Typing that arrived while main applied the change is kept; main's version is asked about.
         askAbout: (p, diskText) => {
           cancelAutosaveFor(p)
@@ -6975,6 +7260,28 @@ export default function App(): JSX.Element {
     }, change, action),
     [acceptThroughOwner, inDocumentQueue],
   )
+  // Accept all / Decline all from one outside source, across the collection. A document this window holds is
+  // accepted through the single click's own route (acceptThroughOwner); main accepts the rest the same way.
+  const outsideSourceBulk = useOutsideSourceBulk({
+    rows: outsideDock.sources,
+    isOpen: (path) => bufferNow(path) !== null || owner.baselineDiskOf(path) !== undefined,
+    acceptInWindow: async (path, id) => {
+      const accepted = await acceptThroughOwner(path, id, () => window.writeflex.resolveChange(id, 'accept', { sweep: false }))
+      return accepted.status === 'acted' ? { applied: accepted.result.applied, message: accepted.result.message } : { applied: false, message: accepted.message }
+    },
+    afterRun: async () => {
+      handleAgentWorkspaceChange()
+      await refreshInlineChangesAfterReconcile()
+    },
+    restoreFocus: restoreEditorFocus,
+    flash,
+  })
+  outsideSourceBulkRef.current = (action) => {
+    // The source of the item in hand when it came from outside; otherwise the source with the most waiting.
+    const current = dockChanges.find((change) => change.id === reviewCursorRef.current?.currentId)?.outsideSource
+    setReviewAskState(null)
+    outsideSourceBulk.open(action, current && current !== 'reader' ? current : undefined)
+  }
 
   // Accept ⏎: apply through the real pipeline (suggestions:apply — snapshot, execute, audit), then
   // refresh the workspace exactly as any agent write does and reconcile the rewritten file. The
@@ -7208,8 +7515,9 @@ export default function App(): JSX.Element {
         toggleMargin: formatShortcutKey(resolveChord('review.toggleMargin', shortcutOverrides) ?? ''),
         saveVersion: formatShortcutKey(resolveChord('file.nameVersion', shortcutOverrides) ?? ''),
       },
+      outsideSources: outsideDock.sources,
     })
-  }, [reviewModels, marginFilterState, marginHidden, shortcutOverrides, pickedCards])
+  }, [reviewModels, marginFilterState, marginHidden, shortcutOverrides, pickedCards, outsideDock.sources])
   // Ticket 04: the bulk actions, over the same model the review line and the count menu are drawn from, so a label and the
   // action under it agree and nothing a filter hides is touched. They need no margin on screen. Every write goes through
   // the review actions (acceptMany / rejectMany, one change at a time in document order), exactly as before.
@@ -7298,8 +7606,9 @@ export default function App(): JSX.Element {
       }
       case 'toggle-margin': toggleMargin(); break
       case 'save-version': requestNameVersion(); break
+      case 'outside-source': setReviewAskState(null); outsideSourceBulk.open(action.action, action.source); break
     }
-  }, [stepReview, nextPieceWithItems, bulkAccept, toggleMargin, requestNameVersion])
+  }, [stepReview, nextPieceWithItems, bulkAccept, toggleMargin, requestNameVersion, outsideSourceBulk])
   // The one handler for the run-level review keys. The margin acts on its selection, else on what its filter shows; with no margin mounted
   // (no document open, a collection page) the keys fall back to the whole pending run.
   marginCommandRef.current = (what): void => {
@@ -7448,6 +7757,36 @@ export default function App(): JSX.Element {
     )
   }
 
+  const renderDocumentOutline = (workspaceDir?: string): JSX.Element => (
+    <aside className="outline" aria-label="Outline">
+      <OutlinePane
+        workspaceDir={workspaceDir}
+        editorRef={editorRef}
+        snapshot={snapshot}
+        // The buffer the editor really shows: after a failed read `active` is the target but the old buffer stays on screen.
+        activePath={loadedFile ?? active}
+        onJumpToFile={(file, line, isPart) => {
+          if (workspaceDir !== undefined && isPart === true) {
+            window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: { path: file } }))
+            if (active === file && loadedPath.current === file) editorRef.current?.goToLine(line)
+            else { pendingLine.current = { path: file, line }; openTab(file) }
+          } else jumpToFileLine(file, line)
+        }}
+        savedTick={savedTick}
+        focusTick={outlineFocusTick}
+        shortcutFor={(commandId) => resolveChord(commandId, shortcutOverrides)}
+        request={outlineRequest}
+        folioPlace={active !== null ? folioPlace : null}
+        folderFileCount={outlineFolderFileCount}
+        onOpenFile={(file, isPart) => { if (workspaceDir !== undefined && isPart === true) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: { path: file } })); else open(file) }}
+        onOpenPlan={workspaceDir !== undefined ? () => openPlanIn(workspaceDir) : openFolioPlan}
+        onStatus={flash}
+        runningOrder={folioRunningOrder}
+        folioRefreshTick={folioRefreshTick}
+      />
+    </aside>
+  )
+
   const activeExternalDiskNotice = active ? externalDiskNotices.get(active) : undefined
   const externalDiskNoticePaths = new Set(externalDiskNotices.keys())
 
@@ -7487,6 +7826,8 @@ export default function App(): JSX.Element {
     <div className={`app-shell window${distractionFree ? ' df' : ''}`} ref={shellRef} tabIndex={-1}>
       <Toolbar
         sidebarOpen={!leftPaneCollapsed}
+        sidebarShortcut={formatShortcutKey(resolveChord('view.toggleLeftPane', shortcutOverrides) ?? '')}
+        panelsShortcut={formatShortcutKey(resolveChord('view.toggleRightPane', shortcutOverrides) ?? '')}
         onToggleSidebar={toggleSidebar}
         panelsOpen={!rightPaneCollapsed}
         onTogglePanels={toggleRightPane}
@@ -7547,7 +7888,7 @@ export default function App(): JSX.Element {
       <div className={`body tabbed-shell${leftPaneCollapsed ? ' left-collapsed' : ''}${rightPaneCollapsed ? ' right-collapsed' : ''}${archiveSearchOpen ? ' archive-open' : ''}`}>
         {!leftPaneCollapsed && (
           <aside className={`chrome-pane left-pane${distractionFree ? ' df-pane' : ''}`} aria-label="Left pane" style={distractionFree ? undefined : { width: leftPaneWidth }}>
-            {distractionFree && <div className="df-ph">{leftTab === 'files' ? <FolderTree className="icon sm" /> : leftTab === 'outline' ? <List className="icon sm" /> : <Search className="icon sm" />}<span>{`${leftTab[0].toUpperCase()}${leftTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title="Close panel (⌘[)" onClick={toggleLeftPane}><X className="icon sm" /></button></div>}
+            {distractionFree && <div className="df-ph">{leftTab === 'files' ? <FolderTree className="icon sm" /> : leftTab === 'outline' ? <List className="icon sm" /> : <Search className="icon sm" />}<span>{`${leftTab[0].toUpperCase()}${leftTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title={`Close panel (${formatShortcutKey(resolveChord('view.toggleLeftPane', shortcutOverrides) ?? '')})`} onClick={toggleLeftPane}><X className="icon sm" /></button></div>}
             {!distractionFree && <div className="pane-tabs" role="tablist" aria-label="Sidebar sections">
               <button type="button" className={leftTab === 'files' ? 'pane-tab on' : 'pane-tab'} role="tab" aria-selected={leftTab === 'files'} onClick={openFilesTab} title="Files (⇧⌘E)" aria-keyshortcuts="Shift+Meta+E">
                 <FolderTree className="icon i sm" aria-hidden="true" />
@@ -7561,7 +7902,7 @@ export default function App(): JSX.Element {
                 <Search className="icon i sm" aria-hidden="true" />
                 Search <span className="pchord" aria-hidden="true">⇧⌘F</span>
               </button>
-              <button type="button" className="sidebar-fold" onClick={toggleLeftPane} title="Collapse sidebar (⌘[)" aria-label="Collapse sidebar">
+              <button type="button" className="sidebar-fold" onClick={toggleLeftPane} title={`Collapse sidebar (${formatShortcutKey(resolveChord('view.toggleLeftPane', shortcutOverrides) ?? '')})`} aria-label="Collapse sidebar">
                 <ChevronLeft className="icon sm" aria-hidden="true" />
               </button>
             </div>}
@@ -7612,27 +7953,9 @@ export default function App(): JSX.Element {
                 </nav>
               </div>
               <div className={leftTab === 'outline' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Outline">
-                <aside className="outline" aria-label="Outline">
-                  <OutlinePane
-                    editorRef={editorRef}
-                    snapshot={snapshot}
-                    // The buffer the editor really shows: after a failed read `active` is the target but the old buffer stays on screen.
-                    activePath={loadedFile ?? active}
-                    onJumpToFile={jumpToFileLine}
-                    savedTick={savedTick}
-                    focusTick={outlineFocusTick}
-                    shortcutFor={(commandId) => resolveChord(commandId, shortcutOverrides)}
-                    request={outlineRequest}
-                    folioPlace={active !== null ? folioPlace : null}
-                    folderFileCount={outlineFolderFileCount}
-                    onOpenFile={open}
-                    onOpenPlan={openFolioPlan}
-                    onOpenBoard={openBoard}
-                    onStatus={flash}
-                    runningOrder={folioRunningOrder}
-                    folioRefreshTick={folioRefreshTick}
-                  />
-                </aside>
+                <RoomBinderSwitch onOpenFile={open} write={folioRunningOrder.write} contents={renderDocumentOutline(workspaceFolioDir ?? undefined)}>
+                {renderDocumentOutline()}
+                </RoomBinderSwitch>
               </div>
               <div className={leftTab === 'search' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Search workspace">
                 <SearchPanel onOpenHit={(match) => { jumpToMatch(match); noteOpenSource(match.path, 'search') }} onClose={closeSearch} focus={folderFocus} />
@@ -7655,6 +7978,8 @@ export default function App(): JSX.Element {
             onSyncHighlightsAutomatically={syncHighlightsOnRoomLifecycle}
             onWriteResult={noteWriteResult}
             outboxRefusal={outboxRefusal?.reason ?? null}
+            outboxRefusalCode={outboxRefusal?.code ?? null}
+            outboxWaiting={outboxWaiting}
             onCite={citeShelfRow}
             highlightsRequest={readingRoomHighlightsRequest}
             shelfRequest={readingRoomShelfRequest}
@@ -7665,6 +7990,107 @@ export default function App(): JSX.Element {
           />
         )}
         <main className="editor-wrap" onPointerMove={(event) => { if (distractionFree) setDfControlsVisible(!documentFindOpen && event.clientY - event.currentTarget.getBoundingClientRect().top < 64) }}>
+          {collectionDir !== null && (
+            // A folder browsed as its Collection (Task 23): an opaque overlay OVER the still-mounted
+            // editor. Opening a piece clears collectionDir (via the wrapped open/activate) → overlay gone,
+            // the editor's buffers untouched underneath.
+            <div className="cv-overlay">
+              <CollectionView
+                key={`${root}:${collectionDir}`}
+                dir={collectionDir}
+                canAddToFolio={canTurnBack}
+                onShowRoomText={setRoomTextPath}
+                roomTextLoaded={loadedFile}
+                roomEditor={editorRef}
+                onRunCommand={id => { if (id === 'export.document') void openExportSheet(undefined, undefined, collectionDir); else actionsHereApi.runCommand(id) }}
+                onRename={async name => {
+                  if (!collectionDir) throw new Error('Rename the workspace folder in Finder.')
+                  if (name === collectionDir.split('/').at(-1)) return
+                  const prefix = `${collectionDir}/`
+                  const openBefore = tabsRef.current.filter(path => path.startsWith(prefix))
+                  const activeBefore = activeRef.current
+                  const moved = await withPathsSaved(() => documentsUnder(prefix), async snapshots => {
+                    const renamed = await window.writeflex.renameFolder(collectionDir, name)
+                    for (const path of snapshots.keys()) afterMainMoved(path, `${renamed.path}${path.slice(collectionDir.length)}`)
+                    return renamed.path
+                  }, prefix)
+                  if (!moved) throw new Error('Could not save the documents. The collection was not renamed.')
+                  await refresh()
+                  for (const path of openBefore) openTab(`${moved.result}${path.slice(collectionDir.length)}`)
+                  if (activeBefore) activateTab(activeBefore.startsWith(prefix) ? `${moved.result}${activeBefore.slice(collectionDir.length)}` : activeBefore)
+                  openCollection(moved.result)
+                }}
+                onBulkAction={async (action, paths, value) => {
+                  if (action === 'move') {
+                    const current = await window.writeflex.listCollection(collectionDir)
+                    if (current.rows.some(row => row.folderPath && paths.includes(row.path))) {
+                      throw new Error('Move folder pieces from Files so all their documents move together.')
+                    }
+                  }
+                  if (action === 'folio') {
+                    const target = await window.writeflex.readFolioPieces(collectionDir)
+                    if (!target) throw new Error('Add documents from the Folio’s own collection folder.')
+                    const current = await window.writeflex.listCollection(collectionDir)
+                    return addCollectionBatchToFolio(folioRunningOrder, collectionDir, target.pieces, paths, current.rows)
+                  }
+                  await window.writeflex.collection.beginBatch()
+                  const openBefore = new Set(tabsRef.current)
+                  const activeBefore = activeRef.current
+                  const movedTabs = new Map<string, string>()
+                  try {
+                    const result = await runCollectionBatch(paths, async path => {
+                      if (action === 'move') {
+                        const name = path.split('/').at(-1)!
+                        // An empty picker value names the workspace root, which rename planning calls null.
+                        const result = await withRenameScopeSaved(path, () => window.writeflex.planFileRename(path, name, value || null), async planned => {
+                          const moved = await window.writeflex.moveFile(path, planned.newPath, collectionDir)
+                          if (moved.file.path !== path) afterMainMoved(path, moved.file.path)
+                          return moved
+                        })
+                        if (!result) throw new Error('Could not save this document. Try again.')
+                        if (openBefore.has(path)) movedTabs.set(path, result.result.file.path)
+                      } else if (action === 'status') {
+                        await setPieceStatusFlushed(owner, window.writeflex.collection.setStatus, collectionDir, path, value)
+                      } else {
+                        const result = await owner.withFlushed([path], async snapshots => {
+                          const snapshot = snapshots.get(path)!
+                          const saved = await window.writeflex.collection.addTags(collectionDir, path, value.split(',').map(tag => tag.trim()).filter(Boolean))
+                          owner.replaceFromMain(path, saved, { since: snapshot.gen, mode: 'replace' })
+                        })
+                        if (result.status !== 'acted') throw new Error('Could not save this document. Try again.')
+                      }
+                    })
+                    flash(result.message)
+                    return result
+                  } finally {
+                    await window.writeflex.collection.endBatch()
+                    if (action === 'move') {
+                      await refresh()
+                      for (const path of movedTabs.values()) openTab(path)
+                      if (activeBefore) activateTab(movedTabs.get(activeBefore) ?? activeBefore)
+                    }
+                  }
+                }}
+                onOpenPiece={open}
+                onNewPiece={newPiece}
+                onStatus={flash}
+                onOpenBoard={openBoard}
+                onOpenFolder={openCollection}
+                onReturnToFolio={openPlanIn}
+                onStartFolio={startNestedFolio}
+                onFolderPieceSelected={setSelectedFolderPiece}
+                shortcutOverrides={shortcutOverrides}
+                openPlanRequested={openPlanRequested}
+                onHelpWithReport={helpWithReport}
+                onMakeVault={openMakeVault}
+                rootIsVault={rootIsVault !== false}
+                runningOrder={folioRunningOrder}
+                onOpenFolio={openFolioAt}
+                renderBoard={renderFolioBoard}
+                onBoardShown={setFolioBoardShown}
+              />
+            </div>
+          )}
           {distractionFree && dfControlsVisible && <><button type="button" className="df-exit" onClick={toggleDistractionFree} title="Leave distraction-free (⌥⌘D or Esc)"><Minimize2 className="icon sm" />Esc</button><div className="moderail" role="group" aria-label="Writing mode"><span className="rl">Mode</span><div className="rseg" role="group" aria-label="Writing mode"><button type="button" aria-pressed={writerMode === 'drafting'} title="Drafting (⌥⌘M)" onClick={() => changeWriterMode('drafting')}><SquarePen className="icon sm" />Drafting</button><button type="button" aria-pressed={writerMode === 'reviewing'} title="Reviewing (⌥⌘M)" onClick={() => changeWriterMode('reviewing')}><Glasses className="icon sm" />Reviewing</button></div><span className="rk">⌥⌘M</span></div></>}
           {/* The formatting toolbar sits inside the document pane (ticket 15): above the text, below the tab
               strip, with the read-aloud and review bars stacking under it. The sidebar therefore starts
@@ -7794,6 +8220,7 @@ export default function App(): JSX.Element {
             onWriterReviewChanged={onWriterReviewChanged}
             onSave={() => void save()}
             onCutToScrap={handleCutToScrap}
+            onScratchpadAnchors={(before, after) => scratchpadApi.current?.syncAnchors(before, after)}
             onScrapDropped={handleScrapDropped}
             getScrapExpansions={getScrapExpansions}
             onChangeMarkClick={selectChange}
@@ -7835,6 +8262,7 @@ export default function App(): JSX.Element {
               outside: {
                 summary: outsideDock.summary,
                 arrived: outsideDock.arrived,
+                onSourceBulk: (action, source) => { setReviewAskState(null); outsideSourceBulk.open(action, source) },
               },
             } : null}
             onWikilinkActivate={activateWikilink}
@@ -7874,7 +8302,7 @@ export default function App(): JSX.Element {
           <StatusBar
             outboxWaiting={outboxWaiting}
             outboxRejected={outboxRejected}
-            outboxNeedsZoteroClosed={outboxRefusal?.code === 'zotero-is-open'}
+            outboxNeedsZoteroOpen={outboxRefusal?.code === 'zotero-closed'}
             onSyncHighlights={syncHighlightsToZotero}
             onOpenRejectedHighlights={openHighlights}
             snapshot={snapshot}
@@ -7905,6 +8333,7 @@ export default function App(): JSX.Element {
             session={session}
             status={status}
             statusAction={statusAction}
+            onStatusHover={hovered => { if (hovered) folioNoticeTimer.current?.pause(); else folioNoticeTimer.current?.resume() }}
             collectionName={statusBarCollectionName}
             onMessageAgent={() => focusComposer()}
             disclosureOpenRequest={statusDisclosureRequest}
@@ -7940,7 +8369,7 @@ export default function App(): JSX.Element {
             onReviewAcceptAll={() => bulkAccept()}
             onReviewPicked={(what) => { if (what === 'accept') bulkAccept(); else if (what === 'decline') askDecline(); else setPickedCards(new Set()) }}
             reviewAcceptKey={formatShortcutKey(resolveChord('review.acceptAll', shortcutOverrides) ?? '')}
-            reviewAsk={reviewAsk}
+            reviewAsk={outsideSourceBulk.ask ?? reviewAsk}
             onReviewModeBack={leaveReviewMode}
             onReviewModeAcceptAll={() => void acceptWriterSession()}
             reviewNotPlaced={reviewModels ? {
@@ -8033,108 +8462,13 @@ export default function App(): JSX.Element {
                 onNewPiece={newPiece}
                 onStatus={flash}
                 onListSources={(path, dir) => setPieceSourcesRequest({ path, dir })}
-                onPieceChanged={reconcileAppliedFile}
+                setPieceStatus={setBoardPieceStatus}
                 seenStatuses={boardSeenStatusesRef.current}
                 onFolderPieceSelected={setSelectedFolderPiece}
                 onQueryContext={updateQueryInsertionContext}
                 onInsertQuery={requestQueryInsertion}
                 onOpenPlan={openPlan}
                 onOpenCollection={() => openCollection(boardDir)}
-              />
-            </div>
-          )}
-          {collectionDir !== null && (
-            // A folder browsed as its Collection (Task 23): an opaque overlay OVER the still-mounted
-            // editor. Opening a piece clears collectionDir (via the wrapped open/activate) → overlay gone,
-            // the editor's buffers untouched underneath.
-            <div className="cv-overlay">
-              <CollectionView
-                key={`${root}:${collectionDir}`}
-                dir={collectionDir}
-                canAddToFolio={canTurnBack}
-                onRunCommand={id => { if (id === 'export.document') void openExportSheet(undefined, undefined, collectionDir); else actionsHereApi.runCommand(id) }}
-                onRename={async name => {
-                  if (!collectionDir) throw new Error('Rename the workspace folder in Finder.')
-                  if (name === collectionDir.split('/').at(-1)) return
-                  const prefix = `${collectionDir}/`
-                  const openBefore = tabsRef.current.filter(path => path.startsWith(prefix))
-                  const activeBefore = activeRef.current
-                  const moved = await withPathsSaved(() => documentsUnder(prefix), async snapshots => {
-                    const renamed = await window.writeflex.renameFolder(collectionDir, name)
-                    for (const path of snapshots.keys()) afterMainMoved(path, `${renamed.path}${path.slice(collectionDir.length)}`)
-                    return renamed.path
-                  }, prefix)
-                  if (!moved) throw new Error('Could not save the documents. The collection was not renamed.')
-                  await refresh()
-                  for (const path of openBefore) openTab(`${moved.result}${path.slice(collectionDir.length)}`)
-                  if (activeBefore) activateTab(activeBefore.startsWith(prefix) ? `${moved.result}${activeBefore.slice(collectionDir.length)}` : activeBefore)
-                  openCollection(moved.result)
-                }}
-                onBulkAction={async (action, paths, value) => {
-                  if (action === 'move') {
-                    const current = await window.writeflex.listCollection(collectionDir)
-                    if (current.rows.some(row => row.folderPath && paths.includes(row.path))) {
-                      throw new Error('Move folder pieces from Files so all their documents move together.')
-                    }
-                  }
-                  if (action === 'folio') {
-                    const target = await window.writeflex.readFolioPieces(collectionDir)
-                    if (!target) throw new Error('Add documents from the Folio’s own collection folder.')
-                    const current = await window.writeflex.listCollection(collectionDir)
-                    return addCollectionBatchToFolio(folioRunningOrder, collectionDir, target.pieces, paths, current.rows)
-                  }
-                  await window.writeflex.collection.beginBatch()
-                  const openBefore = new Set(tabsRef.current)
-                  const activeBefore = activeRef.current
-                  const movedTabs = new Map<string, string>()
-                  try {
-                    const result = await runCollectionBatch(paths, async path => {
-                      if (action === 'move') {
-                        const name = path.split('/').at(-1)!
-                        // An empty picker value names the workspace root, which rename planning calls null.
-                        const result = await withRenameScopeSaved(path, () => window.writeflex.planFileRename(path, name, value || null), async planned => {
-                          const moved = await window.writeflex.moveFile(path, planned.newPath, collectionDir)
-                          if (moved.file.path !== path) afterMainMoved(path, moved.file.path)
-                          return moved
-                        })
-                        if (!result) throw new Error('Could not save this document. Try again.')
-                        if (openBefore.has(path)) movedTabs.set(path, result.result.file.path)
-                      } else {
-                        const result = await owner.withFlushed([path], async snapshots => {
-                          const snapshot = snapshots.get(path)!
-                          const saved = action === 'status'
-                            ? await window.writeflex.collection.setStatus(collectionDir, path, value)
-                            : await window.writeflex.collection.addTags(collectionDir, path, value.split(',').map(tag => tag.trim()).filter(Boolean))
-                          owner.replaceFromMain(path, saved, { since: snapshot.gen, mode: 'replace' })
-                        })
-                        if (result.status !== 'acted') throw new Error('Could not save this document. Try again.')
-                      }
-                    })
-                    flash(result.message)
-                    return result
-                  } finally {
-                    await window.writeflex.collection.endBatch()
-                    if (action === 'move') {
-                      await refresh()
-                      for (const path of movedTabs.values()) openTab(path)
-                      if (activeBefore) activateTab(movedTabs.get(activeBefore) ?? activeBefore)
-                    }
-                  }
-                }}
-                onOpenPiece={open}
-                onNewPiece={newPiece}
-                onStatus={flash}
-                onOpenBoard={openBoard}
-                onOpenFolder={openCollection}
-                onStartFolio={startNestedFolio}
-                onFolderPieceSelected={setSelectedFolderPiece}
-                shortcutOverrides={shortcutOverrides}
-                openPlanRequested={openPlanRequested}
-                onHelpWithReport={helpWithReport}
-                onMakeVault={openMakeVault}
-                rootIsVault={rootIsVault !== false}
-                runningOrder={folioRunningOrder}
-                onOpenFolio={openFolioAt}
               />
             </div>
           )}
@@ -8223,7 +8557,7 @@ export default function App(): JSX.Element {
         )}
         {!rightPaneCollapsed && (
           <aside className={`chrome-pane right-pane${distractionFree ? ' df-pane' : ''}`} aria-label="Right pane" style={distractionFree ? undefined : { width: rightPaneWidth }}>
-            {distractionFree && <div className="df-ph">{rightTab === 'agent' ? <Sparkles className="icon sm" /> : rightTab === 'scratchpad' ? <StickyNote className="icon sm" /> : rightTab === 'agent-notes' ? <Bot className="icon sm" /> : <GitCommitHorizontal className="icon sm" />}<span>{rightTab === 'agent-notes' ? 'Agent notes' : rightTab === 'versions' ? 'Versions' : `${rightTab[0].toUpperCase()}${rightTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title="Close panel (⌘])" onClick={toggleRightPane}><X className="icon sm" /></button></div>}
+            {distractionFree && <div className="df-ph">{rightTab === 'agent' ? <Sparkles className="icon sm" /> : rightTab === 'scratchpad' ? <StickyNote className="icon sm" /> : rightTab === 'agent-notes' ? <Bot className="icon sm" /> : <GitCommitHorizontal className="icon sm" />}<span>{rightTab === 'agent-notes' ? 'Agent notes' : rightTab === 'versions' ? 'Versions' : `${rightTab[0].toUpperCase()}${rightTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title={`Close panel (${formatShortcutKey(resolveChord('view.toggleRightPane', shortcutOverrides) ?? '')})`} onClick={toggleRightPane}><X className="icon sm" /></button></div>}
             {!distractionFree && (
               <RightPaneTabs
                 active={rightTab}
@@ -8299,18 +8633,10 @@ export default function App(): JSX.Element {
                 </aside>
               </div>
               <div className={rightTab === 'scratchpad' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Scratchpad">
-                <ScratchpadPane
-                  scraps={scraps.scraps}
-                  focusTick={scratchpadRequest.focus ? scratchpadRequest.tick : 0}
-                  onToggleDone={scraps.toggleDone}
-                  onSetColour={scraps.setColour}
-                  onRemove={removeScrap}
-                  onInsert={insertScrapAtCursor}
-                  onNewScrap={cutSelectionToScrap}
-                  sources={sources}
-                  onOpenSource={open}
-                  onRevealSource={revealSource}
-                />
+                <div className="sp-rail">
+                  <div className="sp-rail-slot" ref={setScratchpadDockSlot} />
+                  <SourcesSection sources={sources} onOpen={open} onReveal={revealSource} />
+                </div>
               </div>
               <div className={rightTab === 'agent-notes' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Agent notes">
                 <AgentNotes dir={shownCollectionDir ?? ''} activePath={active} workspaceOpen={typeof root === 'string' && root !== ''} resolveProposal={resolveAgentProposal} onRestage={restageAgentNote} onOpenFile={open} onReveal={revealFileInFiles} />
@@ -8319,7 +8645,24 @@ export default function App(): JSX.Element {
                 <div className="change-dock embedded versions-only" aria-label="Versions">
                   <div className="rlist cardlist">
                     <VersionsPane
+                      activePath={active}
                       versions={versions}
+                      waitingHistory={waitingHistory}
+                      attachments={historyAttachments}
+                      attachmentUndo={historyAttachmentUndo?.path === active ? historyAttachmentUndo : null}
+                      onAttachHistory={(input) => { void (async () => {
+                        try {
+                          await window.writeflex.attachVersionHistory(input)
+                          await reloadVersions()
+                        } catch (error) { flash(error instanceof Error ? error.message : 'Could not reattach history.') }
+                      })() }}
+                      onUndoAttachment={() => { void (async () => {
+                        if (!historyAttachmentUndo) return
+                        try {
+                          await window.writeflex.undoHistoryAttachment(historyAttachmentUndo.id)
+                          await reloadVersions()
+                        } catch (error) { flash(error instanceof Error ? error.message : 'Could not undo history attachment.') }
+                      })() }}
                       allChanges={changesPath === active ? changes : []}
                       pendingCount={summariseRun(dockChanges).total}
                       historicalVersionId={historicalView?.kind === 'version' ? historicalView.version.id : null}
@@ -8429,6 +8772,7 @@ export default function App(): JSX.Element {
           onRefresh={settings.refresh}
           typewriterOn={typewriterOn}
           workspaceName={root.split('/').at(-1) ?? root}
+          workspaceRoot={typeof root === 'string' && root !== '' ? root : null}
           onFlash={flash}
           onClose={closePalette}
           onConfigureActionBar={() => setConfigureActionBarOpen(true)}
@@ -8572,6 +8916,28 @@ export default function App(): JSX.Element {
           </form>
         </div>
       )}
+      <ScratchpadHost
+        onModeChange={setScratchpadMode}
+        api={scratchpadApi}
+        buffer={scratchpadBufferNow}
+        owned={(path) => !owner.isSaved(path) && owner.generationsOf(path) !== undefined}
+        navigate={open}
+        root={typeof root === 'string' && root !== '' ? root : null}
+        activePath={active}
+        assetBaseUrl={assetBaseUrl}
+        view={() => editorRef.current?.view() ?? null}
+        editorPath={() => loadedPath.current ?? active}
+        editable={() => !historicalActiveRef.current}
+        suspended={workbenchActive}
+        liveKey={historicalActive}
+        say={(message, action) => flashWithAction(message, action ? { ...action, kind: 'scratchpad' } : undefined)}
+        dockSlot={scratchpadDockSlot}
+        dockVisible={rightTab === 'scratchpad' && !rightPaneCollapsed}
+        railOpen={!rightPaneCollapsed && !distractionFree}
+        openDock={openScratchpadDock}
+        externalSources={{ talkweaver: settingValues['scratchpad.talkweaver'] === true, slidewell: settingValues['scratchpad.slidewell'] === true }}
+        onOpenSettings={() => openSettings('sec-scratchpad')}
+      />
     </div>
     </TitleConflictContext.Provider>
     </ActionsHereContext.Provider>

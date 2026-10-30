@@ -58,14 +58,22 @@ export function fileNameOf(path: string): string {
 export type StripText = string
 
 /** The one strip that applies, in the design's order of precedence, or null. */
-export function allowanceStrip(summary: OutsideSummary | null): StripText | null {
+export type ScopedOutsideSummary = OutsideSummary & { relevantSources?: OutsideSource[]; collectionWide?: boolean }
+
+export function allowanceStrip(summary: ScopedOutsideSummary | null): StripText | null {
+  const text = collectionAllowanceStrip(summary)
+  return text && summary?.collectionWide ? `Across this collection: ${text}` : text
+}
+
+function collectionAllowanceStrip(summary: ScopedOutsideSummary | null): StripText | null {
   if (!summary) return null
   const { limit, limitPerSource, undecided, bySource, lastLook } = summary
   const left = lastLook?.left ?? 0
   const because = lastLook?.leftBecause ?? []
   const refused = lastLook?.refusedFull ?? 0
-  const fullSource = bySource.find((row) => row.undecided >= limitPerSource)
-  const nearSource = bySource.find((row) => row.undecided >= 0.9 * limitPerSource)
+  const sourceRows = bySource.filter(row => !summary.relevantSources || summary.relevantSources.includes(row.source))
+  const fullSource = sourceRows.find((row) => row.undecided >= limitPerSource)
+  const nearSource = sourceRows.find((row) => row.undecided >= 0.9 * limitPerSource)
   const allFull = undecided >= limit
   const allNear = undecided >= 0.9 * limit
 
@@ -86,13 +94,14 @@ export function allowanceStrip(summary: OutsideSummary | null): StripText | null
   return null
 }
 
-/**
- * Whether a limit on outside changes is reached (all sources, or one source), as against merely near or a look that left
- * requests waiting. The margin's top line shows the allowance text only then (ticket 10).
- */
-export function allowanceLimitReached(summary: OutsideSummary | null): boolean {
+/** Ticket 10: the margin top is reserved for reached limits and actionable collection-access failures. */
+export function marginAllowanceVisible(summary: ScopedOutsideSummary | null): boolean {
   if (!summary || allowanceStrip(summary) === null) return false
-  return summary.undecided >= summary.limit || summary.bySource.some((row) => row.undecided >= summary.limitPerSource)
+  const reached = summary.undecided >= summary.limit || summary.bySource.some(row =>
+    (!summary.relevantSources || summary.relevantSources.includes(row.source)) && row.undecided >= summary.limitPerSource)
+  const look = summary.lastLook
+  const blocked = (look?.left ?? 0) > 0 && look?.leftBecause.some(reason => reason === 'not-held' || reason === 'ledger-not-writable')
+  return reached || Boolean(blocked)
 }
 
 /** Split a strip text into plain and bold runs. */
@@ -138,4 +147,17 @@ export const LONG_TEXT_NOTE = 'Long text: only the first 2,000 characters were k
 /** Closed changes, newest `closedAt` first. */
 export function sortNotApplied(changes: Change[]): Change[] {
   return [...changes].sort((a, b) => (b.closedAt ?? b.ts) - (a.closedAt ?? a.ts))
+}
+
+/** Keep collection-wide limits/backlog, but show them only beside suggestions from a relevant source. */
+export function scopeOutsideSummary(summary: OutsideSummary | null, changes: readonly Change[], paths: ReadonlySet<string>): ScopedOutsideSummary | null {
+  if (!summary) return null
+  const relevant = changes.filter(change => paths.has(change.path) && isFromOutside(change) && isUndecided(change))
+  if (relevant.length === 0) return null
+  return { ...summary, collectionWide: true, relevantSources: [...new Set(relevant.map(change => change.outsideSource!))] }
+}
+
+/** Collection navigation/counts retain other documents even when their cards are out of scope. */
+export function outsideChangesElsewhere(changes: readonly Change[], active: string | null): Change[] {
+  return changes.filter(change => change.path !== active && (isUndecided(change) || isNotApplied(change)))
 }

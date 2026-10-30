@@ -2,33 +2,52 @@
  * Annotation writes — the path from a highlight made in the reader to Zotero owning it.
  *
  * ```
- * reader saves ──▶ payload mapping ──▶ OUTBOX (durable, local) ──▶ zotero.sqlite ──▶ confirmed
- *                                        ▲                            ▲
- *          the durability boundary: the reader                 only with Zotero CLOSED, after a
- *          is told "saved" HERE, never at the write             copy of the library (ADR-0031)
+ * reader saves ──▶ payload mapping ──▶ OUTBOX (durable, local) ──▶ WriteFlex plugin in Zotero ──▶ confirmed
+ *                                        ▲                              ▲
+ *          the durability boundary: the reader             only while Zotero is OPEN, saved through
+ *          is told "saved" HERE, never at the write        Zotero's own code (ADR-0047)
  * ```
  *
- * **ADR-0031 reversed the destination and kept everything else.** Writes go into the user's own
- * `zotero.sqlite`, refused while Zotero is running, rather than through `api.zotero.org`: network
- * credentials can also grant write access to shared group libraries, where an incorrect write
- * could affect other library members (ADR-0030). The
- * payload shape below is unchanged, because ADR-0002 verified it maps one-to-one onto the local
- * `itemAnnotations` columns — that verification is what makes the reversal cheap.
- *
- * The outbox is unchanged too, and matters more now than it did for the network: a queue that
- * survives "Zotero is open, try later" is exactly what a refusal needs, and ADR-0029's painted union
- * of Zotero-plus-outbox means the mark appears immediately either way.
+ * **ADR-0047 replaced the destination and kept everything else.** WriteFlex no longer writes
+ * `zotero.sqlite` at all; each change goes to the WriteFlex plugin over Zotero's local HTTP server
+ * (`zotero-plugin-transport.ts`), which saves it with Zotero's own item code. The payload shape below is
+ * unchanged, and so is the outbox: a queue that survives "Zotero is not open, try later" is exactly what
+ * the plugin route needs, and ADR-0029's painted union of Zotero-plus-outbox means the mark appears
+ * immediately either way.
  */
 import type { OutboxEntry } from '@readflex/sidecar'
-import type {
-  NewZoteroAnnotation,
-  WritableZoteroAnnotationType,
-  WrittenZoteroAnnotation,
-  ZoteroAnnotationWriteRefusal,
-  ZoteroAnnotationWriteSession,
-  ZoteroLivenessProbes,
-} from '@readflex/zotero-bridge'
 import { generateZoteroObjectKey } from '@readflex/zotero-bridge'
+
+/** The fields of one annotation as the reader showed them: the before-state of an edit or deletion. */
+/**
+ * What Zotero held for a mark beyond its fields when it was read: its tags and the item's
+ * `clientDateModified`, which Zotero bumps on every saved change. A deletion is refused when either
+ * differs (ADR-0047). `modified` is null when the read did not report it.
+ */
+export type ZoteroState = { modified: string | null; tags: string[] }
+
+/** A `ZoteroState` as sent back by the reader, checked; null when not one. */
+export function validZoteroState(value: unknown): ZoteroState | null {
+  if (!value || typeof value !== 'object') return null
+  const state = value as Record<string, unknown>
+  if (!Array.isArray(state.tags) || !state.tags.every((tag) => typeof tag === 'string')) return null
+  if (state.modified !== null && state.modified !== undefined && typeof state.modified !== 'string') return null
+  return { modified: (state.modified as string | null | undefined) ?? null, tags: [...state.tags as string[]] }
+}
+
+export type ZoteroAnnotationFields = {
+  /** The annotation type as the reader showed it. Absent on rows queued before it was recorded. */
+  type?: string
+  /** On a deletion's baseline: what Zotero held beyond the fields, when the reader knew it. */
+  zoteroState?: ZoteroState
+  text: string | null
+  comment: string | null
+  color: string | null
+  pageLabel: string | null
+  sortIndex: string
+  /** Position JSON as a string; compared structurally, not byte for byte. */
+  position: string
+}
 
 /** The reader's annotation, as the seam hands it over. */
 export type SavedAnnotation = {
@@ -58,24 +77,32 @@ export const LOCAL_ONLY_COMPLEX_PDF_REASON =
 /** Kept as the public name for the original web/EPUB sentence. */
 export const LOCAL_ONLY_POSITION_REASON = LOCAL_ONLY_NON_PDF_REASON
 /**
- * Why an edit or a deletion of a mark is kept here instead of written. The local Zotero write covers
- * the insert and nothing else (ADR-0031), so this is a fact about what is built, not a refusal by
- * Zotero: the row is stored local-only and is never counted or shown as refused.
- *
- * **This is the only definition of the current sentence.** Releases up to 0.21.0-alpha.32 stored an
- * earlier wording as the `last_error` of `failed` rows, and `reconcileKeptEdits` recognises those rows
- * by exact text. Any reword must move the previous sentence into `LEGACY_UNSUPPORTED_ZOTERO_EDIT_REASONS`.
+ * The sentence releases up to 0.27.0-alpha.1 stored on edits and deletions while no write path for
+ * them existed (ADR-0031 then covered the insert only). **No longer written.** Kept so the one-time
+ * release on open (`releaseKeptEdits`) can recognise those rows by exact text; any reword of an old
+ * sentence belongs in `LEGACY_UNSUPPORTED_ZOTERO_EDIT_REASONS`.
  */
 export const UNSUPPORTED_ZOTERO_EDIT_REASON =
   'Editing a highlight in Zotero itself is not something WriteFlex does yet, so this change is kept here.'
 
 /**
- * Earlier wordings of `UNSUPPORTED_ZOTERO_EDIT_REASON` that may still sit in stored `failed` outbox
- * rows (the app was called ReadFlex then). Recognised on read; never written.
+ * Earlier wordings of `UNSUPPORTED_ZOTERO_EDIT_REASON` that may still sit in stored outbox rows (the
+ * app was called ReadFlex then). Recognised on read; never written.
  */
 export const LEGACY_UNSUPPORTED_ZOTERO_EDIT_REASONS: readonly string[] = [
   'Editing a highlight in Zotero itself is not something ReadFlex does yet, so this change is kept here.'
 ]
+
+/**
+ * An edit or deletion that does not record what the highlight looked like before it. Writing it
+ * could put back text changed in Zotero since, so it is listed as a conflict and never sent.
+ */
+export const UNVERIFIABLE_CHANGE_REASON =
+  'This change does not record what the highlight looked like before it, so it was not written in case it overwrites a change made in Zotero. Your version is kept here.'
+
+/** A comment edited past what one annotation carries. Refused whole; never cut short. */
+export const COMMENT_TOO_LONG_REASON =
+  'This comment is longer than a Zotero highlight comment written from here can be, so the change was not written. Shorten it and it will be sent; the full text is kept here.'
 
 /** True when a stored `last_error` is the current or any legacy kept-edit sentence. */
 export function isUnsupportedZoteroEditReason(lastError: string | null | undefined): boolean {
@@ -83,18 +110,6 @@ export function isUnsupportedZoteroEditReason(lastError: string | null | undefin
     lastError === UNSUPPORTED_ZOTERO_EDIT_REASON ||
     (typeof lastError === 'string' && LEGACY_UNSUPPORTED_ZOTERO_EDIT_REASONS.includes(lastError))
   )
-}
-
-/**
- * True for an operation the local Zotero write has no path for: every `delete`, and every `update`
- * except the Area quotation comment, which has its own narrow write (`setImageQuotation`).
- */
-export function isUnsupportedZoteroOperation(
-  operation: OutboxEntry['operation'],
-  payload: Pick<ZoteroAnnotationPayload, 'readflexAreaQuotation'>,
-): boolean {
-  if (operation === 'delete') return true
-  return operation === 'update' && !payload.readflexAreaQuotation
 }
 
 export function annotationPositionWithinCap(position: string): boolean {
@@ -147,6 +162,24 @@ export type ZoteroAnnotationPayload = {
   readflexSourceKey?: string
   /** Main-process-only allowlist marker for the sole accepted local annotation update. */
   readflexAreaQuotation?: { sourceKey: string; comment: string }
+  /**
+   * Main-process-only: on an edit or deletion, the annotation as the reader showed it before the
+   * change. The write is compare-and-set against it and writes only the fields that differ from it.
+   */
+  readflexBaseline?: ZoteroAnnotationFields | null
+  /**
+   * Main-process-only: the reader instance that made the change. A create re-keyed because Zotero
+   * already held its key is resolved to the new key only for later changes from this same instance.
+   */
+  readflexReaderSession?: string
+}
+
+const READER_SESSION_PATTERN = /^[0-9a-f]{32}$/
+
+/** The reader session a payload carries, when it is one; null otherwise. */
+export function readerSessionOf(payload: { readflexReaderSession?: unknown } | null | undefined): string | null {
+  const session = payload?.readflexReaderSession
+  return typeof session === 'string' && READER_SESSION_PATTERN.test(session) ? session : null
 }
 
 export function areaQuotationPayload(
@@ -198,13 +231,14 @@ export function annotationPayload(
   annotation: SavedAnnotation,
   parentItemKey: string,
   version?: number,
+  /** Edits and deletions keep the comment whole: a cut comment would be written over the real one. */
+  options: { keepWholeComment?: boolean } = {},
 ): ZoteroAnnotationPayload {
   return {
     annotationColor: annotation.color ?? DEFAULT_COLOUR,
-    annotationComment: truncateUtf8WithEllipsis(
-      annotation.comment ?? '',
-      MAX_ANNOTATION_COMMENT_BYTES,
-    ),
+    annotationComment: options.keepWholeComment
+      ? annotation.comment ?? ''
+      : truncateUtf8WithEllipsis(annotation.comment ?? '', MAX_ANNOTATION_COMMENT_BYTES),
     annotationPageLabel: annotation.pageLabel ?? '',
     annotationPosition: parsePosition(annotation.position),
     annotationSortIndex: annotation.sortIndex,
@@ -295,45 +329,82 @@ export type ZoteroWriteTransport = (request: {
   libraryId: number
   operation: OutboxEntry['operation']
   itemKey: string | null
+  /** The attachment the outbox row belongs to. Absent only in older stubs; the payload's
+   *  `parentItem` is then used, which `annotationPayload` always sets to the same key. */
+  parentItemKey?: string
   payload: ZoteroAnnotationPayload
+  /**
+   * True when an earlier write of this row was cut off (the app stopped mid-write). Zotero may already
+   * hold it: a create must not be made twice, and an edit or deletion Zotero already shows is done.
+   */
+  resend?: boolean
 }) => Promise<ZoteroWriteOutcome>
 
 export type ZoteroWriteOutcome =
   /** The server took it; `itemKey` is the key it assigned to a create. */
-  | { kind: 'confirmed'; itemKey?: string }
+  | { kind: 'confirmed'; itemKey?: string; note?: string }
   /** Someone else edited this annotation. Last writer wins; the loser is kept (ADR-0002). */
-  | { kind: 'conflict'; reason: string; winningPayload?: string }
-  /** Try again later — offline, rate-limited, a 5xx. */
-  | { kind: 'retry'; reason: string }
+  | { kind: 'conflict'; reason: string; winningPayload?: string; code?: 'key-in-use' }
+  /**
+   * Try again later. `halt` stops this drain: Zotero or its plugin cannot take anything now, and
+   * `code` says why. `uncertain` means the request may have reached Zotero (no answer came back), so
+   * the next attempt is sent as a resend.
+   */
+  | { kind: 'retry'; reason: string; halt?: boolean; code?: DrainSkipReason; uncertain?: boolean }
   /** A person must look at it — malformed, forbidden, the parent is gone. */
   | { kind: 'rejected'; reason: string }
-  /** Nothing is wrong and nothing was written: this kind of change has no write path yet. The entry
-   *  is kept and drawn here, and is not a refusal. */
+  /** Nothing is wrong and nothing was written: this kind of change has no write path. The entry
+   *  is kept and drawn here, and is not a refusal. No transport in this module returns it any more;
+   *  kept for stubs and older callers. */
   | { kind: 'kept-local'; reason: string }
 
 /** The subset of the sidecar the drain touches, so the drain can be tested without a real store. */
 export type OutboxStore = {
   outboxDue(limit?: number): OutboxEntry[]
-  markOutboxConfirmed(id: number, itemKey?: string): void
+  /** Returns false (row left waiting) when `sentRevision` is given and is not the stored revision. */
+  markOutboxConfirmed(id: number, itemKey?: string, sentRevision?: number): boolean | void
   markOutboxFailed(id: number, reason: string, retryable?: boolean): void
   markOutboxConflict(id: number, losingPayload: string, reason: string): void
   /** Keep the entry drawn here and out of both sync counts. Never deletes or rewrites the payload. */
   markOutboxLocalOnly(id: number, reason: string): void
   outboxByStatus?(status: 'confirmed'): OutboxEntry[]
+  /** The row as it is now. A drain re-reads every row before writing it, never a stale batch copy. */
+  outboxEntry?(id: number): OutboxEntry | null
+  /**
+   * Claim a row before writing it: one sidecar transaction marks it as being sent at its current
+   * payload revision, so no reader change can fold into or cancel it while the write is in flight.
+   * Null when it is no longer due or another drain holds it.
+   */
+  claimOutboxForSending?(id: number): OutboxEntry | null
+  /** Every row for one mark, oldest first — what keeps a mark's changes in order across drains. */
+  outboxRowsForKey?(libraryId: number, parentItemKey: string, itemKey: string): OutboxEntry[]
+  /** The key a create is written under when Zotero already used the reader's key. */
+  outboxKeyReplacement?(libraryId: number, parentItemKey: string, readerKey: string, readerSession?: string | null): string | null
+  /** Record the fresh key WriteFlex chose for a create whose key Zotero already used, for its reader session. */
+  recordOutboxKeyReplacement?(libraryId: number, parentItemKey: string, readerKey: string, zoteroKey: string, readerSession?: string | null): void
+  /** A send with no answer: waits again, marked so the next attempt is a resend. */
+  markOutboxSendUncertain?(id: number, reason: string): void
 }
 
 /**
- * Why a drain did nothing. Every one of these leaves the queue untouched, which is the point: the
- * highlight is already safe, and writing it to Zotero is a later, repeatable act.
+ * Why a drain wrote nothing more. Every one of these leaves the highlight safe in the queue: writing it
+ * to Zotero is a later, repeatable act, and the reason is recorded on every row it held back
+ * (`retrying`, attempt counted, reason stored) so it is never silent.
  *
- * `no-credential` predates ADR-0031 and survives as the "there is nowhere to write to" case.
+ * - `zotero-closed` — nothing answers on Zotero's local port. The ordinary wait, not an error.
+ * - `zotero-busy` — Zotero did not answer in time. Also a wait.
+ * - `plugin-missing` / `plugin-outdated` — Zotero is open without the WriteFlex plugin, or with one that
+ *   speaks another protocol. He installs the bundled plugin file.
+ * - `plugin-not-paired` — the plugin did not accept WriteFlex's key.
+ * - `no-credential` — no transport at all (tests and stubs).
  */
 export type DrainSkipReason =
   | 'no-credential'
-  | 'zotero-is-open'
-  | 'schema-drift'
-  | 'schema-unreadable'
-  | 'library-missing'
+  | 'zotero-closed'
+  | 'zotero-busy'
+  | 'plugin-missing'
+  | 'plugin-outdated'
+  | 'plugin-not-paired'
 
 export type DrainReport = {
   attempted: number
@@ -341,12 +412,42 @@ export type DrainReport = {
   conflicted: number
   retrying: number
   rejected: number
-  /** Edits and deletions kept here because there is no write path for them yet. Not refusals. */
+  /** Rows kept here by a transport that has no write path for them. Not refusals. */
   keptLocal: number
   /** Set when nothing was attempted and nothing was lost. */
   skipped: DrainSkipReason | null
   /** What to tell a person when `skipped` is set — a plain instruction, never a warning. */
   skippedReason?: string
+}
+
+/** One line of the write log: one attempt (or one refusal) for one outbox row. */
+export type ZoteroWriteAttempt = {
+  operation: OutboxEntry['operation']
+  key: string | null
+  outbox: number
+  /** `confirmed`, `retry`, `rejected`, `conflict`, `kept-local`, or `refused:<code>`. */
+  outcome: string
+  reason?: string
+}
+
+export type ZoteroWriteAttemptLog = (attempt: ZoteroWriteAttempt) => void
+
+export const SENT_REVISION_SUPERSEDED =
+  'This change was replaced by a newer one while it was being written, so it is still waiting.'
+
+/**
+ * True when an edit or deletion must wait for an earlier change to the same mark that is still owed
+ * to Zotero (waiting, or being written). Creates never wait. An earlier change Zotero refused does
+ * not hold the later ones back: they are written or refused on their own, each with its reason.
+ */
+function waitsForEarlierChange(store: OutboxStore, entry: OutboxEntry): boolean {
+  if (entry.operation === 'create' || !entry.itemKey || !store.outboxRowsForKey) return false
+  return store
+    .outboxRowsForKey(entry.libraryId, entry.parentItemKey, entry.itemKey)
+    .some((row) =>
+      row.id < entry.id
+      && row.localOnly === 0
+      && (row.status === 'pending' || row.status === 'retrying'))
 }
 
 /**
@@ -358,6 +459,7 @@ export async function drainOutbox(
   store: OutboxStore,
   transport: ZoteroWriteTransport | null,
   limit = 25,
+  log: ZoteroWriteAttemptLog = () => {},
 ): Promise<DrainReport> {
   const report: DrainReport = {
     attempted: 0,
@@ -372,15 +474,34 @@ export async function drainOutbox(
     report.skipped = 'no-credential'
     return report
   }
-  for (const entry of store.outboxDue(limit)) {
+  const due = store.outboxDue(limit)
+  for (let index = 0; index < due.length; index += 1) {
+    // Yield between rows so a long drain never holds the main process (the editor stays live).
+    if (index > 0) await new Promise<void>((resolve) => setImmediate(resolve))
+    // Re-read: an earlier row in this batch may have changed this one (a confirmation, a cancel).
+    const current = store.outboxEntry ? store.outboxEntry(due[index]!.id) : due[index]!
+    if (
+      !current
+      || (current.status !== 'pending' && current.status !== 'retrying')
+      || current.localOnly !== 0
+    ) continue
+    // A mark's changes reach Zotero in the order they were made: one whose earlier change is still
+    // owed (or whose create never reached Zotero) waits, untouched, for a later drain.
+    if (waitsForEarlierChange(store, current)) continue
+    // Claim it: from here until its outcome is recorded, nothing may fold into it or cancel it.
+    const entry = store.claimOutboxForSending ? store.claimOutboxForSending(current.id) : current
+    if (!entry) continue
+    const attempt = { key: entry.itemKey, operation: entry.operation, outbox: entry.id }
     let payload: ZoteroAnnotationPayload
     try {
       payload = JSON.parse(entry.payload) as ZoteroAnnotationPayload
     } catch {
       // Unparseable payload is not retryable and must not block the queue behind it.
-      store.markOutboxFailed(entry.id, 'This highlight could not be read back for sending.', false)
+      const reason = 'This highlight could not be read back for sending.'
+      store.markOutboxFailed(entry.id, reason, false)
       report.attempted += 1
       report.rejected += 1
+      log({ ...attempt, outcome: 'rejected', reason })
       continue
     }
     report.attempted += 1
@@ -390,7 +511,9 @@ export async function drainOutbox(
         itemKey: entry.itemKey,
         libraryId: entry.libraryId,
         operation: entry.operation,
+        parentItemKey: entry.parentItemKey,
         payload,
+        ...(entry.sendInterrupted === 1 ? { resend: true } : {}),
       })
     } catch (error) {
       // A thrown transport is a network fact, not a data fact: keep it queued.
@@ -400,25 +523,56 @@ export async function drainOutbox(
       }
     }
     switch (outcome.kind) {
-      case 'confirmed':
-        store.markOutboxConfirmed(entry.id, outcome.itemKey)
+      case 'confirmed': {
+        // Confirm only the revision that was sent. A row whose payload moved on stays waiting.
+        const sentRevision = typeof entry.revision === 'number' ? entry.revision : undefined
+        if (store.markOutboxConfirmed(entry.id, outcome.itemKey, sentRevision) === false) {
+          report.retrying += 1
+          log({ ...attempt, outcome: 'retry', reason: SENT_REVISION_SUPERSEDED })
+          break
+        }
         report.confirmed += 1
+        log({ ...attempt, outcome: 'confirmed', ...(outcome.note ? { reason: outcome.note } : {}) })
         break
+      }
       case 'conflict':
         store.markOutboxConflict(entry.id, entry.payload, outcome.reason)
         report.conflicted += 1
+        log({ ...attempt, outcome: 'conflict', reason: outcome.reason })
         break
-      case 'retry':
-        store.markOutboxFailed(entry.id, outcome.reason, true)
+      case 'retry': {
+        if (outcome.uncertain && store.markOutboxSendUncertain) {
+          store.markOutboxSendUncertain(entry.id, outcome.reason)
+        } else {
+          store.markOutboxFailed(entry.id, outcome.reason, true)
+        }
         report.retrying += 1
+        const code = outcome.code ?? 'zotero-closed'
+        log({ ...attempt, outcome: outcome.halt ? `refused:${code}` : 'retry', reason: outcome.reason })
+        if (outcome.halt) {
+          // Zotero or its plugin stopped taking writes mid-drain. The rest of the batch is held back
+          // with the same reason.
+          for (const rest of due.slice(index + 1)) {
+            const current = store.outboxEntry ? store.outboxEntry(rest.id) : rest
+            if (!current || (current.status !== 'pending' && current.status !== 'retrying') || current.localOnly !== 0) continue
+            store.markOutboxFailed(current.id, outcome.reason, true)
+            log({ key: current.itemKey, operation: current.operation, outbox: current.id, outcome: `refused:${code}`, reason: outcome.reason })
+          }
+          report.skipped = code
+          report.skippedReason = outcome.reason
+          return report
+        }
         break
+      }
       case 'rejected':
         store.markOutboxFailed(entry.id, outcome.reason, false)
         report.rejected += 1
+        log({ ...attempt, outcome: 'rejected', reason: outcome.reason })
         break
       case 'kept-local':
         store.markOutboxLocalOnly(entry.id, outcome.reason)
         report.keptLocal += 1
+        log({ ...attempt, outcome: 'kept-local', reason: outcome.reason })
         break
     }
   }
@@ -426,226 +580,51 @@ export async function drainOutbox(
 }
 
 // ---------------------------------------------------------------------------
-// The local write (ADR-0031)
+// Which mark a change means, and what it changes from
 // ---------------------------------------------------------------------------
 
-/** How a session is obtained. A function rather than a value so liveness is re-read every drain:
- *  Zotero can be launched between one highlight and the next, and a session held open across the
- *  app's lifetime would be holding the library while the user tried to. */
-export type ZoteroWriteSessionOpener = () =>
-  | ZoteroAnnotationWriteSession
-  | ZoteroAnnotationWriteRefusal
-
-/** Annotation types the local write can produce. `unknown` has no numeric type in Zotero. */
-const WRITABLE_TYPES: readonly WritableZoteroAnnotationType[] = [
-  'highlight', 'note', 'image', 'ink', 'underline', 'text',
-]
-
-function writableType(type: unknown): WritableZoteroAnnotationType | null {
-  return WRITABLE_TYPES.includes(type as WritableZoteroAnnotationType)
-    ? (type as WritableZoteroAnnotationType)
-    : null
+/**
+ * Which annotation an edit or deletion means, decided per row at write time. The reader names a mark
+ * by its own key. If the create was written under another key because Zotero already held the
+ * reader's, the new key is used, but only for a change from the reader instance that made the create:
+ * that instance alone shows the mark under the old key. Any other reader read the mark from Zotero
+ * under its new key, so the old key in its changes means whatever Zotero holds under it.
+ */
+export function resolveTarget(
+  store: Pick<OutboxStore, 'outboxKeyReplacement'> | undefined,
+  libraryId: number,
+  parentItemKey: string,
+  readerKey: string,
+  readerSession: string | null,
+): { key: string; supersededKey: string | null } {
+  if (!readerSession) return { key: readerKey, supersededKey: null }
+  const replacement = store?.outboxKeyReplacement?.(libraryId, parentItemKey, readerKey, readerSession) ?? null
+  return replacement && replacement !== readerKey
+    ? { key: replacement, supersededKey: readerKey }
+    : { key: readerKey, supersededKey: null }
 }
 
-/**
- * The API payload, back into the shape the local insert takes. ADR-0002 verified the mapping is
- * one-to-one in both directions, so this is a field rename and not a translation — which is why the
- * outbox could keep storing the payload it already stored when the destination changed.
- */
-export function localAnnotationFromPayload(
-  entry: Pick<OutboxEntry, 'libraryId' | 'itemKey' | 'parentItemKey'>,
-  payload: ZoteroAnnotationPayload,
-): NewZoteroAnnotation | null {
-  const type = writableType(payload.annotationType)
-  if (!type || typeof payload.annotationSortIndex !== 'string' || !payload.annotationSortIndex) {
-    return null
-  }
+/** A before-state as sent by the reader or stored on a row, checked field by field; null if unusable. */
+export function validBaseline(value: unknown): ZoteroAnnotationFields | null {
+  if (!value || typeof value !== 'object') return null
+  const baseline = value as Record<string, unknown>
+  const optionalText = (field: unknown) => field === null || field === undefined || typeof field === 'string'
+  if (
+    typeof baseline.sortIndex !== 'string'
+    || typeof baseline.position !== 'string'
+    || !optionalText(baseline.text)
+    || !optionalText(baseline.comment)
+    || !optionalText(baseline.color)
+    || !optionalText(baseline.pageLabel)
+  ) return null
   return {
-    color: payload.annotationColor || null,
-    comment: payload.annotationComment || null,
-    key: entry.itemKey,
-    libraryId: entry.libraryId,
-    pageLabel: payload.annotationPageLabel || null,
-    parentAttachmentKey: entry.parentItemKey,
-    position: JSON.stringify(payload.annotationPosition ?? { pageIndex: 0, rects: [] }),
-    sortIndex: payload.annotationSortIndex,
-    tags: (payload.tags ?? [])
-      .map((tag) => tag.tag)
-      .filter((tag): tag is string => typeof tag === 'string'),
-    text: payload.annotationText || null,
-    type,
-  }
-}
-
-/**
- * A transport that writes into `zotero.sqlite` instead of posting (ADR-0031, decision 1).
- *
- * `create` is the whole of it. **`update` and `delete` are kept here rather than written**, because
- * ADR-0031's decisions cover the insert and nothing else, and a builder guessing at an UPDATE of a
- * row Zotero's sync engine is tracking is exactly the "hand-forging sync metadata" risk the ADR only
- * partly retired. Such an entry stays in the outbox, local-only, with its reason, so ADR-0029 still
- * draws the edited mark and nothing a reader wrote is lost — it simply has not reached Zotero. It is
- * not a refusal: Zotero was never asked.
- */
-export function localZoteroTransport(
-  session: Pick<ZoteroAnnotationWriteSession, 'insert' | 'setImageQuotation'>,
-  store?: Pick<OutboxStore, 'outboxByStatus'>,
-): ZoteroWriteTransport {
-  return async ({ itemKey, libraryId, operation, payload }) => {
-    const areaQuotation = payload.readflexAreaQuotation
-    if (operation === 'update' && areaQuotation) {
-      const setImageQuotation = session.setImageQuotation
-      if (
-        payload.annotationType !== 'image'
-        || typeof areaQuotation.sourceKey !== 'string'
-        || !areaQuotation.sourceKey
-        || typeof areaQuotation.comment !== 'string'
-        || !areaQuotation.comment
-        || !setImageQuotation
-      ) {
-        return { kind: 'rejected', reason: 'This Area quotation record was not valid.' }
-      }
-      let canonicalKey: string | null = null
-      for (const entry of store?.outboxByStatus?.('confirmed') ?? []) {
-        if (
-          entry.operation !== 'create'
-          || entry.libraryId !== libraryId
-          || entry.parentItemKey !== payload.parentItem
-          || !entry.itemKey
-        ) continue
-        try {
-          const retained = JSON.parse(entry.payload) as ZoteroAnnotationPayload
-          if (
-            retained.annotationType === 'image'
-            && (
-              retained.readflexSourceKey === areaQuotation.sourceKey
-              || (!retained.readflexSourceKey && entry.itemKey === areaQuotation.sourceKey)
-            )
-          ) {
-            canonicalKey = entry.itemKey
-            break
-          }
-        } catch {
-          // An unreadable retained row cannot establish the annotation's identity.
-        }
-      }
-      if (!canonicalKey) {
-        return {
-          kind: 'retry',
-          reason: 'The Area annotation is still waiting to be written before its quotation can be recorded.',
-        }
-      }
-      try {
-        setImageQuotation({
-          comment: areaQuotation.comment,
-          key: canonicalKey,
-          libraryId,
-          parentAttachmentKey: payload.parentItem,
-        })
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : 'The Area quotation could not be recorded in Zotero.'
-        const permanent = /accepted form|too long|no safe room|could not be found|personal Zotero library/.test(reason)
-        return {
-          kind: permanent ? 'rejected' : 'retry',
-          reason,
-        }
-      }
-      return { itemKey: canonicalKey, kind: 'confirmed' }
-    }
-    if (operation !== 'create') {
-      return { kind: 'kept-local', reason: UNSUPPORTED_ZOTERO_EDIT_REASON }
-    }
-    const annotation = localAnnotationFromPayload(
-      { itemKey, libraryId, parentItemKey: payload.parentItem },
-      payload,
-    )
-    if (!annotation) {
-      return { kind: 'rejected', reason: 'This highlight could not be read back for writing.' }
-    }
-    let written: WrittenZoteroAnnotation
-    try {
-      written = session.insert(annotation)
-    } catch (error) {
-      // Every throw from the insert is a fact about the data or the library — a missing parent, a
-      // group library, an unreadable position. None of them get better by trying again, so the entry
-      // stops retrying and keeps its reason where a person can see it.
-      return {
-        kind: 'rejected',
-        reason: error instanceof Error ? error.message : 'This highlight could not be written to Zotero.',
-      }
-    }
-    // The key actually written, which may differ from the reader's if that one was taken or
-    // malformed. ADR-0029's painted union is deduplicated on it, so recording the real one matters.
-    return { itemKey: written.key, kind: 'confirmed' }
-  }
-}
-
-/**
- * Drain the outbox into Zotero's own database, or refuse and say why.
- *
- * The refusal is the interesting half. Nothing is attempted, nothing is lost, and the reason is a
- * sentence for a person: *"Close Zotero and this highlight will be saved to your library."* The
- * highlight is already durable in the outbox and already painted (ADR-0029), so the refusal costs
- * the reader nothing but a sync.
- */
-export async function drainOutboxToZotero(
-  store: OutboxStore,
-  openSession: ZoteroWriteSessionOpener,
-  limit = 25,
-): Promise<DrainReport> {
-  const session = openSession()
-  if (session.kind === 'refused') {
-    return {
-      attempted: 0,
-      confirmed: 0,
-      conflicted: 0,
-      keptLocal: 0,
-      rejected: 0,
-      retrying: 0,
-      skipped: session.code,
-      skippedReason: session.reason,
-    }
-  }
-  try {
-    return await drainOutbox(store, localZoteroTransport(session, store), limit)
-  } finally {
-    // Never hold Zotero's library open past the write: the user may be about to launch Zotero.
-    session.close()
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Fixture-scoped liveness (ADR-0031, correction)
-// ---------------------------------------------------------------------------
-
-/**
- * Liveness probes scoped to the library actually under examination, for the e2e harness.
- *
- * The default probes ask the machine — `ps -axo pid=,comm=` for executable paths and `lsof` for
- * database holders — which is necessary for the real library and wrong for a fixture library in a
- * temp directory. A test whose result depends on whether the developer has an unrelated application
- * running is not flaky; it is not isolated.
- *
- * So the process and holder probes are injected at the boundary rather than weakened. The `-wal`
- * and exclusive-lock readings are already fixture-scoped because they read the fixture's own file.
- *
- * **The seam engages only when a fixture library is in play**, so it can never speak for the live
- * library: both `WRITEFLEX_E2E=1` and `WRITEFLEX_E2E_ZOTERO_DIRECTORY` are required. Within that,
- * `WRITEFLEX_E2E_ZOTERO_LIVENESS=open` makes the fixture report Zotero as running — the refusal path
- * needs testing too, and a seam that can only ever say "closed" would replace a false red with a
- * false green.
- *
- * It lives in this module rather than beside the other e2e fences in `reading-room.ts` because that
- * module imports `electron` at the top level and so cannot be reached by a unit test.
- */
-export function e2eZoteroLivenessProbes(
-  environment: NodeJS.ProcessEnv = process.env,
-): ZoteroLivenessProbes | undefined {
-  if (environment.WRITEFLEX_E2E !== '1') return undefined
-  if (!environment.WRITEFLEX_E2E_ZOTERO_DIRECTORY?.trim()) return undefined
-  const open = environment.WRITEFLEX_E2E_ZOTERO_LIVENESS?.trim() === 'open'
-  return {
-    processesHoldingDatabase: () => (open ? ['czotero'] : []),
-    runningZoteroProcesses: () => (open ? ['4711 zotero'] : []),
+    color: (baseline.color as string | null | undefined) ?? null,
+    comment: (baseline.comment as string | null | undefined) ?? null,
+    pageLabel: (baseline.pageLabel as string | null | undefined) ?? null,
+    position: baseline.position,
+    sortIndex: baseline.sortIndex,
+    text: (baseline.text as string | null | undefined) ?? null,
+    ...(typeof baseline.type === 'string' && baseline.type ? { type: baseline.type } : {}),
+    ...(validZoteroState(baseline.zoteroState) ? { zoteroState: validZoteroState(baseline.zoteroState)! } : {}),
   }
 }

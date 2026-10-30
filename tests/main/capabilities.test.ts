@@ -29,9 +29,9 @@ test('manifest passes bridle validation and scopes to the workspace root', () =>
   const manifest = createManifest(buildWriteFlexManifest(ws))
   expect(manifest.workspaceRoot).toBe(root)
   expect(manifest.capabilities.map((c) => c.name).sort()).toEqual([
-    'files.list', 'files.read', 'folio.create_manifest', 'folio.turn_back', 'frontmatter.normalise', 'frontmatter.set',
+    'files.list', 'files.read', 'folio.create_manifest', 'folio.turn_back', 'frontmatter.normalise', 'frontmatter.set', 'history.follow', 'history.undo_follow',
     'housekeeping.create_file', 'housekeeping.rename_file', 'notes.create', 'objects.insert', 'plan.compare_parts', 'plan.propose', 'plan.read',
-    'prose.edit', 'prose.insert', 'prose.move', 'research.capture', 'sources.attach', 'sources.list', 'tasks.list', 'tasks.toggle', 'widgets.create', 'widgets.insert', 'widgets.list', 'widgets.remove'
+    'prose.edit', 'prose.insert', 'prose.move', 'research.capture', 'scratchpad.attach_evidence', 'scratchpad.cite', 'scratchpad.collect', 'scratchpad.delete', 'scratchpad.external_collect', 'scratchpad.external_search', 'scratchpad.get', 'scratchpad.group', 'scratchpad.insert', 'scratchpad.insert_quote', 'scratchpad.inventory', 'scratchpad.link', 'scratchpad.list', 'scratchpad.put_back', 'scratchpad.reject', 'scratchpad.restore', 'scratchpad.send_text', 'scratchpad.sources', 'sources.attach', 'sources.list', 'tasks.list', 'tasks.toggle', 'widgets.create', 'widgets.insert', 'widgets.list', 'widgets.remove'
   ])
 })
 
@@ -118,7 +118,7 @@ test('permissions: a switched-off capability is excluded from the manifest at bi
   const enabled = (name: string): boolean => name !== 'housekeeping.create_file'
   const names = buildWriteFlexManifest(ws, enabled).capabilities.map((c) => c.name).sort()
   expect(names).toEqual([
-    'files.list', 'files.read', 'folio.create_manifest', 'folio.turn_back', 'frontmatter.normalise', 'frontmatter.set', 'housekeeping.rename_file', 'notes.create', 'objects.insert', 'plan.compare_parts', 'plan.propose', 'plan.read', 'prose.edit', 'prose.insert', 'prose.move', 'research.capture', 'sources.attach', 'sources.list', 'tasks.list', 'tasks.toggle', 'widgets.create', 'widgets.insert', 'widgets.list', 'widgets.remove'
+    'files.list', 'files.read', 'folio.create_manifest', 'folio.turn_back', 'frontmatter.normalise', 'frontmatter.set', 'history.follow', 'history.undo_follow', 'housekeeping.rename_file', 'notes.create', 'objects.insert', 'plan.compare_parts', 'plan.propose', 'plan.read', 'prose.edit', 'prose.insert', 'prose.move', 'research.capture', 'scratchpad.attach_evidence', 'scratchpad.cite', 'scratchpad.collect', 'scratchpad.delete', 'scratchpad.external_collect', 'scratchpad.external_search', 'scratchpad.get', 'scratchpad.group', 'scratchpad.insert', 'scratchpad.insert_quote', 'scratchpad.inventory', 'scratchpad.link', 'scratchpad.list', 'scratchpad.put_back', 'scratchpad.reject', 'scratchpad.restore', 'scratchpad.send_text', 'scratchpad.sources', 'sources.attach', 'sources.list', 'tasks.list', 'tasks.toggle', 'widgets.create', 'widgets.insert', 'widgets.list', 'widgets.remove'
   ])
 })
 
@@ -266,11 +266,13 @@ test('the agent rename door refuses both wikilink and manifest bystanders before
 test('housekeeping.rename_file rejects an applied path outside the declared set', async () => {
   const probe = String.raw`
     import { mock } from 'bun:test'
-    import { mkdtemp, writeFile } from 'node:fs/promises'
+    import { mkdtemp, rm, writeFile } from 'node:fs/promises'
     import { tmpdir } from 'node:os'
     import { join } from 'node:path'
 
+    const actualRenameRepair = await import('./src/main/rename-repair.ts')
     mock.module('./src/main/rename-repair.ts', () => ({
+      ...actualRenameRepair,
       planRenameRepair: async (_workspace, fromPath, toPath) => ({
         fromPath, toPath, writes: [], manifestChanges: [], unrepairedReferences: [], bystanderReferences: [], plannedReferences: [],
         verification: { markdown: [], manifests: [], renamedContent: 'Body.\\n' },
@@ -287,6 +289,7 @@ test('housekeeping.rename_file rejects an applied path outside the declared set'
       import('./src/main/capabilities.ts'), import('./src/main/workspace.ts'),
     ])
     const root = await mkdtemp(join(tmpdir(), 'writeflex-rename-superset-'))
+    try {
     await writeFile(join(root, 'old.md'), 'Body.\\n')
     const workspace = new Workspace(root)
     const rename = buildWriteFlexManifest(workspace).capabilities.find((capability) => capability.name === 'housekeeping.rename_file')
@@ -297,6 +300,7 @@ test('housekeeping.rename_file rejects an applied path outside the declared set'
       sessionId: 's', attemptId: 'attempt', idempotencyKey: 'attempt', audit: () => {}, resolvedTouchedPaths,
     })
     console.log(JSON.stringify(result))
+    } finally { await rm(root, { recursive: true, force: true }) }
   `
   const child = Bun.spawn([process.execPath, '-e', probe], {
     cwd: new URL('../..', import.meta.url).pathname,
@@ -356,11 +360,12 @@ test('housekeeping.rename_file settles stale without writing when a newly appear
   const bridle = await createBridle({
     manifest: buildWriteFlexManifest(ws),
     appDataDir: join(root, '.agent-data'),
-    approvalPolicy: () => 'stage',
+    approvalPolicy: ({ capability }) => capability.risk === 'read' ? 'allow' : 'stage',
     recording: 'off',
     session: scriptedSessionFactory([{
       prompt: 'Rename the report part',
       rounds: [
+        { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: ['housekeeping.rename_file'] } }] },
         { kind: 'tool-calls', calls: [{ name: 'housekeeping.rename_file', arguments: input }] },
         { kind: 'message', text: 'Rename staged.' },
       ],
@@ -684,7 +689,7 @@ test('folio.create_manifest drafts a manifest when absent, then refuses to clobb
   await ws.createFile('report/contents/02-method.md', '# Method\n')
   const create = cap('folio.create_manifest')
   // The manifest and the Folio's agent instructions (ticket 0.23-08): the turn's restore point covers the instructions and their ownership record.
-  expect(create.touchedPaths!({ dir: 'report' })).toEqual(['_report-structure.json', 'AGENTS.md', 'CLAUDE.md', '.folio-instructions.json'].map((name) => join(root, 'report', name)))
+  expect(await create.touchedPaths!({ dir: 'report' })).toEqual(['_report-structure.json', 'AGENTS.md', 'CLAUDE.md', '.folio-instructions.json', '.folio-backup.json', '.folio-turn-back.json', '_report_INDEX.md'].map((name) => join(root, 'report', name)))
   const preview = await create.preview!({ dir: 'report' })
   expect(preview).toContain('Create a Folio manifest in report')
   expect(preview).toContain('"content_root": ""')
@@ -871,4 +876,14 @@ test('scraps.add files a cutting through the shared store and notifies; scraps.l
   expect(listed.text).toContain('a kept sentence')
   // The same store the renderer would use sees it too (one instance, one mutex).
   expect((await store.list()).map((s) => s.text)).toContain('a kept sentence')
+})
+
+
+test('history attachment tools always ask interactively and are denied in the background', async () => {
+  const policy = writeflexApprovalPolicy()
+  for (const name of ['history.follow', 'history.undo_follow']) {
+    for (const trust of ['interactive', 'trusted_app', 'background'] as const) {
+      expect(await policy({ capability: { name, risk: 'write' }, input: {}, trigger: { id: 'history', source: 'user', trust } })).toBe(trust === 'background' ? 'deny' : 'ask')
+    }
+  }
 })

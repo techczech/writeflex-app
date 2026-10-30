@@ -2,13 +2,16 @@ import type { TSchema } from "typebox";
 
 export type ToolRisk = "read" | "write" | "sync" | "destructive";
 export type BridleLane = "live" | "mock";
+export type BridleMode = "suggest" | "work" | "read-only";
 
-export type ApprovalDenialReason = {
-  /** Stable host-defined code for UI and audit handling. */
-  code: string;
-  /** Exact model-facing denial text. */
-  message: string;
-};
+export type ApprovalDenialReason =
+  | { code: "folder-not-undoable"; message: string }
+  | {
+      /** Stable host-defined code for UI and audit handling. */
+      code: string;
+      /** Exact model-facing denial text. */
+      message: string;
+    };
 
 export type StageValidationResult =
   | { decision: "pass" }
@@ -39,6 +42,10 @@ export type AuditEvent = {
   prompt?: string;
   trigger?: AgentTrigger;
   receipt?: unknown;
+  responder?: import("./events.ts").TurnResponder;
+  outcome?: import("./events.ts").TurnOutcome | "pending";
+  reason?: import("./events.ts").TurnFailureReason;
+  usage?: import("./events.ts").TurnUsage;
   metadata?: Record<string, unknown>;
 };
 
@@ -112,7 +119,10 @@ export type Capability<TInput = any, TOutput = unknown> = {
   label?: string;
   description: string;
   risk: ToolRisk;
+  /** Always requires human approval, including when policy would allow or stage. */
+  asks?: boolean | ((input: TInput) => boolean);
   /** TypeBox schema handed to Pi verbatim */
+  showFirst?: boolean | ((input: TInput) => boolean);
   parameters: TSchema;
   /** Human-readable title source for approval cards and staged Proposals. */
   preview?: (input: TInput) => string | Promise<string>;
@@ -160,6 +170,10 @@ export type ManifestDefinition = {
   /** Absolute path; when set, generated system prompt scopes the agent's world to it */
   workspaceRoot?: string;
   capabilities: Capability[];
+  /** Large catalogues expose a starting set and discover the rest on demand. */
+  toolSearch?: import("./tool-discovery.ts").ToolSearchOptions;
+  /** Opt in to the folder-confined general content tools. Requires workspaceRoot. */
+  contentTools?: Omit<import("./content-tools.ts").ContentToolsOptions, "workspaceRoot">;
   /** Named read-risk Capability used to resolve file and image Context Items. */
   contextReader?: string;
   /** Prepended to the generated system prompt */
@@ -188,6 +202,7 @@ export type ApprovalPolicy = (call: {
 }) => ApprovalDecision | Promise<ApprovalDecision>;
 
 export type ApprovalRequest = {
+  turnId?: string;
   id: string;
   capabilityName: string;
   risk: ToolRisk;

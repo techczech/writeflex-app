@@ -32,12 +32,12 @@ beforeEach(async () => {
   agent = undefined
 })
 afterEach(async () => {
-  agent?.dispose()
+  await agent?.dispose()
   for (const dir of [root, outside, appData]) await rm(dir, { recursive: true, force: true })
 })
 
 async function makeAgent(script?: { text: string; steps: ScriptedStep[] }): Promise<WorkspaceAgent> {
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace,
     appDataDir: appData,
     changes,
@@ -50,6 +50,7 @@ async function makeAgent(script?: { text: string; steps: ScriptedStep[] }): Prom
           sessionFactory: scriptedSessionFactory([{
             prompt: script.text,
             rounds: [
+              { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: script.steps.map((step) => step.cap) } }] },
               { kind: 'tool-calls', calls: script.steps.map((step) => ({ name: step.cap, arguments: step.input as Record<string, unknown> })) },
               { kind: 'message', text: 'Scripted turn complete.' },
             ],

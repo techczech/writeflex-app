@@ -1,16 +1,16 @@
 /**
  * Resolve which Folio a file belongs to and where it sits in it (the line above the text and the
- * title-bar button). Read-only. The Folio is the nearest ancestor folder with a manifest (the answer
- * `resolveTabGroups` gives); failing that, the file's own folder when its Index Note declares a Plan.
+ * title-bar button). Read-only. Every ancestor uses the shared declaration and conflict rule,
+ * including Index-Note-only Folios. The outermost declaration wins when old data overlaps.
  * Order comes from `folioPieces` (manifest) or the fallback order (no manifest).
  */
-
+import { folioDeclaration } from './folio-declaration'
 import { open } from 'node:fs/promises'
-import { posix } from 'node:path'
-import { fallbackFolioParts, folioPieces, indexNotePath, readManifest } from './folio'
+import { join, posix } from 'node:path'
+import { fallbackFolioParts, folioPieces, indexNotePath } from './folio'
 import { documentTitle } from './frontmatter'
 import { folioOrderFacts } from './folio-order-facts'
-import { declaresRunningOrder, readFolioFrontMatter } from './plan'
+import { readFolioFrontMatter } from './plan'
 import { assertRelativeWorkspacePath, type Workspace } from './workspace'
 import { folioPlaceFacts, type FolioPlace } from '../shared/folio-place'
 
@@ -48,26 +48,31 @@ export function invalidateFolioPlaces(root: string): void {
  * lists its folder only when the heading is there.
  */
 export async function indexDeclaresPlan(ws: Workspace, dir: string): Promise<boolean> {
-  try {
-    const path = indexNotePath(ws, dir)
-    if (!declaresRunningOrder((await ws.readFile(path)).content)) return false
-    return (await ws.listFilesIn(dir, { recursive: false })).some((file) => file.path === path)
-  } catch {
-    return false
-  }
+  try { const state = folioDeclaration(ws, dir); return state.isFolio && state.runningOrder && !state.repairNeeded } catch { return false }
+}
+
+/**
+ * The same Folio rule, synchronously, for a check made in the tick of a write (folio-workspace.ts): `dir` has a
+ * manifest (anything at `_report-structure.json`), or its Index Note is a plain file (no link, as the listing
+ * `indexDeclaresPlan` asks for) whose text declares a running order (`declaresRunningOrder`). An Index Note with no
+ * running order is a folder's cover, not a Folio. A read that fails for any reason but "not there" throws: the
+ * caller decides what that means.
+ */
+export function isFolioFolderNow(root: string, dir: string): boolean {
+  return folioDeclaration({ root, absolute: path => join(root, path) }, dir).isFolio
 }
 
 async function findFolio(ws: Workspace, own: string): Promise<FolioOfFolder> {
   for (let cursor = own; ; cursor = parentDir(cursor)) {
-    if (await readManifest(ws, cursor)) {
+    const declaration = folioDeclaration(ws, cursor)
+    if (declaration.isFolio) {
       // One listing of the Folio's folder serves the order and the front matter.
       const listing = new Set((await ws.listFilesIn(cursor)).map((file) => file.path))
-      return { dir: cursor, pieces: (await folioPieces(ws, cursor, listing))?.pieces ?? [], frontMatter: await frontMatterOf(ws, cursor, listing), manifest: true }
+      return { dir: cursor, pieces: declaration.manifest ? (await folioPieces(ws, cursor, listing))?.pieces ?? [] : await fallbackFolioParts(ws, cursor), frontMatter: await frontMatterOf(ws, cursor, listing), manifest: declaration.manifest }
     }
     if (cursor === '') break
   }
-  if (!(await indexDeclaresPlan(ws, own))) return null
-  return { dir: own, pieces: await fallbackFolioParts(ws, own), frontMatter: await frontMatterOf(ws, own), manifest: false }
+  return null
 }
 
 function folioOfFolder(ws: Workspace, own: string): Promise<FolioOfFolder> {

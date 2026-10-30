@@ -275,16 +275,15 @@ export function trackSettledHere(state: { seen: ReadonlySet<string>; settled: Re
 }
 
 /**
- * Whether the review margin is drawn at all. Only when something is waiting: a card, a change that could not be placed,
- * a change from outside that has just arrived, or items waiting in other pieces. Settled history and the allowance strip
- * alone never raise it. With nothing waiting it renders nothing (no bar, no column, no reserved space).
+ * Reserve review space only for cards drawn on this piece, or an explicitly requested history mode.
+ * Arrivals, closed changes and work in other pieces are reached in status-bar popovers; they draw nothing here.
  */
-export function marginVisible(model: Pick<MarginModel, 'cards' | 'unplaced' | 'notPlaced' | 'otherPieces'> & { mode?: ReviewMode }, outside?: { arrived: readonly unknown[] } | null): boolean {
+export function marginVisible(model: Pick<MarginModel, 'cards' | 'unplaced' | 'notPlaced' | 'otherPieces'> & { mode?: ReviewMode }, _outside?: { arrived: readonly unknown[] } | null): boolean {
   // Settled today and My edits are asked for (count menu, palette): they draw the margin even with nothing waiting.
   if (model.mode !== undefined && model.mode !== 'review') return true
   // Settled-this-visit rows do not keep the margin on their own: with nothing waiting there is no margin (frame `none`);
   // the last settled item stays reachable from Settled today.
-  return model.cards.length > 0 || model.unplaced.length > 0 || model.notPlaced.length > 0 || model.otherPieces.length > 0 || (outside?.arrived.length ?? 0) > 0
+  return model.cards.length > 0 || model.unplaced.length > 0
 }
 
 /** A comment-only item (no text change) is a note; anything that changes text is an edit. */

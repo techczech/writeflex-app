@@ -56,16 +56,17 @@ function harness() {
 // ---- 1. A folder name the reader takes apart is not written into a link ----
 
 for (const name of ['chap#ters', 'chap|ters', 'chap]]ters', 'chap]ters']) {
-  test(`renaming a folder to ${name} leaves its ./ links as they are and reports them unrepaired`, async () => {
+  test(`renaming a folder to ${name} escapes its ./ links and preserves their file identity`, async () => {
     await write(A, '# Alpha\n')
     await write(`${DIR}/chap.md`, '# Chap\n') // what `[[./chap#ters/a]]` would open
     await write(INDEX, '# book\n\n- [[./contents/a]]\n')
     const plan = await planFolderRenameRepair(ws, `${DIR}/contents`, `${DIR}/${name}`)
-    expect(plan.writes).toEqual([])
-    expect(plan.unrepairedReferences).toEqual([expect.stringContaining(`${INDEX}: [[./contents/a]] cannot be repaired`)])
+    expect(plan.writes).toHaveLength(1)
+    expect(plan.unrepairedReferences).toEqual([])
     await rename(join(root, DIR, 'contents'), join(root, DIR, name))
-    expect(await applyFolderRenameRepair(plan, ws)).toEqual({ writtenPaths: [], unrepairedReferences: plan.unrepairedReferences })
-    expect(await read(INDEX)).toBe('# book\n\n- [[./contents/a]]\n')
+    expect(await applyFolderRenameRepair(plan, ws)).toEqual({ writtenPaths: [INDEX], unrepairedReferences: [] })
+    const escaped = name.replace(/[%#|\[\]]/g, char => encodeURIComponent(char))
+    expect(await read(INDEX)).toBe(`# book\n\n- [[./${escaped}/a]]\n`)
   })
 }
 

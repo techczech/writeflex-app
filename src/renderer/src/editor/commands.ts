@@ -1,3 +1,4 @@
+import { clearFlagAtCursor, openFlagMenu } from './flag-actions'
 import { EditorSelection, type EditorState, type StateCommand } from '@codemirror/state'
 import { copyLineDown } from '@codemirror/commands'
 import { selectNextOccurrence } from '@codemirror/search'
@@ -415,6 +416,8 @@ export const turnIntoCommands: PaletteCommand[] = [
 /** Every editing command Task 13's palette should list, keyed and keyless alike. Kept here (not in
  *  the keymap) so palette-only commands (case transforms) and bound commands share one registry. */
 export const paletteCommands: PaletteCommand[] = [
+  { id: 'edit.flagSelection', label: 'Flag the selection…', keywords: ['citation', 'rewrite', 'fact', 'expand'], run: openFlagMenu, keys: 'Alt-f' },
+  { id: 'edit.clearFlag', label: 'Clear flag at cursor', run: clearFlagAtCursor },
   { id: 'edit.selectBodyExceptMetadata', label: 'Select all text (keep metadata)', run: selectBodyExceptMetadata, keys: 'Mod-a' },
   { id: 'edit.bold', label: 'Bold', run: toggleBold, keys: 'Mod-b' },
   { id: 'edit.italic', label: 'Italic', run: toggleItalic, keys: 'Mod-i' },

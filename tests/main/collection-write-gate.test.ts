@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:
 import { existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { SnapshotStore } from '@bridle/core'
-import { WorkspaceAgent } from '../../src/main/agent'
+import { SnapshotStore, scriptedSessionFactory } from '@bridle/core'
+import { WorkspaceAgent, buildE2EScriptedTurn } from '../../src/main/agent'
 import { assertCollectionWritable, collectionWritesPaused, pauseCollectionWrites, pausedMessage, resumeCollectionWrites, WritesPausedError } from '../../src/main/collection-write-gate'
 import { gatedSnapshots } from '../../src/main/gated-snapshots'
 import { Workspace } from '../../src/main/workspace'
@@ -104,13 +104,11 @@ test('the history store handed to this app refuses every write while the Collect
 
 test('the agent\'s own history writes ask the gate: version snapshot, checkpoint and undo turn write nothing while paused', async () => {
   const workspace = new Workspace(root)
-  const agent = await WorkspaceAgent.create({ workspace, appDataDir: appData, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
+  const steps = [{ cap: 'housekeeping.create_file', input: { path: 'talks/agent.md', content: '# Agent\n' } }]
+  const agent = await WorkspaceAgent.create({ mode: 'work', workspace, appDataDir: appData, sessionFactory: scriptedSessionFactory([buildE2EScriptedTurn(steps)]), onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {} })
   try {
-    // A turn's restore point with one file under it, as Bridle leaves them.
-    const raw = await SnapshotStore.open({ dir: join(root, '.bridle') })
-    await raw.beginRestorePoint('turn: rewrite York', 's')
-    await raw.snapshotFile(join(root, 'talks', 'york.md'), { sessionId: 's', origin: 'turn' })
-    await writeFile(join(root, 'talks', 'york.md'), '# York, rewritten by the agent\n')
+    // Undo now requires a recorded turn, rather than a hand-labelled snapshot.
+    await agent.runScriptedTurn('Create a note', steps)
     const before = await history()
     pauseCollectionWrites(root, REASON)
     for (const write of [() => agent.snapshotReviewVersion('talks/york.md'), () => agent.restoreLastTurn()]) {
@@ -125,7 +123,8 @@ test('the agent\'s own history writes ask the gate: version snapshot, checkpoint
     await agent.checkpointFile('talks/york.md')
     expect(Object.keys(await history()).length).toBe(Object.keys(before).length + 1)
     expect((await agent.snapshotReviewVersion('talks/york.md')).snapshotId).toBeTruthy()
-    expect(await agent.restoreLastTurn()).toEqual([join(root, 'talks', 'york.md')])
+    expect(await agent.restoreLastTurn()).toEqual([join(root, 'talks', 'agent.md')])
+    expect(existsSync(join(root, 'talks', 'agent.md'))).toBe(false)
     expect(await readFile(join(root, 'talks', 'york.md'), 'utf8')).toBe('# York\n')
   } finally {
     await agent.dispose()

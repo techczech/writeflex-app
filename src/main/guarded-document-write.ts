@@ -14,10 +14,14 @@
  * - A rewrite can carry the fingerprint of the bytes its new text was worked out from (`expect`).
  *   The file standing at the name is then read through one no-follow handle immediately before the
  *   rename, and the write is refused (`changed`) when its bytes are not those: nothing is written.
+ *   The state of that file as it was read (device, inode, size, modification time) is looked at again,
+ *   synchronously, in the tick of the rename: a file changed or replaced at the name while the handle
+ *   closed is seen and refused (`changed`), and the staged file is removed.
  *
  * What cannot be closed from Node: it has no way to act relative to an open folder, so between the
  * last check and the link or rename a part of the REAL path could still be replaced, and another
- * program could rewrite the file in the instant between the fingerprint check and the rename. The
+ * program could rewrite the file in the instant between that synchronous look and the rename (or rewrite it
+ * keeping its size and modification time). The
  * path used there held no link when it was checked. Writers inside this app cannot get into that
  * instant: they are serialised by the Collection's write turn (collection-write-turn.ts).
  *
@@ -26,13 +30,16 @@
  * it: a file put at that name between that check and the unlink can be removed. A temporary file that cannot be
  * removed is named: in the refusal of a failed write, and in `GuardedWriteResult.leftover` of a committed one.
  */
-import { constants, realpathSync, statSync } from 'node:fs'
+import { guardFolioWrite, finishFolioWrite, type FolioWriteOptions } from './folio-declaration'
+import { settleVersionMoves } from './version-moves'
+import { constants, lstatSync, realpathSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { link, lstat, open, realpath, rename, unlink, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { assertCollectionWritable } from './collection-write-gate'
 import { isHiddenFolderName } from './document-path'
 import type { Workspace } from './workspace'
+import { fileIdentityOf, type FileIdentity } from './workspace-watcher'
 
 /**
  * The identity of the one folder a write is allowed to land in (its real path, device and inode), pinned by a
@@ -42,13 +49,21 @@ import type { Workspace } from './workspace'
  */
 export type FolderIdentity = { real: string; dev: number; ino: number }
 
-/** Whether the folder at real path `folder` is, at this instant, the pinned one. Follows links: a swapped-in link
- *  resolves to another folder's device and inode. */
+/** Whether the folder at real path `folder` is, at this instant, physically the pinned one (`standsAsPinnedFolder`).
+ *  Synchronous, so a caller can make it in the tick of the commit. */
 export function isPinnedFolder(folder: string, pinned: FolderIdentity): boolean {
-  if (folder !== pinned.real) return false
+  return folder === pinned.real && standsAsPinnedFolder(folder, pinned)
+}
+
+/** Whether the folder named by `path` is, at this instant, physically the pinned folder: its real path is the pinned
+ *  real path (no link anywhere on the way), the name itself is a folder and not a link (`lstat`), and it has the pinned
+ *  device and inode. A pinned folder moved away and replaced by a link to it fails, although the link leads to the
+ *  same device and inode. Synchronous. */
+export function standsAsPinnedFolder(path: string, pinned: FolderIdentity): boolean {
   try {
-    const now = statSync(folder)
-    return now.isDirectory() && now.dev === pinned.dev && now.ino === pinned.ino
+    if (realpathSync.native(path) !== pinned.real) return false
+    const now = lstatSync(path)
+    return !now.isSymbolicLink() && now.isDirectory() && now.dev === pinned.dev && now.ino === pinned.ino
   } catch {
     return false
   }
@@ -62,17 +77,25 @@ export type WriteSeams = {
   betweenCheckAndWrite?: (path: string) => Promise<void>
   /** After the bytes are staged in the judged folder, before the file takes its name. */
   afterStage?: (path: string) => Promise<void>
+  /** After the bytes of the file at the name have been read (`expect`), before its state is looked at again. */
+  afterFingerprintRead?: (path: string) => Promise<void>
+  /** After the file at the name has been read and its fingerprint matched (`expect`), before the file takes its name. */
+  afterFingerprint?: (path: string) => Promise<void>
+  /** After the file has taken its name, before the write returns. */
+  afterCommit?: (path: string) => Promise<void>
 }
 
 /** What a committed write reports. `leftover`: the sentence naming the temporary file that could not be removed
  *  after a create committed by a hard link. It is a second name for the new document (changing it changes the
  *  document), so the caller shows it; the write itself succeeded. */
-export type GuardedWriteResult = { leftover?: string }
+export type GuardedWriteResult = { leftover?: string; notices?: string[] }
 
 /** What `beforeCommit` is told: the real folder (links resolved when the path was judged) that the file takes its
- *  name in. A caller that holds a folder's identity checks it here, so a folder swapped for a link and back between
- *  the judging and the commit is seen. */
-export type CommitTarget = { folder: string }
+ *  name in, and the identity of the staged file, from its own handle after its bytes were written. A caller that
+ *  holds a folder's identity checks it here, so a folder swapped for a link and back between the judging and the
+ *  commit is seen. The staged identity is the state the commit leaves at the name (a rename and a hard link keep
+ *  the inode and the modification time): what the app records as its own write (D-WATCH-1). */
+export type CommitTarget = { folder: string; staged: FileIdentity }
 
 /** @internal The seams of a `documentOnly` save in the app (the command line passes its own). */
 export const documentSaveSeams: WriteSeams = {}
@@ -96,7 +119,7 @@ export class GuardedWriteRefused extends Error {
   }
 }
 
-type GuardedWorkspace = Pick<Workspace, 'root' | 'classifyPath' | 'absolute'>
+type GuardedWorkspace = Pick<Workspace, 'root' | 'classifyPath' | 'absolute'> & Partial<Pick<Workspace, 'exclusiveAll'>>
 
 const errorCode = (error: unknown): string | undefined => (error as NodeJS.ErrnoException | undefined)?.code
 /** A disk that has no hard links answers a link with one of these. */
@@ -169,8 +192,12 @@ async function cleanUpStaged(error: unknown, at: string, id: StagedId): Promise<
   return reported
 }
 
-/** Refuses unless the ordinary file standing at `final` is `standing` and its bytes have `fingerprint`. */
-async function assertUnchanged(final: string, standing: { ino: number; dev: number }, fingerprint: string, path: string): Promise<void> {
+/** Refuses unless the ordinary file standing at `final` is `standing` and its bytes have `fingerprint`. Returns the
+ *  file's state (device, inode, size, modification time) from the same handle, taken BEFORE its bytes were read and
+ *  found the same after: the state of the bytes that were hashed, which the commit looks for at the name. A file
+ *  changed while it was read, or after, before its state was looked at again, is refused: a state taken only after
+ *  the read could describe newer bytes than the ones that matched. */
+async function assertUnchanged(final: string, standing: { ino: number; dev: number }, fingerprint: string, path: string, seams: WriteSeams): Promise<FileIdentity> {
   let handle: FileHandle
   try {
     handle = await open(final, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
@@ -178,13 +205,32 @@ async function assertUnchanged(final: string, standing: { ino: number; dev: numb
     throw new GuardedWriteRefused('changed', path)
   }
   try {
-    const opened = await handle.stat()
-    if (!opened.isFile() || opened.ino !== standing.ino || opened.dev !== standing.dev) throw new GuardedWriteRefused('changed', path)
-    const hash = createHash('sha256').update(await handle.readFile()).digest('hex')
-    if (hash !== fingerprint) throw new GuardedWriteRefused('changed', path)
+    const opened = await handle.stat({ bigint: true })
+    if (!opened.isFile() || Number(opened.ino) !== standing.ino || Number(opened.dev) !== standing.dev) throw new GuardedWriteRefused('changed', path)
+    const before = fileIdentityOf(opened)
+    const bytes = await handle.readFile()
+    await seams.afterFingerprintRead?.(path)
+    const after = fileIdentityOf(await handle.stat({ bigint: true }))
+    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs) throw new GuardedWriteRefused('changed', path)
+    if (createHash('sha256').update(bytes).digest('hex') !== fingerprint) throw new GuardedWriteRefused('changed', path)
+    return before
   } finally {
     await handle.close()
   }
+}
+
+/** Whether the name `final`, looked at now without following a link, holds the state `read` (a file read and
+ *  matched), or, `read` null, nothing at all. Synchronous: it runs in the tick of the commit. */
+function stillStanding(final: string, read: FileIdentity | null): boolean {
+  let now: FileIdentity
+  try {
+    const there = lstatSync(final, { bigint: true })
+    if (!there.isFile()) return false
+    now = fileIdentityOf(there)
+  } catch (error) {
+    return read === null && errorCode(error) === 'ENOENT'
+  }
+  return read !== null && now.dev === read.dev && now.ino === read.ino && now.size === read.size && now.mtimeNs === read.mtimeNs
 }
 
 /**
@@ -203,17 +249,35 @@ export async function writeDocumentGuarded(
   path: string,
   content: string | Uint8Array,
   mode: 'create' | 'replace',
-  options: { seams?: WriteSeams; expect?: { fingerprint: string }; beforeCommit?: (target: CommitTarget) => void; inFolder?: FolderIdentity } = {},
+  options: { folioOptions?: FolioWriteOptions; seams?: WriteSeams; expect?: { fingerprint: string }; beforeCommit?: (target: CommitTarget) => void; inFolder?: FolderIdentity } = {},
+): Promise<GuardedWriteResult> {
+  const run = async () => {
+    const result = await writeDocumentGuardedHeld(ws, path, content, mode, options)
+    return result
+  }
+  return ws.exclusiveAll ? ws.exclusiveAll(run) : run()
+}
+
+async function writeDocumentGuardedHeld(
+  ws: GuardedWorkspace,
+  path: string,
+  content: string | Uint8Array,
+  mode: 'create' | 'replace',
+  options: { folioOptions?: FolioWriteOptions; seams?: WriteSeams; expect?: { fingerprint: string }; beforeCommit?: (target: CommitTarget) => void; inFolder?: FolderIdentity } = {},
 ): Promise<GuardedWriteResult> {
   const seams = options.seams ?? {}
   const pinned = options.inFolder
-  // Runs with the caller's `beforeCommit`, in the same tick as the commit: the folder is still the pinned one,
-  // and the caller is told the real folder the file takes its name in.
-  const commitCheck = (): void => {
+  // Runs with the caller's `beforeCommit`, in the same tick as the commit: the folder is still the pinned one, the
+  // name still holds what was checked there (`at.read`: the state of the file read and matched, or null for no
+  // file; no `at`, no state was checked), and the caller is told the real folder the file takes its name in. The
+  // name is looked at before the caller is told, so a refusal here leaves no record of a write that did not happen.
+  const commitCheck = (at?: { final: string; read: FileIdentity | null }): void => {
     if (pinned && !isPinnedFolder(folder, pinned)) throw new GuardedWriteRefused('swapped', path)
-    options.beforeCommit?.({ folder })
+    if (at && !stillStanding(at.final, at.read)) throw new GuardedWriteRefused(at.read ? 'changed' : 'exists', path)
+    options.beforeCommit?.({ folder, staged: written })
   }
   assertCollectionWritable(ws.root)
+  settleVersionMoves(ws.root)
   const verdict = ws.classifyPath(path, 'file')
   if (verdict !== 'document') throw new GuardedWriteRefused(verdict, path)
   const absolute = ws.absolute(path)
@@ -227,6 +291,7 @@ export async function writeDocumentGuarded(
   if ('refused' in parent) throw new GuardedWriteRefused(parent.refused, path)
   const folder = parent.real
   if (pinned && !isPinnedFolder(folder, pinned)) throw new GuardedWriteRefused('swapped', path)
+  const folioCommit = await guardFolioWrite(ws, path, content, options.folioOptions)
   await seams.betweenCheckAndWrite?.(path)
 
   const staged = `${absolute}.${randomUUID().slice(0, 8)}.tmp`
@@ -234,6 +299,8 @@ export async function writeDocumentGuarded(
   let realStaged: string | null = null
   // The staged file's own identity, from its open handle: cleanup removes a file at its name only if it is this one.
   let stagedId: StagedId | null = null
+  // The staged file as its bytes left it, from the same handle: the state the commit puts at the name.
+  let written: FileIdentity = { dev: 0n, ino: 0n, size: 0n, mtimeNs: 0n }
   try {
     // Where did the file that was just opened really land? Trust nothing but the open handle.
     const opened = await handle.stat()
@@ -245,6 +312,7 @@ export async function writeDocumentGuarded(
     if (dirname(landed) !== folder) throw new GuardedWriteRefused('swapped', path)
     await handle.writeFile(content)
     await handle.sync().catch(() => {})
+    written = fileIdentityOf(await handle.stat({ bigint: true }))
   } catch (error) {
     await handle.close().catch(() => {})
     throw realStaged && stagedId ? await cleanUpStaged(error, realStaged, stagedId) : error
@@ -258,14 +326,22 @@ export async function writeDocumentGuarded(
     if (mode === 'replace') {
       const standing = await lstat(final)
       if (!standing.isFile()) throw new GuardedWriteRefused('swapped', path)
-      if (options.expect) await assertUnchanged(final, standing, options.expect.fingerprint, path)
-      commitCheck()
+      if (options.expect) {
+        const read = await assertUnchanged(final, standing, options.expect.fingerprint, path, seams)
+        await seams.afterFingerprint?.(path)
+        // Nothing is awaited from here to the rename: the file read and matched must still be the one at the name.
+        commitCheck({ final, read })
+      } else commitCheck()
       await rename(realStaged, final)
+      if (seams.afterCommit) await seams.afterCommit(path)
+      await finishFolioWrite(ws, path, content, options.folioOptions, folioCommit)
       return {}
     }
     commitCheck()
     try {
       await link(realStaged, final)
+      if (seams.afterCommit) await seams.afterCommit(path)
+      await finishFolioWrite(ws, path, content, options.folioOptions, folioCommit)
       // The document has its name: the staged name is a second link to it, removed only while it is still that file.
       // If it cannot be removed the write still succeeded, and the leftover name is reported.
       if (await removeStaged(realStaged, id)) return {}
@@ -275,8 +351,11 @@ export async function writeDocumentGuarded(
       // No hard links on this disk (the link wrote nothing): the name is checked free, and then
       // `beforeCommit` runs again, so that nothing is awaited between it and the rename that commits.
       if (await lstat(final).catch(() => null)) throw new GuardedWriteRefused('exists', path)
-      commitCheck()
+      // Looked at again in the tick of the rename, which would replace a file put at the name since.
+      commitCheck({ final, read: null })
       await rename(realStaged, final)
+      if (seams.afterCommit) await seams.afterCommit(path)
+      await finishFolioWrite(ws, path, content, options.folioOptions, folioCommit)
       return {}
     }
   } catch (error) {

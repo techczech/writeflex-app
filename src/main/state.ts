@@ -1,3 +1,4 @@
+import { clearFolioDeclarations } from './folio-declaration'
 import type { AmbientState } from './ambient'
 // type-only: erased at runtime, keeps this module electron-free for tests
 import type { BrowserWindow } from 'electron'
@@ -5,6 +6,7 @@ import type { Workspace } from './workspace'
 import type { ScriptedTurn, WorkspaceAgent } from './agent'
 import type { ThreadManager } from './threads'
 import type { ScrapStore } from './scraps'
+import type { ScratchpadStore } from './scratchpad-store'
 import type { ChangeStore } from './changes'
 import type { VersionStore } from './versions'
 import type { WorkspaceWatcher } from './workspace-watcher'
@@ -19,6 +21,7 @@ import type { RequestInboxWatch } from './request-inbox-watch'
 
 export type WindowState = {
   collectionPageActive?: boolean
+  collectionPageCanStartFolio?: boolean
   collectionPageFolio?: boolean
   window: BrowserWindow
   ambient: AmbientState | null
@@ -56,6 +59,8 @@ export type WindowState = {
    *  instead of clobbering the newer bind's agent. */
   bindGeneration: number
   scraps: ScrapStore | null
+  /** The floating Scratchpad's exact-payload store (ADR-0050), bound with `scraps`, whose files it reads. */
+  scratchpad: ScratchpadStore | null
   /** The window's Change Ledger store (ADR-0010/0011): agent suggestions, the writer's own edits, and
    *  reviewer changes, journaled to `.writeflex/changes.jsonl`. Bound alongside `scraps` on open. */
   changes: ChangeStore | null
@@ -166,7 +171,7 @@ export function notifyWindowReleased(): void {
 }
 
 export function registerWindow(window: BrowserWindow): WindowState {
-  const state: WindowState = { window, ambient: null, workspace: null, workspaceWatcher: null, requestInbox: null, readerNotes: null, diaryCapture: null, diaryIdleTimer: null, diaryRoot: null, explicitSession: null, explicitDurationTimer: null, explicitCompletionTimer: null, agent: null, agentReady: null, threads: null, e2eScriptQueues: null, approvalOwners: new Map(), bindGeneration: 0, scraps: null, changes: null, versions: null, pendingFocusFile: null, guideTabWanted: false, pendingFocusLine: null, folderFocus: null, forceClose: false, closing: null, closeWork: null, onCloseCancelled: null, assetToken: randomUUID(), rendererRoot: undefined, onRendererReady: null }
+  const state: WindowState = { window, ambient: null, workspace: null, workspaceWatcher: null, requestInbox: null, readerNotes: null, diaryCapture: null, diaryIdleTimer: null, diaryRoot: null, explicitSession: null, explicitDurationTimer: null, explicitCompletionTimer: null, agent: null, agentReady: null, threads: null, e2eScriptQueues: null, approvalOwners: new Map(), bindGeneration: 0, scraps: null, scratchpad: null, changes: null, versions: null, pendingFocusFile: null, guideTabWanted: false, pendingFocusLine: null, folderFocus: null, forceClose: false, closing: null, closeWork: null, onCloseCancelled: null, assetToken: randomUUID(), rendererRoot: undefined, onRendererReady: null }
   const webContentsId = window.webContents.id
   states.set(webContentsId, state)
   window.on('closed', () => {
@@ -174,6 +179,7 @@ export function registerWindow(window: BrowserWindow): WindowState {
     state.bindGeneration += 1 // a still-booting agent disposes itself on arrival (generation mismatch)
     state.workspaceWatcher?.dispose()
     state.workspaceWatcher = null
+    if (state.workspace) clearFolioDeclarations(state.workspace.root)
     // Its executor stops at once; windows.ts keeps the Collection's lock until it has (waitForRequestDisposals).
     void state.requestInbox?.dispose()
     state.readerNotes?.dispose()

@@ -1,4 +1,5 @@
 export { BRIDLE_VERSION } from "./version.ts";
+export type { BridleTurns, TurnActivity, TurnActivityItem, UndoTurnResult } from "./turns.ts";
 export {
   BridleDisposedError,
   createBridle,
@@ -28,6 +29,7 @@ export {
 } from "./skills/machine-instructions.ts";
 export { projectAgentsMd, type ProjectAgentsMdOptions } from "./skills/agents-md.ts";
 export { defaultApprovalPolicy } from "./policy.ts";
+export type { ApprovalOutcome, ApprovalResolution } from "./approval.ts";
 export { ApprovalBroker } from "./approval.ts";
 export { executeCapability } from "./executor.ts";
 export type { ExecutorCallContext, ExecutorDeps } from "./executor.ts";
@@ -36,6 +38,7 @@ export type {
   ActionOutcome,
   AdoptGroupResult,
   CoreProposalSettlementReason,
+  DirectoryBaseline,
   HostProposalSettlement,
   HostProposalSettlementReason,
   Proposal,
@@ -48,6 +51,7 @@ export type {
   ProposalSettlementResult,
   ProposalStatus,
   ProposalStore,
+  ProposalStoreState,
 } from "./proposals/types.ts";
 export {
   SnapshotStore,
@@ -136,9 +140,14 @@ export type {
   EgressSummary,
   TurnId,
   TurnOutcome,
+  TurnEndReason,
+  TurnFailureReason,
+  TurnAuthLane,
+  TurnResponder,
   TurnReceipt,
   TurnResult,
   TurnUsage,
+  TurnToolError,
 } from "./events.ts";
 export type { ContextReadResult, ImageNormalizer, NormalizedImage } from "./context.ts";
 // Generic provider/model/auth catalog — apps enumerate providers here instead of
@@ -164,6 +173,9 @@ export {
   createModelService,
   listRegistryModels,
   type BridleModelServiceOptions,
+  type BridleSavedModelResolution,
+  DEFAULT_OPENAI_CODEX_MODEL,
+  OPENAI_CODEX_CLIENT_VERSION,
   type BridleDiscoveryResult,
   type BridleModelRefreshOutcome,
   type BridleDiscoveryReason,
@@ -217,3 +229,8 @@ export type {
   UncapturedReason,
   VersioningReport,
 } from "./versioning/types.ts";
+
+export { callAsks } from "./capability-asks.ts";
+export { generateCapabilities, type CommandDefinition, type GeneratedToolsOptions } from "./generated-tools.ts";
+export { createToolDiscovery, type ToolSearchOptions } from "./tool-discovery.ts";
+export { createContentTools, type ContentToolsOptions } from "./content-tools.ts";

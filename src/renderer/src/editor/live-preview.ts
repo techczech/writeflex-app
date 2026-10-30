@@ -13,6 +13,8 @@ import { renumberFootnotes } from './insert-objects'
 import { mountObjectEditor, objectEditorReplacement } from './object-editors/registry'
 import { reportRendererError } from '../app/RendererErrorBoundary'
 import { editorViewModeOf } from './view-mode'
+import { metadataProposalsField } from './metadata-proposals'
+import type { MetadataProposal } from '../app/metadata-proposal'
 
 export type LivePreviewKind = 'frontmatter' | 'image' | 'table' | 'code' | 'mermaid' | 'markmap' | 'query' | 'svg' | 'widget'
 export type LivePreviewBlock = { kind: LivePreviewKind; from: number; to: number; source: string; language?: string; url?: string; alt?: string }
@@ -165,12 +167,12 @@ function localAssetUrl(base: string, path: string): string {
   return `${base.replace(/\/$/, '')}/${path.split('/').map(encodeURIComponent).join('/')}`
 }
 
-export function widgetFor(block: LivePreviewBlock, assetBaseUrl: string, selected: boolean, pending: boolean, documentPath: string | null = null): WidgetType {
+export function widgetFor(block: LivePreviewBlock, assetBaseUrl: string, selected: boolean, pending: boolean, documentPath: string | null = null, proposals: readonly MetadataProposal[] = []): WidgetType {
   if (block.kind === 'frontmatter') return new FrontmatterWidget(block.source, selected, pending, documentPath, (view) => {
     if (blockHasPendingChange(view.state, block)) view.state.facet(livePreviewConfig).onPendingMetadataEdit?.()
     view.dispatch({ selection: { anchor: block.from }, effects: setOpenLivePreviewBlock.of(block), scrollIntoView: true })
     view.focus()
-  })
+  }, proposals)
   if (block.kind === 'image') return new ImageWidget(block.source, localAssetUrl(assetBaseUrl, block.url ?? ''), block.alt ?? '', selected)
   if (block.kind === 'table') return new TableWidget(block.source, selected)
   if (block.kind === 'mermaid') return new MermaidWidget(block.source, selected)
@@ -390,7 +392,9 @@ function composePreview(state: EditorState, structure: PreviewStructure, selecte
     // Replace ranges stop at the last line's END (never swallowing the line break); the selection
     // outline lives on the widget itself — both required by CM's tile geometry.
     const lastLineEnd = state.doc.lineAt(Math.max(block.from, block.to - 1)).to
-    const deco = Decoration.replace({ widget: widgetFor(block, config.assetBaseUrl(), selected, pending, config.documentPath()), block: true })
+    // The metadata panel marks the fields a waiting edit would change (metadata-proposals.ts).
+    const proposals = block.kind === 'frontmatter' ? state.field(metadataProposalsField, false) ?? [] : []
+    const deco = Decoration.replace({ widget: widgetFor(block, config.assetBaseUrl(), selected, pending, config.documentPath(), proposals), block: true })
     ranges.push(deco.range(block.from, lastLineEnd))
     // The ATOMIC range swallows the trailing line break too, so one ↓ from the block steps fully
     // past it (mockup grammar: land on, then move past) — while the visual replace stops at the
@@ -526,6 +530,7 @@ export function livePreview(opts: { assetBaseUrl: () => string; documentPath?: (
     typeEscape,
     fenceTrigger,
     openBlockField, livePreviewConfig.of({ assetBaseUrl: opts.assetBaseUrl, pendingRanges: opts.pendingRanges ?? (() => []), documentPath: opts.documentPath ?? (() => null), onPendingMetadataEdit: opts.onPendingMetadataEdit }),
+    metadataProposalsField,
     previewField,
     previewEventHandlers(opts.onPendingMetadataEdit),
     // High precedence: ↵-on-a-block must win over the default insertNewline (which would otherwise

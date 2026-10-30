@@ -229,3 +229,19 @@ test('a broken count read stays silent while a failed drain is surfaced', async 
   await brokenDrain.runManual()
   expect(surfaced).toEqual(['drain IPC broke'])
 })
+
+test('SHOULD-FIX false success: success is announced only for rows written, and a refused last row is said as such', async () => {
+  const { outboxResultAnnouncement } = await import('../../src/renderer/src/reading-room-sync')
+  // The last waiting row was refused: the queue is empty, but nothing reached Zotero.
+  expect(outboxResultAnnouncement(1, { refusedNow: 1, waiting: 0, written: 0 }))
+    .toBe('1 change could not be written to Zotero. It is kept here with the reason.')
+  expect(outboxResultAnnouncement(3, { refusedNow: 2, waiting: 0, written: 1 }))
+    .toBe('2 changes could not be written to Zotero. They are kept here with the reason.')
+  expect(outboxResultAnnouncement(2, { refusedNow: 0, waiting: 0, written: 2 })).toBe('New highlights synced to Zotero.')
+  // Emptied with nothing written and nothing refused (an older main process, a cancel): say nothing.
+  expect(outboxResultAnnouncement(1, { waiting: 0 })).toBeNull()
+  // Still waiting, never waiting, or a kept-here create: no announcement.
+  expect(outboxResultAnnouncement(2, { waiting: 1, written: 1 })).toBeNull()
+  expect(outboxResultAnnouncement(0, { waiting: 0, written: 1 })).toBeNull()
+  expect(outboxResultAnnouncement(1, { keptLocal: { created: true }, waiting: 0, written: 1 })).toBeNull()
+})

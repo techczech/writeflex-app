@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import JSZip from 'jszip'
@@ -48,6 +48,17 @@ function expectReportTitle(html: string, title: string): void {
 }
 
 const NO_DECLARED = { index: null, page: null }
+
+test('an Index Note that is listed but unreadable falls back to the next title instead of throwing', async () => {
+  await folio('Manifest title', { index: 'Index title', page: null })
+  const index = join(root, 'machine-folder-slug/_machine-folder-slug_INDEX.md')
+  await chmod(index, 0o000)
+  try {
+    expect(await exportCollectionTitle(ws, 'machine-folder-slug')).toBe('Manifest title')
+  } finally {
+    await chmod(index, 0o644)
+  }
+})
 
 test('manifest titles reach browser, cover, masthead, navigation and save suggestions through the app export request', async () => {
   // The manifest's title is used when neither the Details (Index Note) nor the title page declares one.
@@ -274,4 +285,14 @@ test('collection title previews read the current title-matter and cover buffers 
   buffers.set(titlePath, 'Draft without a declared title.\n')
   buffers.set(coverPath, '---\ntitle: Unsaved cover title\n---\n\nDraft.\n')
   expect(await exportCollectionTitle(ws, 'machine-folder-slug', buffers)).toBe('Unsaved cover title')
+})
+
+test('export title resolution propagates an unreadable title file instead of falling back', async () => {
+  await folio(undefined, { index: null })
+  const original = ws.readFile.bind(ws)
+  ws.readFile = async path => {
+    if (path.endsWith('00-frontmatter.md')) throw new Error('unreadable title file')
+    return original(path)
+  }
+  await expect(exportCollectionTitle(ws, 'machine-folder-slug')).rejects.toThrow('unreadable title file')
 })

@@ -5,10 +5,10 @@
  * Index Note the Plan's own reading of its parts is taken (plan.ts applies the rule to every line), so the Plan, the
  * Outline and the export cannot disagree; the manifest's entries are read as well, for a Folio with no Index Note
  * and for a listed file the running order does not name. The title page among them is the export's cover.
- * Read-only. Only files inside the Folio's folder are ever read (`resolveManifestFilePath`).
+ * Read-only. Only files inside the Folio’s folder are ever read (`manifestPartEntries`, `titleMatterPath`).
  */
 
-import { readManifest, resolveManifestFilePath, titleMatterPath, type Folio } from './folio'
+import { manifestPartEntries, readManifest, titleMatterPath, type Folio } from './folio'
 import { parseFrontmatter } from './frontmatter'
 import { readPlan, type Plan } from './plan'
 import type { Workspace } from './workspace'
@@ -82,8 +82,7 @@ export function frontMatterPathSet(dir: string, manifest: Folio | null, present:
   for (const line of lines) {
     if (line.path && isFrontMatterPart({ lineTags: line.role ? [line.role, ...line.tags] : line.tags, path: line.path })) found.add(line.path)
   }
-  for (const file of manifest?.files ?? []) {
-    const path = resolveManifestFilePath(dir, manifest as Folio, file, present)
+  for (const { file, path } of manifest ? manifestPartEntries(dir, manifest, present) : []) {
     if (path && partIsFrontMatter({ entry: file, isTitleMatter: path === titleMatter })) found.add(path)
   }
   if (titleMatter) found.add(titleMatter)

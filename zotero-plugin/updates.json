@@ -1,0 +1,18 @@
+{
+  "addons": {
+    "writeflex@dominiklukes.net": {
+      "updates": [
+        {
+          "version": "1.0.0",
+          "update_link": "https://github.com/techczech/writeflex-app/releases/latest/download/writeflex-zotero-1.0.0.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "7.0",
+              "strict_max_version": "11.*"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

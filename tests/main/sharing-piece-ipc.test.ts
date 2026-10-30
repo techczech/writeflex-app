@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // The Sharing page's IPC (src/main/sharing-piece-ipc.ts; sharing ticket 03): every channel answers only
 // WriteFlex's windows; a window names pieces by their path in its own Workspace and acts only on links
 // of pieces there; Open in browser opens only a link this Mac made. No answer holds a token.
@@ -343,3 +344,6 @@ test('a piece whose file is no longer a writer\'s piece (its folder now a link t
   expect((await call('sharing:turn-off', { shareId: link.shareId })).ok).toBe(true)
   expect((await w.readerPage(link.shareId)).status).toBe(404)
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

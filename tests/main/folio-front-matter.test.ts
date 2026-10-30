@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 // Folio front matter (ADR-0046, ticket B of 0.25.1): front matter is a part role, read from a `#front-matter` line
 // tag, a manifest entry (`role: front-matter|title-matter`) or the manifest's `title_matter` file, written as `role: front-matter` with
 // `toc: false`, always a leading block (`toc: false` alone only offers "Add as front matter"; the part stays put), of the running order, and "Add as front matter" puts a title page back
@@ -260,7 +261,7 @@ test('Add as front matter on the Pangram Folio: the title page goes back first, 
   expect(plan.parts.map((part) => [part.title, part.role])).toEqual([[PANGRAM_TITLE, 'front-matter'], ['Summary', 'summary'], ['Details', 'section']])
   expect(plan.parts[0]).toMatchObject({ path: `${PANGRAM}/contents/00-frontmatter.md`, titlePage: true })
   expect(plan.unlisted).toEqual([])
-  expect(await read(PANGRAM_INDEX)).toBe(`---\ntitle: "${PANGRAM_TITLE}"\n---\n\n# ${PANGRAM_TITLE}\n\n## Running order\n\n- [[${PANGRAM_TITLE}]] #front-matter\n- [[Summary]] — Summary of the findings and proposed evaluation. #summary\n- [[Details]]\n`)
+  expect(await read(PANGRAM_INDEX)).toBe(pinnedIndex(`---\ntitle: "${PANGRAM_TITLE}"\n---\n\n# ${PANGRAM_TITLE}\n\n## Running order\n\n- [[${PANGRAM_TITLE}]] #front-matter\n- [[Summary]] — Summary of the findings and proposed evaluation. #summary\n- [[Details]]\n`, {"Summary":"./contents/01-executive-summary.md|Summary","Details":"./contents/02-report.md|Details","Pangram evaluation: proposal and proof of concept":"./contents/00-frontmatter.md|Pangram evaluation: proposal and proof of concept"}))
 
   const after = await read(PANGRAM_MANIFEST)
   const manifest = JSON.parse(after) as { files: Array<Record<string, unknown>>; title_matter: string }
@@ -331,7 +332,7 @@ test('plan:adopt-part with asFrontMatter is the same guarded Put back: the row t
   })
   const invoke = (input: unknown) => handlers.get('plan:adopt-part')!({ sender: { id: 1 } }, input)
   const path = `${PANGRAM}/contents/00-frontmatter.md`
-  await expect(invoke({ dir: PANGRAM, unlistedIndex: 0, expected: { title: 'Another', path }, asFrontMatter: true })).rejects.toThrow(/look again/i)
+  await expect(invoke({ dir: PANGRAM, unlistedIndex: 0, expected: { title: 'Another', path: `${PANGRAM}/contents/another.md` }, asFrontMatter: true })).rejects.toThrow(/look again/i)
   await expect(invoke({ dir: PANGRAM, unlistedIndex: 0, expected: { title: PANGRAM_TITLE, path }, asFrontMatter: 'yes' })).rejects.toThrow('Invalid Folio outline adoption.')
   const plan = await invoke({ dir: PANGRAM, unlistedIndex: 0, expected: { title: PANGRAM_TITLE, path }, asFrontMatter: true }) as { parts: Array<{ role: string }> }
   expect(plan.parts.map((part) => part.role)).toEqual(['front-matter', 'summary', 'section'])
@@ -376,7 +377,7 @@ test('insert keeps the block: a contents part asked for first lands after the fr
   expect(contents.parts.map((part) => [part.title, part.role])).toEqual([['Title', 'front-matter'], ['Intro', 'section'], ['A', 'section'], ['B', 'section']])
   const front = await insertPart(ws, 'r', 4, { title: 'Preface', role: 'front-matter' })
   expect(front.parts.map((part) => [part.title, part.role])).toEqual([['Title', 'front-matter'], ['Preface', 'front-matter'], ['Intro', 'section'], ['A', 'section'], ['B', 'section']])
-  expect(await read('r/_r_INDEX.md')).toBe('# R\n\n## Running order\n\n- [[Title]] #front-matter\n- [[Preface]] #front-matter\n- [[Intro]]\n- [[A]]\n- [[B]]\n')
+  expect(await read('r/_r_INDEX.md')).toBe(pinnedIndex('# R\n\n## Running order\n\n- [[Title]] #front-matter\n- [[Preface]] #front-matter\n- [[Intro]]\n- [[A]]\n- [[B]]\n', {"Title":"./title.md|Title","A":"./a.md|A","B":"./b.md|B"}))
 })
 
 test('a role across the boundary moves the part to the edge of its new side, in both documents; back again restores the order', async () => {
@@ -384,7 +385,7 @@ test('a role across the boundary moves the part to the edge of its new side, in 
   const manifestBefore = await read(`r/${MANIFEST_NAME}`)
   const toFront = await setPartRole('r', 2, 'front-matter')
   expect(toFront.parts.map((part) => [part.title, part.role])).toEqual([['Title', 'front-matter'], ['B', 'front-matter'], ['A', 'section']])
-  expect(await read('r/_r_INDEX.md')).toBe('# R\n\n## Running order\n\n- [[Title]] #front-matter\n- [[B]] #front-matter\n- [[A]]\n')
+  expect(await read('r/_r_INDEX.md')).toBe(pinnedIndex('# R\n\n## Running order\n\n- [[Title]] #front-matter\n- [[B]] #front-matter\n- [[A]]\n', {"Title":"./title.md|Title","B":"./b.md|B","A":"./a.md|A"}))
   const files = (JSON.parse(await read(`r/${MANIFEST_NAME}`)) as { files: Array<Record<string, unknown>> }).files
   expect(files).toEqual([{ path: 'title.md', role: 'front-matter', toc: false }, { path: 'b.md', role: 'front-matter', toc: false }, { path: 'a.md', role: 'section' }])
 

@@ -9,6 +9,9 @@ import { evaluateCollectionQuery } from '../query-engine'
 import { compareParts, readPlanForAgent } from '../plan-agent-reads'
 import { describeListing, readPieceSources } from '../piece-sources'
 import { ScrapStore } from '../scraps'
+import { ScratchpadStore } from '../scratchpad-store'
+import { readScratchInventory } from '../scratchpad-inventory'
+import { listScrapsWithScratchpad } from '../scrap-listing'
 import { listTasksInFile } from '../tasks'
 import { VersionStore } from '../versions'
 import { isPathInFolder } from '../workspace'
@@ -111,12 +114,30 @@ export const READ_OPERATIONS: Operation[] = [
     }),
   },
   {
+    name: 'scratchpad', group: 'Collect and plan', behaviour: 'direct',
+    summary: 'Read typed Scratchpad candidates with exact payloads, and optionally document inventory. Each inventory span says live or disk.',
+    args: [
+      { name: 'path', type: 'string', positional: true, description: 'Document to inventory; omitted lists candidates only.' },
+      { name: 'folio', type: 'boolean', description: 'Include the resolved parts of this document’s Folio.' },
+    ],
+    run: ({ workspace }, args) => guarded(async () => {
+      const path = args.path === undefined ? null : visiblePath(workspace, str(args.path), { markdown: true })
+      const snapshot = await new ScratchpadStore(workspace, new ScrapStore(workspace)).list({ activePath: path })
+      const inventory = path ? await readScratchInventory(workspace, { activePath: path, scope: args.folio ? 'folio' : 'part' }) : { items: [], notices: [] }
+      return { data: { ...snapshot, inventory }, text: [
+        ...snapshot.items.map(item => `${item.kind} [${item.id}] from ${item.origin.path}: ${item.title}`),
+        ...inventory.items.map(item => `${item.kind} in ${item.origin.path}:${item.document!.line} (${item.document!.basis}): ${item.title}`),
+        ...snapshot.notices, ...inventory.notices,
+      ].join('\n') || 'The Scratchpad is empty.' }
+    }),
+  },
+  {
     name: 'scraps', group: 'Collect and plan', behaviour: 'direct',
     summary: 'List the Collection\'s scraps (cuttings set aside), optionally one file\'s.',
     args: [{ name: 'origin', type: 'string', positional: true, description: 'Only the scraps filed under this file.' }],
     run: ({ workspace }, args) => guarded(async () => {
       const origin = args.origin === undefined ? undefined : visiblePath(workspace, str(args.origin), { markdown: true })
-      const scraps = await new ScrapStore(workspace).list(origin ? { origin } : undefined)
+      const scraps = await listScrapsWithScratchpad(workspace, new ScrapStore(workspace), origin ? { origin } : undefined)
       const text = scraps.map((s) => `${s.origin} [${s.id}]${s.done ? ' (done)' : ''}: ${s.text.replace(/\s+/g, ' ').trim()}`).join('\n')
       return { data: { scraps }, text: text || 'No scraps.' }
     }),
@@ -127,10 +148,10 @@ export const READ_OPERATIONS: Operation[] = [
     args: [{ name: 'dir', type: 'string', positional: true, description: 'The Folio\'s folder (default: the root).' }],
     run: ({ workspace }, args) => guarded(async () => {
       const dir = args.dir === undefined ? '' : visiblePath(workspace, str(args.dir), { allowRoot: true })
-      const plan = await readPlanForAgent(workspace, dir)
-      const parts = plan.parts.map((p, i) => `${i + 1}. ${inLine(p.title)} [${p.role}] ${p.path === null || p.path === undefined ? '(unwritten)' : inLine(p.path)}${p.words === null ? '' : `, ${p.words} words`}`)
+      const plan = await readPlanForAgent(workspace, dir, { manifestOrder: true })
+      const parts = plan.parts.map((p, i) => `${i + 1}. ${inLine(p.title)} [${p.sectionPage ? 'Section page' : p.role}]${p.section ? ` · in ${inLine(p.section)}` : ''} ${p.path === null || p.path === undefined ? '(unwritten)' : inLine(p.path)}${p.words === null ? '' : `, ${p.words} words`}`)
       const strays = plan.strays.map((s) => `stray: ${inLine(s.path)} (${inLine(s.title)}, ${s.words} words)`)
-      return { data: plan, text: [...parts, ...strays].join('\n') || 'The running order is empty.' }
+      return { data: plan, text: [[...parts, ...strays].join('\n') || 'The running order is empty.', ...(plan.evidenceProblem ? [plan.evidenceProblem] : [])].join('\n') }
     }),
   },
   {

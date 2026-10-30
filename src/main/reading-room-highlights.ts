@@ -10,7 +10,7 @@
  */
 import type { ZoteroAnnotation, ZoteroAnnotationType } from '@readflex/zotero-bridge'
 import type { OutboxEntry } from '@readflex/sidecar'
-import type { ZoteroAnnotationPayload } from './zotero-annotation-writes'
+import { validZoteroState, type ZoteroAnnotationPayload, type ZoteroState } from './zotero-annotation-writes'
 
 /** How a row's body should be read, which is not the same question as Zotero's annotation type. */
 export type HighlightBodyKind =
@@ -22,6 +22,8 @@ export type HighlightBodyKind =
   | 'mark'
 
 export type HighlightRow = {
+  /** Present only when this key is known to exist in Zotero; pending local marks carry null. */
+  zoteroKey?: string | null
   key: string
   type: ZoteroAnnotationType
   bodyKind: HighlightBodyKind
@@ -38,8 +40,8 @@ export type HighlightRow = {
   sortIndex: string
   /** A colleague's annotation in a group library, not the reader's own. */
   isExternal: boolean
-  /** The reader edited this mark here and the edit has not reached Zotero (there is no write path
-   *  for edits yet). What is shown IS the edit. Said quietly in the row, never as a warning. */
+  /** The reader edited this mark here and the edit is kept here, not sent to Zotero (a web or EPUB
+   *  mark, or a dismissed refusal). What is shown IS the edit. Said quietly, never as a warning. */
   keptHere?: boolean
 }
 
@@ -56,6 +58,8 @@ export type ReaderPaintAnnotation = {
   position: string
   tags: string[]
   isExternal: boolean
+  /** Only on a mark read from Zotero: its tags and modification stamp there, which a deletion is checked against. */
+  zoteroState?: ZoteroState
 }
 
 export type HighlightsResult = {
@@ -131,10 +135,11 @@ export function highlightRow(annotation: ZoteroAnnotation): HighlightRow {
 
 /** Marks the reader can paint. `unknown` is dropped: the reader has no renderer for a type it does not
  *  know, and the list still shows it so nothing disappears from the harvest. */
-function paintable(annotations: ZoteroAnnotation[]): ReaderPaintAnnotation[] {
+function paintable(annotations: Array<ZoteroAnnotation & { zoteroState?: ZoteroState }>): ReaderPaintAnnotation[] {
   return annotations
     .filter((annotation) => annotation.type !== 'unknown')
     .map((annotation) => ({
+      ...(annotation.zoteroState ? { zoteroState: annotation.zoteroState } : {}),
       color: annotation.color,
       comment: annotation.comment,
       isExternal: annotation.isExternal,
@@ -196,16 +201,79 @@ export function annotationFromOutbox(entry: OutboxEntry): ZoteroAnnotation | nul
  * database has not yet been told about.
  */
 export function mergeWithOutbox(
-  stored: ZoteroAnnotation[],
+  stored: Array<ZoteroAnnotation & { zoteroState?: ZoteroState }>,
   pending: OutboxEntry[],
-): ZoteroAnnotation[] {
-  const byKey = new Map<string, ZoteroAnnotation>()
+): Array<ZoteroAnnotation & { zoteroState?: ZoteroState }> {
+  const byKey = new Map<string, ZoteroAnnotation & { zoteroState?: ZoteroState }>()
   for (const annotation of stored) byKey.set(annotation.key, annotation)
   for (const entry of pending) {
+    // A deletion still owed to Zotero hides the mark here: the reader deleted it, and drawing it again
+    // on reopen would undo that in front of them. Rows are in queue order, so a later create wins.
+    if (entry.operation === 'delete') {
+      if (entry.itemKey) byKey.delete(entry.itemKey)
+      continue
+    }
     const annotation = annotationFromOutbox(entry)
-    if (annotation) byKey.set(annotation.key, annotation)
+    if (!annotation) continue
+    const state = outboxState(entry, byKey.get(annotation.key))
+    byKey.set(annotation.key, state ? { ...annotation, zoteroState: state } : annotation)
   }
   return [...byKey.values()]
+}
+
+/**
+ * The Zotero state a mark painted from the outbox carries, so a deletion of it is still checked
+ * against Zotero's tags (ADR-0047). WriteFlex never writes tags, so the tags are those of the mark it
+ * paints over; its own write moves Zotero's stamp, so the stamp is unknown. With nothing beneath it, a
+ * create has no tags in Zotero, and an edit takes the tags its reader was shown. Otherwise none: a
+ * deletion without a state is refused, never written unchecked.
+ */
+function outboxState(entry: OutboxEntry, beneath: { zoteroState?: ZoteroState } | undefined): ZoteroState | null {
+  if (beneath) return beneath.zoteroState ? { modified: null, tags: [...beneath.zoteroState.tags] } : null
+  if (entry.operation === 'create') return { modified: null, tags: [] }
+  try {
+    const payload = JSON.parse(entry.payload) as { readflexBaseline?: { zoteroState?: unknown } | null }
+    const shown = validZoteroState(payload.readflexBaseline?.zoteroState)
+    return shown ? { modified: null, tags: shown.tags } : null
+  } catch {
+    return null
+  }
+}
+
+/** How a read of Zotero's annotations was made, and whether it may retire anything. */
+export type ZoteroRead = {
+  /**
+   * True only for a read that sees everything Zotero has committed: the plugin's read inside Zotero, or
+   * a read-only open of `zotero.sqlite` (write-ahead log included) while Zotero is closed. An immutable
+   * read may miss what is still in the log, so it never retires anything.
+   */
+  authoritative: boolean
+  /** When the read began (this computer's clock, milliseconds), taken before it was asked for. */
+  startedAt: number
+}
+
+/**
+ * Confirmed rows still painted from here (ADR-0047), and which of them a read retires.
+ *
+ * A confirmed row is retired by the first authoritative read that started after it was confirmed: that
+ * read holds the write, or a later change Zotero made over it, and Zotero wins either way. Nothing
+ * about the row's content is compared, so an edit that changed only the geometry, a create Zotero has
+ * since deleted, and a chain of edits all retire the same way. A non-authoritative read retires
+ * nothing; a row confirmed before its confirmation time was recorded is retired by any authoritative
+ * read. Returns the rows to keep painting and the ids now retired.
+ */
+export function retireConfirmed(
+  unread: ReadonlyArray<OutboxEntry & { confirmedAt: number | null }>,
+  read: ZoteroRead,
+): { stillShown: OutboxEntry[]; retired: number[] } {
+  if (!read.authoritative) return { retired: [], stillShown: [...unread] }
+  const stillShown: OutboxEntry[] = []
+  const retired: number[] = []
+  for (const entry of unread) {
+    if (entry.confirmedAt === null || entry.confirmedAt < read.startedAt) retired.push(entry.id)
+    else stillShown.push(entry)
+  }
+  return { retired, stillShown }
 }
 
 /** Rows in document order, plus the colour and tag facets the filter row is built from. */

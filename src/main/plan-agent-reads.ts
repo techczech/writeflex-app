@@ -1,3 +1,7 @@
+import { declaresSectionPage, sectionMembership } from '../shared/folio-sections'
+import { countAttachedEvidence, readEvidence } from './folio-evidence'
+import { folioFiles } from './folio-files'
+import { evidencePartKey } from '../shared/folio-evidence'
 /**
  * The agent's two read-only views of a report folder (ticket 08; design
  * docs/design/2026-08-10-agent-and-multi-part-works/2026-09-27-verbs-and-report-skill-draft.md):
@@ -13,8 +17,11 @@
 
 import { existsSync, statSync } from 'node:fs'
 import { posix } from 'node:path'
-import { collectionCoverPaths, readManifest } from './folio'
-import { readPlan } from './plan'
+import { collectionCoverPaths, readManifest, pathUnderFolioRoot } from './folio'
+import { readFolioPlan, readPlan } from './plan'
+import { parseFrontmatter } from './frontmatter'
+import { findFlags, type Flag } from '../shared/markdown/flags'
+import { labelOfTags, priorityOfTags, readLabelVocabulary, type RoomLabel, type RoomPriority } from '../shared/folio-room'
 import { collectionCandidates } from './wikilinks'
 import { documentWordCount, passageWordCount } from './collection'
 import { isPathInFolder, type Workspace } from './workspace'
@@ -23,6 +30,10 @@ import { frontmatterBlock } from '../shared/markdown/frontmatter'
 import { blockRangesOf } from '../shared/markdown/line-blocks'
 
 export type AgentPlanPart = {
+  /** A section opening, marked only in its file’s frontmatter. */
+  sectionPage?: true
+  /** Title of the owning section; omitted before the first section and for front matter/openings. */
+  section?: string
   title: string
   gloss: string | null
   role: string
@@ -31,6 +42,13 @@ export type AgentPlanPart = {
   /** Body words (frontmatter excluded, the Digest's rule); null for an unwritten part. */
   words: number | null
   exists: boolean
+  synopsis: string | null
+  label: RoomLabel | null
+  priority: RoomPriority | null
+  status: string
+  /** Evidence rows the room shows for this part; null when the Folio's evidence file cannot be read. */
+  evidenceCount: number | null
+  openFlags: Flag[]
 }
 
 export type AgentPlanStray = { path: string; title: string; words: number }
@@ -44,6 +62,8 @@ export type AgentPlanReadout = {
   contentRoot: string
   parts: AgentPlanPart[]
   strays: AgentPlanStray[]
+  /** Present only when the Folio's evidence-and-notes file exists but cannot be read; a plain sentence. */
+  evidenceProblem?: string
 }
 
 export type ComparedSide = 'a' | 'b'
@@ -115,32 +135,67 @@ function neverAPart(path: string, root: string): boolean {
   return inside.split('/').slice(0, -1).some((segment) => NEVER_PARTS.has(segment.toLocaleLowerCase()))
 }
 
-export async function readPlanForAgent(ws: Workspace, dirInput: unknown): Promise<AgentPlanReadout> {
+/** `options.summary` (the per-turn assistant summary) counts attached evidence from the evidence file alone and skips the strays; plan.read never sets it. */
+export async function readPlanForAgent(ws: Workspace, dirInput: unknown, options: { summary?: boolean; manifestOrder?: boolean } = {}): Promise<AgentPlanReadout> {
   const dir = agentPlanDir(ws, dirInput)
-  const plan = await readPlan(ws, dir)
-  const contentRoot = (await readManifest(ws, dir))?.contentRoot ?? ''
+  // The command line follows the room's manifest order; proposal callers keep their Index Note basis.
+  const plan = options.manifestOrder ? await readFolioPlan(ws, dir) : await readPlan(ws, dir)
+  const source = plan && !plan.indexNoteAbsent ? await ws.readFile(plan.indexPath).then(read => read.content, () => null) : null
+  const labels = readLabelVocabulary(source).labels
+  const manifest = await readManifest(ws, dir)
+  const contentRoot = manifest?.contentRoot ?? ''
   const root = inDir(dir, contentRoot)
 
   const parts: AgentPlanPart[] = []
+  const contents = new Map<string,string>()
   for (const part of plan?.parts ?? []) {
     let words: number | null = null
     let exists = false
+    let status = 'idea'
+    let openFlags: Flag[] = []
     if (part.path) {
       try {
-        words = documentWordCount((await ws.readFile(part.path)).content)
+        const content = (await ws.readFile(part.path)).content
+        contents.set(part.path,content)
+        words = documentWordCount(content)
+        status = parseFrontmatter(content)?.status?.trim() || 'Unsorted'
+        openFlags = findFlags(content)
         exists = true
       } catch {
         // Resolved at parse time but gone since: report it as missing rather than failing the read.
       }
     }
-    parts.push({ title: part.title, gloss: part.gloss, role: part.role, path: part.path, words, exists })
+    parts.push({ title: part.title, gloss: part.gloss, role: part.role, path: part.path, words, exists, synopsis: part.gloss, label: labelOfTags(part.tags, labels), priority: priorityOfTags(part.tags), status, openFlags, evidenceCount:0 })
+  }
+
+  const membership = sectionMembership(parts.map(part => ({ sectionPage: part.path ? declaresSectionPage(contents.get(part.path) ?? '') : false, frontMatter: part.role === 'front-matter' })))
+  parts.forEach((part, index) => {
+    if (part.path && part.role !== 'front-matter' && declaresSectionPage(contents.get(part.path) ?? '')) part.sectionPage = true
+    const owner = membership[index]
+    if (owner !== null) part.section = parts[owner].title
+  })
+
+  let evidenceProblem: string | undefined
+  if (plan && options.summary) {
+    // The per-turn summary counts what the evidence file lists; it never touches the sources themselves.
+    const evidence = await countAttachedEvidence(ws, dir, parts.map(part => part.title))
+    if (evidence.state === 'unreadable') evidenceProblem = evidence.message
+    for (const part of parts) part.evidenceCount = evidence.state === 'unreadable' ? null : evidence.counts[evidencePartKey(part.title)] ?? 0
+  } else if (plan) {
+    const evidence = await readEvidence(ws, dir, parts.map(part => ({ title: part.title, path: part.path, content: part.path ? contents.get(part.path) : undefined })), await folioFiles(ws, dir))
+    if (evidence.state === 'unreadable') evidenceProblem = evidence.message
+    for (const part of parts) part.evidenceCount = evidence.state === 'unreadable' ? null : evidence.parts[evidencePartKey(part.title)]?.rows.length ?? 0
   }
 
   const inOrder = new Set(parts.flatMap((part) => (part.path ? [part.path] : [])))
   const covers = new Set([...collectionCoverPaths(ws, dir), ...collectionCoverPaths(ws, root)])
   const strays: AgentPlanStray[] = []
-  for (const candidate of await collectionCandidates(ws, root)) {
-    if (inOrder.has(candidate.path) || covers.has(candidate.path) || neverAPart(candidate.path, root)) continue
+  const candidates = options.summary ? [] : await collectionCandidates(ws, root)
+  const discovered = new Set(candidates.map(candidate => candidate.path))
+  const knownStrays = options.summary ? [] : (plan?.unlisted ?? []).flatMap(part => part.path && !discovered.has(part.path) ? [{ path: part.path, title: part.title }] : [])
+  for (const candidate of [...candidates, ...knownStrays]) {
+    const candidateRoot = pathUnderFolioRoot(root, candidate.path) ? root : dir
+    if (inOrder.has(candidate.path) || covers.has(candidate.path) || neverAPart(candidate.path, candidateRoot)) continue
     strays.push({
       path: candidate.path,
       title: candidate.title,
@@ -149,7 +204,7 @@ export async function readPlanForAgent(ws: Workspace, dirInput: unknown): Promis
   }
   strays.sort((left, right) => left.path.localeCompare(right.path))
 
-  return { dir, hasIndexNote: plan !== null, indexPath: plan?.indexPath ?? null, contentRoot, parts, strays }
+  return { dir, hasIndexNote: plan !== null && !plan.indexNoteAbsent, indexPath: plan?.indexNoteAbsent ? null : plan?.indexPath ?? null, contentRoot, parts, strays, ...(evidenceProblem ? { evidenceProblem } : {}) }
 }
 
 type Block = { text: string; key: string; line: number; words: number }

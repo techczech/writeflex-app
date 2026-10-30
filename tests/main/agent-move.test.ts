@@ -27,7 +27,7 @@ afterEach(async () => {
 })
 
 async function makeAgent(text: string, steps: ScriptedStep[]): Promise<WorkspaceAgent> {
-  return WorkspaceAgent.create({
+  return WorkspaceAgent.create({ mode: 'work',
     workspace: ws,
     appDataDir,
     changes,
@@ -38,6 +38,7 @@ async function makeAgent(text: string, steps: ScriptedStep[]): Promise<Workspace
     sessionFactory: scriptedSessionFactory([{
       prompt: text,
       rounds: [
+        { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: steps.map((step) => step.cap) } }] },
         { kind: 'tool-calls', calls: steps.map((step) => ({ name: step.cap, arguments: step.input as Record<string, unknown> })) },
         { kind: 'message', text: 'Scripted turn complete.' },
       ],

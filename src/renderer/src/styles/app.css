@@ -289,6 +289,20 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .file-filter-search{height:28px;flex:none}
 .file-filter-search input{font-size:11.5px;color:var(--ink)}
 .file-filter-count{font-size:10px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+/* TalkWeaver's prefix teaching and two-line ranked results, in the Files pane's palette. */
+.file-pfx-row{display:flex;flex-wrap:wrap;gap:4px}
+.file-pfx{border:0;background:none;color:var(--ink-3);font-size:10px;padding:3px 4px;cursor:pointer}
+.file-pfx b{color:var(--accent)}
+.file-cpl{border:1px solid var(--line);border-radius:6px;background:var(--bg-elev);overflow:hidden}
+.file-cpl-h,.file-cpl-f{padding:5px 8px;color:var(--ink-3);font-size:10px}
+.file-cpl-o{display:flex;justify-content:space-between;gap:8px;padding:5px 8px;font-size:11px;cursor:pointer}
+.file-cpl-o>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-cpl-o i{color:var(--ink-3);font-size:10px;font-style:normal;flex:none}
+.file-cpl-o.is-on{background:var(--accent-soft)}
+.file-result-path{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-3);font-size:10px;font-weight:400;margin-top:2px}
+.file-search-results .trow{min-height:42px;height:auto;padding-top:5px;padding-bottom:5px}
+.file-search-results .fname{text-align:left;min-width:0}
+.file-search-results .children{display:none}
 .filter-glyph{font-size:14px;line-height:1}
 .filter-clear{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;color:var(--ink-3);flex:none}
 .filter-clear:hover{background:var(--hover);color:var(--ink)}
@@ -652,6 +666,7 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .cv-overlay{position:absolute;inset:0;z-index:9;display:flex;flex-direction:column;background:var(--bg-pane)}
 .cv-scroll{flex:1;min-height:0;overflow-y:auto;padding:38px 44px 60px}
 .cv{max-width:780px;margin:0 auto}
+.cv-folio-navigation{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:16px;font-size:12px}
 .cv-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
 .cv-head h1{font-family:var(--prose);font-weight:700;font-size:30px;letter-spacing:-.3px}
 .cv-badge{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;background:var(--pill);color:var(--ink-2);border-radius:4px;padding:2px 7px}
@@ -1475,6 +1490,10 @@ button.bsrc-ico:hover,button.bsrc-ico:focus-visible{color:var(--accent);border-c
 .sb-review .rbp button.rbp-btn.danger{background:var(--danger,#c4442e);border-color:var(--danger,#c4442e);color:#fff}.sb-review .rbp button.rbp-btn.danger kbd{color:#fff;border-color:rgba(255,255,255,.45);background:rgba(255,255,255,.14)}
 .sb-review .rbp button.rbp-btn.primary:hover:not(:disabled),.sb-review .rbp button.rbp-btn.danger:hover{color:#fff;filter:brightness(1.06)}
 .sb-review .rbp button.rbp-btn .icon{width:13px;height:13px}
+.rbp-source-pick{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.sb-review .rbp button.rbp-source-choice{font-weight:500}.sb-review .rbp button.rbp-source-choice[aria-checked="true"]{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);font-weight:650}
+.rbp-source-n{margin-left:2px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.rbp-source-lines{margin:8px 0 0;padding-left:16px;font-size:12px;line-height:1.45;color:var(--ink-2);max-height:160px;overflow:auto}
 .mg-st.sent{color:var(--accent)}
 .mg-filterline{display:flex;align-items:center;gap:6px;min-width:0;font-size:12px;color:var(--ink-2)}.mg-filterline b{color:var(--ink);font-weight:650}.mg-filterline .mg-btn{margin-left:auto;flex:none}
 .mg-filterline .icon{color:var(--accent);flex:none}
@@ -1562,6 +1581,10 @@ table.gfm-style{border-collapse:collapse;width:100%;font-family:var(--ui);font-s
 table.gfm-style th{text-align:left;font-weight:650;border-bottom:1.5px solid var(--ink-2);padding:5px 10px 4px}
 table.gfm-style td{border-bottom:1px solid var(--line);padding:5px 10px}
 .lp-frontmatter{padding-top:1px}.lp-pending-review{display:inline-flex;margin:3px 0 3px 8px;border-radius:4px;background:var(--pill);color:var(--ink-3);padding:1px 6px;font:9.5px/17px var(--ui);letter-spacing:.02em}.yamlt{width:100%;border-collapse:collapse;margin:0 0 10px;font:12.5px var(--ui)}.yamlt td{padding:4.5px 10px;border-bottom:1px solid var(--line);text-align:left}.yamlt td:first-child{width:110px;color:var(--ink-3);font-size:11.5px}.yamlt .chip,.fme .chip{display:inline-flex;align-items:center;gap:4px;margin-right:4px;border:1px solid var(--line);border-radius:9px;background:var(--bg-side);padding:1px 8px;font-size:11px}.yamlt .yamlt-raw{width:auto;white-space:pre-wrap;color:var(--ink-3);font:11px/1.45 var(--mono)}.lp-frontmatter.lp-render-failed pre{margin:0;white-space:pre-wrap;font:11.5px/1.5 var(--mono)}
+/* A field a waiting edit would change (metadata-proposals.ts): tinted as an edit mark, with who proposed what. */
+.metadata-field.has-proposal{padding:2px 6px 5px;margin-left:-6px;margin-right:-6px;border-radius:6px;background:var(--rv-edit-hl);box-shadow:inset 0 -2px 0 var(--rv-edit-under)}
+.metadata-proposal{margin:3px 0 0;font:11px/1.4 var(--ui);color:var(--collection-agent)}
+.metadata-proposals{margin:4px 0 2px;padding:4px 8px;border-radius:6px;background:var(--rv-edit-hl)}.metadata-proposals .metadata-proposal{margin:2px 0}
 .fme{display:flex;flex-direction:column}.fme-row{display:grid;grid-template-columns:110px minmax(0,1fr) 26px;align-items:start;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)}.fme-row input{width:100%;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--ink);padding:5px 7px;font:12px var(--ui);outline:none}.fme-row input:focus{border-color:var(--accent);background:var(--bg)}.fme-key{color:var(--ink-3)!important;font-size:11.5px!important}.fme-remove{opacity:0;border:0;border-radius:5px;color:var(--ink-3);padding:4px;font:14px var(--ui)}.fme-row:hover .fme-remove,.fme-row:focus-within .fme-remove{opacity:1}.fme-remove:hover{background:var(--hover);color:var(--danger)}.fme-chips{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-height:29px}.fme .chip{margin:0}.fme .chip button{border:0;color:var(--ink-3);font:13px var(--ui);line-height:1}.fme-chip-input{flex:1;min-width:70px}.fme-add{align-self:flex-start;margin-top:6px;border:1px dashed var(--line-strong);border-radius:6px;color:var(--ink-3);padding:4px 11px;font:11px var(--ui)}.fme-add:hover{border-color:var(--accent);color:var(--accent)}.fme-row.raw{display:block;padding:7px 8px;background:var(--bg-side)}.fme-row.raw pre{margin:3px 0 0;white-space:pre-wrap;color:var(--ink-2);font:11px/1.45 var(--mono)}.fme-raw-label{color:var(--ink-3);font:10px var(--ui)}
 .lp-code{background:var(--code-bg);font-family:var(--mono);font-size:11.5px;line-height:1.55;padding:12px 14px;overflow-x:auto}
 .lp-code pre{margin:0;white-space:pre;font:inherit}
@@ -2271,6 +2294,7 @@ table.gfm-style td{border-bottom:1px solid var(--line);padding:5px 10px}
 .outside-room{display:flex;align-items:flex-start;gap:8px;margin:0 8px 8px;padding:8px 10px;border-radius:9px;background:var(--house-soft);font-size:11.5px;line-height:1.45;color:var(--ink-2)}
 .outside-room .icon{width:14px;height:14px;color:var(--house);margin-top:1px;flex:none}
 .outside-room b{color:var(--ink);font-weight:650}
+.outside-room-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.outside-room-actions .mg-btn .icon{width:12px;height:12px;margin:0;color:inherit}
 .arrived{display:flex;align-items:center;gap:8px;padding:7px 8px 0 10px;font-size:11.5px;color:var(--ink-2)}
 .arrived .tx{flex:1;min-width:0}
 .arrived .ca{height:22px;padding:0 8px;font-size:11px;flex:none}
@@ -2612,6 +2636,18 @@ table.gfm-style td{border-bottom:1px solid var(--line);padding:5px 10px}
 .export-done{background:color-mix(in srgb,var(--green) 12%,transparent);color:var(--green)}
 .export-warn{background:var(--amber-soft);color:var(--amber)}
 .export-error{background:var(--danger-soft);color:var(--danger)}
+/* The out-of-step line (Folio room spec § 8 D-ORD-3): the amber notice, with its two buttons under the sentences. */
+.export-order{display:flex;gap:9px;align-items:flex-start}
+.export-order>.icon{flex:none;width:15px;height:15px;margin-top:2px}
+.export-order-body{flex:1;min-width:0}
+/* In the What field, under the scope rows, the line and what the repair said align with the rows. */
+.export-field>.export-order,.export-field>.export-done,.export-field>.export-error{margin:8px 0 0}
+.export-order-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.export-order-actions .btn.small{padding:5px 10px;font-size:12px}
+.version-modal .export-order-actions .btn.ghost{border:1px solid color-mix(in srgb,var(--amber) 40%,transparent);color:var(--amber)}
+/* The repair action looks the same on the export sheet and the Share page's problem panel: the amber fill. */
+.export-order-actions .btn.export-order-repair,.shr-btn.export-order-repair{background:var(--amber);border-color:var(--amber);color:var(--bg-elev)}
+.shr-btn.export-order-repair:hover:not(:disabled){background:var(--amber);filter:brightness(1.06)}
 .export-done .linkish{color:inherit;text-decoration:underline;font:inherit}
 .export-working{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-3)}
 .export-spin{width:12px;height:12px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:export-spin .8s linear infinite}
@@ -2684,6 +2720,8 @@ table.gfm-style td{border-bottom:1px solid var(--line);padding:5px 10px}
 .reading-room-notice strong{color:var(--ink);font-weight:600}
 .reading-room-notice button{flex:none;color:var(--ink);font:inherit;font-weight:600;text-decoration:underline;text-underline-offset:2px}
 .reading-room-notice button:hover{color:var(--accent)}
+.reading-room-notice-error{background:var(--danger-soft)}
+.reading-room-notice-error strong{color:var(--danger)}
 .reading-room-document{flex:1;min-height:0;position:relative;overflow:hidden;background:var(--bg-sunk)}
 .reading-room-document iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff}
 .reading-room.side-left .reading-room-document iframe{left:18px;width:calc(100% - 18px)}
@@ -2747,6 +2785,24 @@ table.gfm-style td{border-bottom:1px solid var(--line);padding:5px 10px}
 .reading-room-shelf-field input{flex:1;min-width:0;border:0;background:transparent;font:12.5px var(--ui);color:var(--ink)}
 .reading-room-shelf-field input::placeholder{color:var(--ink-4)}
 .reading-room-shelf-field input::-webkit-search-cancel-button{display:none}
+.reading-room-shelf-searchrow{display:flex;align-items:center;gap:6px}
+.reading-room-shelf-searchrow .reading-room-shelf-field{flex:1;min-width:0}
+.reading-room-shelf-scope{margin:0;padding:3px 9px;border-bottom:1px solid var(--line);background:var(--bg-sunk);font:10.5px var(--mono);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.reading-room-collection-picker{position:relative;flex:none;max-width:45%}
+.reading-room-collection-picker>button{display:flex;align-items:center;gap:5px;height:26px;max-width:100%;padding:0 8px;border:1px solid var(--line);border-radius:13px;background:var(--bg-elev);font:11.5px var(--ui);color:var(--ink-2);cursor:pointer}
+.reading-room-collection-picker>button.active{border-color:var(--accent);color:var(--ink)}
+.reading-room-collection-picker>button svg{flex:none;width:12px;height:12px;stroke-width:1.8}
+.reading-room-collection-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reading-room-collection-popover{position:absolute;z-index:20;top:30px;right:0;width:280px;max-width:80vw;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:8px;background:var(--bg-elev);box-shadow:0 6px 24px rgba(0,0,0,.18)}
+.reading-room-collection-popover input{margin:6px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg-pane);font:12px var(--ui);color:var(--ink)}
+.reading-room-collection-list{max-height:280px;overflow:auto;padding-bottom:4px}
+.reading-room-collection-option{display:flex;align-items:baseline;gap:6px;padding:4px 10px;font:12px var(--ui);color:var(--ink);cursor:pointer}
+.reading-room-collection-option[data-active="true"]{background:var(--hover)}
+.reading-room-collection-option[aria-selected="true"] .reading-room-collection-name{font-weight:600}
+.reading-room-collection-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reading-room-collection-path{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;color:var(--ink-4)}
+.reading-room-collection-count{margin-left:auto;flex:none;font:10.5px var(--mono);color:var(--ink-3)}
+.reading-room-collection-none{margin:0;padding:8px 10px;font-size:12px;color:var(--ink-3)}
 .reading-room-shelf-count{font:10.5px var(--mono);color:var(--ink-3)}
 .reading-room-shelf-list{flex:1;min-height:0;overflow:auto}
 .reading-room-shelf-bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:7px;height:24px;padding:0 9px;background:var(--bg-sunk);border-bottom:1px solid var(--line);color:var(--ink-3);font:600 10px/1 var(--ui);letter-spacing:.07em;text-transform:uppercase}
@@ -3793,3 +3849,53 @@ button.folio-agent-pill[data-state=none],button.folio-agent-pill[data-state=part
 .metadata-panel .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .oe:has(.metadata-panel) .oe-surface{padding:0}.oe:has(.metadata-panel) .metadata-panel{border:0;border-radius:0}.lp-frontmatter .metadata-body>button{margin-top:12px}
 @media(max-width:520px){.metadata-grid{grid-template-columns:minmax(0,1fr)}.metadata-summary{max-width:55%}.metadata-head{padding:9px}.metadata-body{padding:12px}}
+
+/* Assistant design C: mode chip beside the model, numbered turns above the conversation. */
+.agent-configuration { display: flex; align-items: center; gap: 6px; }
+.assistant-mode { position: relative; flex-shrink: 0; }
+.assistant-mode-chip.ghost { display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px; border: 1px solid var(--accent); border-radius: 7px; color: var(--accent); font-size: 11px; }
+.assistant-mode-menu { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 20; width: 262px; padding: 5px; background: var(--bg-pane); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.14); }
+.assistant-mode-menu button { display: block; width: 100%; border: 0; border-radius: 7px; padding: 6px 8px; text-align: left; background: transparent; color: var(--ink); font: inherit; }
+.assistant-mode-menu button[aria-checked=true], .assistant-mode-menu button:focus-visible { background: var(--accent-soft); }
+.assistant-mode-menu strong { display: block; font-size: 12px; }
+.assistant-mode-menu small { display: block; font-size: 11px; line-height: 1.45; color: var(--ink-3); }
+.assistant-turn-strip { display: flex; flex-shrink: 0; justify-content: flex-start; gap: 4px; padding: 8px 10px; overflow-x: auto; border-bottom: 1px solid var(--line-soft); background: var(--bg-sunk); }
+.assistant-turn-step { flex: 0 0 clamp(64px, calc((100% - 12px) / 4), 96px); min-width: 64px; max-width: 96px; white-space: nowrap; height: 26px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-pane); color: var(--ink-2); font: inherit; font-size: 10px; }
+.assistant-turn-step.stopped { background: var(--bg-sunk); color: var(--ink-3); }
+.assistant-turn-step.failed, .assistant-turn-end.failed { background: var(--danger-soft); color: var(--danger); }
+.assistant-turn-step[aria-pressed=true] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.assistant-turn-selection { flex-shrink: 0; padding: 7px 10px; border-bottom: 1px solid var(--line-soft); color: var(--ink-2); font-size: 11.5px; max-height: 38%; overflow-y: auto; }
+.assistant-turn-summary { display: flex; gap: 6px; align-items: center; }
+.assistant-turn-summary strong { color: var(--ink); white-space: nowrap; }
+.assistant-turn-summary > span { flex: 1; }
+.assistant-turn-undo.ghost { display: inline-flex; align-items: center; gap: 4px; color: var(--danger); padding: 2px 8px; border: 1px solid var(--line); border-radius: 7px; white-space: nowrap; }
+.assistant-turn-files { margin-top: 5px; font-size: 10.5px; }
+.assistant-turn-files summary { cursor: pointer; }
+.assistant-turn-counts { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0; }
+.assistant-turn-file { display: flex; gap: 8px; padding: 2px 0; }
+.assistant-turn-file > span:first-child { color: var(--ink-3); text-transform: uppercase; min-width: 55px; font-size: 9.5px; }
+.assistant-turn-file button { overflow-wrap: anywhere; text-align: left; }
+.assistant-turn-end, .assistant-turn-refusal { padding: 7px 9px; margin-top: 5px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg-sunk); }
+.assistant-turn-refusal { border-color: var(--danger); }
+.assistant-turn-refusal button { display: block; margin-top: 6px; }
+
+/* The text sidebar keeps chapter navigation close to its two-way switch. */
+.ol-controls{display:contents}
+.folio-controls{display:flex;align-items:center;gap:4px;padding:3px 8px;border-bottom:1px solid var(--line-soft)}
+.folio-controls .ol-bar{flex:none;gap:0;padding:0;border:0}
+.folio-controls .ol-btn{width:21px;height:26px}
+.folio-controls .ol-bar-sep{margin:0 2px}
+.folio-controls .ol-bar-gap{display:none}
+.folio-controls .ol-levels{padding:0 3px;min-width:30px}
+.folio-controls .facet-row{flex:1;min-width:48px;padding:0}
+.folio-controls .facet-search{min-width:0;width:100%;height:26px;padding:0 5px;gap:3px}
+.folio-controls .facet-search input{width:100%;min-width:0}
+.folio-controls .facet-search .icon{width:12px;height:12px;flex:none}
+.fr-sidebar .scope-seg{margin:5px 8px 2px}
+.fo-sec{padding:5px 6px 3px;font-size:9px}
+.fo-piece{padding-top:4px;padding-bottom:4px}
+
+/* Running-order confirmation stays within the footer's reserved height, below the prose. */
+.status-flash.status-flash-inline{position:static;flex:0 1 560px;min-width:0;display:flex;align-items:center;max-width:560px;height:24px;box-sizing:border-box;padding:1px 6px;margin-left:auto;box-shadow:none;white-space:nowrap;overflow:hidden;line-height:20px}
+.status-flash-inline .status-flash-message{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.status-flash-inline .status-flash-undo{flex:none;margin-left:6px}

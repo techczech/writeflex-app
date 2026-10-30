@@ -27,6 +27,7 @@ import { RemotePictureRefused, type RemotePictureFetch } from './sharing-remote-
 import { htmlOutline, toHtml } from '../shared/markdown/to-html'
 import { readDocument } from '../shared/markdown/model'
 import { parseMarkdown, stripComments, withoutByteOrderMark } from '../shared/markdown/dialect'
+import { findFlags } from '../shared/markdown/flags'
 import { frontmatterBlock } from '../shared/markdown/frontmatter'
 import { partTitle, withoutOwnHeading } from '../shared/folio-part-title'
 import { SHARE_LIMITS } from '../../sharing-service/share-protocol.ts'
@@ -95,7 +96,9 @@ export function chipsOf(source: string): { label: string; value: string }[] {
   if (!parsed) return []
   const chips: { label: string; value: string }[] = []
   for (const [field, label] of CHIP_FIELDS) {
-    const raw = (parsed as unknown as Record<string, unknown>)[field]
+    const fields = parsed as unknown as Record<string, unknown>
+    const raw = field === 'status' && typeof parsed.extra.status_label === 'string' && parsed.extra.status_label.trim()
+      ? parsed.extra.status_label : fields[field]
     const text = typeof raw === 'string' || typeof raw === 'number' ? String(raw)
       : Array.isArray(raw) ? raw.filter((item) => typeof item === 'string').join(', ') : ''
     const value = oneLine(text, SHARE_LIMITS.chipValueChars)
@@ -119,10 +122,16 @@ export function withoutHiddenComments(source: string): string {
   const block = frontmatterBlock(content)
   const head = block ? content.slice(0, block.end) : ''
   const body = stripComments((block ? content.slice(block.end) : content).replace(/\r\n?/g, '\n'))
+  // Only a tag that really closes a flag in this text stays; an orphan flag tag is cut like any comment
+  // (kept, it could become a flag once an ordinary comment between it and a highlight is cut).
+  const flagTags = new Set(findFlags(body).map((flag) => flag.wordsTo + 2))
   const cuts: Array<[number, number]> = []
   parseMarkdown(body).iterate({
     enter: (node) => {
       if (node.name !== 'Comment' && node.name !== 'CommentBlock') return undefined
+      // A flag's tag stays: the reading model drops it and publishes the flagged words as plain text.
+      // Cut here, the flagged words would be left in a bare `==` and publish as a <mark>.
+      if (node.name === 'Comment' && flagTags.has(node.from)) return false
       cuts.push([node.from, node.to])
       return false
     },

@@ -90,15 +90,20 @@ test('an insert is carried as its anchor text, and a move\'s positions are found
 })
 
 test('frontmatter, status, a tick, an object and a source are each one Change the accept path can replay', async () => {
+  // A change to the metadata only is the WHOLE old frontmatter block and the whole new one, marked
+  // `frontmatter`: never the writing below (placed only while the block is exactly as proposed).
   const set = await propose('set-frontmatter', { path: 'talks/york.md', key: 'audience', value: 'teachers' })
-  expect(set).toMatchObject({ ok: true, changes: [{ editClass: 'content', oldText: YORK }] })
-  if (set.ok) expect(set.changes[0].newText).toBe(YORK.replace('status: draft\n', 'status: draft\naudience: teachers\n'))
+  const block = YORK.slice(0, YORK.indexOf('---\n', 4) + 4)
+  expect(set).toEqual({ ok: true, path: 'talks/york.md', changes: [{
+    path: 'talks/york.md', editClass: 'content', category: 'other', summary: 'Set audience in the frontmatter of talks/york.md',
+    oldText: block, newText: block.replace('status: draft\n', 'status: draft\naudience: teachers\n'), anchor: { from: 0, to: block.length }, frontmatter: true,
+  }] })
   expect(reason(await propose('set-frontmatter', { path: 'talks/york.md', key: 'bad key: x', value: 'v' }))).toContain('plain name')
   expect(reason(await propose('set-frontmatter', { path: 'talks/york.md', key: 'k', value: 'a\nb: c' }))).toContain('one line')
 
   const status = await propose('set-status', { path: 'talks/york.md', status: 'editing' })
-  expect(status).toMatchObject({ ok: true, changes: [{ oldText: YORK }] })
-  if (status.ok) expect(status.changes[0].newText).toContain('status: editing')
+  expect(status).toMatchObject({ ok: true, changes: [{ oldText: block, newText: block.replace('status: draft\n', 'status: editing\n'), frontmatter: true }] })
+  if (status.ok) expect(status.changes[0]).not.toHaveProperty('whole')
   expect(reason(await propose('set-status', { path: 'talks/york.md', status: 'draft' }))).toContain('already has the status')
   expect(reason(await propose('set-status', { path: 'talks/york.md', status: 'a\nb' }))).toContain('Invalid Collection status')
 
@@ -116,7 +121,8 @@ test('frontmatter, status, a tick, an object and a source are each one Change th
   await fx.write('talks/research/assessment.md', '# Assessment notes\n\nA finding.\n')
   const attached = await propose('attach-source', { path: 'talks/york.md', 'source-path': 'talks/research/assessment.md', collection: 'talks' })
   expect(reason(attached)).toBe('')
-  if (attached.ok) expect(attached.changes[0]).toMatchObject({ editClass: 'content', oldText: YORK })
+  if (attached.ok) expect(attached.changes[0]).toMatchObject({ editClass: 'content', frontmatter: true })
+  if (attached.ok) expect(attached.changes[0].oldText).not.toContain('Intro about assessment.')
   expect(reason(await propose('attach-source', { path: 'talks/york.md', 'source-path': '.writeflex/versions.jsonl' }))).toContain('dot-folder')
   expect(reason(await propose('attach-source', { path: 'talks/york.md', 'source-path': 'notes.md' }))).toContain('research/')
 })

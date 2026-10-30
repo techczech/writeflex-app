@@ -1,3 +1,4 @@
+import { createFolioAuthorQueue, openFolioIdentityIfNeeded } from '../../../shared/folio-write-preparation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { plainErrorForScreen } from '../error-text'
 import { chapterSortOrder, inverseOrder, isIdentityOrder } from '../../../shared/folio-chapter-order'
@@ -20,14 +21,19 @@ import {
   type RunningOrderResult,
   type RunningOrderUndo,
 } from '../../../shared/folio-running-order'
+import { moveOrder, newCardFlash, undoneNewCardAnnouncement, withManifestNote } from '../../../shared/folio-room-order'
+import type { RoomAuthoringResult } from '../../../shared/folio-room-authoring'
+import type { PlanCardKey } from '../../../shared/folio-running-order'
 
 /** The Folio as the caller was looking at it: its folder and the running order it saw, with titles for the messages. */
 export type FolioSeen = { dir: string; pieces: ReadonlyArray<{ path: string; title: string }> }
 
-export type FlashAction = { label: string; run: () => void }
+export type FlashAction = { label: string; run: () => void; kind?: 'folio-order' | 'scratchpad' }
 
 type Deps = {
-  /** The status-bar flash. With an action it stays until the next flash. */
+  /** Hide the preceding notice when another order change starts, without discarding Undo. */
+  onChangeStart?: () => void
+  /** The status-bar flash. */
   say: (message: string, action?: FlashAction) => void
   /**
    * Make one request to main for the Folio in `dir`: first every open buffer of that Folio is saved (see
@@ -48,6 +54,7 @@ type Deps = {
 type HeldUndo = { step: RunningOrderUndo; scope: string }
 
 export type FolioRunningOrder = {
+  openIdentity: (dir: string, force?: boolean) => Promise<boolean>
   /** Move one piece before another (null = to the end). */
   movePiece: (seen: FolioSeen, path: string, beforePath: string | null) => Promise<boolean>
   /** Add files to the end of the running order in one step. */
@@ -56,6 +63,20 @@ export type FolioRunningOrder = {
   sortPlan: (dir: string, parts: readonly PlanPartKey[], frontMatter?: readonly boolean[]) => Promise<boolean>
   /** The Plan's Add all from this folder: the files at the end, in the order given, in one write and one Undo step (Plan write path). */
   addToPlan: (dir: string, parts: readonly PlanPartKey[], files: ReadonlyArray<{ path: string; title: string }>) => Promise<boolean>
+  /**
+   * The Folio room's move (a card or Outline row dragged, ⌥↑↓): the part at `from` to position `to` of `parts` (the
+   * running order as the room shows it), in one room order write and one Undo step. Answers the order the write left,
+   * or null when nothing was written (refused, or the same place).
+   */
+  reorderInRoom: (dir: string, parts: readonly PlanPartKey[], order: number[]) => Promise<boolean>
+  moveInRoom: (dir: string, parts: readonly PlanPartKey[], from: number, to: number) => Promise<PlanPartKey[] | null>
+  /** The Folio room's New card: an unwritten part at the end, one Undo step. Answers the order it left, or null when refused. */
+  addRoomCard: (dir: string, parts: readonly PlanPartKey[], title: string) => Promise<PlanPartKey[] | null>
+  /**
+   * Remove parts from the Folio to the Folio bin (the Folio page's Remove, ADR-0049): one write, no question asked, one
+   * Undo step offered in the flash. Answers main's answer, or null when nothing was asked (another change running).
+   */
+  removeToBin: (dir: string, indices: number[], expected: readonly PlanCardKey[]) => Promise<RoomAuthoringResult | null>
   undo: () => Promise<void>
   /** One request of another Folio write (the Details card's) through the same save of the Folio's open buffers and the editor's save queue. */
   write: Deps['write']
@@ -82,7 +103,7 @@ export type FolioRunningOrder = {
  * Plan's Folio: the Plan covers the Outline), and an answer from main that arrives after another
  * Folio came on screen does not put a step back.
  */
-export function useFolioRunningOrder({ say, write, refresh, root, openDir, planDir = null }: Deps): FolioRunningOrder {
+export function useFolioRunningOrder({ say, write, refresh, root, openDir, planDir = null, onChangeStart }: Deps): FolioRunningOrder {
   const [announcement, setAnnouncement] = useState('')
   const [touched, setTouched] = useState<{ tick: number; path: string; order: string[] } | null>(null)
   const [justAdded, setJustAdded] = useState<readonly string[]>([])
@@ -100,7 +121,7 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
   usableScopesRef.current = { outlineScope, planScope }
   const rootRef = useRef(root)
   rootRef.current = root
-  const busy = useRef(false)
+  const authorQueue = useRef(createFolioAuthorQueue())
   const tick = useRef(0)
 
   /** Keep `step` as the Undo step of the Folio `scope`, unless another Folio is on screen by now (then there is none). */
@@ -112,58 +133,94 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
   const touch = useCallback((path: string, order: string[]) => { tick.current += 1; setTouched({ tick: tick.current, path, order }) }, [])
   const tell = useCallback((message: string, action?: FlashAction) => { say(message, action); setAnnouncement(message) }, [say])
 
-  const guarded = useCallback(async (step: () => Promise<boolean>): Promise<boolean> => {
-    if (busy.current) return false
-    busy.current = true
-    try {
-      return await step()
-    } catch (error) {
-      tell(plainErrorForScreen(error, 'Could not change the running order.'))
-      refresh()
-      return false
-    } finally {
-      busy.current = false
-    }
-  }, [refresh, tell])
+  const guarded = useCallback((step: () => Promise<boolean>, linking = false): Promise<boolean> => {
+    const run = authorQueue.current(async () => {
+      onChangeStart?.()
+      try { return await step() } catch (error) {
+        tell(plainErrorForScreen(error, 'Could not change the running order.'))
+        refresh()
+        return false
+      }
+    }, linking)
+    return run
+  }, [refresh, tell, onChangeStart])
 
   const undo = useCallback(async (): Promise<void> => {
-    const held = undoRef.current
-    if (!held) return
-    // Only in its own Folio: an Undo asked while another Folio (or none) is on screen changes nothing.
-    if (!undoStepUsableOnScreen(held.scope, usableScopesRef.current.outlineScope, usableScopesRef.current.planScope)) return
-    const { step } = held
     await guarded(async () => {
+      const held = undoRef.current
+      if (!held || !undoStepUsableOnScreen(held.scope, usableScopesRef.current.outlineScope, usableScopesRef.current.planScope)) return false
+      const { step } = held
       const bridge = window.writeflex.folioRunningOrder
       const plan = window.writeflex.plan
-      const asked = await write<RunningOrderResult | PlanOrderResult>(step.dir, () => (step.kind === 'move'
+      const asked = await write<RunningOrderResult | PlanOrderResult | RoomAuthoringResult>(step.dir, () => (step.kind === 'bin'
+        ? window.writeflex.folioRoom.author(step.dir, { op: 'undo', token: step.token })
+        : step.kind === 'move'
         ? bridge.movePiece(step.dir, step.path, step.before, step.after)
         : step.kind === 'add'
           ? bridge.removeAdded(step.dir, step.token)
           : step.kind === 'plan-reorder'
-            ? plan.reorderParts(step.dir, step.order, step.after)
-            : plan.removeAdded(step.dir, step.token)))
+            ? plan.reorderParts(step.dir, step.order, step.after, step.room ? { room: true } : undefined)
+            : step.kind === 'room-card'
+              ? plan.roomRemoveCard(step.dir, step.index, step.title, step.after)
+              : plan.removeAdded(step.dir, step.token)))
       if (!asked.ok) { tell(`${asked.message} The change was not undone.`); return false }
       const result = asked.value
       refresh()
       if (!result.ok) {
         // Main's own sentence is shown. An Undo of an Add is all or nothing (folio-add-undo.ts): nothing was written.
         tell(result.message)
-        if (result.stale) remember(null)
+        if ('stale' in result && result.stale && undoRef.current === held) remember(null)
         return false
       }
-      remember(null)
+      if (undoRef.current === held) remember(null)
       setJustAdded([])
-      if (step.kind === 'move' && 'order' in result) {
+      if (step.kind === 'identity') {
+        tell('Undid the Folio’s file links.')
+      } else if (step.kind === 'bin') {
+        tell(`Put “${step.title}” back in the outline.`)
+      } else if (step.kind === 'move' && 'order' in result) {
         tell(undoneAnnouncement(step.title, result.order.indexOf(step.path) + 1, result.order.length))
         touch(step.path, result.order)
+      } else if (step.kind === 'plan-reorder' && step.room && step.title !== undefined && 'parts' in result) {
+        const back = result.parts.findIndex((part) => part.title === step.title)
+        tell(undoneAnnouncement(step.title, back + 1, result.parts.length))
       } else if (step.kind === 'plan-reorder') {
         tell(undoneSortAnnouncement)
+      } else if (step.kind === 'room-card') {
+        tell(undoneNewCardAnnouncement(step.title))
       } else if (step.kind === 'add' || step.kind === 'plan-add') {
         tell(undoneAddAnnouncement(step.paths.length))
       }
       return true
     })
   }, [guarded, refresh, remember, write, tell, touch])
+
+  useEffect(() => window.writeflex.plan.onIdentityLinked?.(result => {
+    if (result.root !== rootRef.current) return
+    const scope = folioScope(result.root, result.dir)
+    if (result.undoToken) remember({ kind: 'identity', dir: result.dir, token: result.undoToken }, scope)
+    refresh()
+    tell("WriteFlex now links this Folio's chapters to their files" + (result.warning ? ` — ${result.warning}` : ''), result.undoToken ? { label: 'Undo', run: () => { void undo() } } : undefined)
+  }), [refresh, remember, tell, undo])
+
+  const openIdentity = useCallback(async (dir: string, force = false): Promise<boolean> => {
+    const capturedRoot = rootRef.current
+    if (!capturedRoot) return false
+    try { return await openFolioIdentityIfNeeded(
+      () => window.writeflex.plan.identityCheck(dir, capturedRoot, force),
+      () => guarded(async () => {
+      const scope = folioScope(capturedRoot, dir)
+      if (rootRef.current !== capturedRoot) return false
+      const asked = await write(dir, () => window.writeflex.plan.open(dir, capturedRoot, force))
+      if (!asked.ok) { tell(asked.message); return false }
+      if (!asked.value.changed) { if (asked.value.warning) tell(asked.value.warning); return true }
+      if (asked.value.undoToken) remember({ kind: 'identity', dir, token: asked.value.undoToken }, scope)
+      refresh()
+      tell("WriteFlex now links this Folio's chapters to their files" + (asked.value.warning ? ` — ${asked.value.warning}` : ''), { label: 'Undo', run: () => { void undo() } })
+      return true
+      }, true),
+    ) } catch (error) { tell(plainErrorForScreen(error, 'Could not check the Folio’s chapter links.')); return false }
+  }, [guarded, write, tell, remember, refresh, undo])
 
   const movePiece = useCallback((seen: FolioSeen, path: string, beforePath: string | null): Promise<boolean> => guarded(async () => {
     const expected = seen.pieces.map((piece) => piece.path)
@@ -249,6 +306,87 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
     return true
   }), [guarded, refresh, remember, write, say, tell, undo])
 
+  const moveInRoom = useCallback(async (dir: string, parts: readonly PlanPartKey[], from: number, to: number): Promise<PlanPartKey[] | null> => {
+    const order = moveOrder(parts.length, from, to)
+    if (!order) return null
+    let left: PlanPartKey[] | null = null
+    await guarded(async () => {
+      const expected = [...parts]
+      const title = expected[from].title
+      const scope = folioScope(rootRef.current, dir)
+      const asked = await write(dir, () => window.writeflex.plan.reorderParts(dir, order, expected, { room: true }))
+      if (!asked.ok) { tell(`${asked.message} The part was not moved.`); return false }
+      const result = asked.value
+      if (!result.ok) { tell(result.message); refresh(); return false }
+      if (!result.changed) return true
+      left = result.parts
+      const position = result.parts.findIndex((part) => part.title === title) + 1
+      remember({ kind: 'plan-reorder', dir, order: inverseOrder(order), after: result.parts, room: true, title }, scope)
+      setJustAdded([])
+      refresh()
+      say(withManifestNote(movedFlash(title, position, result.parts.length), result.manifestCreated, result.notInRunningOrder), { label: 'Undo', run: () => { void undo() } })
+      setAnnouncement(withManifestNote(movedAnnouncement(title, position, result.parts.length).replace(/\.$/, ''), result.manifestCreated, result.notInRunningOrder))
+      return true
+    })
+    return left
+  }, [guarded, refresh, remember, write, say, tell, undo])
+
+  const reorderInRoom = useCallback(async (dir: string, parts: readonly PlanPartKey[], order: number[]): Promise<boolean> => guarded(async () => {
+    const scope = folioScope(rootRef.current, dir)
+    const asked = await write(dir, () => window.writeflex.plan.reorderParts(dir, order, [...parts], { room: true, createManifest: true }))
+    if (!asked.ok) { tell(asked.message); return false }
+    const result = asked.value
+    if (!result.ok) { tell(result.message); refresh(); return false }
+    if (result.changed) {
+      remember({ kind: 'plan-reorder', dir, order: inverseOrder(order), after: result.parts, room: true }, scope)
+      setJustAdded([]); refresh()
+      say('Wrote the map path to the Folio running order.', { label: 'Undo', run: () => { void undo() } })
+      setAnnouncement('Wrote the map path to the Folio running order.')
+    }
+    return true
+  }), [guarded, refresh, remember, write, tell, undo, say])
+
+  const addRoomCard = useCallback(async (dir: string, parts: readonly PlanPartKey[], title: string): Promise<PlanPartKey[] | null> => {
+    let left: PlanPartKey[] | null = null
+    await guarded(async () => {
+      const scope = folioScope(rootRef.current, dir)
+      const asked = await write(dir, () => window.writeflex.plan.roomNewCard(dir, title, [...parts]))
+      if (!asked.ok) { tell(`${asked.message} Nothing was added.`); return false }
+      const result = asked.value
+      if (!result.ok) { tell(result.message); if (result.stale) refresh(); return false }
+      left = result.parts
+      const added = result.parts[result.index]?.title ?? title.trim()
+      remember({ kind: 'room-card', dir, index: result.index, title: added, after: result.parts }, scope)
+      setJustAdded([])
+      refresh()
+      const text = withManifestNote(newCardFlash(added, result.index + 1, result.parts.length), result.manifestCreated, result.notInRunningOrder)
+      say(text, { label: 'Undo', run: () => { void undo() } })
+      setAnnouncement(text)
+      return true
+    })
+    return left
+  }, [guarded, refresh, remember, write, say, tell, undo])
+
+  const removeToBin = useCallback(async (dir: string, indices: number[], expected: readonly PlanCardKey[]): Promise<RoomAuthoringResult | null> => {
+    let answer: RoomAuthoringResult | null = null
+    await guarded(async () => {
+      const scope = folioScope(rootRef.current, dir)
+      const asked = await write(dir, () => window.writeflex.folioRoom.author(dir, { op: 'remove', indices, expected: [...expected] }))
+      answer = asked.ok ? asked.value : { ok: false, message: `${asked.message} Nothing was removed.` }
+      refresh()
+      if (!answer.ok) { tell(answer.message); return false }
+      const title = answer.removed?.length === 1 ? answer.removed[0].title : `${answer.removed?.length ?? indices.length} parts`
+      if (answer.token) {
+        remember({ kind: 'bin', dir, token: answer.token, title }, scope)
+        say(answer.message, { label: 'Undo', run: () => { void undo() } })
+        setAnnouncement(answer.message)
+      } else tell(answer.message)
+      setJustAdded([])
+      return true
+    })
+    return answer
+  }, [guarded, refresh, remember, write, say, tell, undo])
+
   const clear = useCallback(() => { remember(null); setJustAdded([]) }, [remember])
 
   // Another Folio came on screen: its Outline must not offer, tint or run the step made in the one before.
@@ -258,8 +396,8 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
 
   const canUndo = undoStep !== null && undoStepUsableOnScreen(undoStep.scope, outlineScope, planScope)
   return useMemo(
-    () => ({ movePiece, addPieces, sortPlan, addToPlan, undo, write, canUndo, announcement, touched, justAdded, clear }),
-    [movePiece, addPieces, sortPlan, addToPlan, undo, write, canUndo, announcement, touched, justAdded, clear],
+    () => ({ openIdentity, movePiece, addPieces, sortPlan, addToPlan, moveInRoom, reorderInRoom, addRoomCard, removeToBin, undo, write, canUndo, announcement, touched, justAdded, clear }),
+    [openIdentity, movePiece, addPieces, sortPlan, addToPlan, moveInRoom, reorderInRoom, addRoomCard, removeToBin, undo, write, canUndo, announcement, touched, justAdded, clear],
   )
 }
 

@@ -1,3 +1,4 @@
+import { cleanUpScratch } from '../helpers/scratch-dirs'
 // Publishing follows the piece (sharing ticket 04; spec section 5 rule 5; section 6.1 rows "Shared, you
 // offline or app closed" to "App restarted", "Very large piece", "Piece with images"; test matrix row
 // Publish). One case per row, against the real sharing service in memory behind the stand-in Cloudflare
@@ -402,3 +403,6 @@ describe('Sol round 2: a start publishes only what is on record; a walk never ou
     expect(again.records().filter((entry) => entry.lost?.why === 'gone')).toHaveLength(2)
   })
 })
+
+// The shared tracker is cached across files; register this file's cleanup explicitly.
+afterAll(cleanUpScratch)

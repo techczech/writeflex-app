@@ -203,7 +203,7 @@ test('an accept returns the receipt of its own write when a second writer lands 
   const appData = await mkdtemp(join(tmpdir(), 'wf-receipt-agent-'))
   try {
     const changes = new ChangeStore(ws)
-    const agent = await WorkspaceAgent.create({
+    const agent = await WorkspaceAgent.create({ mode: 'work',
       workspace: ws, appDataDir: appData, changes,
       onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     })
@@ -245,7 +245,7 @@ test('a live-suggestion accept (proposals.adopt under acceptScope.run) returns t
   try {
     const changes = new ChangeStore(ws)
     const steps = [{ cap: 'prose.edit', input: { path: 'a.md', oldText: 'The draft is too wordy.', newText: 'The draft is concise.', category: 'wording', summary: 'Tighten' } }]
-    const agent = await WorkspaceAgent.create({
+    const agent = await WorkspaceAgent.create({ mode: 'work',
       workspace: ws, appDataDir: appData, changes,
       onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
       sessionFactory: scriptedSessionFactory([buildE2EScriptedTurn(steps)]),
@@ -416,7 +416,7 @@ test('a ledger accept writes only over the text it read: an outside write after 
   const appData = await mkdtemp(join(tmpdir(), 'wf-accept-basis-'))
   try {
     const changes = new ChangeStore(ws)
-    const agent = await WorkspaceAgent.create({
+    const agent = await WorkspaceAgent.create({ mode: 'work',
       workspace: ws, appDataDir: appData, changes,
       onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
     })
@@ -449,7 +449,7 @@ test('a live-suggestion accept (the verb run by proposals.adopt) writes only ove
   try {
     const changes = new ChangeStore(ws)
     const steps = [{ cap: 'prose.edit', input: { path: 'a.md', oldText: 'cat', newText: 'dog', category: 'wording', summary: 'Dog' } }]
-    const agent = await WorkspaceAgent.create({
+    const agent = await WorkspaceAgent.create({ mode: 'work',
       workspace: ws, appDataDir: appData, changes,
       onChangesChanged: () => {}, onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
       sessionFactory: scriptedSessionFactory([buildE2EScriptedTurn(steps)]),

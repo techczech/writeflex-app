@@ -5,7 +5,7 @@ import { OUTCOME_LINES, renderOutcome, type Outcome } from './outcome'
 import { resolveCollectionRoot, type CollectionRoot } from './root'
 import { CommandLineWorkspace } from './guarded-workspace'
 import { buildOperationTable } from './table'
-import { REQUEST_OPERATIONS } from './request-format'
+import { READ_REQUEST_OPERATIONS, REQUEST_OPERATIONS } from './request-format'
 import { MAX_STDIN_BYTES, stdinTooLarge } from './stdin'
 import { sendToApp, type RequestSurroundings } from './request-route'
 import { fileForReview, type ReviewFiling } from './review-route'
@@ -150,8 +150,9 @@ export async function runCli(argv: string[], env: CliEnv): Promise<number> {
         return filing.result
       }
     }
-    const appOwns = writes && found ? await chooseWriteRoute(found, writeEnv) === 'app' : false
-    const requestable = (REQUEST_OPERATIONS as readonly string[]).includes(operation.name)
+    const liveRead = (READ_REQUEST_OPERATIONS as readonly string[]).includes(operation.name)
+    const appOwns = (writes || liveRead) && found ? await chooseWriteRoute(found, writeEnv) === 'app' : false
+    const requestable = liveRead || (REQUEST_OPERATIONS as readonly string[]).includes(operation.name)
     const routed = appOwns && requestable && found
       ? await sendToApp(found.root, operation, invocation.args, surroundings())
       : null

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Change, OutsideSummary } from '../../../preload'
-import { isFromOutside, isNotApplied, isUndecided } from '../components/outside-dock-model'
+import { isFromOutside, isUndecided, scopeOutsideSummary, outsideChangesElsewhere } from '../components/outside-dock-model'
 import { loadDismissed, saveDismissed, withDismissed } from './dismissed-not-applied'
+import { outsideSourceRows, type OutsideSourceRow } from './outside-source-bulk'
 
 /**
  * What the review dock reads about changes from outside beyond the open document's own list: the
@@ -9,11 +10,15 @@ import { loadDismissed, saveDismissed, withDismissed } from './dismissed-not-app
  * look), and the arrival notice (outside changes that appeared since the last look, cleared when one of
  * the waiting ones is decided). Re-reads on `changes:changed`.
  */
-export function useOutsideDock(active: string | null, root: string | null | undefined): {
+export function useOutsideDock(active: string | null, root: string | null | undefined, folioDir: string | null = null): {
   others: Change[]
   summary: OutsideSummary | null
   arrived: Change[]
   clearArrived: () => void
+  /** Every outside source (never readers) with changes waiting anywhere in the collection: for Accept all / Decline all from one source. */
+  sources: OutsideSourceRow[]
+  /** The undecided outside changes of the whole collection. */
+  waiting: Change[]
 } {
   const [all, setAll] = useState<Change[]>([])
   const [summary, setSummary] = useState<OutsideSummary | null>(null)
@@ -57,12 +62,32 @@ export function useOutsideDock(active: string | null, root: string | null | unde
     return window.writeflex.onChangesChanged(() => void refresh())
   }, [refresh, root])
 
+  const [partPaths, setPartPaths] = useState<{ dir: string; paths: string[] } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    setPartPaths(null)
+    if (folioDir === null) return
+    const load = (): void => { void window.writeflex.plan.read(folioDir).then(plan => {
+      if (!cancelled) setPartPaths({ dir: folioDir, paths: plan?.parts.flatMap(part => part.path ? [part.path] : []) ?? [] })
+    }).catch(() => { if (!cancelled) setPartPaths(null) }) }
+    load()
+    const off = window.writeflex.onCollectionChanged(load)
+    return () => { cancelled = true; off() }
+  }, [folioDir, root])
+  const paths = useMemo(() => new Set([
+    ...(folioDir === null && active ? [active] : []),
+    ...(folioDir !== null && partPaths?.dir === folioDir ? partPaths.paths : []),
+  ]), [active, folioDir, partPaths])
   const others = useMemo(
-    () => all.filter((change) => change.path !== active && (isUndecided(change) || isNotApplied(change))),
+    () => outsideChangesElsewhere(all, active),
     [all, active],
   )
+  const scopedSummary = useMemo(() => scopeOutsideSummary(summary, all, paths), [summary, all, paths])
+  const scopedArrived = useMemo(() => arrived.filter(change => paths.has(change.path)), [arrived, paths])
   const clearArrived = useCallback(() => setArrived([]), [])
-  return { others, summary, arrived, clearArrived }
+  const sources = useMemo(() => outsideSourceRows(all), [all])
+  const waiting = useMemo(() => all.filter(isUndecided), [all])
+  return { others, summary: scopedSummary, arrived: scopedArrived, clearArrived, sources, waiting }
 }
 
 /** The dismissed closed-change ids of this Collection. */

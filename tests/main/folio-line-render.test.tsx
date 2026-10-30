@@ -45,12 +45,12 @@ const toolbar = (folioName?: string | null): string =>
     />,
   )
 
-test('the title bar adds nothing without a Folio and the Folio outline button with one, before the mode control', () => {
+test('the title bar adds nothing without a Folio and the Manage Folio button with one, before the mode control', () => {
   expect(toolbar(null)).not.toContain('planbtn')
   expect(toolbar(undefined)).toBe(toolbar(null))
   const html = toolbar('UnityBC Paper')
-  expect(html).toContain('aria-label="Open the Folio outline for UnityBC Paper"')
-  expect(html).toContain('<span class="pb-plan">Folio outline</span><span class="pb-name">UnityBC Paper</span>')
+  expect(html).toContain('aria-label="Manage Folio UnityBC Paper"')
+  expect(html).toContain('<span class="pb-plan">Manage Folio</span><span class="pb-name">UnityBC Paper</span>')
   expect(html.indexOf('planbtn')).toBeLessThan(html.indexOf('modebtn'))
   expect(html.indexOf('planbtn')).toBeGreaterThan(html.indexOf('class="tabstrip"'))
 })

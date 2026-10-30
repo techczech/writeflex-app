@@ -30,7 +30,7 @@ let scraps: ScrapStore
 let agent: WorkspaceAgent | null
 
 async function bootAgent(opts: { changes?: ChangeStore; script?: Parameters<typeof scriptedSessionFactory>[0] } = {}): Promise<WorkspaceAgent> {
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, services: { scraps },
     ...(opts.changes ? { changes: opts.changes, onChangesChanged: () => {} } : {}),
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
@@ -167,6 +167,7 @@ test('an agent sources.attach is a proposal: nothing is written until the writer
   const live = await bootAgent({
     changes,
     script: [{ prompt, rounds: [
+      { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
       { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
       { kind: 'message', text: 'Proposed.' },
     ] }],
@@ -191,6 +192,7 @@ test('an accepted sources.attach never writes the piece over a version it did no
   const live = await bootAgent({
     changes,
     script: [{ prompt, rounds: [
+      { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
       { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
       { kind: 'message', text: 'Proposed.' },
     ] }],

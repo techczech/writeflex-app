@@ -119,8 +119,10 @@ test('the margin is drawn only when something is waiting', () => {
   const unplacedOnly = build([change('lost', 'Never in the text.')])
   expect(unplacedOnly.cards.length).toBe(0)
   expect(marginVisible(unplacedOnly, none)).toBe(true)
-  // An outside arrival with nothing else on the piece carries something to act on.
-  expect(marginVisible(build([]), { arrived: [change('x', 'First')] })).toBe(true)
+  // Arrivals and work elsewhere live in status-bar popovers; they must not reserve an empty column.
+  expect(marginVisible(build([]), { arrived: [change('x', 'First')] })).toBe(false)
+  expect(marginVisible(buildMarginModel({ changes: [], document: DOC, view: 'margin', others: [change('elsewhere', 'First', { path: 'other.md' })] }))).toBe(false)
+  expect(marginVisible({ ...build([]), notPlaced: [change('closed', 'Gone')] })).toBe(false)
 })
 
 test('quiet fixes hidden from the margin still say where they wait, for the faint marker in the text (ticket 13)', () => {

@@ -23,7 +23,8 @@ export function updateCollectionMenu(): void {
   const enabled = focusedState()?.collectionPageActive === true
   for (const child of item?.submenu?.items ?? []) {
     child.enabled = enabled
-    child.visible = child.id !== 'collection-page:bulk-folio' || focusedState()?.collectionPageFolio === true
+    child.visible = (child.id !== 'collection-page:bulk-folio' || focusedState()?.collectionPageFolio === true)
+      && (child.id !== 'collection-page:make-folio' || focusedState()?.collectionPageCanStartFolio !== false)
   }
 }
 
@@ -128,6 +129,8 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         // Same registerAccelerator: false pattern as Quick Open above (Task 17) — the renderer's
         // own keydown handler is the sole owner of ⇧⌘F (Task 18), so a native registration here
         // would double-fire the panel toggle.
+        { label: 'Show/Hide Left Sidebar', ...accel('view.toggleLeftPane', 'CmdOrCtrl+['), registerAccelerator: false, click: () => sendMenuAction('toggle-left-pane') },
+        { label: 'Show/Hide Right Pane', ...accel('view.toggleRightPane', 'CmdOrCtrl+]'), registerAccelerator: false, click: () => sendMenuAction('toggle-right-pane') },
         { label: 'Open Files', ...accel('view.files', 'Shift+CmdOrCtrl+E'), registerAccelerator: false, click: () => sendMenuAction('open-files') },
         { label: 'Search Files…', ...accel('app.search', 'Shift+CmdOrCtrl+F'), registerAccelerator: false, click: () => sendMenuAction('search') },
         // The archive search dock (WF-4B); the renderer owns ⌃⌘F, so the menu only shows it.
@@ -161,7 +164,18 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         : [{ role: 'delete' as const }, { type: 'separator' as const }, { role: 'selectAll' as const }]),
       { type: 'separator' },
       { label: 'Follow Wikilink', accelerator: 'Alt+Enter', registerAccelerator: false, click: () => sendMenuAction('follow-wikilink') },
-      { label: 'Materialise Dead Wikilink', accelerator: 'CmdOrCtrl+Enter', registerAccelerator: false, click: () => sendMenuAction('materialise-stub') }
+      { label: 'Materialise Dead Wikilink', accelerator: 'CmdOrCtrl+Enter', registerAccelerator: false, click: () => sendMenuAction('materialise-stub') },
+      { type: 'separator' },
+      // The floating Scratchpad (ADR-0050, ticket 04): the same registered commands the palette
+      // runs. registerAccelerator: false throughout — ⇧⌘J and ⌘⇧X stay the renderer's keys, and
+      // the keyless commands show no chord until the writer binds one (the cheat sheet and the
+      // palette resolve the effective chord from the registry then).
+      { label: 'Open Scratchpad', ...accel('app.scratchpad', 'Shift+CmdOrCtrl+J'), registerAccelerator: false, click: () => sendMenuAction('open-scratchpad') },
+      { label: 'Send a Copy to Scratchpad', registerAccelerator: false, click: () => sendMenuAction('scratchpad-send-copy') },
+      { label: 'Cut to Scratchpad', accelerator: 'Shift+CmdOrCtrl+X', registerAccelerator: false, click: () => sendMenuAction('scratchpad-cut') },
+      { label: 'Insert a Copy from the Scratchpad', registerAccelerator: false, click: () => sendMenuAction('scratchpad-insert-copy') },
+      { label: 'Compare Ticked Scratchpad Items', registerAccelerator: false, click: () => sendMenuAction('scratchpad-compare') },
+      { label: 'Search the Scratchpad', registerAccelerator: false, click: () => sendMenuAction('scratchpad-search') }
     ]
   },
     {
@@ -186,7 +200,7 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         { label: 'Toggle Typewriter', ...accel('view.typewriter', 'CmdOrCtrl+T'), registerAccelerator: false, click: () => sendMenuAction('toggle-typewriter') },
         { type: 'separator' },
         // The native zoom ROLES stay absent (Task 17): the locked design gives ⌘+/⌘− to prose size,
-        // ⌥⌘+/⌥⌘− to column width, ⌥⌘0 to reset, and the freed ⌘0 to Toggle Sidebar (mockup
+        // ⌥⌘+/⌥⌘− to column width and ⌥⌘0 to reset (mockup
         // cheat-sheet, View + Navigation groups) — a role would swallow those keydowns before the
         // renderer's handlers saw them. But the actions are discoverable here the same way Toggle
         // Outline/Typewriter are: registerAccelerator:false shows the shortcut without Electron
@@ -199,7 +213,9 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         { label: 'Increase Column Width', accelerator: 'Alt+CmdOrCtrl+Plus', registerAccelerator: false, click: () => sendMenuAction('column-width-in') },
         { label: 'Decrease Column Width', accelerator: 'Alt+CmdOrCtrl+-', registerAccelerator: false, click: () => sendMenuAction('column-width-out') },
         { type: 'separator' },
-        { role: 'toggleDevTools' },
+        // ⌥⌘I is the Folio workspace's inspector key (registry: folio.room.inspector), and a menu accelerator is taken before the
+        // renderer sees the keydown, so the role's own accelerator moves to ⇧⌥⌘I (ADR-0049; the menu still shows it).
+        { label: 'Toggle Developer Tools', accelerator: 'Alt+CmdOrCtrl+Shift+I', click: (_item, window) => { if (window instanceof BrowserWindow) window.webContents.toggleDevTools() } },
         { type: 'separator' },
         // Full Screen keeps its menu item but not the ⌃⌘F accelerator the role would register: that
         // chord opens the archive search (WF-4B). fn-F and the green window button still toggle it.
@@ -209,7 +225,7 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
     {
       id: 'collection-page',
       label: 'Collection',
-      submenu: COLLECTION_PAGE_COMMANDS.map(([name, label]) => ({ id: `collection-page:${name}`, label, enabled: focusedState()?.collectionPageActive === true, visible: name !== 'bulk-folio' || focusedState()?.collectionPageFolio === true, click: () => sendMenuAction(`collection-page:${name}`) }))
+      submenu: COLLECTION_PAGE_COMMANDS.map(([name, label]) => ({ id: `collection-page:${name}`, label, enabled: focusedState()?.collectionPageActive === true, visible: (name !== 'bulk-folio' || focusedState()?.collectionPageFolio === true) && (name !== 'make-folio' || focusedState()?.collectionPageCanStartFolio !== false), click: () => sendMenuAction(`collection-page:${name}`) }))
     },
     {
       label: 'Window',

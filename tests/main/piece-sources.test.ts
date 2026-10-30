@@ -6,7 +6,7 @@ import type { Capability, CapabilityContext } from '@bridle/core'
 import { WorkspaceAgent } from '../../src/main/agent'
 import { BoardMaterialDesk } from '../../src/main/board-material-desk'
 import { buildWriteFlexManifest } from '../../src/main/capabilities'
-import { listPieceSources, matchAuthorYear, pieceCollectionDir, readPieceSources, surnamesOf, yearOf, type CitationNote } from '../../src/main/piece-sources'
+import { needsPieceSources, listPieceSources, matchAuthorYear, pieceCollectionDir, readPieceSources, surnamesOf, yearOf, type CitationNote } from '../../src/main/piece-sources'
 import { ScrapStore } from '../../src/main/scraps'
 import { Workspace } from '../../src/main/workspace'
 
@@ -199,7 +199,7 @@ test('sources.list does not record the piece as read: it returns the listing, no
 })
 
 test('"Add to sources" is ticket 03\'s attach: the cited source becomes listed, one undo takes it back', async () => {
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, services: { scraps: new ScrapStore(ws) },
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
   })
@@ -212,4 +212,12 @@ test('"Add to sources" is ticket 03\'s attach: the cited source becomes listed, 
   expect(after.entries.find((entry) => entry.path === cited.path)).toMatchObject({ status: 'both', cited: 2 })
   expect(await desk.undo(added.ok ? added.step.id : '')).toMatchObject({ ok: true })
   expect(await readFile(join(root, PIECE), 'utf8')).toBe(files[PIECE])
+})
+
+test('source gate excludes metadata dates and fenced code, retaining explicit sources and body citations', () => {
+  expect(needsPieceSources('---\ndate: 2026-10-25\n---\nA plain answer.')).toBe(false)
+  expect(needsPieceSources('---\nsources:\n  - Hall\n---\nA plain answer.')).toBe(true)
+  expect(needsPieceSources('Hall 1976 argued this.')).toBe(true)
+  expect(needsPieceSources('See [[Hall]].')).toBe(true)
+  expect(needsPieceSources('```\nHall 1976\n[[Hall]]\n```')).toBe(false)
 })

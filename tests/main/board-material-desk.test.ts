@@ -10,6 +10,8 @@ import { buildWriteFlexManifest, writeflexApprovalPolicy } from '../../src/main/
 import { ChangeStore } from '../../src/main/changes'
 import { pauseCollectionWrites, resumeCollectionWrites } from '../../src/main/collection-write-gate'
 import { ScrapStore } from '../../src/main/scraps'
+import { ScratchpadStore } from '../../src/main/scratchpad-store'
+import { listScrapsWithScratchpad } from '../../src/main/scrap-listing'
 import { Workspace } from '../../src/main/workspace'
 
 // Scraps ticket 02: offcut to idea and add-to-end-of-piece each write two files as ONE undo group
@@ -38,7 +40,7 @@ const ctx: CapabilityContext = {
 }
 
 async function bootAgent(opts: { changes?: ChangeStore; script?: Parameters<typeof scriptedSessionFactory>[0] } = {}): Promise<WorkspaceAgent> {
-  agent = await WorkspaceAgent.create({
+  agent = await WorkspaceAgent.create({ mode: 'work',
     workspace: ws, appDataDir: appData, services: { scraps },
     ...(opts.changes ? { changes: opts.changes, onChangesChanged: () => {} } : {}),
     onTrace: () => {}, onApprovalRequest: () => {}, onSuggestionsChanged: () => {},
@@ -86,6 +88,48 @@ test('offcut to idea writes one idea line and removes that scrap; one undo resto
   expect(board.latest()).toBeNull()
   // The step is spent: a second undo refuses and writes nothing.
   expect(await board.undo(result.ok ? result.step.id : '')).toMatchObject({ ok: false, message: 'That change is no longer held for undo.' })
+})
+
+test('ticket 04 (P4 copy): a lossless Scratchpad offcut promotes under the desk restore point; the candidate is retained and one undo restores the tracker only', async () => {
+  const store = new ScratchpadStore(ws, scraps)
+  const exact = 'A **kept** paragraph.\n\n- with a list\n'
+  const item = await store.addText({ origin: PIECE, markdown: exact, how: 'copy', by: 'writer' })
+  const recordFile = `.writeflex/scratchpad-item-${item.id}.json`
+  const board = await desk()
+  const result = await board.promoteOffcut({ dir: DIR, scrapsPath: '', scrapId: item.id, name: 'Kept paragraph idea' })
+  expect(result).toMatchObject({ ok: true, step: { kind: 'idea', activity: 'Offcut became an idea' }, paths: [TRACKER] })
+  expect(await read(TRACKER)).toContain('- [[kept-paragraph-idea]]')
+  expect(await read(TRACKER)).toContain('> A **kept** paragraph.')
+  expect(await read(SCRAPS)).toBe(scrapsText) // the legacy file is untouched
+  // Retained copy: the candidate stays listed with exact payload/id/status, plus a historical use.
+  expect((await listScrapsWithScratchpad(ws, scraps)).some((s) => s.id === item.id)).toBe(true)
+  const copied = JSON.parse(await read(recordFile)) as { consumed?: unknown; uses: Array<{ path: string; historical?: boolean }> }
+  expect(copied.consumed).toBeUndefined()
+  expect(copied.uses.some((use) => use.path === TRACKER && use.historical === true)).toBe(true)
+  expect(await store.get(item.id)).toMatchObject({ markdown: exact, status: 'active' })
+
+  expect((await board.undo(result.ok ? result.step.id : '')).ok).toBe(true)
+  expect(await read(TRACKER)).toBe(trackerText)
+  // Undo does not roll the candidate's record back: the historical copy remains, candidate reusable.
+  const afterUndo = await store.get(item.id)
+  expect(afterUndo.markdown).toBe(exact)
+  expect(afterUndo.uses.some((use) => use.path === TRACKER && use.historical === true)).toBe(true)
+  expect((await listScrapsWithScratchpad(ws, scraps)).some((s) => s.id === item.id)).toBe(true)
+})
+
+test('ticket 04 (P4 copy): appending a lossless drawer item keeps its exact bytes and retains the candidate; one undo restores the piece', async () => {
+  const store = new ScratchpadStore(ws, scraps)
+  const exact = 'Appended **exactly**.\r\n\r\nSecond block.\r\n'
+  const item = await store.addText({ origin: PIECE, markdown: exact, how: 'copy', by: 'writer' })
+  const board = await desk()
+  const result = await board.appendScrap({ piece: PIECE, scrapId: item.id })
+  expect(result.ok).toBe(true)
+  expect(await read(PIECE)).toBe(`${pieceText}\n${exact}`)
+  expect((await listScrapsWithScratchpad(ws, scraps)).some((s) => s.id === item.id)).toBe(true)
+
+  expect((await board.undo(result.ok ? result.step.id : '')).ok).toBe(true)
+  expect(await read(PIECE)).toBe(pieceText)
+  expect((await store.get(item.id)).markdown).toBe(exact)
 })
 
 test('undo brings back a scraps file the last offcut emptied, and deletes a tracker the step created', async () => {
@@ -189,6 +233,7 @@ test('an agent scraps.promote is a proposal: nothing is written until the writer
   const live = await bootAgent({
     changes,
     script: [{ prompt, rounds: [
+      { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
       { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
       { kind: 'message', text: 'Proposed.' },
     ] }],
@@ -203,6 +248,45 @@ test('an agent scraps.promote is a proposal: nothing is written until the writer
   expect((await live.resolveChange(change.id, 'accept')).applied).toBe(true)
   expect(await read(TRACKER)).toBe(change.newText)
   expect(await read(SCRAPS)).toBe(`## ${FAMILIES}\nFamilies share more context.\n`)
+})
+
+test('P4 copy: an accepted agent scraps.promote of a lossless item copies it; the candidate stays and survives agent Undo of the tracker', async () => {
+  const store = new ScratchpadStore(ws, scraps)
+  const exact = 'Agent-copied **words**.\n'
+  const item = await store.addText({ origin: PIECE, markdown: exact, how: 'copy', by: 'writer' })
+  const changes = new ChangeStore(ws)
+  const step: ScriptedStep = { cap: 'scraps.promote', input: { dir: DIR, origin: PIECE, id: item.id, name: 'Copied idea' } }
+  const prompt = 'Turn the new offcut into an idea'
+  const live = await bootAgent({
+    changes,
+    script: [{ prompt, rounds: [
+      { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
+      { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
+      { kind: 'message', text: 'Proposed.' },
+    ] }],
+  })
+  await live.runScriptedTurn(prompt, [step])
+  // Proposal posture: nothing written before acceptance.
+  expect(await read(TRACKER)).toBe(trackerText)
+  const [change] = await waitForChanges(changes, 1)
+  expect(change.summary).toContain('copied and stays')
+  expect((await live.resolveChange(change.id, 'accept')).applied).toBe(true)
+  expect(await read(TRACKER)).toContain('- [[copied-idea]]')
+  expect(await read(SCRAPS)).toBe(scrapsText)
+  // The candidate is retained, reusable, with a historical copy recorded.
+  const kept = await store.get(item.id)
+  expect(kept).toMatchObject({ markdown: exact, status: 'active' })
+  expect(kept.uses.some((use) => use.path === TRACKER && use.mode === 'copy' && use.historical === true)).toBe(true)
+  expect((await listScrapsWithScratchpad(ws, scraps)).some((s) => s.id === item.id)).toBe(true)
+
+  const [turn] = (await live.turnState()).turns
+  const undone = await live.undoTurn(turn.turnId, true)
+  expect(undone.undone).toBe(true)
+  expect(await read(TRACKER)).toBe(trackerText)
+  // Undo restored the tracker; it must not roll the candidate's record back or consume it.
+  const afterUndo = await store.get(item.id)
+  expect(afterUndo).toMatchObject({ markdown: exact, status: 'active' })
+  expect(afterUndo.uses.some((use) => use.path === TRACKER && use.historical === true)).toBe(true)
 })
 
 // Final review round 2, finding 1 (R5): an accepted scraps.promote writes the tracker and the scraps file only
@@ -225,6 +309,7 @@ async function stagedPromotion(): Promise<{ live: WorkspaceAgent; changes: Chang
   const live = await bootAgent({
     changes,
     script: [{ prompt, rounds: [
+      { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
       { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
       { kind: 'message', text: 'Proposed.' },
     ] }],
@@ -302,6 +387,7 @@ test('Undo turn takes back the agent turn, never a Board step made after it', as
   const prompt = 'Rename frames'
   const live = await bootAgent({
     script: [{ prompt, rounds: [
+      { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [renameStep.cap] } }] },
       { kind: 'tool-calls', calls: [{ name: renameStep.cap, arguments: renameStep.input as Record<string, unknown> }] },
       { kind: 'message', text: 'Renamed.' },
     ] }],
@@ -416,4 +502,85 @@ test('while another owner holds the Collection, a Board step and its undo are re
   } finally {
     resumeCollectionWrites(root)
   }
+})
+
+// Parent independent review: a required copy-use record can fail after the tracker committed.
+test('a refused accepted lossless promotion rolls back its own tracker write and preserves the outside candidate change', async () => {
+  const store = new ScratchpadStore(ws, scraps)
+  const item = await store.addText({ origin: PIECE, markdown: 'Exact **candidate**.\n', how: 'copy', by: 'writer' })
+  const changes = new ChangeStore(ws)
+  const step: ScriptedStep = { cap: 'scraps.promote', input: { dir: DIR, origin: PIECE, id: item.id, name: 'Refused copy' } }
+  const prompt = 'Propose this candidate as an idea'
+  const live = await bootAgent({ changes, script: [{ prompt, rounds: [
+    { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
+    { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
+    { kind: 'message', text: 'Proposed.' },
+  ] }] })
+  await live.runScriptedTurn(prompt, [step])
+  const [change] = await waitForChanges(changes, 1)
+  const saveFile = ws.saveFile.bind(ws)
+  let fired = false
+  ws.saveFile = async (path, content, options) => {
+    const saved = await saveFile(path, content, options)
+    if (!fired && path === TRACKER) {
+      fired = true
+      const recordPath = join(root, '.writeflex', `scratchpad-item-${item.id}.json`)
+      const record = JSON.parse(await readFile(recordPath, 'utf8'))
+      record.status = 'rejected'
+      await writeFile(recordPath, JSON.stringify(record) + '\n')
+    }
+    return saved
+  }
+  const result = await live.resolveChange(change.id, 'accept')
+  expect(fired).toBe(true)
+  expect(result.applied).toBe(false)
+  expect(await read(TRACKER)).toBe(trackerText)
+  expect(await store.get(item.id)).toMatchObject({ status: 'rejected', markdown: 'Exact **candidate**.\n' })
+})
+
+test('a refused accepted lossless promotion leaves a tracker changed outside after its write, and says it stayed', async () => {
+  const store = new ScratchpadStore(ws, scraps)
+  const item = await store.addText({ origin: PIECE, markdown: 'Exact **candidate**.\n', how: 'copy', by: 'writer' })
+  const changes = new ChangeStore(ws)
+  const step: ScriptedStep = { cap: 'scraps.promote', input: { dir: DIR, origin: PIECE, id: item.id, name: 'Refused copy outside tracker' } }
+  const prompt = 'Propose this candidate as an idea'
+  const live = await bootAgent({ changes, script: [{ prompt, rounds: [
+    { kind: 'tool-calls', calls: [{ name: 'tools.enable', arguments: { names: [step.cap] } }] },
+    { kind: 'tool-calls', calls: [{ name: step.cap, arguments: step.input as Record<string, unknown> }] },
+    { kind: 'message', text: 'Proposed.' },
+  ] }] })
+  await live.runScriptedTurn(prompt, [step])
+  const [change] = await waitForChanges(changes, 1)
+  const saveFile = ws.saveFile.bind(ws)
+  let fired = false
+  let outsideTracker = ''
+  ws.saveFile = async (path, content, options) => {
+    const saved = await saveFile(path, content, options)
+    if (!fired && path === TRACKER) {
+      fired = true
+      // After WriteFlex's tracker write landed, another program edits the tracker itself, and the
+      // candidate is rejected outside, so the required historical-use record then refuses.
+      outsideTracker = `${await read(TRACKER)}- [[written-outside-after-ours]]\n`
+      await writeFile(join(root, TRACKER), outsideTracker)
+      const recordPath = join(root, '.writeflex', `scratchpad-item-${item.id}.json`)
+      const record = JSON.parse(await readFile(recordPath, 'utf8'))
+      record.status = 'rejected'
+      await writeFile(recordPath, JSON.stringify(record) + '\n')
+    }
+    return saved
+  }
+  const result = await live.resolveChange(change.id, 'accept')
+  expect(fired).toBe(true)
+  expect(result.applied).toBe(false)
+  // The rollback is conditional: the tracker no longer holds only what WriteFlex wrote, so the
+  // outside version (our line plus theirs) stays exactly, and the message names it as left.
+  expect(result.message).toContain(`${TRACKER} changed on disk after WriteFlex wrote it, so it was left as it is.`)
+  expect(result.message).not.toContain('Nothing was changed')
+  expect(await read(TRACKER)).toBe(outsideTracker)
+  expect(await read(TRACKER)).toContain('- [[written-outside-after-ours]]')
+  // The outside candidate edit stays too, with its exact payload, and no copy use was recorded.
+  const kept = await store.get(item.id)
+  expect(kept).toMatchObject({ status: 'rejected', markdown: 'Exact **candidate**.\n' })
+  expect(kept.uses.some((use) => use.path === TRACKER)).toBe(false)
+  expect((await changes.get(change.id))?.status).toBe('pending')
 })

@@ -6,6 +6,7 @@
  * inside another Folio for every caller).
  */
 
+import { assertNoRelatedFolio } from './folio-declaration'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
@@ -133,6 +134,7 @@ export async function prepareFromBasis(ws: Workspace, input: PlanProposalInput, 
     const refusal = await indexNoteCreationRefusal(ws, basis.dir)
     if (refusal) throw new Error(`The proposal was not staged: ${refusal}`)
   }
+  await assertNoRelatedFolio(ws, basis.dir)
   const contentRoot = (await readManifest(ws, basis.dir))?.contentRoot ?? ''
   const targets = ops.flatMap((op) => (op.op === 'materialisePart' ? [materialiseTarget(basis.dir, contentRoot, op.title, op.index)] : []))
   const taken = new Set((await ws.listFiles()).map((file) => file.path))
@@ -201,12 +203,12 @@ function partIndex(plan: Plan | null, title: string): number {
  * Run the proposal's Plan operations in order, each against a fresh read of the plan. Returns the
  * files the operations created (written-out parts, a new Index Note).
  */
-export function runPlanOperations(ws: Workspace, dir: string, ops: PlanOp[]): Promise<{ plan: Plan | null; created: string[] }> {
+export function runPlanOperations(ws: Workspace, dir: string, ops: PlanOp[]): Promise<{ plan: Plan | null; created: string[]; notices?: string[] }> {
   // One hold of the Folio's lock for the whole run: each operation's read and write, and the reads between them.
   return withPlanLock(ws, dir, () => runPlanOperationsHeld(ws, dir, ops))
 }
 
-async function runPlanOperationsHeld(ws: Workspace, dir: string, ops: PlanOp[]): Promise<{ plan: Plan | null; created: string[] }> {
+async function runPlanOperationsHeld(ws: Workspace, dir: string, ops: PlanOp[]): Promise<{ plan: Plan | null; created: string[]; notices?: string[] }> {
   const created: string[] = []
   for (const op of ops) {
     if (op.op === 'createIndexNote') {

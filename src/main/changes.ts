@@ -85,6 +85,18 @@ export type WholeDocumentChange = { whole?: true }
 /** Whether `change` is over the whole document. Tolerates any record. */
 export const isWholeDocumentChange = (change: Change | NewChange): boolean => (change as WholeDocumentChange).whole === true
 
+/**
+ * A Change to the document's METADATA only (set a key, a status, a source; normalise the block): its
+ * `oldText` is the run of whole frontmatter lines it replaces and `newText` what they become, and it is
+ * placed only inside the frontmatter block as it stands then (frontmatter-change.ts). The writing is
+ * never part of it, so an edit accepted in the body leaves it placeable, and it leaves the body's edits
+ * placeable. Like `whole`, an extra field the ledger parser passes through untouched.
+ */
+export type FrontmatterChange = { frontmatter?: true }
+
+/** Whether `change` was filed as a change to the frontmatter only. Tolerates any record. */
+export const isFrontmatterChange = (change: Change | NewChange): boolean => (change as FrontmatterChange).frontmatter === true
+
 /** Why this Change was closed without being applied, or null when it was not (a writer's own reject
  *  carries no reason). Tolerates any record: a reason of the wrong type or on a non-rejected Change is
  *  not a closure. */
@@ -180,6 +192,19 @@ export function newFilePartOf(change: Change | undefined): NewFilePart | undefin
 }
 
 const WIDGETS_CREATE = 'widgets.create'
+
+/** The agent's Scratchpad insertion verbs whose Changes are bound to a frozen prepared payload
+ *  (scratchpad-agent-insert.ts). Like a widget proposal, such a Change is carried out ONLY by its
+ *  verb through the live proposal, against the proof main froze at ingest: the ledger record alone
+ *  never replays it, because the candidate, its canonical source and the destination must all be
+ *  revalidated against that proof at Accept. The record says so by its verb. */
+export const SCRATCHPAD_PROPOSAL_VERBS = ['scratchpad.insert', 'scratchpad.put_back', 'scratchpad.cite', 'scratchpad.link', 'scratchpad.insert_quote'] as const
+
+/** Whether a Change is a bound Scratchpad insertion proposal. Tolerates any record. */
+export function scratchpadProposalVerb(change: Change | undefined): string | null {
+  const verb = (change as (Change & { capability?: unknown }) | undefined)?.capability
+  return typeof verb === 'string' && (SCRATCHPAD_PROPOSAL_VERBS as readonly string[]).includes(verb) ? verb : null
+}
 
 /** Whether a Change is the agent's widgets.create proposal. The record says so by its verb, not by still having
  *  its file part: a record that lost `newFile` is still a widget proposal and is still never applied as a plain edit. */
@@ -323,6 +348,12 @@ export class ChangeStore {
   }
 
   /** The agent's proposal that also creates a file: the Change plus the file the writer must be shown. In-process only. */
+  /** A bound Scratchpad insertion proposal: the Change plus the verb that alone may carry it out. In-process only. */
+  async addScratchpadProposal(input: NewChange, verb: (typeof SCRATCHPAD_PROPOSAL_VERBS)[number]): Promise<Change> {
+    const { newFile: _dropped, capability: _verb, ...plain } = input as NewChange & { newFile?: unknown; capability?: unknown }
+    return this.#add({ ...plain, capability: verb } as NewChange)
+  }
+
   async addWithNewFile(input: NewChange, newFile: NewFilePart): Promise<Change> {
     const { newFile: _dropped, capability: _verb, ...plain } = input as NewChange & { newFile?: unknown; capability?: unknown }
     return this.#add({ ...plain, capability: WIDGETS_CREATE, newFile: { path: newFile.path, content: newFile.content, sha256: newFile.sha256 } } as NewChange)

@@ -32,7 +32,12 @@
  *   move-text            `move`, with the ranges found when it is ADDED, and the anchor's text kept
  *                        beside them (`outsideMoveAfter`) so accept places it by text again
  *   frontmatter, status,
- *   a source, a version  `content` over the whole document, marked `whole`: `oldText` is the document
+ *   a source             `content` over the whole frontmatter block, marked `frontmatter`: placed only
+ *                        while the block is exactly as proposed, so an edit to the writing never stands
+ *                        in its way and a changed block makes it wait (frontmatter-change.ts). When the request
+ *                        changes more than the frontmatter, or the document has no block yet, it is a
+ *                        change over the whole document, as a version is:
+ *   a version            `content` over the whole document, marked `whole`: `oldText` is the document
  *                        as it stands, `newText` what it would be. Accept applies it only while the
  *                        document is still EXACTLY that text (never as a passage found inside a
  *                        document that has grown since); otherwise the Change closes with the reason.
@@ -43,7 +48,9 @@
  */
 import { posix } from 'node:path'
 import type { Change, NewChange } from '../engine'
-import { anchorContextOf, isWholeDocumentChange, type ClosedCode, type WholeDocumentChange } from './changes'
+import { anchorContextOf, isWholeDocumentChange, type ClosedCode, type FrontmatterChange, type WholeDocumentChange } from './changes'
+import { frontmatterBlockEdit } from '../shared/markdown/frontmatter-proposal'
+import { frontmatterEditOf, placeInFrontmatter } from './frontmatter-change'
 import { outsideMoveAfterOf, type OutsideChangeFields } from './outside-change-fields'
 import { readTaskLines } from '../shared/markdown/task-lines'
 import { objectBlock, validateObjectMarkup, type ObjectKind } from '../shared/object-markup'
@@ -63,7 +70,7 @@ import type { Workspace } from './workspace'
 export * from './outside-change-fields'
 
 /** A Change as the validator proposes it: no author, no source, no status. Whoever adds it gives those. */
-export type OutsideDraft = Pick<NewChange, 'path' | 'editClass' | 'category' | 'summary' | 'oldText' | 'newText' | 'anchor' | 'moveFrom' | 'moveTo' | 'insertAfter'> & Pick<OutsideChangeFields, 'outsideMoveAfter'> & WholeDocumentChange
+export type OutsideDraft = Pick<NewChange, 'path' | 'editClass' | 'category' | 'summary' | 'oldText' | 'newText' | 'anchor' | 'moveFrom' | 'moveTo' | 'insertAfter'> & Pick<OutsideChangeFields, 'outsideMoveAfter'> & WholeDocumentChange & FrontmatterChange
 
 export type OutsideProposal =
   | { ok: true; path: string; changes: OutsideDraft[] }
@@ -142,6 +149,18 @@ function wholeDocument(path: string, content: string, next: string, summary: str
   return { path, editClass: 'content', category: 'other', summary, oldText: content, newText: next, whole: true }
 }
 
+/**
+ * A Change to the metadata: `next` is what the document would become. Judged as a change to the whole
+ * document is (empty, unchanged, too large), then filed as the old and new frontmatter blocks when only
+ * the frontmatter changes; otherwise over the whole document.
+ */
+function metadataChange(path: string, content: string, next: string, summary: string): OutsideDraft {
+  const whole = wholeDocument(path, content, next, summary)
+  const edit = frontmatterBlockEdit(content, next)
+  if (!edit) return whole
+  return { path, editClass: 'content', category: 'other', summary, oldText: edit.oldText, newText: edit.newText, anchor: { from: edit.from, to: edit.to }, frontmatter: true }
+}
+
 /** The app's own words when one of its planners refuses, as a Refusal. */
 async function planned<T>(plan: () => T | Promise<T>): Promise<T> {
   try { return await plan() } catch (error) {
@@ -203,13 +222,13 @@ const BUILDERS: Record<string, Build> = {
     const value = args.value
     if (typeof value !== 'string' || value.length > MAX_VALUE_CHARS || /[\r\n\u0085\u2028\u2029]/.test(value)) refuse(`The frontmatter value must be one line of text of at most ${MAX_VALUE_CHARS} characters.`)
     const next = await planned(() => setFrontmatterKeys(content, { [key]: value as string }, path))
-    return { path, changes: [wholeDocument(path, content, next, summaryOf(args, `Set ${key} in the frontmatter of ${path}`))] }
+    return { path, changes: [metadataChange(path, content, next, summaryOf(args, `Set ${key} in the frontmatter of ${path}`))] }
   },
   'normalise-frontmatter': async (ws, args) => {
     const { path, content } = await readTarget(ws, args.path)
     if (!frontmatterSplit(content.startsWith('\uFEFF') ? content.slice(1) : content)) refuse(`${path} has no frontmatter block to normalise.`)
     const next = await planned(() => normaliseExistingFrontmatter(content))
-    return { path, changes: [wholeDocument(path, content, next, summaryOf(args, `Normalise the frontmatter of ${path}`))] }
+    return { path, changes: [metadataChange(path, content, next, summaryOf(args, `Normalise the frontmatter of ${path}`))] }
   },
   'set-status': async (ws, args) => {
     const { path, content } = await readTarget(ws, args.path)
@@ -220,7 +239,7 @@ const BUILDERS: Record<string, Build> = {
     if (plan.next === null) refuse(`${path} already has the status ${quote(status)}; there is nothing to change.`)
     // What was read for the plan is what the Change is over.
     if (plan.source.content !== content) refuse(`${path} changed while it was being read. Try again.`)
-    return { path, changes: [wholeDocument(path, content, plan.next as string, summaryOf(args, `Set the status of ${path} to “${status}”`))] }
+    return { path, changes: [metadataChange(path, content, plan.next as string, summaryOf(args, `Set the status of ${path} to “${status}”`))] }
   },
   tick: async (ws, args) => {
     const { path, content } = await readTarget(ws, args.path)
@@ -256,7 +275,7 @@ const BUILDERS: Record<string, Build> = {
     if (dir !== '' && ws.classifyPath(dir, 'folder') !== 'document') refuse(`${quote(dir)} is not a folder of this Collection.`)
     const plan = await planned(() => prepareSourceAttach(ws, { dir, piece: path, source: source.path }))
     if (plan.piece.path !== path || plan.piece.before !== content || plan.piece.after === null) refuse(`${path} changed while it was being read. Try again.`)
-    return { path, changes: [wholeDocument(path, content, plan.piece.after as string, summaryOf(args, `Add “${plan.sourceTitle.slice(0, 120)}” to the sources of ${plan.pieceTitle.slice(0, 120)}`))] }
+    return { path, changes: [metadataChange(path, content, plan.piece.after as string, summaryOf(args, `Add “${plan.sourceTitle.slice(0, 120)}” to the sources of ${plan.pieceTitle.slice(0, 120)}`))] }
   },
 }
 
@@ -327,6 +346,13 @@ export function wholeDocumentMismatch(change: Change, content: string): Unplacea
  * does not wait to fail. A whole-document Change can be placed only in exactly the text it was made over.
  */
 export function unplaceableIn(change: Change, content: string): Unplaceable | null {
+  // A change to the metadata only (filed so, or a whole-document record that changes only the
+  // frontmatter): judged inside the frontmatter, as Accept places it (frontmatter-change.ts).
+  const metadata = frontmatterEditOf(change)
+  if (metadata) {
+    const placed = placeInFrontmatter(content, change.path, metadata)
+    return 'reason' in placed ? placed : null
+  }
   if (isWholeDocumentChange(change)) return wholeDocumentMismatch(change, content)
   try {
     if (change.editClass === 'move') {

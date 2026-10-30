@@ -94,36 +94,39 @@ export type SavedTextVersion = { record: Version; versionId: string; snapshotId:
 /** Save a version named `name` of the text `path` holds on disk. Refuses, writing nothing, as described above. */
 export async function saveVersionOfSavedText(stores: SavedTextVersionStores, input: { path: string; name: string; note?: string; /** In place of the stores' author: set only by the app's own code, never from a request. */ author?: AuthorIdentity }): Promise<SavedTextVersion> {
   const { workspace } = stores
-  const name = input.name.trim()
-  if (name === '') throw new VersionSaveRefused('Version name is required.')
-  const note = input.note?.trim()
-  const refusal = documentPathRefusal(workspace, input.path)
-  if (refusal) throw new VersionSaveRefused(`A version cannot be saved: ${refusal}`)
-  const path = workspace.relative(workspace.absolute(input.path))
-  // Without a file, Bridle would record "absent" and the version would have no text to compare or restore.
-  const info = await lstat(workspace.absolute(path)).catch(() => null)
-  if (!info) throw new VersionSaveRefused(`${path} does not exist, so there is no text to save a version of.`)
-  if (!info.isFile()) throw new VersionSaveRefused(`${path} is not an ordinary file (a link or a folder stands at that name), so no version was saved.`)
+  // The snapshot and its version record must precede any rename intent for this path.
+  return workspace.exclusive(input.path, async () => {
+    const name = input.name.trim()
+    if (name === '') throw new VersionSaveRefused('Version name is required.')
+    const note = input.note?.trim()
+    const refusal = documentPathRefusal(workspace, input.path)
+    if (refusal) throw new VersionSaveRefused(`A version cannot be saved: ${refusal}`)
+    const path = workspace.relative(workspace.absolute(input.path))
+    // Without a file, Bridle would record "absent" and the version would have no text to compare or restore.
+    const info = await lstat(workspace.absolute(path)).catch(() => null)
+    if (!info) throw new VersionSaveRefused(`${path} does not exist, so there is no text to save a version of.`)
+    if (!info.isFile()) throw new VersionSaveRefused(`${path} is not an ordinary file (a link or a folder stands at that name), so no version was saved.`)
 
-  const unsettled = changesAVersionWouldSettle(await stores.changes.list({ path }))
-  if (unsettled.length > 0) {
-    const n = unsettled.length
-    throw new VersionSaveRefused(
-      `${path} has ${n} change${n === 1 ? '' : 's'} that saving a version in WriteFlex would gather into it (accepted, the writer's own, or a copy-edit, and not yet in any version). `
-      + 'This command saves the text as it stands on disk and settles no changes, so it saved nothing. Save this version in WriteFlex.',
-      'version-unsettled',
-    )
-  }
+    const unsettled = changesAVersionWouldSettle(await stores.changes.list({ path }))
+    if (unsettled.length > 0) {
+      const n = unsettled.length
+      throw new VersionSaveRefused(
+        `${path} has ${n} change${n === 1 ? '' : 's'} that saving a version in WriteFlex would gather into it (accepted, the writer's own, or a copy-edit, and not yet in any version). `
+        + 'This command saves the text as it stands on disk and settles no changes, so it saved nothing. Save this version in WriteFlex.',
+        'version-unsettled',
+      )
+    }
 
-  await stores.confirmOwner()
-  assertCollectionWritable(workspace.root)
-  const snapshot = await stores.snapshot(path)
-  await stores.confirmOwner()
-  const record = await stores.versions.append({
-    path, name, author: input.author ?? stores.author,
-    ...(note ? { note } : {}),
-    snapshotId: snapshot.snapshotId,
-    versionId: snapshot.versionId,
+    await stores.confirmOwner()
+    assertCollectionWritable(workspace.root)
+    const snapshot = await stores.snapshot(path)
+    await stores.confirmOwner()
+    const record = await stores.versions.append({
+      path, name, author: input.author ?? stores.author,
+      ...(note ? { note } : {}),
+      snapshotId: snapshot.snapshotId,
+      versionId: snapshot.versionId,
+    })
+    return { record, ...snapshot }
   })
-  return { record, ...snapshot }
 }

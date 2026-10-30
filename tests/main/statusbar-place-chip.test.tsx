@@ -24,7 +24,7 @@ function renderStatus(overrides: Record<string, unknown> = {}): string {
       status=""
       outboxWaiting={0}
       outboxRejected={0}
-      outboxNeedsZoteroClosed={false}
+      outboxNeedsZoteroOpen={false}
       onSyncHighlights={() => {}}
       onOpenRejectedHighlights={() => {}}
       version={null}

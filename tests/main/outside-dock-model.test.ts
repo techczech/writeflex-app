@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import {
-  allowanceStrip, arrivalText, clockTime, reasonSentence, tagTitle, whenPhrase,
+  outsideChangesElsewhere, scopeOutsideSummary, allowanceStrip, arrivalText, clockTime, reasonSentence, tagTitle, whenPhrase,
 } from '../../src/renderer/src/components/outside-dock-model'
 import { DISMISSED_LIMIT, loadDismissed, saveDismissed, withDismissed } from '../../src/renderer/src/app/dismissed-not-applied'
 import type { Change, OutsideLook, OutsideSummary } from '../../src/preload'
@@ -69,4 +69,49 @@ test('dismissed ids are kept per Collection in storage, newest last, capped, and
   expect(() => saveDismissed('/c/one', ['a'], null)).not.toThrow()
   data.set('writeflex.dismissedNotApplied:/c/bad', '{not json')
   expect(loadDismissed('/c/bad', store)).toEqual([])
+})
+
+test('scoped strips retain collection-wide counts and lastLook for relevant pending or held sources', () => {
+  const changes = [
+    { path: 'f/one.md', status: 'pending', outsideSource: 'claude-code' },
+    { path: 'f/research.md', status: 'held', outsideSource: 'claude-code' },
+    { path: 'other.md', status: 'pending', outsideSource: 'codex' },
+  ] as Change[]
+  const original = sum(400, { lastLook: look({ left: 3, leftBecause: ['ledger-full'] }) })
+  expect(scopeOutsideSummary(original, changes, new Set(['unrelated.md']))).toBeNull()
+  const scoped = scopeOutsideSummary(original, changes, new Set(['f/one.md']))!
+  expect(scoped.undecided).toBe(400)
+  expect(scoped.bySource).toBe(original.bySource)
+  expect(scoped.byRequest).toBe(original.byRequest)
+  expect(scoped.lastLook).toBe(original.lastLook)
+  expect(scoped.limitPerSource).toBe(400)
+  expect(allowanceStrip(scoped)).toContain('Across this collection: **400** changes from Claude Code')
+  expect(allowanceStrip(scoped)).toContain('**3 more requests**')
+  expect(scopeOutsideSummary(original, changes, new Set(['f/research.md']))?.relevantSources).toEqual(['claude-code'])
+  expect(allowanceStrip(scopeOutsideSummary(sum(400), changes, new Set(['other.md'])))).toBeNull()
+})
+
+test('document-scoped strips preserve collection backlog and failure notices without requiring a full source', () => {
+  const changes = [{ path: 'one.md', status: 'held', outsideSource: 'claude-code' }] as Change[]
+  for (const [because, phrase] of [
+    ['not-held', 'another copy of WriteFlex has this collection open'],
+    ['ledger-not-writable', 'could not save'],
+    ['look-limit', 'batch at a time'],
+  ] as const) {
+    const scoped = scopeOutsideSummary(sum(1, { lastLook: look({ left: 4, leftBecause: [because] }) }), changes, new Set(['one.md']))
+    expect(allowanceStrip(scoped)).toContain('Across this collection:')
+    expect(allowanceStrip(scoped)).toContain(phrase)
+  }
+  const refused = scopeOutsideSummary(sum(400, { lastLook: look({ refusedFull: 2 }) }), changes, new Set(['one.md']))
+  expect(allowanceStrip(refused)).toContain('**2 new requests** were turned away')
+})
+
+test('other-document awareness keeps collection-wide pending and held suggestions outside the open Folio', () => {
+  const changes = [
+    { path: 'folio/current.md', status: 'pending' },
+    { path: 'outside/one.md', status: 'pending' },
+    { path: 'outside/two.md', status: 'held' },
+    { path: 'outside/done.md', status: 'accepted' },
+  ] as Change[]
+  expect(outsideChangesElsewhere(changes, 'folio/current.md').map(change => change.path)).toEqual(['outside/one.md', 'outside/two.md'])
 })

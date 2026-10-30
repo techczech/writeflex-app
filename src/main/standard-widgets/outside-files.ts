@@ -21,6 +21,7 @@ import { lstatSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { basename, dirname, extname, join, posix } from 'node:path'
 import { parseManifest } from '../folio'
+import { folioDeclaration, folioDeclarationOnDisk } from '../folio-declaration'
 import { backupManifestDocument } from '../plan'
 import { readContainedFile, walkNoFollowSync } from '../widget-file'
 import { assertRelativeWorkspacePath, isHiddenWorkspacePath, type Workspace } from '../workspace'
@@ -105,28 +106,32 @@ export function exactUtf8(bytes: Buffer): string | null {
 /** Largest manifest the Folio resolver reads. */
 const MANIFEST_MAX_BYTES = 4 * 1024 * 1024
 
+// A pick also binds the physical write boundaries it saw. Ownership uses folioDeclaration;
+// an externally added nested declaration still requires a fresh pick before crossing its bytes.
+const pickBoundaries = new WeakMap<OutsidePick, string>()
+function physicalBoundaries(root: string, document: string, owner: string): string {
+  const ws = { root, absolute: (path: string) => join(root, path) }
+  const folders: string[] = []
+  for (let cursor = parentDir(document); ; cursor = parentDir(cursor)) {
+    if (cursor !== owner && cursor.startsWith(owner ? owner + '/' : '') && folioDeclarationOnDisk(ws, cursor).isFolio) folders.push(cursor)
+    if (!cursor) return JSON.stringify(folders)
+  }
+}
 export type DocumentFolio = { ok: true; folder: string } | { ok: false; message: string }
 
-/**
- * The one answer to "which Folio is this document in" for a file brought in from outside: the pick binds to it, the
- * check at the write repeats it, and the step's destination must be it. Read fresh from disk (never the Folio cache,
- * folio-place.ts): the nearest folder above the document holding a manifest, found by a no-follow walk and read by
- * `parseManifest`, the rule `folioContaining` reads by; else the document's own folder (no Folio, or a Folio by its
- * Index Note, which is that folder too). A manifest on the way that cannot be read as one (a link, not a plain file,
- * too large, or not a manifest by that rule) is refused by name: where `folioContaining` would pass over it, this
- * never guesses.
- */
+/** Shared Folio ownership, with the existing contained-manifest validation retained for intake. */
 export async function documentFolio(realRoot: string, documentPath: string): Promise<DocumentFolio> {
+  const ws = { root: realRoot, absolute: (path: string) => join(realRoot, path) }
+  let owner = parentDir(documentPath)
   for (let cursor = parentDir(documentPath); ; cursor = parentDir(cursor)) {
     const path = cursor === '' ? MANIFEST_NAME : `${cursor}/${MANIFEST_NAME}`
     const read = await readContainedFile(realRoot, path, MANIFEST_MAX_BYTES)
-    if (read.ok) {
-      if (parseManifest(cursor, read.bytes.toString('utf8')) !== null) return { ok: true, folder: cursor }
-    } else if (read.reason === 'missing') {
-      if (cursor === '') return { ok: true, folder: parentDir(documentPath) }
-      continue
+    if ((read.ok && parseManifest(cursor, read.bytes.toString('utf8')) === null) || (!read.ok && read.reason !== 'missing')) {
+      return { ok: false, message: `The manifest ${path} can't be read, so WriteFlex cannot tell which Folio ${documentPath} is in; nothing was written.` }
     }
-    return { ok: false, message: `The manifest ${path} can't be read, so WriteFlex cannot tell which Folio ${documentPath} is in; nothing was written.` }
+    try { if (folioDeclaration(ws, cursor).isFolio) owner = cursor }
+    catch { return { ok: false, message: `The Folio in ${cursor || 'the workspace root'} can't be read; nothing was written.` } }
+    if (cursor === '') return { ok: true, folder: owner }
   }
 }
 
@@ -179,7 +184,9 @@ async function pickedFile(ws: Workspace, desk: PickDesk, owner: number, document
   if (read.dev !== info.dev || read.ino !== info.ino) return { ok: false, message: `${name} changed while it was being read. Choose it again.` }
   const text = decodeUtf8(read.bytes)
   if (text === null) return { ok: false, message: `${name} is not UTF-8 text.` }
+  const boundaries = physicalBoundaries(realRoot, documentPath, bundle)
   const pick: OutsidePick = Object.freeze({ name, origin, bytes: read.bytes, kind: /\.json$/i.test(name) ? 'json' as const : 'csv' as const, documentPath, folder: Object.freeze({ path: bundle, ...bundleId }) })
+  pickBoundaries.set(pick, boundaries)
   genuine.add(pick)
   return { ok: true, inside: false, token: desk.hold(pick, owner, ws.root, documentPath), name, text }
 }
@@ -196,10 +203,10 @@ export async function pickStillAuthorised(ws: Workspace, realRoot: string, pick:
   const changed = `${pick.folder.path || 'The Workspace folder'}, the folder ${document} was in when ${pick.name} was chosen, has changed since, so nothing was written. Choose the file again.`
   const now = folderIdentity(realRoot, pick.folder.path)
   if (!now || now.dev !== pick.folder.dev || now.ino !== pick.folder.ino) return changed
-  // Fresh from disk at the write: a manifest added nearer the document since the pick makes it another Folio's.
+  // Read shared ownership fresh; separately retain the physical boundaries the pick authorised.
   const folio = await documentFolio(realRoot, document)
   if (!folio.ok) return folio.message
-  if (folio.folder !== pick.folder.path) return changed
+  if (folio.folder !== pick.folder.path || pickBoundaries.get(pick) !== physicalBoundaries(realRoot, document, pick.folder.path)) return changed
   return null
 }
 

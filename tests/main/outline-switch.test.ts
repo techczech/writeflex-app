@@ -1,5 +1,15 @@
 import { expect, test } from 'bun:test'
-import { noteDocumentInteraction, noteFileOpened, OUTLINE_SWITCH_IDLE } from '../../src/renderer/src/app/outline-switch'
+import { folioSidebarLayout, noteDocumentInteraction, noteFileOpened, OUTLINE_SWITCH_IDLE } from '../../src/renderer/src/app/outline-switch'
+
+test('entering either Folio surface selects the sidebar contents; leaving restores the previous tab and collapse state', () => {
+  const before = { tab: 'search' as const, collapsed: true }
+  const entered = folioSidebarLayout(null, 'f', before)
+  expect(entered).toEqual({ saved: before, layout: { tab: 'outline', collapsed: false } })
+  // Moving between workspace and editing keeps the original layout, and lets Files/Search work meanwhile.
+  expect(folioSidebarLayout(entered.saved, 'f', { tab: 'files', collapsed: false })).toEqual({ saved: before, layout: null })
+  expect(folioSidebarLayout(entered.saved, null, { tab: 'outline', collapsed: false })).toEqual({ saved: null, layout: before })
+  expect(folioSidebarLayout(null, null, before)).toEqual({ saved: null, layout: null })
+})
 
 test('clicking through three files in Files keeps Files; the first document click switches once', () => {
   let state = OUTLINE_SWITCH_IDLE

@@ -83,3 +83,21 @@ test('rejects invalid bookmark position and label values at the boundary', () =>
   )
   store.close()
 })
+
+test('late view-state writes after a document switch or close are no-ops and never overwrite the active position', () => {
+ const store=sidecar()
+ let active:ReadingRoomDocument|null=document
+ const bookmarks=createReadingRoomBookmarks({currentDocument:()=>active,store})
+ const old={attachmentKey:document.attachmentKey,libraryId:document.libraryId,viewState:{pageIndex:4}}
+ try {
+  expect(bookmarks.savePosition(old)).toBe(true)
+  active={...document,attachmentKey:'OTHERPDF',path:'/tmp/other.pdf'}
+  expect(bookmarks.savePosition({...old,viewState:{pageIndex:8}})).toBe(false)
+  expect(bookmarks.savePosition({...old,attachmentKey:'OTHERPDF',viewState:{pageIndex:2}})).toBe(true)
+  expect(store.getPosition(document.libraryId,document.attachmentKey)?.position).toBe(JSON.stringify({pageIndex:4}))
+  expect(store.getPosition(document.libraryId,'OTHERPDF')?.position).toBe(JSON.stringify({pageIndex:2}))
+  active=null
+  expect(bookmarks.savePosition(old)).toBe(false)
+  expect(()=>bookmarks.savePosition({...old,viewState:[]})).toThrow('Invalid Reading Room view state.')
+ } finally {store.close()}
+})

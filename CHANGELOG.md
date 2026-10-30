@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.28.0-alpha.1] — 2026-10-29
+
+### Added
+
+- A floating Scratchpad keeps formatted paragraphs and section fragments for later review and reuse. It can dock beside the document or collapse to a pill, with groups, search, previews and side-by-side comparison.
+- Insert a copy keeps the candidate. Put back is available for recorded cuttings and follows editor Undo and Redo. A cut is saved before text is removed, and existing scraps remain readable.
+- Browse pictures, SVG graphics, tables and compatible widgets already used in a document or across a Folio. Collect candidates, preview them and show their location in the document.
+- Review Folio references and evidence beside the text, with actions to cite, link, insert a quote with its citation or attach evidence.
+- Optional TalkWeaver vault browsing and SlideWell search have separate switches in Settings, both off by default. Insertion copies the chosen asset into the writing workspace and retains its source.
+- Folio section pages group the parts that follow them in the running order and outline, with optional section-page export settings.
+
+### Changed
+
+- Updated the Electron runtime and patched bundled dependencies, including the agent runtime's HTTP dependency through a reviewed MIT derivative that changes its dependency pin.
+
 ## [0.26.0] — 2026-10-21
 
 ### Added

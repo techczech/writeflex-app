@@ -27,6 +27,7 @@ import { problemRows, shortTime } from './sharing-view-model'
 import { bareAddress, copyAgainText, linkState, notPublishedText, updatedLabel } from './sharing-page-model'
 import { OtherLinksPanel, StateChip } from './SharingOtherLinks'
 import { LimitsPanel, WaitingCell } from './SharingLimits'
+import { ShareOrderPanel, useExportOrderCheck } from '../ExportOrderNotice'
 import { countLabel, type LimitsActionResult, type NotesCounts } from '../../../../shared/sharing-notes'
 import { ownCheckingText, ownLapsedText, ownNotAttachedText, ownUnconfirmedText, ownWaitingText } from '../../../../shared/sharing-setup'
 
@@ -94,6 +95,9 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
   // that arrives after that (a make, a turn off, a reload still on its way) is dropped, never drawn
   // under another piece's heading.
   const live = useRef(true)
+  // A Folio's out-of-step line (Folio room spec § 8 D-ORD-3): sharing publishes in the manifest's order. Read as the
+  // page opens and again when its view changes; writes nothing until Make export follow the running order.
+  const order = useExportOrderCheck(folioDir, view)
 
   const reload = useCallback(async (): Promise<PieceSharingView | null> => {
     const next = folioDir !== null ? await window.writeflex.sharing.folio(folioDir, piecePath) : await window.writeflex.sharing.piece(piecePath)
@@ -515,6 +519,7 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
           ))}
         </section>
         <aside className="shr-right">
+          {folio && <ShareOrderPanel state={order} />}
           {folio && missing.length > 0 && current?.on && (
             <div className="shr-panel problem" data-problem="part-missing">
               <div className="shr-panel-h"><TriangleAlert className="icon" aria-hidden="true" /><span>{missing.length === 1 ? 'A part is missing' : 'Parts are missing'}</span></div>

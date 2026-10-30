@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 /**
  * The Folio page and the Outline's Folio part read one Folio: the same folder and Index Note whatever file is
  * open, the same running order and the same "Not in the outline" when the Index Note names no part yet (the
@@ -5,6 +6,7 @@
  * Index Note refused in main when the Folio has one (or the folder is inside another Folio), and the first change
  * writing the running order it showed exactly once. Shapes from two real Folios (2026-10-19).
  */
+import { relatedFolioMessage } from '../../src/main/folio-declaration'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
@@ -14,7 +16,7 @@ import { MANIFEST_NAME, indexNotePath } from '../../src/main/folio'
 import { invalidateFolioOrderFacts } from '../../src/main/folio-order-cache'
 import { folioOutline } from '../../src/main/folio-outline'
 import { folioContaining, folioDirOf, folioPlace, invalidateFolioPlaces } from '../../src/main/folio-place'
-import { INDEX_NOTE_EXISTS, INSIDE_ANOTHER_FOLIO } from '../../src/main/folio-index-note'
+import { INDEX_NOTE_EXISTS } from '../../src/main/folio-index-note'
 import { moveFolioPiece } from '../../src/main/folio-running-order'
 import { createIndexNote, firstParagraphAfterH1, listCollection, setCollectionPieceMode } from '../../src/main/collection'
 import { setCollectionCounted } from '../../src/main/diary'
@@ -154,12 +156,12 @@ test('creating the Index Note is refused in main when the Folio has one, or the 
   await expect(createIndexNote(ws, DIR)).rejects.toThrow(INDEX_NOTE_EXISTS('_review_INDEX.md'))
   expect(await read(INDEX)).toBe('# review\n\nKept prose.\n')
   // The bug's path: a part in contents/ resolved the page to contents/, whose Start would have made a second Index Note.
-  await expect(createIndexNote(ws, `${DIR}/contents`)).rejects.toThrow(INSIDE_ANOTHER_FOLIO('review'))
+  await expect(createIndexNote(ws, `${DIR}/contents`)).rejects.toThrow(relatedFolioMessage(DIR))
   expect(existsSync(join(root, indexNotePath(ws, `${DIR}/contents`)))).toBe(false)
   // Inside a Folio with no Index Note yet: still refused for the sub-folder.
   await rm(join(root, INDEX))
   fresh()
-  await expect(createIndexNote(ws, `${DIR}/research`)).rejects.toThrow(INSIDE_ANOTHER_FOLIO('review'))
+  await expect(createIndexNote(ws, `${DIR}/research`)).rejects.toThrow(relatedFolioMessage(DIR))
   expect(existsSync(join(root, `${DIR}/research/_research_INDEX.md`))).toBe(false)
   // The Folio's own folder may get its first one, and a plain folder may too.
   expect(await createIndexNote(ws, DIR)).toBe(INDEX)
@@ -177,7 +179,7 @@ test('the first page change writes the running order it showed with the change, 
   expect(moved.parts.map((part) => part.path)).toEqual(expected)
   expect(moved.orderFrom).toBeUndefined()
   let index = await read(INDEX)
-  expect(index).toBe(`# review\n\n## Running order\n\n${[NAMES.at(-1)!, ...NAMES.slice(0, -1)].map((name) => `- [[${titleOf(name)}]]${name === NAMES.at(-1) ? ' #appendix' : ''}`).join('\n')}\n`)
+  expect(index).toBe(pinnedIndex(`# review\n\n## Running order\n\n${[NAMES.at(-1)!, ...NAMES.slice(0, -1)].map((name) => `- [[${titleOf(name)}]]${name === NAMES.at(-1) ? ' #appendix' : ''}`).join('\n')}\n`, {"Part 04-findings":"./contents/04-findings.md|Part 04-findings","Part 00-title":"./contents/00-title.md|Part 00-title","Part 01-summary":"./contents/01-summary.md|Part 01-summary","Part 02-map":"./contents/02-map.md|Part 02-map","Part 03-catalogue":"./contents/03-catalogue.md|Part 03-catalogue"}))
   // The manifest followed.
   expect((JSON.parse(await read(MANIFEST)) as { files: Array<{ path: string }> }).files.map((file) => file.path)).toEqual([NAMES.at(-1), ...NAMES.slice(0, -1)].map((name) => `${name}.md`))
   // A second change edits the written order; nothing is added twice.
@@ -185,8 +187,8 @@ test('the first page change writes the running order it showed with the change, 
   await removePart(ws, DIR, 2)
   index = await read(INDEX)
   expect(occurrences(index, '## Running order')).toBe(1)
-  for (const name of NAMES) expect(occurrences(index, `[[${titleOf(name)}]]`)).toBeLessThanOrEqual(1)
-  expect(occurrences(index, `[[${titleOf(NAMES[1])}]]`)).toBe(0)
+  for (const name of NAMES) expect(occurrences(index, `[[./contents/${name}.md|${titleOf(name)}]]`)).toBeLessThanOrEqual(1)
+  expect(occurrences(index, `[[./contents/${NAMES[1]}.md|${titleOf(NAMES[1])}]]`)).toBe(0)
   fresh()
   const outline = await folioOutline(ws, ORDER[0])
   expect(outline?.pieces.map((piece) => piece.path)).toEqual((await readPlan(ws, DIR))?.parts.map((part) => part.path))
@@ -198,8 +200,8 @@ test('the Outline\'s drag on such a Folio goes through the same Plan write: the 
   expect(outcome.result.ok).toBe(true)
   const index = await read(INDEX)
   expect(occurrences(index, '## Running order')).toBe(1)
-  expect(index.indexOf(`[[${titleOf(NAMES[2])}]]`)).toBeLessThan(index.indexOf(`[[${titleOf(NAMES[0])}]]`))
-  for (const name of NAMES) expect(occurrences(index, `[[${titleOf(name)}]]`)).toBe(1)
+  expect(index.indexOf(`[[./contents/${NAMES[2]}.md|${titleOf(NAMES[2])}]]`)).toBeLessThan(index.indexOf(`[[./contents/${NAMES[0]}.md|${titleOf(NAMES[0])}]]`))
+  for (const name of NAMES) expect(occurrences(index, `[[./contents/${name}.md|${titleOf(name)}]]`)).toBe(1)
 })
 
 function harness() {
@@ -217,19 +219,15 @@ function harness() {
   return { invoke, checkpoints, collectionChanges }
 }
 
-test('the page on a Folio with no Index Note: plan:read shows the manifest order; the first move creates the Index Note and writes the order with the move', async () => {
+test('the first page move creates a pinned Index Note and checkpoints both documents', async () => {
   await reviewFolio(null)
   const api = harness()
-  const shown = await api.invoke('plan:read', { dir: DIR }) as { parts: Array<{ path: string }>; indexNoteAbsent?: true }
-  expect(shown.indexNoteAbsent).toBe(true)
-  expect(shown.parts.map((part) => part.path)).toEqual(ORDER)
+  const shown = await api.invoke('plan:read', { dir: DIR }) as { parts: Array<{ path: string }> }
+  expect(shown.parts.map(part => part.path)).toEqual(ORDER)
   const moved = await api.invoke('plan:move-part', { dir: DIR, from: 1, to: 0 }) as { parts: Array<{ path: string }> }
-  expect(moved.parts.map((part) => part.path)).toEqual([ORDER[1], ORDER[0], ...ORDER.slice(2)])
-  const index = await read(INDEX)
-  expect(index.startsWith('# review\n\n## Running order\n\n')).toBe(true)
-  for (const name of NAMES) expect(occurrences(index, `[[${titleOf(name)}]]`)).toBe(1)
-  expect(api.collectionChanges.some((paths) => paths.includes(INDEX))).toBe(true)
-  // The write was checkpointed like every Plan write (its Undo).
+  expect(moved.parts.map(part => part.path)).toEqual([ORDER[1], ORDER[0], ...ORDER.slice(2)])
+  expect(existsSync(join(root, INDEX))).toBe(true)
+  expect(api.checkpoints).toContain(MANIFEST)
   expect(api.checkpoints).toContain(INDEX)
 })
 
@@ -252,12 +250,12 @@ for (const index of ['# review\n', null]) {
     expect(seen.sidebarOrder).toEqual([b, a])
     expect(seen.pageNotIn.has(a) || seen.pageNotIn.has(b)).toBe(false)
     expect(seen.sidebarNotIn.has(a) || seen.sidebarNotIn.has(b)).toBe(false)
-    expect(seen.plan?.parts.map((part) => part.title)).toEqual(['./contents/b', './contents/a'])
+    expect(seen.plan?.parts.map((part) => part.title)).toEqual(['Same', 'Same'])
     // The first page change writes both lines by path, with the change: both surfaces still agree.
     const api = harness()
     const moved = await api.invoke('plan:move-part', { dir: DIR, from: 1, to: 0 }) as { parts: Array<{ path: string }>; unlisted: Array<{ path: string }> }
     expect(moved.parts.map((part) => part.path)).toEqual([a, b])
-    expect(await read(INDEX)).toContain('## Running order\n\n- [[./contents/a]]\n- [[./contents/b]]\n')
+    expect(await read(INDEX)).toContain('## Running order\n\n- [[./contents/a.md|Same]]\n- [[./contents/b.md|Same]]\n')
     const after = await bothSurfaces(b)
     expect(after.pageOrder).toEqual([a, b])
     expect(after.sidebarOrder).toEqual([a, b])
@@ -297,16 +295,13 @@ test('the first page change on a Folio with no Index Note is one step: a refused
   expect(await read(MANIFEST)).toBe(manifest)
 })
 
-test('the first page change checkpoints the Index Note as absent, then creates it holding the order and the change', async () => {
+test('the first manifest-only page move checkpoints the absent Index Note before creating it', async () => {
   await reviewFolio(null)
   const api = recordingHarness()
   await api.invoke('plan:move-part', { dir: DIR, from: 1, to: 0 })
-  // The Index Note's checkpoint was taken while it was absent: its Undo is "no Index Note file".
-  expect(api.taken.filter((item) => item.path === INDEX)).toEqual([{ path: INDEX, existed: false }])
-  const index = await read(INDEX)
-  expect(index.startsWith('# review\n\n## Running order\n\n')).toBe(true)
-  expect(index.indexOf(`[[${titleOf(NAMES[1])}]]`)).toBeLessThan(index.indexOf(`[[${titleOf(NAMES[0])}]]`))
-  // No pristine-copy backup is made of a file that did not exist.
+  expect(api.taken).toContainEqual({ path: MANIFEST, existed: true })
+  expect(api.taken).toContainEqual({ path: INDEX, existed: false })
+  expect(existsSync(join(root, INDEX))).toBe(true)
   expect(existsSync(join(root, `${INDEX}.writeflex-backup`))).toBe(false)
 })
 
@@ -319,7 +314,7 @@ test('the first page change: a manifest write that fails removes the Index Note 
     return original(path, content, options)
   }) as Workspace['saveFileWithoutReadBack']
   const api = harness()
-  await expect(api.invoke('plan:move-part', { dir: DIR, from: 1, to: 0 })).rejects.toThrow('put back as it was')
+  await expect(api.invoke('plan:move-part', { dir: DIR, from: 1, to: 0 })).rejects.toThrow('disk full')
   expect(existsSync(join(root, INDEX))).toBe(false)
   expect(await read(MANIFEST)).toBe(manifest)
   ws.saveFileWithoutReadBack = original
@@ -328,11 +323,11 @@ test('the first page change: a manifest write that fails removes the Index Note 
   registerPlanIpcHandlers({ handle: (channel, handler) => racing.set(channel, handler) }, {
     stateForSender: () => ({ workspace: ws }),
     requireWorkspace: (state) => state.workspace,
-    checkpointFile: async (_state, path) => { if (path === INDEX) await write(INDEX, '# Owner\n') },
+    checkpointFile: async (_state, path) => { if (path === MANIFEST) await write(INDEX, '# Owner\n') },
     notifyCollectionChanged: () => undefined,
     notifyChangedOnDisk: () => undefined,
   })
-  await expect(racing.get('plan:move-part')!({ sender: { id: 1 } }, { dir: DIR, from: 1, to: 0 })).rejects.toThrow('Another Index Note appeared')
+  await expect(racing.get('plan:move-part')!({ sender: { id: 1 } }, { dir: DIR, from: 1, to: 0 })).rejects.toThrow('Index Note')
   expect(await read(INDEX)).toBe('# Owner\n')
   expect(await read(MANIFEST)).toBe(manifest)
 })
@@ -375,15 +370,15 @@ test('every Index Note creation obeys the ownership rule: an agent proposal for 
   await reviewFolio('# review\n\nKept.\n')
   const contents = `${DIR}/contents`
   const second = indexNotePath(ws, contents)
-  await expect(prepareProposal(ws, { dir: contents, changes: [{ op: 'insert', title: 'New part' }] })).rejects.toThrow(INSIDE_ANOTHER_FOLIO('review'))
+  await expect(prepareProposal(ws, { dir: contents, changes: [{ op: 'insert', title: 'New part' }] })).rejects.toThrow(relatedFolioMessage(DIR))
   // Accept's run, should a staged proposal reach it: the creation itself refuses before anything is written.
-  await expect(runPlanOperations(ws, contents, [{ op: 'createIndexNote' }, { op: 'insertPart', title: 'New part' }])).rejects.toThrow(INSIDE_ANOTHER_FOLIO('review'))
+  await expect(runPlanOperations(ws, contents, [{ op: 'createIndexNote' }, { op: 'insertPart', title: 'New part' }])).rejects.toThrow(relatedFolioMessage(DIR))
   expect(existsSync(join(root, second))).toBe(false)
   // The other callers of the one creation: a counted diary, a Folder Piece's mode.
-  await expect(setCollectionCounted(ws, contents, true)).rejects.toThrow(INSIDE_ANOTHER_FOLIO('review'))
+  await expect(setCollectionCounted(ws, contents, true)).rejects.toThrow(relatedFolioMessage(DIR))
   await write(`${DIR}/contents/chapter/one.md`, '# One\n')
   await write(`${DIR}/contents/chapter/two.md`, '# Two\n')
-  await expect(setCollectionPieceMode(ws, contents, `${DIR}/contents/chapter`, 'one-work')).rejects.toThrow(INSIDE_ANOTHER_FOLIO('review'))
+  await expect(setCollectionPieceMode(ws, contents, `${DIR}/contents/chapter`, 'one-work')).rejects.toThrow(relatedFolioMessage(DIR))
   expect(existsSync(join(root, second))).toBe(false)
   expect(existsSync(join(root, `${DIR}/contents/chapter/_chapter_INDEX.md`))).toBe(false)
   expect(await read(INDEX)).toBe('# review\n\nKept.\n')

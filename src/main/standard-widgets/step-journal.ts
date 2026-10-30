@@ -305,7 +305,7 @@ export async function cleanUpLeftoverStep(ws: Workspace, id: string): Promise<Cl
       ...record.rewritten.map((file) => ({ path: file.path, before: file.before, after: { text: file.after } })),
       ...record.created.map((file) => ({ path: file.path, before: null, after: { sha256: file.sha256 }, guard: guardOf(file.path) })),
     ]
-    const outcome = await putBackStep(ws, realRoot, changes, folders)
+    const outcome = await putBackStep(ws, realRoot, changes, folders, record.moves)
     // Stopped by a guard: no further removal of any kind, the step's folders included.
     if (refusedCopies.length) {
       // Stopped at a copy whose original went: the journal keeps what is still there, for another Clean up.

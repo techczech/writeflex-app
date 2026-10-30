@@ -10,6 +10,7 @@ void mock.module('@bridle/electron/renderer', () => ({
 
 ;(globalThis as { window?: unknown }).window = { writeflex: { auth: {} } }
 import { AgentPanel, unavailableModelTitle } from '../../src/renderer/src/components/AgentPanel'
+import { emptyAgentChat, reduceAgentChat } from '../../src/renderer/src/hooks/agent-chat'
 import type { UseAgent } from '../../src/renderer/src/hooks/useAgent'
 
 const markdown = [
@@ -31,6 +32,7 @@ const markdown = [
 
 function renderConversation(agentText: string, userText = '# Keep **my syntax** plain', agentOverrides: Partial<UseAgent> = {}): string {
   const agent = {
+    assistantTurns: { turns: [], selected: null, select: async () => {}, refusal: null, busy: false, mode: 'work', chooseMode: async () => {}, notice: null, error: null, undo: async () => null, undoLatest: async () => null },
     available: true,
     history: [],
     messages: [
@@ -139,4 +141,18 @@ test('disabled model choices explain whether the provider is signed out or the m
   expect(unavailableModelTitle(
     { provider: 'anthropic', id: 'claude-opus', name: 'Claude Opus' }, available,
   )).toBe('Anthropic is signed out.')
+})
+
+
+test('rendered conversation omits discovery activity and retains every real capability row', () => {
+  let state = reduceAgentChat(emptyAgentChat(), { type: 'prompt', text: 'Read my draft', at: 1 })
+  for (const capability of ['tools.search', 'tools.enable', 'tools.search_documents', 'files.read', 'housekeeping.create_file']) {
+    state = reduceAgentChat(state, { type: 'trace', event: { id: capability, timestamp: 2, type: 'policy.decision', title: `${capability}: allow`, metadata: { capability, decision: 'allow' } } })
+  }
+  const html = renderConversation('Done.', 'Read my draft', { messages: state.turns })
+  expect(html).not.toContain('tools.search: allow')
+  expect(html).not.toContain('tools.enable: allow')
+  expect(html).toContain('tools.search_documents: allow')
+  expect(html).toContain('Read')
+  expect(html).toContain('Created')
 })

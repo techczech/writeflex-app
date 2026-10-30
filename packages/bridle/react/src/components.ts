@@ -211,8 +211,8 @@ export function TurnReceiptFooter({ receipt }: { receipt: TurnReceipt }) {
   const parts = [
     `${receipt.filesRead.length} read`, `${receipt.filesWritten.length} written`,
     `${receipt.callsDenied} denied`, `${receipt.callsStaged} staged`,
-    `${receipt.usage.input + receipt.usage.output} tokens`,
-    `${receipt.usage.cacheRead} cache read`, `${receipt.egress.providerId}/${receipt.egress.modelId}`,
+    ...(receipt.usage ? [`${receipt.usage.input + receipt.usage.output} tokens`, `${receipt.usage.cacheRead} cache read`] : []),
+    `${receipt.egress.providerId}/${receipt.egress.modelId}`,
   ];
   return h("footer", {
     className: "bridle-receipt",

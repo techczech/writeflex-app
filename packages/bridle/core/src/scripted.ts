@@ -1,3 +1,4 @@
+import { bindToolDiscovery } from "./tool-discovery.ts";
 import {
   createAssistantMessageEventStream,
   getApiProvider,
@@ -114,7 +115,7 @@ function ensureScriptedDispatcher(): void {
   if (!scriptedDispatcher) throw new ScriptedProviderError(`Failed to register reserved scripted API ID ${SCRIPTED_API}.`);
 }
 
-function routeFor(scripts: TurnScript[], identityPrefix: string): ScriptedRoute {
+function routeFor(scripts: TurnScript[], identityPrefix: string, dynamicTools = false): ScriptedRoute {
   let scriptIndex = 0;
   let roundIndex = 0;
   let prefixSeen = false;
@@ -127,7 +128,7 @@ function routeFor(scripts: TurnScript[], identityPrefix: string): ScriptedRoute 
         prefixSeen = true;
         systemPrompt = context.systemPrompt;
         toolCatalog = currentToolCatalog;
-      } else if (context.systemPrompt !== systemPrompt || currentToolCatalog !== toolCatalog) {
+      } else if (context.systemPrompt !== systemPrompt || (!dynamicTools && currentToolCatalog !== toolCatalog)) {
         throw new ScriptedProviderError("Scripted provider Cache Law violation: Pi changed the system prompt or tool catalog within a session.");
       }
       const script = scripts[scriptIndex];
@@ -162,7 +163,6 @@ function createScriptedSessionFactory(scripts: TurnScript[], identityPrefix: str
     if (!checked.ok) throw new ScriptedProviderError(`TurnScript ${index + 1} is invalid: ${checked.reason ?? "unknown validation error"}`);
   });
   ensureScriptedDispatcher();
-  const route = routeFor(scripts, identityPrefix);
   return async (opts) => {
     const capabilities = new Map(opts.manifest.capabilities.map((capability) => [capability.name, capability]));
     const toolOutcomes = new Map<string, ToolRelayOutcome>();
@@ -192,6 +192,8 @@ function createScriptedSessionFactory(scripts: TurnScript[], identityPrefix: str
     // THE LAW: scripted ≡ live — including the S3 skill scoping (Sol S8 finding:
     // dropping composition here false-greened conformance for skill-bound runs).
     const assembled = assembleSessionConfig(opts.manifest, { agentDir: opts.agentDir, runCapability: runner }, opts.composition);
+    const route = routeFor(scripts, identityPrefix, assembled.discovery.enabled);
+    for (const cap of assembled.discovery.capabilities) capabilities.set(cap.name, cap);
     const loader = new DefaultResourceLoader(assembled.loaderConfig);
     await loader.reload();
     const model = scriptedModel(route);
@@ -220,7 +222,7 @@ function createScriptedSessionFactory(scripts: TurnScript[], identityPrefix: str
       modelRuntime,
       model,
       thinkingLevel: opts.thinkingLevel,
-      tools: assembled.toolNames,
+      tools: assembled.customTools.map((tool) => tool.name),
       customTools: assembled.customTools,
       resourceLoader: loader,
       // THE LAW: a scripted run is indistinguishable from live at the record layer — including how
@@ -235,6 +237,7 @@ function createScriptedSessionFactory(scripts: TurnScript[], identityPrefix: str
       responseIdentities.observe({ type: "message_end", message } as never);
     }
     session.subscribe(responseIdentities.observe);
+    bindToolDiscovery(session, assembled.discovery, wireName);
     sessionId = session.sessionId;
     let promptCount = 0;
     const prompt = session.prompt.bind(session);

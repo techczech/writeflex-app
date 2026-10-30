@@ -12,7 +12,8 @@
 import { statSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { posix } from 'node:path'
-import { collectionCoverPaths, readManifest } from './folio'
+import { folioDeclaration } from './folio-declaration'
+import { collectionCoverPaths } from './folio'
 import type { SettingsStore } from './settings'
 import type { Workspace } from './workspace'
 
@@ -58,9 +59,9 @@ async function isFile(ws: FocusWorkspace, path: string): Promise<boolean> {
   }
 }
 
-/** Folio first (a manifest is a deliberate declaration), then any recognised cover, else a folder. */
+/** Folio declaration first, then any recognised cover, else a folder. */
 export async function folderFocusKind(ws: FocusWorkspace, path: string): Promise<FolderFocusKind> {
-  if (await readManifest(ws, path)) return 'folio'
+  if (folioDeclaration(ws, path).isFolio) return 'folio'
   for (const cover of collectionCoverPaths(ws, path)) if (await isFile(ws, cover)) return 'collection'
   return 'folder'
 }

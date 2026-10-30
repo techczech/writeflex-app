@@ -20,6 +20,14 @@ The sound pack includes CC BY and CC0/public-domain material. Attribution and pr
 
 Upstream source and releases: https://github.com/techczech/app-patterns.
 
+## Bridle contract
+
+`@bridle/contract` 0.3.1 is MIT licensed. The public release archive at `vendor/bridle/bridle-contract-0.3.1.tgz` includes the compiled module, type declarations and full MIT licence in `package/LICENSE`. The application root installs this exact tested archive; the matching source package also ships at `packages/bridle/contract` so the bundled Bridle source packages can build against it.
+
+## Pi coding agent (undici derivative)
+
+`@earendil-works/pi-coding-agent` 0.83.0 is MIT licensed. The archive at `vendor/earendil-works/earendil-works-pi-coding-agent-0.83.0-undici-8.12.2.tgz` is a local derivative of the npm release: its only changes are raising the package's own undici dependency pin from 8.5.0 to 8.12.2 and adding the upstream MIT licence text as `package/LICENSE`, which the npm archive omits. The recipe that produces and verifies these exact bytes ships in source at `scripts/lib/pi-undici-derivative.ts`. The npm registry integrity identifies the upstream original only, not this derivative.
+
 ## Dependencies
 
 Installed dependencies retain their own licences. Their notices ship with the dependencies in the packaged app.

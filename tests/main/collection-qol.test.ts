@@ -48,7 +48,7 @@ test('Make Folio and turn back preserve documents, Index Note and authored instr
   await writeFolioAgentInstructions(ws, 'collection')
   await turnBackIntoCollection(ws, 'collection')
   expect(await readManifest(ws, 'collection')).toBeNull()
-  for (const [name, text] of Object.entries(originals)) expect(await readFile(join(root, 'collection', name), 'utf8')).toBe(text)
+  for (const [name, text] of Object.entries(originals)) expect(await readFile(join(root, 'collection', name), 'utf8')).toBe(name.endsWith('_INDEX.md') ? text.replace('## Running order\n- Part\n', '') : text)
   await ws.saveFile('collection/_report-structure.json', await draftManifest(ws, 'collection'))
   await writeFolioAgentInstructions(ws, 'collection')
   expect(await readManifest(ws, 'collection')).not.toBeNull()
@@ -59,13 +59,14 @@ test('turn back keeps an authored import, clears only a recorded generated impor
   const child = await createNestedFolio(ws, 'collection')
   await turnBackIntoCollection(ws, child)
   expect(await Bun.file(join(root, child, 'CLAUDE.md')).exists()).toBe(false)
-  expect(await readFile(join(root, child, 'AGENTS.md'), 'utf8')).toBe('')
+  expect(await Bun.file(join(root, child, 'AGENTS.md')).exists()).toBe(false)
   await ws.saveFile(`${child}/_report-structure.json`, await draftManifest(ws, child))
   await writeFolioAgentInstructions(ws, child)
   expect(await readFile(join(root, child, 'CLAUDE.md'), 'utf8')).toBe(AGENT_IMPORT + '\n')
   expect(await readManifest(ws, child)).not.toBeNull()
   await writeFile(join(root, 'collection/CLAUDE.md'), AGENT_IMPORT + '\n')
-  await ws.saveFile('collection/_report-structure.json', '{"files":[]}\n')
+  // Legacy nested data is fixture setup; the workspace write seam now refuses creating it.
+  await writeFile(join(root, 'collection/_report-structure.json'), '{"files":[]}\n')
   await turnBackIntoCollection(ws, 'collection')
   expect(await readFile(join(root, 'collection/CLAUDE.md'), 'utf8')).toBe(AGENT_IMPORT + '\n')
 })
@@ -78,7 +79,8 @@ test('instruction separators round-trip without changing the author’s newline,
     await writeFolioAgentInstructions(ws, 'collection')
     await folioAgentInstructionsStatus(ws, 'collection')
     await turnBackIntoCollection(ws, 'collection')
-    expect(await readFile(join(root, 'collection/AGENTS.md'), 'utf8')).toBe(original)
+    if (original) expect(await readFile(join(root, 'collection/AGENTS.md'), 'utf8')).toBe(original)
+    else expect(await Bun.file(join(root, 'collection/AGENTS.md')).exists()).toBe(false)
   }
 })
 test('edited maintained instructions retain the author’s words; damaged markers refuse without removing the manifest', async () => {
@@ -116,7 +118,7 @@ test('the inverse agent verb requires approval, declares its exact write paths, 
   for (const trust of ['interactive', 'trusted_app', 'background'] as const) {
     expect(await policy({ capability: verb, input: { dir: child }, trigger: { id: 'conversion', source: 'user', trust } })).toBe(trust === 'background' ? 'deny' : 'ask')
   }
-  expect(await verb.touchedPaths!({ dir: child })).toEqual(['_report-structure.json', 'AGENTS.md', 'CLAUDE.md', '.folio-backup.json', '.folio-instructions.json'].map(name => join(root, child, name)))
+  expect(await verb.touchedPaths!({ dir: child })).toEqual(['_report-structure.json', 'AGENTS.md', 'CLAUDE.md', '.folio-instructions.json', '.folio-backup.json', '.folio-turn-back.json', '_Untitled Folio_INDEX.md'].map(name => join(root, child, name)))
   const result = await verb.execute({ dir: child }, {} as never)
   expect(result.isError).not.toBe(true)
   expect(await readManifest(ws, child)).toBeNull()
@@ -173,10 +175,12 @@ test('restoring a backup drops missing nested entries and appends new files as s
 })
 
 test('Start a Folio outline and turn back both work at the workspace root', async () => {
-  const { ws } = await workspace()
+  const { root, ws } = await workspace()
   const child = await createNestedFolio(ws, '')
   expect(child).toBe('Untitled Folio')
-  await ws.saveFile('_report-structure.json', '{"files":[]}\n')
+  // Reproduce existing nested data without bypassing the app's declaration refusal.
+  await expect(ws.saveFile('_report-structure.json', '{"files":[]}\n')).rejects.toThrow('already occupies')
+  await writeFile(join(root, '_report-structure.json'), '{"files":[]}\n')
   await turnBackIntoCollection(ws, '')
   expect(await readManifest(ws, '')).toBeNull()
   expect(await draftManifest(ws, '')).toBe('{"files":[]}\n')
@@ -197,6 +201,7 @@ test('rollback attempts every applied restore and reports the original error plu
   const saveCreate = ws.saveFileOver.bind(ws)
   ws.saveFileOver = async (path, next, expected, options) => {
     if (path === claudePath) { attempted.push(path); throw new Error('restore failure') }
+    if (next === agents) attempted.push(path)
     return saveCreate(path, next, expected, options)
   }
   const save = ws.saveFileOverRead.bind(ws)
@@ -264,16 +269,15 @@ test('Start checkpoints existing instructions before modifying them and refuses 
     checked.push(path)
   })
   expect(checked).toEqual([child + '/AGENTS.md'])
-  await expect(createNestedFolio(ws, child)).rejects.toThrow("Folios can't contain another Folio from here")
+  await expect(createNestedFolio(ws, child)).rejects.toThrow("Folios cannot contain another Folio")
 })
 
 
-test('turn back trashes generated CLAUDE, clears ownership, then Make preserves a new authored CLAUDE', async () => {
+test('turn back parks generated CLAUDE, clears ownership, then Make preserves a new authored CLAUDE', async () => {
   const { root, ws } = await workspace()
   const child = await createNestedFolio(ws, 'collection')
-  const trashed: string[] = []
-  await turnBackIntoCollection(ws, child, async path => { trashed.push(path); await rm(path) })
-  expect(trashed).toEqual([join(root, child, 'CLAUDE.md')])
+  await turnBackIntoCollection(ws, child)
+  expect(await readFile(join(root, child, '.folio-turn-back.json'), 'utf8')).toContain('CLAUDE.md')
   expect(await Bun.file(join(root, child, '.folio-instructions.json')).exists()).toBe(false)
   const mine = '# My own Claude rules\n'
   await writeFile(join(root, child, 'CLAUDE.md'), mine)

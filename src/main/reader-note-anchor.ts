@@ -19,6 +19,8 @@
 //
 // Pure: no file, no clock.
 
+import { findFlags } from '../shared/markdown/flags'
+
 export type ReaderAnchorInput = { quote: string; before: string; after: string }
 
 export type ReaderAnchor =
@@ -33,6 +35,13 @@ const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim()
 
 /** The Markdown as a reader reads it, roughly, with each character's place in the source. */
 export function projectMarkdown(source: string): Projection {
+  // A flag's `==` marks and `<!--flag:…-->` tag print nothing on the reader's page (the share strips
+  // them), so they are markup here: skipped, with the flagged words kept.
+  const skip = new Map<number, number>() // start -> end of a stretch that projects to nothing
+  for (const flag of findFlags(source)) {
+    skip.set(flag.from, flag.wordsFrom)
+    skip.set(flag.wordsTo, flag.to)
+  }
   let text = ''
   const map: number[] = []
   let lineStart = true
@@ -51,6 +60,8 @@ export function projectMarkdown(source: string): Projection {
   }
   let i = 0
   while (i < source.length) {
+    const jump = skip.get(i)
+    if (jump !== undefined) { i = jump; continue }
     if (lineStart) {
       // A line's leading markers: heading, list item, quote, task box.
       const lead = /^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+(?:\[[ xX]\][ \t]+)?|\d{1,9}[.)][ \t]+)*/.exec(source.slice(i, i + 64))

@@ -43,11 +43,11 @@ const isEditableTarget = (target: EventTarget | null): boolean => {
  * The big primary Open Folio button on a Folio's page, with an attached Open at… menu of every part.
  * ⌘↩ presses the main button while the page is up (the page is a full overlay, so no editor chord competes).
  */
-export function FolioOpenButton({ parts, onOpen }: { parts: readonly FolioOpenPart[]; onOpen: (path: string) => void }): JSX.Element | null {
+export function FolioOpenButton({ parts, onOpen, returnPath }: { parts: readonly FolioOpenPart[]; returnPath?: string | null; onOpen: (path: string) => void }): JSX.Element | null {
   const [menuOpen, setMenuOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   const caret = useRef<HTMLButtonElement>(null)
-  const first = folioOpenTarget(parts)
+  const first = returnPath && parts.some(part => part.path === returnPath) ? returnPath : folioOpenTarget(parts)
 
   useEffect(() => {
     if (first === null) return
@@ -91,7 +91,7 @@ export function FolioOpenButton({ parts, onOpen }: { parts: readonly FolioOpenPa
     <div className="folio-open" ref={root}>
       <div className="folio-open-split">
         <button type="button" className="folio-open-main" onClick={() => onOpen(first)} aria-keyshortcuts="Meta+Enter" title="Open the Folio at its first part and show its outline (⌘↩)">
-          <BookOpen className="icon" aria-hidden="true" />Open Folio<kbd>⌘↩</kbd>
+          <BookOpen className="icon" aria-hidden="true" />{returnPath === undefined ? 'Open Folio' : 'Return to text'}<kbd>⌘↩</kbd>
         </button>
         <button
           type="button"

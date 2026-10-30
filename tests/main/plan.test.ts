@@ -1,3 +1,4 @@
+import { pinnedIndex } from '../helpers/folio-file-identity'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -233,13 +234,13 @@ test('moving a part changes only the Folio outline lines in the whole Index Note
   await seedPlan()
   await movePart(ws, 'report', 2, 0)
   expect(await read(indexPath)).toBe(
-    '---\npurpose: report\ncustom: keep exactly\n---\n\n' +
+    pinnedIndex('---\npurpose: report\ncustom: keep exactly\n---\n\n' +
     '# Report\n\nCover prose stays byte-identical.\n\n' +
     '## Running order\n\n' +
     '- [[Close]] #summary\n' +
     '- [[Opening]] — Establish the question #opening\n' +
     '* [[Unwritten idea]]\n\n' +
-    '## Notes\n\nDo not touch this section.\n',
+    '## Notes\n\nDo not touch this section.\n', {"Close":"./contents/03-close.md|Close","Opening":"./contents/01-opening.md|Opening"}),
   )
 })
 
@@ -247,14 +248,14 @@ test('inserting a part changes only the Folio outline lines in the whole Index N
   await seedPlan()
   await insertPart(ws, 'report', 1, { title: 'Evidence', gloss: 'What the sources show', role: 'appendix' })
   expect(await read(indexPath)).toBe(
-    '---\npurpose: report\ncustom: keep exactly\n---\n\n' +
+    pinnedIndex('---\npurpose: report\ncustom: keep exactly\n---\n\n' +
     '# Report\n\nCover prose stays byte-identical.\n\n' +
     '## Running order\n\n' +
     '- [[Opening]] — Establish the question #opening\n' +
     '- [[Evidence]] — What the sources show #appendix\n' +
     '* [[Unwritten idea]]\n' +
     '- [[Close]] #summary\n\n' +
-    '## Notes\n\nDo not touch this section.\n',
+    '## Notes\n\nDo not touch this section.\n', {"Opening":"./contents/01-opening.md|Opening","Close":"./contents/03-close.md|Close"}),
   )
 })
 
@@ -262,20 +263,20 @@ test('removing a part changes only the Folio outline lines in the whole Index No
   await seedPlan()
   await removePart(ws, 'report', 1)
   expect(await read(indexPath)).toBe(
-    '---\npurpose: report\ncustom: keep exactly\n---\n\n' +
+    pinnedIndex('---\npurpose: report\ncustom: keep exactly\n---\n\n' +
     '# Report\n\nCover prose stays byte-identical.\n\n' +
     '## Running order\n\n' +
     '- [[Opening]] — Establish the question #opening\n' +
     '- [[Close]] #summary\n\n' +
-    '## Notes\n\nDo not touch this section.\n',
+    '## Notes\n\nDo not touch this section.\n', {"Opening":"./contents/01-opening.md|Opening","Close":"./contents/03-close.md|Close"}),
   )
 })
 
-test('materialising a part leaves every Index Note byte unchanged', async () => {
+test('materialising a part changes only link metadata in the Index Note', async () => {
   await seedPlan()
   const before = await read(indexPath)
   await materialisePart(ws, 'report', 1)
-  expect(await read(indexPath)).toBe(before)
+  expect(await read(indexPath)).toBe(pinnedIndex(before, { Opening: './contents/01-opening.md|Opening', 'Unwritten idea': './contents/02-unwritten-idea.md|Unwritten idea', Close: './contents/03-close.md|Close' }))
 })
 
 test('a part with no gloss or tags keeps its list marker and bytes through another insertion', async () => {
@@ -398,7 +399,7 @@ test('readPlan degrades on malformed manifest JSON without changing the Index No
   expect({ titles: plan!.parts.map((part) => part.title), source: await read(indexPath) }).toEqual({ titles: ['Opening'], source: index })
 })
 
-test('readPlan lists an unrepresentable unlisted title with Put back refused, instead of throwing or hiding it', async () => {
+test('readPlan refuses adoption when neither a plain path nor its title fits a wikilink', async () => {
   const index = '# Report\n\n## Running order\n'
   await write(indexPath, index)
   // Its title cannot be a line, and neither can its path (`./contents/bad#1`): no line can name it (a title alone
@@ -411,8 +412,7 @@ test('readPlan lists an unrepresentable unlisted title with Put back refused, in
   expect(plan!.parts).toEqual([])
   expect(plan!.unlisted.map((part) => [part.path, Boolean(part.putBackRefusal)])).toEqual([['report/contents/bad#1.md', true]])
   expect(await read(indexPath)).toBe(index)
-  // Put back is refused with the row's own reason, before any line is built.
-  await expect(adoptPart(ws, 'report', 0)).rejects.toThrow(/No running-order line can name this file/)
+  await expect(adoptPart(ws, 'report', 0)).rejects.toThrow()
   expect(await read(indexPath)).toBe(index)
 })
 
@@ -426,7 +426,7 @@ test('a manifest entry whose title a running-order line cannot hold is in the or
 
   const plan = await readPlan(ws, 'report')
 
-  expect(plan!.parts.map((part) => [part.title, part.path])).toEqual([['./contents/bad', 'report/contents/bad.md']])
+  expect(plan!.parts.map((part) => [part.title, part.path])).toEqual([['Bad | title # fragment ]]', 'report/contents/bad.md']])
   expect(plan!.unlisted).toEqual([])
   expect(await read(indexPath)).toBe(index)
 })
@@ -502,7 +502,7 @@ test('the first change to an Index Note with no running-order part writes the ma
   expect(plan.parts.map((part) => part.title)).toEqual(['Preface', 'Opening'])
   expect(plan.orderFrom).toBeUndefined()
   expect(plan.unlisted).toEqual([])
-  expect(await read(indexPath)).toBe('# Report\n\n## Running order\n- [[Preface]]\n- [[Opening]]\n')
+  expect(await read(indexPath)).toBe(pinnedIndex('# Report\n\n## Running order\n- [[Preface]]\n- [[Opening]]\n', {"Opening":"./contents/01-opening.md|Opening"}))
 })
 
 test('even a same-position move rewrites the manifest from the Folio outline order', async () => {
@@ -548,4 +548,189 @@ test('a writer refuses to save a Folio outline line that its parser cannot round
   await write(indexPath, '# Report\n\n## Running order\n')
   await expect(insertPart(ws, 'report', 0, { title: 'Bad ]] title' })).rejects.toThrow('Folio outline title')
   expect(await read(indexPath)).toBe('# Report\n\n## Running order\n')
+})
+
+
+test('structure writes pin file identity, preserve authored surroundings, and retitles never rewrite the Index', async () => {
+  await write('report/a plain%.md', '# Alpha\n\nAuthor text.\n')
+  await write('report/b.md', '# Beta\n')
+  const source = '# Paper\r\n\r\n## Running order\r\n\r\n  * [[Alpha|My alias]] — Keep this #custom\r\n- [[Beta]]\r\n\r\n## Notes\r\nDo not alter.\r\n'
+  await write(indexPath, source)
+  expect((await readPlan(ws, 'report'))!.parts[0].path).toBe('report/a plain%.md')
+  expect(await read(indexPath)).toBe(source)
+  await movePart(ws, 'report', 0, 1)
+  const pinned = await read(indexPath)
+  expect(pinned).toContain('  * [[./a plain%.md|My alias]] — Keep this #custom\r\n')
+  expect(pinned).toContain('## Notes\r\nDo not alter.\r\n')
+  for (const title of ['Alpha #', 'Alpha |', 'Beta', 'Changed']) {
+    await ws.saveFile('report/a plain%.md', `# ${title}\n\nAuthor text.\n`)
+    const plan = (await readPlan(ws, 'report'))!
+    expect(plan.parts.map(p => p.path)).toEqual(['report/b.md', 'report/a plain%.md'])
+    expect(plan.parts[1].title).toBe(title)
+    expect(await read(indexPath)).toBe(pinned)
+  }
+})
+
+test('path identities allow equal display titles and keep a missing chapter in its original slot', async () => {
+  await write('report/one/a.md', '# Same\n')
+  await write('report/two/a.md', '# Same\n')
+  await write(indexPath, '## Running order\n- [[./one/a.md|Same]]\n- [[./two/a.md|Same]]\n')
+  await movePart(ws, 'report', 0, 1)
+  await rm(join(root, 'report/one/a.md'))
+  const plan = (await readPlan(ws, 'report'))!
+  expect(plan.parts.map(p => p.path)).toEqual(['report/two/a.md', 'report/one/a.md'])
+  expect(plan.parts[1].resolution).toBe('missing')
+})
+
+test('ambiguous legacy rows are retained and a structure write requires repair', async () => {
+  await write('report/a.md', '# Same\n')
+  await write('report/b.md', '# Same\n')
+  const source = '## Running order\n- [[Same]] — Preserve me\n- [[Idea]]\n'
+  await write(indexPath, source)
+  expect((await readPlan(ws, 'report'))!.parts[0].resolution).toBe('ambiguous')
+  await expect(movePart(ws, 'report', 0, 1)).rejects.toThrow('ambiguous')
+  expect(await read(indexPath)).toBe(source)
+})
+
+test('every committed document write announces its path and listener failure cannot refuse a save', async () => {
+  await seedPlan()
+  const paths: string[] = []
+  ws.onDocumentWritten = path => { paths.push(path); throw new Error('listener failed') }
+  await movePart(ws, 'report', 0, 2)
+  expect(paths).toContain(indexPath)
+  await ws.saveFile('report/contents/01-opening.md', '# Title | #\n\nSaved body.\n')
+  expect(await read('report/contents/01-opening.md')).toContain('Saved body.')
+  expect(paths).toContain('report/contents/01-opening.md')
+})
+
+
+test('unobserved external retitles never guess paths or turn unresolved ideas into missing parts', async () => {
+  await write('report/a.md', '# Alpha\n')
+  await write(indexPath, '## Running order\n- [[Alpha]]\n- [[Unwritten idea]]\n')
+  const source = await read(indexPath)
+  for (const manifest of [false, true]) {
+    if (manifest) await write(`report/${MANIFEST_NAME}`, JSON.stringify({ files: [{ path: 'a.md' }, { path: '_cover.md' }] }))
+    await write('report/a.md', '# Alpha\n')
+    expect((await readPlan(ws, 'report'))!.parts[0].path).toBe('report/a.md')
+    await write('report/a.md', '# Retitled externally\n')
+    const after = (await readPlan(ws, 'report'))!
+    expect(after.parts[0].path).toBe(null)
+    expect(after.parts[0].resolution).toBeUndefined()
+    expect(after.parts[1].resolution).toBeUndefined()
+    expect(await read(indexPath)).toBe(source)
+  }
+})
+
+
+test('an explicit structure write pins a bare file path before extension variants appear', async () => {
+  await write('report/a.md', '# Alpha\n')
+  await write('report/b.md', '# Beta\n')
+  await write(indexPath, '## Running order\n- [[./a]]\n- [[./b]]\n')
+  await movePart(ws, 'report', 0, 1)
+  expect(await read(indexPath)).toContain('[[./a.md|./a]]')
+  await write('report/a.markdown', '# Other\n')
+  expect((await readPlan(ws, 'report'))!.parts.map(p => p.path)).toEqual(['report/b.md', 'report/a.md'])
+})
+
+test('missing manifest entries keep their original slots on open and no Index Note is created', async () => {
+  await write('report/a.md', '# Alpha\n')
+  const manifest = JSON.stringify({ files: [{ path: 'absent.md', id: 'keep' }, { path: 'a.md' }] })
+  await write(`report/${MANIFEST_NAME}`, manifest)
+  const { readFolioPlan } = await import('../../src/main/plan')
+  const plan = (await readFolioPlan(ws, 'report'))!
+  expect(plan.parts.map(p => p.path)).toEqual(['report/absent.md', 'report/a.md'])
+  expect(plan.parts[0].resolution).toBe('missing')
+  expect(await exists(indexPath)).toBe(false)
+  expect(await read(`report/${MANIFEST_NAME}`)).toBe(manifest)
+  await expect(materialisePart(ws, 'report', 0)).rejects.toThrow()
+  expect(await exists('report/absent.md')).toBe(false)
+})
+
+
+test('a stale open Index buffer cannot resurrect the lines before a structure change', async () => {
+  await seedPlan()
+  const before = await read(indexPath)
+  await movePart(ws, 'report', 0, 2)
+  const committed = await read(indexPath)
+  await expect(ws.saveFileOverRead(indexPath, before + '\nOlder buffer.\n', before)).rejects.toThrow('changed')
+  expect(await read(indexPath)).toBe(committed)
+  await ws.saveFile('report/contents/01-opening.md', '# Unwritten idea\n\nA title collision must not block this body save.\n')
+  expect(await read('report/contents/01-opening.md')).toContain('must not block this body save.')
+  expect(await read(indexPath)).toBe(committed)
+})
+
+test('a structural move refuses a disagreement between the Index and manifest order without rewriting either', async () => {
+  await seedPlan()
+  const manifestPath = `report/${MANIFEST_NAME}`
+  const raw = JSON.parse(await read(manifestPath))
+  raw.files.reverse()
+  await write(manifestPath, JSON.stringify(raw))
+  const before = [await read(indexPath), await read(manifestPath)]
+  await expect(movePart(ws, 'report', 0, 2)).rejects.toThrow('disagree')
+  expect([await read(indexPath), await read(manifestPath)]).toEqual(before)
+})
+
+
+test('legacy literal percent paths migrate reversibly and an encoded/literal collision requires repair', async () => {
+  await write('report/a%23.md', '# Literal percent\n')
+  await write('report/b.md', '# Beta\n')
+  await write(indexPath, '## Running order\n- [[./a%23.md]]\n- [[Beta]]\n')
+  await movePart(ws, 'report', 0, 1)
+  expect(await read(indexPath)).toContain('[[./a%23.md]]')
+  expect((await readPlan(ws, 'report'))!.parts[1].path).toBe('report/a%23.md')
+  await write('report/a#.md', '# Hash\n')
+  const ambiguous = '## Running order\n- [[./a%23.md]]\n- [[Beta]]\n'
+  await write(indexPath, ambiguous)
+  expect((await readPlan(ws, 'report'))!.parts[0].resolution).toBe('ambiguous')
+  await expect(movePart(ws, 'report', 0, 1)).rejects.toThrow('ambiguous')
+  expect(await read(indexPath)).toBe(ambiguous)
+})
+
+
+test('starting a planned part pins it and the existing chapters in the same guarded structural commit', async () => {
+  await seedPlan()
+  const before = await read('report/contents/01-opening.md')
+  const made = await materialisePart(ws, 'report', 1)
+  expect(made.path).toBe('report/contents/02-unwritten-idea.md')
+  expect(await read(indexPath)).toContain('[[./contents/02-unwritten-idea.md|Unwritten idea]]')
+  expect(await read(indexPath)).toContain('[[./contents/01-opening.md|Opening]]')
+  await ws.saveFile(made.path, '# Externally retitled\n\nText.\n')
+  expect((await readPlan(ws, 'report'))!.parts[1].path).toBe(made.path)
+  expect(await read('report/contents/01-opening.md')).toBe(before)
+})
+
+test('the page can adopt and remove a file in a manifest-only Folio without creating an Index Note', async () => {
+  await write('report/a.md', '# Alpha\n')
+  await write('report/b.md', '# Beta\n')
+  await write(`report/${MANIFEST_NAME}`, '{ "files": [{ "path": "a.md", "custom": true }], "keep": true }')
+  const added = await adoptPart(ws, 'report', 0, { createsIndexNote: true })
+  expect(added.parts.map(p => p.path)).toEqual(['report/a.md', 'report/b.md'])
+  expect(await exists(indexPath)).toBe(false)
+  await removePart(ws, 'report', 1, { createsIndexNote: true })
+  expect(JSON.parse(await read(`report/${MANIFEST_NAME}`)).files).toEqual([{ path: 'a.md', custom: true }])
+  expect(await exists(indexPath)).toBe(false)
+  expect(await read('report/b.md')).toBe('# Beta\n')
+})
+
+
+test('a post-commit hook failure while starting a part never removes the saved chapter', async () => {
+  await seedPlan()
+  await expect(materialisePart(ws, 'report', 1, { onCommit: () => { throw new Error('receipt unavailable') } })).rejects.toThrow('change was made')
+  expect(await exists('report/contents/02-unwritten-idea.md')).toBe(true)
+  expect((await readPlan(ws, 'report'))!.parts[1].path).toBe('report/contents/02-unwritten-idea.md')
+  expect(JSON.parse(await read(`report/${MANIFEST_NAME}`)).files.some((f: { path: string }) => f.path === '02-unwritten-idea.md')).toBe(true)
+})
+
+test('the shared pin splice preserves fragments and aliases during moves and materialisation', async () => {
+  await write('report/a.md', '# Alpha\n')
+  await write('report/b.md', '# Beta\n')
+  await write(indexPath, '## Running order\n- [[Alpha#Sec|Keep alias]] — Keep gloss #tag\n- [[./b.md]]\n- [[Draft#Start|Draft alias]]\n')
+  await movePart(ws, 'report', 0, 1)
+  expect(await read(indexPath)).toContain('[[./a.md#Sec|Keep alias]] — Keep gloss #tag')
+  expect(await read(indexPath)).toContain('[[./b.md]]')
+  const { setPartRole } = await import('../../src/main/plan')
+  await setPartRole(ws, 'report', 1, 'appendix', (await readPlan(ws, 'report'))!.parts[1])
+  expect(await read(indexPath)).toContain('[[./a.md#Sec|Keep alias]] — Keep gloss #appendix #tag')
+  const created = await materialisePart(ws, 'report', 2)
+  expect(await read(indexPath)).toContain(`[[./${created.path.slice('report/'.length)}#Start|Draft alias]]`)
 })

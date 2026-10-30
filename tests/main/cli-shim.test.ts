@@ -25,6 +25,13 @@ async function runWritten(path: string, args: string[], env?: NodeJS.ProcessEnv)
   return { status, stdout, stderr }
 }
 
+/** A no-app lookup confined to two empty fixture folders; the finder always returns no paths. */
+async function noAppShim(dir: string): Promise<string> {
+  const preferredDirs: [string, string] = [join(dir, 'empty-first'), join(dir, 'empty-second')]
+  await Promise.all(preferredDirs.map((path) => mkdir(path)))
+  return generateShim('net.example.not-installed-anywhere', { preferredDirs, finder: '/usr/bin/true' })
+}
+
 test('the shim finds the app by bundle identifier, never a fixed path, and passes arguments through', () => {
   const shim = generateShim(STABLE_BUNDLE_ID)
   expect(shim).toContain(`BUNDLE_ID='${STABLE_BUNDLE_ID}'`)
@@ -37,11 +44,11 @@ test('the shim finds the app by bundle identifier, never a fixed path, and passe
 })
 
 test('nothing the shim runs is looked up on PATH: a program of the same name planted ahead of /usr/bin is never run', async () => {
-  const shim = generateShim('net.example.not-installed-anywhere')
-  expect(shim.split('\n')[0]).toBe('#!/bin/sh')
-  expect(shim).not.toMatch(/(^|[\s(;])(mdfind|PlistBuddy|osascript)\b/m)
-  expect(shim).toContain('/usr/libexec/PlistBuddy -c')
-  expect(shim).not.toMatch(/\bPATH\b/)
+  const productionShim = generateShim('net.example.not-installed-anywhere')
+  expect(productionShim.split('\n')[0]).toBe('#!/bin/sh')
+  expect(productionShim).not.toMatch(/(^|[\s(;])(mdfind|PlistBuddy|osascript)\b/m)
+  expect(productionShim).toContain('/usr/libexec/PlistBuddy -c')
+  expect(productionShim).not.toMatch(/\bPATH\b/)
   const dir = await mkdtemp(join(tmpdir(), 'wf-shim-path-'))
   try {
     // Every name the script uses, planted as a program that leaves a mark when run.
@@ -52,10 +59,10 @@ test('nothing the shim runs is looked up on PATH: a program of the same name pla
       await chmod(join(planted, name), 0o755)
     }
     const path = join(dir, 'writeflex')
-    await writeFile(path, shim)
+    await writeFile(path, await noAppShim(dir))
     await chmod(path, 0o755)
-    const result = await runWritten(path, ['help'], { PATH: `${planted}:/usr/bin:/bin`, HOME: dir })
-    // The real search ran (Spotlight by its own path) and found nothing by that made-up identifier.
+    const result = await runWritten(path, [WHICH_APP_FLAG], { PATH: `${planted}:/usr/bin:/bin`, HOME: dir })
+    // The synthetic finder returns no paths; the production absolute finder is asserted separately.
     expect(result.status).toBe(127)
     expect(result.stderr).toContain('cannot find WriteFlex')
     expect((await readdir(dir)).filter((name) => name.startsWith('ran-'))).toEqual([])
@@ -66,9 +73,9 @@ test('a shim run with no app installed says so and exits 127', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-shim-'))
   try {
     const path = join(dir, 'writeflex')
-    await writeFile(path, generateShim('net.example.not-installed-anywhere'))
+    await writeFile(path, await noAppShim(dir))
     await chmod(path, 0o755)
-    const result = await runWritten(path, ['help'])
+    const result = await runWritten(path, [WHICH_APP_FLAG])
     expect(result.status).toBe(127)
     expect(result.stderr).toContain('cannot find WriteFlex (net.example.not-installed-anywhere)')
   } finally { await rm(dir, { recursive: true, force: true }) }

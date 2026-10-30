@@ -119,3 +119,12 @@ export function firstLossyCarriedKey(sourceText: string, parsed: Record<string, 
   }
   return null
 }
+
+/** Canonical source texts of the values in a JSON array already accepted by JSON.parse. */
+export function arrayValueTexts(text: string): string[] {
+ const values: string[] = []; let at = skipWhitespace(text,0)
+ if(text[at] !== '[') throw new Error('Expected a JSON array.')
+ at = skipWhitespace(text,at+1)
+ while(text[at]!==']' && at<text.length){const end=valueEnd(text,at);values.push(canonicalJsonText(text.slice(at,end)));at=skipWhitespace(text,end);if(text[at]===',')at=skipWhitespace(text,at+1);else break}
+ return values
+}

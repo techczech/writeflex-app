@@ -30,6 +30,7 @@ import { parseFrontmatter } from '../main/frontmatter'
 import { frontmatterBlock } from './markdown/frontmatter'
 import { eolOf, layoutOf } from './markdown/frontmatter-edit'
 import { parseMarkdownBlocks } from './markdown/dialect'
+import { stripFlagsInLine } from './markdown/flags'
 
 export type PartHeadingMode = 'own' | 'none' | 'missing'
 
@@ -201,7 +202,8 @@ function dropLinkTargets(text: string): string {
  * rewritten from it. Also applied to a frontmatter `title`, so both sides of a comparison read alike.
  * Linear in the text's length, and the whole text is read: nothing is cut.
  */
-export function headingPlainText(raw: string): string {
+export function headingPlainText(rawWithFlags: string): string {
+  const raw = stripFlagsInLine(rawWithFlags) // a needs-work flag is not part of the title
   const hashesBeforeAttributes = endsInHashesBeforeAttributes(raw)
   let text = dropClosingHashes(raw)
   text = dropComments(text)

@@ -36,6 +36,9 @@ test('renders keyboard-focusable session rows beneath their version or Working p
   try {
     const html = renderToStaticMarkup(
       <VersionsPane
+        attachmentUndo={{ id: "multi-file-map", files: 3 }}
+        activePath="draft.md"
+        waitingHistory={[{ from: 'old.md', count: 2 }, { from: '.draft.md', count: 1 }]}
         versions={[version]}
         allChanges={[
           change('working_1', {
@@ -80,6 +83,10 @@ test('renders keyboard-focusable session rows beneath their version or Working p
     expect(html).toContain('aria-label="Pending session"')
     expect(html).toContain('aria-label="Settled session"')
     expect(html).toContain('<span class="vcount">2</span>')
+    expect(html).toContain('History waiting to be reattached (1 version, from .draft.md)')
+    expect(html.match(/>Attach here<\/button>/g)).toHaveLength(2)
+    expect(html).toContain('Undo history attachment (3 files)')
+    expect(html).toContain('History waiting to be reattached (2 versions, from old.md)')
   } finally {
     Date.now = originalNow
   }

@@ -12,10 +12,14 @@
  * route before it calls a Plan write, and again inside that write against the very read it is made from.
  */
 
-import { manifestContentRootRefused, manifestEntryPointsOutsideFolio, resolveManifestFilePath, type Folio } from './folio'
+import { manifestContentRootRefused, manifestEntryPointsOutsideFolio, manifestPartEntries, type Folio } from './folio'
 import { readPlanWithManifest, type Plan } from './plan'
 import type { Workspace } from './workspace'
 import { isAgentInstructionsName } from '../shared/folio-agent-files'
+import { isRoomSupportName } from '../shared/folio-part-name'
+import type { ExportOrderAgreement } from '../shared/export-order-agreement'
+
+export type { ExportOrderAgreement } from '../shared/export-order-agreement'
 
 export type OutlineOrderReason =
   | 'no-index' // the Index Note is a file the workspace does not list, so there is no Folio outline to read
@@ -43,9 +47,9 @@ export function assessOutlineOrder(plan: Plan | null, manifest: Folio | null, pr
   if (manifest.unreadableEntries) return { ok: false, reason: 'unreadable-entry' }
   if (manifestContentRootRefused(plan.dir, manifest)) return { ok: false, reason: 'outside-entry' }
   const manifestOrder: string[] = []
-  for (const file of manifest.files) {
+  // The manifest's logical order: an entry naming a room support file is no part and is not compared (D-FILES-2 (c)).
+  for (const { file, path } of manifestPartEntries(plan.dir, manifest, present)) {
     if (manifestEntryPointsOutsideFolio(plan.dir, manifest, file)) return { ok: false, reason: 'outside-entry' }
-    const path = resolveManifestFilePath(plan.dir, manifest, file, present)
     if (!path) return { ok: false, reason: 'missing-file' }
     if (isAgentInstructionsName(path)) return { ok: false, reason: 'agent-instructions' }
     manifestOrder.push(path)
@@ -58,9 +62,45 @@ export function assessOutlineOrder(plan: Plan | null, manifest: Folio | null, pr
   return agree ? { ok: true, order: manifestOrder } : { ok: false, reason: 'disagree', manifestOrder }
 }
 
+/**
+ * Whether export and sharing follow the running order (spec-folio-room-data-model § 8 D-ORD-3). Pure, write-free (I-4).
+ * Unlike `assessOutlineOrder` it does not stop at an unwritten part or a missing file: it compares two projections.
+ * - Index projection: the running order's written parts, in order, minus room support files (unwritten parts skipped).
+ * - Manifest projection: the manifest's logical order (`manifestPartEntries`, as `folioPieces` resolves it), with
+ *   missing files and agent instructions skipped, as export skips them.
+ * The order is judged on the files both projections hold, each restricted to them, independently of membership, so
+ * an extra entry on either side cannot hide a wrong order. Membership differences are reported beside it.
+ * `manifestExists`: a manifest file is there (false: `manifest` null means no manifest; true: it could not be parsed).
+ */
+export function exportOrderAgreement(plan: Plan, manifest: Folio | null, present: ReadonlySet<string>, manifestExists: boolean): ExportOrderAgreement {
+  if (!manifest) return manifestExists ? { kind: 'unreadable' } : { kind: 'no-manifest' }
+  if (manifest.unreadableEntries || manifestContentRootRefused(plan.dir, manifest)) return { kind: 'unreadable' }
+  const entries = manifestPartEntries(plan.dir, manifest, present)
+  if (entries.some(({ file }) => manifestEntryPointsOutsideFolio(plan.dir, manifest, file))) return { kind: 'unreadable' }
+  const manifestOrder = entries.flatMap(({ path }) => (path && !isAgentInstructionsName(path) ? [path] : []))
+  const indexOrder = plan.parts.flatMap((part) => (part.path !== null && !isRoomSupportName(part.path) ? [part.path] : []))
+  const inManifest = new Set(manifestOrder)
+  const inIndex = new Set(indexOrder)
+  const index = indexOrder.filter((path) => inManifest.has(path))
+  const listed = manifestOrder.filter((path) => inIndex.has(path))
+  const differs = index.length !== listed.length || index.some((path, at) => path !== listed[at])
+  const notInExport = indexOrder.filter((path) => !inManifest.has(path))
+  const notInRunningOrder = manifestOrder.filter((path) => !inIndex.has(path))
+  if (!differs && notInExport.length === 0 && notInRunningOrder.length === 0) return { kind: 'agree' }
+  return { kind: 'disagree', ...(differs ? { orderDiffers: { index, manifest: listed } } : {}), notInExport, notInRunningOrder }
+}
+
 /** The files the Folio's folder holds now (the listing `folioPieces` resolves entries against). */
 export async function presentInFolio(ws: Workspace, dir: string): Promise<Set<string>> {
   return new Set((await ws.listFilesIn(dir)).map((file) => file.path))
+}
+
+/** `exportOrderAgreement` from one fresh read, with the Plan it was made from; null when the Folio has no Index Note. Writes nothing. */
+export async function readExportOrderAgreement(ws: Workspace, dir: string): Promise<{ agreement: ExportOrderAgreement; plan: Plan; manifestExists: boolean } | null> {
+  const read = await readPlanWithManifest(ws, dir)
+  if (!read) return null
+  const { manifest, manifestExists } = read.loaded
+  return { agreement: exportOrderAgreement(read.plan, manifest, await presentInFolio(ws, dir), manifestExists), plan: read.plan, manifestExists }
 }
 
 /** The assessment from one fresh read, with the Plan it was made from. */

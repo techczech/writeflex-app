@@ -8,6 +8,7 @@
  * folio.create_manifest capability / Make Folio), never something this reader does.
  */
 
+import { folioDeclaration, assertNoRelatedFolio } from './folio-declaration'
 import { existsSync, lstatSync } from 'node:fs'
 import { posix } from 'node:path'
 import type { Workspace } from './workspace'
@@ -15,7 +16,7 @@ import { MANIFEST_NAME } from '../shared/folio-constants'
 import { jsonArrayLayout, rewriteJsonArrayByKey } from './json-array-layout'
 import { isAgentInstructionsName } from '../shared/folio-agent-files'
 import { chapterNumber, compareChapterOrder } from '../shared/folio-chapter-order'
-import { isFolioPartCandidateName, isNotInOutlineName } from '../shared/folio-part-name'
+import { isFolioPartCandidateName, isNotInOutlineName, isRoomSupportName } from '../shared/folio-part-name'
 
 export const FOLIO_BACKUP_NAME = '.folio-backup.json'
 export const FOLIO_OWNERSHIP_NAME = '.folio-instructions.json'
@@ -42,8 +43,9 @@ export type Folio = {
   unreadableEntries?: true
 }
 /** A listed entry that will not be read or exported, with its path exactly as the manifest wrote it.
- *  `agent-instructions`: the entry names AGENTS.md, CLAUDE.md or a conflict copy of either, which is never a part. */
-export type FolioLeftOut = { path: string; reason: 'not-found' | 'outside-folio' | 'agent-instructions' }
+ *  `agent-instructions`: the entry names AGENTS.md, CLAUDE.md or a conflict copy of either, which is never a part.
+ *  `room-support`: the entry names the Folio room's evidence-and-notes file or a `.canvas` file (`isRoomSupportName`). */
+export type FolioLeftOut = { path: string; reason: 'not-found' | 'outside-folio' | 'agent-instructions' | 'room-support' }
 /** A Folio's listed entries, resolved: the pieces in manifest order, and the entries left out. */
 export type FolioPieces = { pieces: string[]; leftOut: FolioLeftOut[] }
 
@@ -124,6 +126,11 @@ export function manifestFilePathCandidates(dir: string, manifest: Folio, file: P
   return candidates
 }
 
+/** Shared folder predicate for Plan pools, labels and agent strays. */
+export function pathUnderFolioRoot(root: string, path: string): boolean {
+  return root === '' || path.startsWith(`${root.replace(/\/+$/, '')}/`)
+}
+
 /** Resolve an authored manifest path without changing its original string. Null when the file is not
  *  in the listing, or when the path leaves the Folio's folder. */
 export function resolveManifestFilePath(
@@ -135,9 +142,57 @@ export function resolveManifestFilePath(
   return manifestFilePathCandidates(dir, manifest, file).find((path) => present.has(path)) ?? null
 }
 
-/** The manifest's `title_matter` file as a workspace path, or null when it names none or no present file (ADR-0046). */
+/**
+ * Whether an authored manifest path names a Folio room support file (`isRoomSupportName`): judged on the path as
+ * authored AND on every workspace path it can resolve to (`manifestFilePathCandidates`, normalised, so the one
+ * `resolveManifestFilePath` returns is among them). An authored `_paper_EVIDENCE-AND-NOTES.md/x/..` keeps no support
+ * basename but normalises to the support file (Opus review r1 of Folio room ticket 04). Pure: judged on names, with
+ * or without the file present. Links are judged by `resolvesToRoomSupportFile` at the boundaries that read.
+ */
+function namesRoomSupportFile(dir: string, manifest: Folio, file: Pick<FolioFile, 'path'>): boolean {
+  return isRoomSupportName(file.path) || manifestFilePathCandidates(dir, manifest, file).some(isRoomSupportName)
+}
+
+/** The manifest's `title_matter` file as a workspace path, or null when it names none or no present file (ADR-0046).
+ *  Null too when it names a Folio room support file (`namesRoomSupportFile`: authored or resolved): such a file is
+ *  never a title page, front matter or the source of an export title (I-9, spec-folio-room-data-model § 22, § 23 r6-1). */
 export function titleMatterPath(dir: string, manifest: Folio, present: ReadonlySet<string>): string | null {
-  return manifest.titleMatter ? resolveManifestFilePath(dir, manifest, { path: manifest.titleMatter }, present) : null
+  if (!manifest.titleMatter || namesRoomSupportFile(dir, manifest, { path: manifest.titleMatter })) return null
+  return resolveManifestFilePath(dir, manifest, { path: manifest.titleMatter }, present)
+}
+
+/**
+ * One entry of a manifest's logical order (`manifestPartEntries`). `slot` is the entry's index in `manifest.files`,
+ * which is its index in the authored `files` array whenever the manifest has no `unreadableEntries` (the only writer
+ * that maps back by slot, folio-manifest-order.ts, refuses a manifest that has them). `path` is the entry resolved by
+ * `resolveManifestFilePath`: null when no file is at its place, or it has no place inside the Folio's folder.
+ */
+export type ManifestPartEntry = { slot: number; file: FolioFile; path: string | null }
+
+/**
+ * THE function that turns a manifest's `files` into an order (spec-folio-room-data-model § 1 D-FILES-2 (c)): the
+ * entries in authored order, each with its slot and resolved path, minus every entry naming a Folio room support
+ * file (`namesRoomSupportFile`: on the authored path or any place it resolves to, so the listing does not matter). Every reader
+ * of a Folio's running order, part list or first part asks here; a unit test (folio-manifest-part-entries.test.ts)
+ * fails on any other reader of a parsed manifest's `files` outside its allow-list. Pure; an entry listed twice
+ * appears twice, as authored.
+ */
+export function manifestPartEntries(dir: string, manifest: Folio, present: ReadonlySet<string>): ManifestPartEntry[] {
+  const entries: ManifestPartEntry[] = []
+  manifest.files.forEach((file, slot) => {
+    if (!namesRoomSupportFile(dir, manifest, file)) entries.push({ slot, file, path: resolveManifestFilePath(dir, manifest, file, present) })
+  })
+  return entries
+}
+
+/** The entries `manifestPartEntries` leaves out, with their slots: the ones naming a room support file (`namesRoomSupportFile`).
+ *  They form no order; `folioPieces` lists them in `leftOut` as `room-support`. */
+export function manifestRoomSupportEntries(dir: string, manifest: Folio): Array<{ slot: number; file: FolioFile }> {
+  const entries: Array<{ slot: number; file: FolioFile }> = []
+  manifest.files.forEach((file, slot) => {
+    if (namesRoomSupportFile(dir, manifest, file)) entries.push({ slot, file })
+  })
+  return entries
 }
 
 /** Whether an entry has no place inside the Folio's folder under either path convention, or belongs to
@@ -154,15 +209,15 @@ export { isFolioPartCandidateName } from '../shared/folio-part-name'
 /**
  * The never-a-part rule as the Collection lists apply it (the Folder dashboard rows, the Board, the Word
  * export, word counts, digests): a file named as agent instructions anywhere inside a Folio, that is, its own
- * folder or any folder above it up to the Collection root holds a manifest (so an AGENTS.md in a Folio's
+ * folder or any folder above it up to the Collection root declares a Folio (so an AGENTS.md in a Folio's
  * `content_root` subfolder is left out too). An AGENTS.md in a folder that is in no Folio is left to show as before.
  */
-export function isFolioAgentInstructionsFile(ws: Pick<Workspace, 'absolute'>, path: string): boolean {
+export function isFolioAgentInstructionsFile(ws: Pick<Workspace, 'root' | 'absolute'>, path: string): boolean {
   if (!isAgentInstructionsName(path)) return false
   let dir = posix.dirname(path) === '.' ? '' : posix.dirname(path)
   for (;;) {
     try {
-      if (existsSync(ws.absolute(inDir(dir, MANIFEST_NAME)))) return true
+      if (folioDeclaration(ws, dir).isFolio) return true
     } catch {
       return false
     }
@@ -252,7 +307,8 @@ export function parseManifest(dir: string, raw: string): Folio | null {
 
 /** Refuse every destructive Folio-create path when a manifest already exists, including malformed
  *  JSON that readManifest deliberately treats as a non-Folio for read-only projection purposes. */
-export async function assertManifestAbsent(ws: Workspace, dir: string): Promise<void> {
+export async function assertManifestAbsent(ws: Workspace, dir: string, reportSkipped?: (message: string) => void): Promise<void> {
+  await assertNoRelatedFolio(ws, dir, reportSkipped)
   const path = inDir(dir, MANIFEST_NAME)
   if (!existsSync(ws.absolute(path))) return
   if (await readManifest(ws, dir)) {
@@ -276,14 +332,16 @@ export async function folioPieces(ws: Workspace, dir: string, listing?: Readonly
   // (`listing`: that folder's listing, when the caller already has it).
   const present = listing ?? new Set((await ws.listFilesIn(dir)).map((f) => f.path))
   const pieces: string[] = []
-  const leftOut: FolioLeftOut[] = []
-  for (const file of manifest.files) {
-    const path = resolveManifestFilePath(dir, manifest, file, present)
-    if (path && isAgentInstructionsName(path)) leftOut.push({ path: file.path, reason: 'agent-instructions' })
+  const leftOut: Array<FolioLeftOut & { slot: number }> = []
+  // A room support file (evidence and notes, the Map) is never a piece, found or not (I-9), judged on the authored path and where it resolves.
+  for (const { slot, file } of manifestRoomSupportEntries(dir, manifest)) leftOut.push({ slot, path: file.path, reason: 'room-support' })
+  for (const { slot, file, path } of manifestPartEntries(dir, manifest, present)) {
+    if (path && isAgentInstructionsName(path)) leftOut.push({ slot, path: file.path, reason: 'agent-instructions' })
     else if (path) pieces.push(path)
-    else leftOut.push({ path: file.path, reason: manifestEntryPointsOutsideFolio(dir, manifest, file) ? 'outside-folio' : 'not-found' })
+    else leftOut.push({ slot, path: file.path, reason: manifestEntryPointsOutsideFolio(dir, manifest, file) ? 'outside-folio' : 'not-found' })
   }
-  return { pieces, leftOut }
+  // In the manifest's order, as one pass over `files` listed them.
+  return { pieces, leftOut: leftOut.sort((a, b) => a.slot - b.slot).map(({ path, reason }) => ({ path, reason })) }
 }
 
 /**

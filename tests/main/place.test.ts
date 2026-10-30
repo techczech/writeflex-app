@@ -273,6 +273,8 @@ describe('actionsAt: the drawn lists', () => {
       'Write: Blockquote',
       'Write: Bullet list',
       'Write: Strikethrough',
+      'Write: Flag the selection…',
+      'Write: Clear flag at cursor',
       'Write: Toggle Comment',
       'Write: Inline code',
       'Write: Clear formatting',
@@ -335,8 +337,8 @@ describe('actionsAt: the drawn lists', () => {
 
   test('state 19, in a paragraph: the commands the final drawing reaches (Format and Turn into children included)', () => {
     const listed = ids('paragraph', caretIn('Every wall', 3))
-    expect([...listed].sort()).toEqual([INSERT, 'edit.bold', 'edit.italic', 'edit.strikethrough', 'edit.link', 'edit.mark', 'block.quote', 'list.bullet', 'list.ordered', 'outline.makeHeadingAtSurroundingLevel', 'outline.makeHeadingOneLevelDeeper', 'outline.moveBlockUp', 'outline.moveBlockDown', 'insert.footnote', 'edit.toggleComment', 'readAloud.start', 'edit.inlineCode', 'edit.clearFormatting', 'block.duplicate', 'block.delete', 'turn.taskList', 'turn.codeBlock', 'turn.table', 'agent.askHere'].sort())
-    expect(listed).toHaveLength(24)
+    expect([...listed].sort()).toEqual([INSERT, 'edit.bold', 'edit.italic', 'edit.strikethrough', 'edit.link', 'edit.mark', 'edit.flagSelection', 'edit.clearFlag', 'block.quote', 'list.bullet', 'list.ordered', 'outline.makeHeadingAtSurroundingLevel', 'outline.makeHeadingOneLevelDeeper', 'outline.moveBlockUp', 'outline.moveBlockDown', 'insert.footnote', 'edit.toggleComment', 'readAloud.start', 'edit.inlineCode', 'edit.clearFormatting', 'block.duplicate', 'block.delete', 'turn.taskList', 'turn.codeBlock', 'turn.table', 'agent.askHere'].sort())
+    expect(listed).toHaveLength(26)
   })
 
   test('state 22, on a file row: exactly the drawn 9 rows, with no document needed', () => {

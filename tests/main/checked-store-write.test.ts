@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   readStoreFile,
+  removeStoreFile,
   StoreFileChanged,
   StoreFileExists,
   storeWriteSeams,
@@ -239,4 +240,27 @@ test('a create whose temporary file is rewritten in place before promotion is re
   }
   await expect(writeStoreFile(root, REL, 'INTENDED CONTENT', { mode: 'create' })).rejects.toBeInstanceOf(StoreWriteRefused)
   expect(await readdir(join(root, '.writeflex'))).toEqual([])
+})
+
+test('remove unlinks only the exact version the caller read (ticket 04 delete forever)', async () => {
+  await writeStoreFile(root, REL, 'one', { mode: 'create' })
+  await removeStoreFile(root, REL, await version())
+  expect(existsSync(target())).toBe(false)
+  expect(await readdir(join(root, '.writeflex'))).toEqual([])
+})
+
+test('remove refuses a file changed since the read, and a link at the name; both stay', async () => {
+  await writeStoreFile(root, REL, 'one', { mode: 'create' })
+  const read = await version()
+  await writeStoreFile(root, REL, 'two', { mode: 'replace', expect: read })
+  await expect(removeStoreFile(root, REL, read)).rejects.toBeInstanceOf(StoreFileChanged)
+  expect(await readFile(target(), 'utf8')).toBe('two')
+
+  await unlink(target())
+  const victim = join(outside, 'victim.json')
+  await writeFile(victim, 'outside', 'utf8')
+  await symlink(victim, target())
+  await expect(removeStoreFile(root, REL, await version().catch(() => read))).rejects.toBeInstanceOf(StoreWriteRefused)
+  expect(await readFile(victim, 'utf8')).toBe('outside')
+  expect(existsSync(target())).toBe(true)
 })

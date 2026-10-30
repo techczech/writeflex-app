@@ -41,6 +41,12 @@ function dockChangesLabel(total: number): string {
 }
 
 export type VersionsPaneProps = {
+  activePath?: string | null
+  waitingHistory?: Array<{ from: string; count: number }>
+  attachments?: Array<{ from: string; to: string }>
+  attachmentUndo?: { id: string; files: number } | null
+  onAttachHistory?: (input: { from: string; to: string }) => void
+  onUndoAttachment?: () => void
   versions: Version[]
   /** The full Change history — per-version change counts are derived from its version stamps. */
   allChanges: Change[]
@@ -93,6 +99,7 @@ function SessionRow({
  * pencil/name = rename in place), Compare, and the Save version commit gesture.
  */
 export function VersionsPane({
+  activePath, waitingHistory = [], attachments = [], attachmentUndo, onAttachHistory, onUndoAttachment,
   versions,
   allChanges,
   pendingCount,
@@ -155,6 +162,19 @@ export function VersionsPane({
           <ArrowLeftRight className="icon" aria-hidden="true" />
         </button>
       </div>
+      {waitingHistory.map(row => (
+        <div key={row.from} className="version-empty">
+          History waiting to be reattached ({row.count} version{row.count === 1 ? '' : 's'}, from {row.from})
+          {activePath && <button type="button" onClick={() => onAttachHistory?.({ from: row.from, to: activePath })}>Attach here</button>}
+        </div>
+      ))}
+      {attachments.map(row => (
+        <div key={row.from} className="version-empty">
+          <p>This file matches the first saved version of {row.from}.</p>
+          <button type="button" onClick={() => onAttachHistory?.(row)}>Reattach history from {row.from}</button>
+        </div>
+      ))}
+      {attachmentUndo && <button type="button" onClick={onUndoAttachment}>Undo history attachment{attachmentUndo.files > 1 ? ` (${attachmentUndo.files} files)` : ''}</button>}
       <button type="button" className="working-version" onClick={onReturnToCurrent}>
         <span className="spine-node current" aria-hidden="true" />
         <span className="vcopy">

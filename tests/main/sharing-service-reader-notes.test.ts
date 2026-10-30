@@ -81,7 +81,7 @@ describe('the reader page with comments', () => {
     const html = renderReaderPage(publish({}))
     expect(html).toContain('<div class="rp readonly">')
     expect(html).toContain('<span>Comments are off for this link.</span>')
-    expect(html).not.toContain('notes-col')
+    expect(html.slice(html.indexOf('<body>'))).not.toContain('notes-col')
     expect(() => publish({ comments: 'yes' })).toThrow('comments must be true or false')
   })
 

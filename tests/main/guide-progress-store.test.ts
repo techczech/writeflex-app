@@ -32,7 +32,7 @@ test('events are saved under one key, announced once each, and a repeat changes 
     store.stepDone('example')
     expect(changes).toEqual([GUIDE_PROGRESS_KEY, GUIDE_PROGRESS_KEY, GUIDE_PROGRESS_KEY, GUIDE_PROGRESS_KEY])
     const saved = JSON.parse(readFileSync(file, 'utf8'))
-    expect(Object.keys(saved.values)).toEqual([GUIDE_PROGRESS_KEY])
+    expect(Object.keys(saved.values)).toEqual(['agent.mode', GUIDE_PROGRESS_KEY])
     expect(parseGuideProgress(saved.values[GUIDE_PROGRESS_KEY])).toEqual({ ran: ['fold.current'], opened: ['Shape the document'], finished: {}, steps: { folder: 'walking-book', example: true }, read: [] })
     // A tick is not "a change made in Settings".
     expect(saved.changelog).toEqual([])
@@ -79,7 +79,7 @@ test('a topic read is saved under the same key, announced once, and is still the
     store.topicRead('not-a-topic')
     expect(changes).toEqual([GUIDE_PROGRESS_KEY])
     const saved = JSON.parse(readFileSync(file, 'utf8'))
-    expect(Object.keys(saved.values)).toEqual([GUIDE_PROGRESS_KEY])
+    expect(Object.keys(saved.values)).toEqual(['agent.mode', GUIDE_PROGRESS_KEY])
     expect(saved.changelog).toEqual([])
     // A new process, reading the same file: the record holds the topic; the example folder is not consulted.
     expect(new GuideProgressStore(new SettingsStore(file)).read().read).toEqual(['how.3'])

@@ -32,3 +32,25 @@ export function multiplexIpcChannel<T>(ipc: IpcLike, channel: string): (fn: (pay
     }
   }
 }
+
+
+let turnBackRequestId = 0
+
+/** The renderer arms Undo only after all of this conversion's change pushes have arrived. */
+export async function invokeTurnBackAfterNotifications(
+  ipc: IpcLike & { invoke: (channel: string, input: { dir: string; requestId: number }) => Promise<boolean | string> },
+  dir: string,
+): Promise<boolean | string> {
+  const requestId = ++turnBackRequestId
+  let finish!: () => void
+  const finished = new Promise<void>(resolve => { finish = resolve })
+  const listener = (_event: unknown, payload: unknown) => { if (payload === requestId) finish() }
+  ipc.on('folio:turn-back-finished', listener)
+  try {
+    const changed = await ipc.invoke('folio:turn-back', { dir, requestId })
+    if (changed) await finished
+    return changed
+  } finally {
+    ipc.removeListener('folio:turn-back-finished', listener)
+  }
+}

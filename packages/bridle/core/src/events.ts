@@ -10,6 +10,16 @@ import type {
 import type { AgentTrigger, ApprovalDenialReason, ApprovalRequest, BridleLane, ToolRisk, TraceEvent } from "./types.ts";
 
 export type TurnId = string;
+export type TurnEndReason = "provider-error" | "auth" | "network" | "aborted" | "tool-error" | "truncated" | "no-answer" | "no-text" | "checkpoint-failed";
+/** @deprecated Use TurnEndReason; successful turns can carry a reason too. */
+export type TurnFailureReason = TurnEndReason;
+export type TurnAuthLane = "oauth" | "apikey" | "env" | "none";
+export type TurnResponder = {
+  providerId: string;
+  modelId: string;
+  thinkingLevel?: "minimal" | "low" | "medium" | "high";
+  authLane: TurnAuthLane;
+};
 export type TurnOutcome = "completed" | "aborted" | "error";
 
 export type EgressSummary = {
@@ -27,17 +37,26 @@ export type TurnUsage = {
   costUsd?: number;
 };
 
+export type TurnToolError = { capability?: string; toolCallId?: string; message: string };
+
 export type TurnReceipt = {
   turnId: TurnId;
   lane: BridleLane;
   outcome: TurnOutcome;
+  /** Present on all newly recorded turns; optional for pre-0.15 receipts. */
+  responder?: TurnResponder;
+  reason?: TurnEndReason;
   /** Reasoning level captured when this turn began. */
   thinkingLevel: "minimal" | "low" | "medium" | "high";
   filesRead: string[];
   filesWritten: string[];
   callsDenied: number;
   callsStaged: number;
-  usage: TurnUsage;
+  usage?: TurnUsage;
+  toolErrors?: TurnToolError[];
+  writesAfterStop?: string[];
+  capabilitiesAfterStop?: string[];
+  truncated?: boolean;
   egress: EgressSummary;
   durationMs: number;
 };
@@ -45,6 +64,7 @@ export type TurnReceipt = {
 export type TurnResult = {
   turnId: TurnId;
   outcome: TurnOutcome;
+  reason?: TurnEndReason;
   answerText: string;
   receipt: TurnReceipt;
 };
@@ -59,6 +79,7 @@ export type ContextItem = {
 };
 
 export type BridleEventPayload =
+  | { type: "turn.activity"; turnId: TurnId; activity: import("./turns.ts").TurnActivity }
   | { type: "turn_start"; turnId: TurnId; lane: BridleLane; trigger: AgentTrigger; promptPreview: string; activeSkillId?: string }
   | { type: "assistant_delta"; turnId: TurnId; text: string }
   | { type: "assistant_message"; turnId: TurnId; text: string }

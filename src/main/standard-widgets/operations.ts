@@ -36,6 +36,8 @@
  * first, by the guarded write into the very folder the step recorded, and the files it made only after all of
  * that, so a moved document is never left in neither place.
  */
+import { relatedFolioMessage } from '../folio-declaration'
+
 import { lstatSync, readFileSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { join, posix } from 'node:path'
@@ -237,7 +239,7 @@ export class StandardWidgetUndoDesk {
    * after the stop makes the retry refuse before any widget file is removed.
    */
   undo(ws: Workspace, id: string): Promise<UndoResult> {
-    return ws.exclusiveAll(async () => {
+    return ws.exclusiveAll(() => ws.outsideCallRecords(async () => {
       const step = this.#held.get(id)
       if (!step || step.root !== ws.root) return { ok: false, code: 'not-held', message: 'This widget step is no longer held for undo.' }
       const realRoot = await realpath(ws.root)
@@ -253,7 +255,7 @@ export class StandardWidgetUndoDesk {
         const folders = step.guarded
         for (const change of putBackOrder(stepChanges(step.log))) {
           if (done.has(change.path)) continue
-          const outcome = await ws.outsideCallRecords(() => putBackOne(ws, realRoot, change, folders))
+          const outcome = await ws.outsideCallRecords(() => putBackOne(ws, realRoot, change, folders, step.moved))
           if (outcome !== 'restored') {
             invalidateFolioPlaces(ws.root)
             const failed = outcome === 'changed' ? [] : [{ path: change.path, reason: outcome.reason }]
@@ -291,7 +293,7 @@ export class StandardWidgetUndoDesk {
       invalidateFolioPlaces(ws.root)
       this.#held.delete(id)
       return { ok: true, restored, movedBack: (step.moved ?? []).map((move) => ({ from: move.to, to: move.from })) }
-    })
+    }))
   }
 }
 
@@ -434,7 +436,7 @@ async function recordedMove<T>(ws: Workspace, realRoot: string, plan: MoveStepPl
     return { ok: true, value, log, made }
   } catch (error) {
     snapshotSeams.afterStep?.(log, snapshot, bytesBefore)
-    const outcome = await putBackStep(ws, realRoot, stepChanges(log), plan.folders)
+    const outcome = await putBackStep(ws, realRoot, stepChanges(log), plan.folders, plan.moves)
     const left = removeMadeFolders(realRoot, made)
     if (error instanceof FolderLeftBehind) left.push({ path: error.folder, reason: LEFT_FOLDER })
     invalidateFolioPlaces(ws.root)
@@ -503,7 +505,7 @@ export async function createStandardWidget(ws: Workspace, desk: StandardWidgetUn
     // when that plan is not the one the sheet showed. A folder that needs the sheet is refused without an answer.
     let own: OwnFolderPlan | null = null
     if (folio) {
-      if (request.placement !== undefined) return folderChanged(homeLabel)
+      if (request.placement !== undefined) return refusal(relatedFolioMessage(folio.dir))
     } else {
       const answer = await readOwnFolderFacts(ws, { documentPath: requestedPath, sourceFile: request.sourceFile, name: request.name })
       if (!answer.ok) return refusal(answer.message)
@@ -655,7 +657,7 @@ export async function createStandardWidget(ws: Workspace, desk: StandardWidgetUn
         if (walkNoFollowSync(realRoot, newFolder).kind !== 'missing') throw new Error(`${newFolder} appeared meanwhile, so nothing was moved`)
         const ownFolder: CheckedFolder = { path: newFolder, id: ensureFolder(realRoot, newFolder, made) }
         /** What each original held when its copy was made: its old name is removed only over that text. */
-        const originals: Array<{ from: string; fromFolder: CheckedFolder; read: string }> = []
+        const originals: Array<{ from: string; to: string; fromFolder: CheckedFolder; read: string }> = []
         let documentText = current
         for (const move of moving) {
           const copied = await copyFileGuarded(ws, realRoot, {
@@ -664,7 +666,7 @@ export async function createStandardWidget(ws: Workspace, desk: StandardWidgetUn
             beforeWrite: (read) => journal.noteCopy(move.from, move.to, read),
             ...(move.from === requestedPath ? { expected: current } : {}),
           })
-          originals.push({ from: move.from, fromFolder: homeChecked, read: copied.read })
+          originals.push({ from: move.from, to: move.to, fromFolder: homeChecked, read: copied.read })
           if (move.from === requestedPath) documentText = copied.written
         }
         const manifest = { schema_version: 1, content_root: '', files: own!.documents.map((path) => ({ path, role: 'section' })) }
@@ -677,7 +679,7 @@ export async function createStandardWidget(ws: Workspace, desk: StandardWidgetUn
           // The data file's copy (an edit to it written in its place); a moved one keeps its original until the end.
           const edit = checkedEdit ? { expected: checkedEdit.edit.basis, replacement: checkedEdit.edit.text } : {}
           const copied = await copyFileGuarded(ws, realRoot, { from: data.from, to: data.to, toFolder: widgetFolder, ...edit, beforeWrite: (read) => journal.noteCopy(data.from, data.to, read) })
-          if (data.mode === 'move') originals.push({ from: data.from, fromFolder: dataHome!, read: copied.read })
+          if (data.mode === 'move') originals.push({ from: data.from, to: data.to, fromFolder: dataHome!, read: copied.read })
         })
         // Links elsewhere carried after the moved files (relative links here, wikilinks by the app's rename repair,
         // planned over the Workspace as it will be once the old names are gone).
