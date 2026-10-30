@@ -1093,7 +1093,9 @@ function mapReviewSelection(tr: Transaction, syntheticChanges: ChangeSet, insert
   const mapPos = (pos: number, assoc: number): number => {
     for (const insert of inserts) {
       const atStart = pos === insert.fromB && assoc < 0
-      const atEnd = pos === insert.toB && assoc > 0
+      // The requested position is already after this insertion, even when the cursor
+      // associates with the character before it (as native typing can request).
+      const atEnd = pos === insert.toB
       if ((pos > insert.fromB && pos < insert.toB) || atStart || atEnd) {
         return insert.syntheticFrom + (pos - insert.fromB)
       }
