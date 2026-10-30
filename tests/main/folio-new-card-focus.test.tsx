@@ -1,5 +1,6 @@
-import { expect, test } from 'bun:test'
+import { expect } from 'bun:test'
 import { chromium } from 'playwright'
+import { isolatedBrowserTest } from '../helpers/isolated-browser-test'
 
 // Real React DOM and Chromium focus, using the browser unit-test route already used
 // by assistant-turns.test.tsx. The virtual entry keeps the synthetic fixture here.
@@ -63,7 +64,7 @@ declare global {
   }
 }
 
-test('New card focus is ready at opening commit in cards and Outline, with no stale frame after close or unmount', async () => {
+isolatedBrowserTest(import.meta.path, 'New card focus is ready at opening commit in cards and Outline, with no stale frame after close or unmount', async () => {
   const result = await Bun.build({
     entrypoints: [import.meta.path], target: 'browser', format: 'iife',
     plugins: [{

@@ -1,5 +1,6 @@
-import { expect, test } from 'bun:test'
+import { expect } from 'bun:test'
 import { chromium } from 'playwright'
+import { isolatedBrowserTest } from '../helpers/isolated-browser-test'
 
 // Exercise the real hook, React state, pointer listeners and browser storage together.
 // The in-memory entry needs no app, fixture files or additional dependencies.
@@ -58,7 +59,7 @@ type WidthHarness = {
   end: () => WidthSnapshot
 }
 
-test('docked Scratchpad width has an independent preference, viewport cap and captured resize destination', async () => {
+isolatedBrowserTest(import.meta.path, 'docked Scratchpad width has an independent preference, viewport cap and captured resize destination', async () => {
   const result = await Bun.build({
     entrypoints: [import.meta.path], target: 'browser', format: 'iife',
     plugins: [{ name: 'pane-width-hook-fixture', setup(build) {
