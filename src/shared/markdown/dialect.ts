@@ -288,8 +288,8 @@ export function parseMarkdownBlocks(text: string): Tree {
  * the parser is configured with this very dialect, and it also finds code inside a list item or a
  * block quote, which no line scanner ever did.
  *
- * Cost is one extra parse per cleaned document — export and copy already parse, and both act on one
- * document at a time.
+ * A cleaner needs this extra parse only when it finds a candidate to remove; its ranges are
+ * shared by all candidates in that call.
  */
 type Range = { from: number; to: number }
 
@@ -344,11 +344,11 @@ const COMMENT_LINE = /^\s*\/\//
 /** Drop WriteFlex `//` post-it comment lines (ADR-0021). Code-aware: a `//` line inside a fenced OR
  *  an indented code block is the writer's code and stays, wherever that block sits. */
 export function stripComments(text: string): string {
-  const code = codeBlockRanges(text)
+  let code: Range[] | undefined
   const kept: string[] = []
   let start = 0
   for (const line of text.split('\n')) {
-    if (COMMENT_LINE.test(line) && !insideCode(code, firstInk(line, start))) { start += line.length + 1; continue }
+    if (COMMENT_LINE.test(line) && !insideCode(code ??= codeBlockRanges(text), firstInk(line, start))) { start += line.length + 1; continue }
     kept.push(line)
     start += line.length + 1
   }
@@ -463,7 +463,7 @@ const FOOTNOTE_OPENER = /^\[\^([^\]\s]+)\]:[ \t]*(.*)$/
  *  definition. Lifting it destroyed the example twice over — the body lost the line, and the
  *  continuation ran on into the closing fence and folded it into the note. */
 export function footnoteDefinitions(text: string): { body: string; definitions: FootnoteDefinition[] } {
-  const code = codeBlockRanges(text)
+  let code: Range[] | undefined
   const lines = text.split('\n')
   const starts: number[] = []
   for (let at = 0, index = 0; index < lines.length; index += 1) { starts.push(at); at += lines[index].length + 1 }
@@ -471,7 +471,9 @@ export function footnoteDefinitions(text: string): { body: string; definitions: 
   const kept: string[] = []
   for (let index = 0; index < lines.length; index += 1) {
     const opener = FOOTNOTE_OPENER.exec(lines[index])
-    if (!opener || insideCode(code, firstInk(lines[index], starts[index]))) { kept.push(lines[index]); continue }
+    if (!opener) { kept.push(lines[index]); continue }
+    code ??= codeBlockRanges(text)
+    if (insideCode(code, firstInk(lines[index], starts[index]))) { kept.push(lines[index]); continue }
     const parts = [opener[2].trim()]
     while (index + 1 < lines.length) {
       const next = lines[index + 1]
