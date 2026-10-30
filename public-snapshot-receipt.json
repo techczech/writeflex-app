@@ -1,6 +1,6 @@
 {
   ".github/workflows/release.yml": "2f01ea0a6088e331c2e6c979d1ccd4c7c83b7f753570bc29564378e8f47ecdde",
-  ".github/workflows/tests.yml": "c20a3e1828808ed6804be60d8fcac002b2567989a241899920f5b16c0e0ef358",
+  ".github/workflows/tests.yml": "eab6b9bb5784d3dce0822c932b12e59eb74914713cee421847e24b03b1868fb4",
   ".gitignore": "235f802423bc5df22de5b9078774d41a6cace04361f855dfd461e7754ade9aca",
   ".gitleaks.toml": "b6a1349c0d4ab0913dd783698eeef12a3bd000718675375a0c9cf8a987ad8ec8",
   ".gitleaksignore": "fe56ea79045c9ffbc630940b0783a00451d650c18c91f036fcf4116de5285bb8",
@@ -1454,6 +1454,7 @@
   "tests/helpers/html-export-leak-harness.ts": "09bfaa66bff0fc9af8cbe58878cff73f65e701046df2f0f2f77faaeab027d34b",
   "tests/helpers/isolated-browser-test.ts": "1e691cd7087f5117136c16a3845d541f219f00c8458f13b38d54bca88be2d3b7",
   "tests/helpers/memory-secrets.ts": "c7ba4926824a1c8a6fa4a6acec263d1e5dafa5e292592a21302ee0464e60c5fd",
+  "tests/helpers/observe-synthetic-scout.cjs": "789e3d3fb2698955bcb9800b2a168f257b087046f98de7257f4fe04cc0290099",
   "tests/helpers/own-folder-answer.ts": "8d82dd0cfd66d2dc70f84c9cc01b1d8d859e2a887fbbb665053d5297715d3c18",
   "tests/helpers/owner-lock-child.ts": "32e2474522857e765708590334214c5bcdd10e2da8760be61aff9d9c527ab0fc",
   "tests/helpers/plant-change-path.ts": "68024e85abc65314e782a6a019c1ca6938efc4c3e8c8302a2cd9ded287c07964",
