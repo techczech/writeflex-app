@@ -1,3 +1,4 @@
+import type { ScratchMode } from '../../../shared/scratchpad-layout'
 import { createNoticeTimer } from './notice-timer'
 import { ROOM_ON_SCREEN_EVENT, roomOnScreen } from '../plan/room-on-screen'
 import { flushRoomPending } from '../folio-room-pending'
@@ -612,6 +613,8 @@ export default function App(): JSX.Element {
   const [guideWanted, setGuideWanted] = useState(0)
   const openGuideTabRef = useRef<() => void>(() => {})
   const [removeExampleOpen, setRemoveExampleOpen] = useState(false)
+  const [scratchpadMode, setScratchpadMode] = useState<ScratchMode>('collapsed')
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const {
     leftTab,
     rightTab,
@@ -629,6 +632,8 @@ export default function App(): JSX.Element {
     startPaneResize,
   } = usePaneLayout({
     guideShown: guideInRow,
+    scratchpadDocked: scratchpadMode === 'docked',
+    viewportWidth,
     onLeftTabOpened: (tab) => {
       if (tab === 'outline') setOutlineOpen(true)
     },
@@ -639,7 +644,6 @@ export default function App(): JSX.Element {
   })
   // The narrow-window rule (ticket 07, state 34): with the Guide open and the window too narrow to keep the
   // editor at 560px beside both panes, the Files pane closes — once per narrowing.
-  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   useEffect(() => {
     const onResize = (): void => setViewportWidth(window.innerWidth)
     window.addEventListener('resize', onResize)
@@ -8913,6 +8917,7 @@ export default function App(): JSX.Element {
         </div>
       )}
       <ScratchpadHost
+        onModeChange={setScratchpadMode}
         api={scratchpadApi}
         buffer={scratchpadBufferNow}
         owned={(path) => !owner.isSaved(path) && owner.generationsOf(path) !== undefined}

@@ -4,6 +4,7 @@
 // commands through `api`; everything else about the feature lives under src/renderer/src/scratchpad/.
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import { createPortal } from 'react-dom'
+import type { ScratchMode } from '../../../shared/scratchpad-layout'
 import type { EditorState } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import { ScratchpadPanel, type ScratchpadPanelCommands } from '../components/scratchpad/ScratchpadPanel'
@@ -45,7 +46,7 @@ export type ScratchpadHostApi = {
 type Say = (message: string, action?: { label: string; run: () => void }) => void
 
 export function ScratchpadHost({
-  api, root, activePath, assetBaseUrl, view, say, dockSlot, dockVisible, railOpen, openDock, editorPath, editable, suspended = false, liveKey, buffer, owned, navigate, partName = defaultPartName, externalSources = null, onOpenSettings,
+  api, root, activePath, assetBaseUrl, view, say, dockSlot, dockVisible, railOpen, openDock, editorPath, editable, suspended = false, liveKey, buffer, owned, navigate, partName = defaultPartName, externalSources = null, onOpenSettings, onModeChange,
 }: {
   /** The editor shows the live document (not a saved version or a past session); see the controller.
    *  Inventory buffers are RAW editor text plus excluded old-role spans (the one coordinate contract). */
@@ -78,6 +79,8 @@ export function ScratchpadHost({
   /** The Settings › Scratchpad switches as they stand; a source tab exists only while on. */
   externalSources?: { talkweaver: boolean; slidewell: boolean } | null
   onOpenSettings?: () => void
+  /** Report the actual mode so the rail can use its dock-specific width. */
+  onModeChange?: (mode: ScratchMode) => void
 }): JSX.Element | null {
   const bridge = window.writeflex.scratchpad
   const layout = useScratchpadLayout()
@@ -254,6 +257,7 @@ export function ScratchpadHost({
   }, [liveKey, activePath])
 
   const mode = layout.layout.mode
+  useEffect(() => { onModeChange?.(mode) }, [mode, onModeChange])
   // Docking means the rail's Scratchpad tab: open it when the panel docks.
   useEffect(() => { if (mode === 'docked') openDock() }, [mode]) // eslint-disable-line react-hooks/exhaustive-deps
   // The placement note follows the caret while the panel is open; the selection bubble follows the

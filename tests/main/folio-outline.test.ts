@@ -295,7 +295,9 @@ test('saving one file re-reads only that file', async () => {
 test('the heading cache holds exactly 2,000 files per root, the oldest out first', async () => {
   const names = Array.from({ length: 2010 }, (_, i) => `p${String(i).padStart(4, '0')}.md`)
   await write(`paper/${MANIFEST_NAME}`, manifest(names))
-  for (const name of names) await writeFile(join(root, 'paper', name), `# ${name}\n`, 'utf8')
+  for (let start = 0; start < names.length; start += 12) {
+    await Promise.all(names.slice(start, start + 12).map((name) => writeFile(join(root, 'paper', name), `# ${name}\n`, 'utf8')))
+  }
   await folioOutline(ws, 'paper/p0000.md')
   expect(reads.length).toBe(2010)
   // The first ten went, in the order they were added: the cache is the last 2,000, oldest first.

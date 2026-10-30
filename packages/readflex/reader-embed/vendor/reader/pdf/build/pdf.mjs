@@ -11271,7 +11271,7 @@ function putBinaryImageData(ctx, imgData) {
       for (j = 0; j < thisChunkHeight; j++) {
         const srcDiff = srcLength - srcPos;
         let k = 0;
-        const kEnd = srcDiff > fullSrcDiff ? width : srcDiff * 8 - 7;
+        const kEnd = Math.min(width, srcDiff * 8);
         const kEndUnrolled = kEnd & ~7;
         let mask = 0;
         let srcByte = 0;
