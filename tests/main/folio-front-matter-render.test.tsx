@@ -28,8 +28,8 @@ const plan: Plan = {
 test('the Folio outline numbers the contents only; front matter carries no number and is counted apart', () => {
   const rows = buildPlanRows(plan, [])
   expect(rows.map((row) => [row.title, row.number, row.index, row.frontMatter])).toEqual([[TITLE, 0, 0, true], ['Summary', 1, 1, false], ['Details', 2, 2, false]])
-  expect(pluralisedSummary(planSummary(rows))).toBe('1 front matter · 2 parts · 2 written · 0 jotted')
-  expect(pluralisedSummary(planSummary(rows), 2)).toBe('1 front matter · 2 parts · 2 chapters in the contents')
+  expect(pluralisedSummary(planSummary(rows))).toBe('1 front matter · 2 parts')
+  expect(pluralisedSummary(planSummary(rows), 2)).toBe('1 front matter · 2 parts')
   expect(pluralisedSummary(planSummary(rows.slice(0, 1)))).toBe('1 front matter · nothing in the contents yet')
 })
 
@@ -125,7 +125,7 @@ test('the sidebar Outline lists front matter first, marked not in contents, with
   expect(front).toBeLessThan(run)
   expect(html.indexOf(TITLE)).toBeLessThan(run)
   expect(html).toContain('data-fo-flag="not-in-contents"')
-  expect(html).toContain('Contents · 2 chapters')
+  expect(html).toContain('Contents · 2 parts')
   expect(html).toMatch(/data-fo-front-box="0"/)
   expect(html).not.toMatch(/data-fo-box="0"/)
   expect(html).toMatch(/data-fo-box="1"/)

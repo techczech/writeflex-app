@@ -99,7 +99,7 @@ export function WorkspaceEmpty({ files, onNewFile, onSearchFiles, onOpenFile }: 
       </div>
       {recentFiles.length > 0 && (
         <div className="workspace-recents">
-          <div className="side-label">Recent in this workspace</div>
+          <div className="side-label">Recent in this vault</div>
           <ul className="workspace-rec-card">
             {recentFiles.map((file, index) => (
               <li key={file.path}>

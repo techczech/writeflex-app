@@ -1,3 +1,4 @@
+import { shortSocketDir } from '../helpers/short-socket-dir'
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -41,6 +42,7 @@ let service: InstanceType<typeof ScratchpadExternalSources>
 let discoverCalls = 0
 let locateCalls = 0
 let socketServer: Server | null = null
+let socketRoot: string | null = null
 
 class CountingTalkweaver extends TalkweaverAdapter {
   override async discover() { discoverCalls += 1; return super.discover() }
@@ -111,6 +113,7 @@ beforeEach(async () => {
 afterEach(async () => {
   socketServer?.close()
   socketServer = null
+  if (socketRoot) { await rm(socketRoot, { recursive: true, force: true }); socketRoot = null }
   await rm(base, { recursive: true, force: true })
 })
 
@@ -420,7 +423,8 @@ test('SlideWell semantic search needs the running service and maps its ranked id
 
 test('the picture-query client speaks one bounded line each way over a user-owned socket', async () => {
   const { askPictureQuery, socketIsOurs } = await import('../../src/main/scratchpad-slidewell')
-  const socketPath = join(process.env.TMPDIR ?? '/tmp', `wfq-${Math.random().toString(36).slice(2, 8)}.sock`)
+  socketRoot = shortSocketDir()
+  const socketPath = join(socketRoot, 'picture.sock')
   socketServer = createServer((sock) => {
     let seen = ''
     sock.on('data', (chunk) => {

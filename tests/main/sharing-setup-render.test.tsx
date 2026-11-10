@@ -95,7 +95,7 @@ test('frame settings: account and token, the service and Update, Remove sharing 
   expect(panel('account')).toContain('Cloudflare account Token accepted Account Example author · personal account Token Kept in the macOS Keychain')
   expect(panel('account')).toContain('Replace token Check token')
   expect(panel('service')).toContain('Sharing service Update available Installed on your account Build 1 Offered by this WriteFlex Build 2 Update sharing service Your links keep working while it updates.')
-  expect(panel('remove')).toBe('Remove sharing from this account Deletes the sharing service and everything in it from your Cloudflare account. Every link stops working and comments not yet collected are lost. Your pieces on this Mac are not touched. Remove sharing from this account')
+  expect(panel('remove')).toBe('Remove sharing from this account Deletes the sharing service and everything in it from your Cloudflare account. Every link stops working for every Mac on this account, and comments not yet collected are lost. Your pieces on this Mac are not touched. Remove sharing from this account')
   expect(panel('now')).toContain('State Running Address writeflex-sharing.example.workers.dev')
 
   const notSetUp = text(renderToStaticMarkup(<SharingSettingsPanel onFlash={none} onOpenSetup={none} initialStatus={fresh} />))

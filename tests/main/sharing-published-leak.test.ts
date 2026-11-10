@@ -13,6 +13,21 @@ import { buildShipped, removeShipped } from '../helpers/sharing-world.ts'
 import { publishWorld } from '../helpers/sharing-publish-world.ts'
 import { assertHtmlExportDoesNotLeak, type HtmlExportLeakContext } from '../helpers/html-export-leak-harness.ts'
 
+// Build 15 carries portable Folio routing on the authenticated publish only. Check prose with
+// the original leak harness; check that owner metadata separately, and keep every reader check.
+function readerCopy(body: Record<string, unknown>) {
+  const { folioState: _ownerOnly, ...copy } = body
+  return copy
+}
+function publishedWire(w: Awaited<ReturnType<typeof publishWorld>>) {
+  return w.serviceCalls().map((entry) => {
+    expect(entry.body).not.toContain(w.root)
+    let body = entry.body
+    if (entry.url.endsWith('/page')) body = JSON.stringify(readerCopy(JSON.parse(body)))
+    return `${entry.url}\n${body}`
+  }).join('\n')
+}
+
 beforeAll(buildShipped)
 afterAll(removeShipped)
 
@@ -83,8 +98,8 @@ test('the published payload and the reader page carry none of what the spec leav
     annotationEnabled: false,
   }
   // The payload as sent, and everything else the publisher put on the wire to the service.
-  assertHtmlExportDoesNotLeak(JSON.stringify(published.body), context)
-  assertHtmlExportDoesNotLeak(w.serviceCalls().map((entry) => `${entry.url}\n${entry.body}`).join('\n'), context)
+  assertHtmlExportDoesNotLeak(JSON.stringify(readerCopy(published.body)), context)
+  assertHtmlExportDoesNotLeak(publishedWire(w), context)
   // What a reader gets.
   const page = await w.readerPage(shareId)
   expect(page.status).toBe(200)
@@ -122,8 +137,8 @@ test('a byte-order mark before a hidden comment: the comment reaches neither the
       filePaths: [PATH, 'piece-canary-name', 'drafts/', `${w.root}/${PATH}`],
       annotationEnabled: false,
     }
-    assertHtmlExportDoesNotLeak(JSON.stringify(published.body), context)
-    assertHtmlExportDoesNotLeak(w.serviceCalls().map((entry) => `${entry.url}\n${entry.body}`).join('\n'), context)
+    assertHtmlExportDoesNotLeak(JSON.stringify(readerCopy(published.body)), context)
+    assertHtmlExportDoesNotLeak(publishedWire(w), context)
     const page = await w.readerPage(shareId)
     expect(page.status).toBe(200)
     assertHtmlExportDoesNotLeak(page.text, { ...context, annotationEnabled: true, editEnabled: true })
@@ -212,8 +227,8 @@ test('a Folio: the payload, the wire and the reader page carry none of what the 
     ],
     annotationEnabled: false,
   }
-  assertHtmlExportDoesNotLeak(JSON.stringify(published.body), context)
-  assertHtmlExportDoesNotLeak(w.serviceCalls().map((entry) => `${entry.url}\n${entry.body}`).join('\n'), context)
+  assertHtmlExportDoesNotLeak(JSON.stringify(readerCopy(published.body)), context)
+  assertHtmlExportDoesNotLeak(publishedWire(w), context)
   const page = await w.readerPage(shareId)
   expect(page.status).toBe(200)
   assertHtmlExportDoesNotLeak(page.text, { ...context, annotationEnabled: true, editEnabled: true })

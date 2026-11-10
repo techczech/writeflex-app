@@ -1,8 +1,10 @@
 import { EVIDENCE_DRAG_MIME } from '../../../shared/folio-evidence-transfer'
+import { askConfirm } from './confirm-bus'
 import { FLAG_NOTICE } from '../editor/flag-actions'
 import { setMetadataCollapsed } from '../editor/metadata-view-state'
 import { createPortal } from 'react-dom'
 import { FolioLine } from './FolioLine'
+import { useFolioSlot } from './notice-slot'
 import { ReviewMargin, type ReviewMarginProps } from './ReviewMargin'
 import type { FolioPlace } from '../../../shared/folio-place'
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type MutableRefObject } from 'react'
@@ -65,7 +67,7 @@ import { insertWidgetLine, setWidgetDrop, widgetDropIndicator, widgetDropPoint, 
 import { ActionsHere } from './ActionsHere'
 import { actionsAt, placeAt, type Place } from '../commands/place'
 import type { ActionRow } from '../commands/actions-here'
-import { isTableColumnCommand, tableColumnEdit } from '../editor/table-column-actions'
+import { isTableColumnCommand, pendingTableEdit, tableColumnEdit } from '../editor/table-column-actions'
 import { registryCommand } from '../commands/registry'
 import { COMPOSED_PREFIX } from '../commands/actions-layout'
 import { composeCommands, deleteBlock } from '../editor/block-actions'
@@ -401,6 +403,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   const hostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const [folioLineHost, setFolioLineHost] = useState<HTMLElement | null>(null)
+  const folioStatusSlot = useFolioSlot()
   const [marginHost, setMarginHost] = useState<HTMLElement | null>(null)
   const marginListenersRef = useRef(new Set<(update: ViewUpdate) => void>())
   const subscribeMargin = useCallback((listener: (update: ViewUpdate) => void) => {
@@ -1443,6 +1446,9 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
               id,
               path,
               action,
+              // Put back is a one-use approval. History already carries its text and placement;
+              // reopening its spent proposal would make Redo refuse and leave editor and disk apart.
+              ...(action === 'accept' && scratchPlacement ? { replay: 'text' as const } : {}),
               ...(action === 'accept' ? { beforeContent } : {}),
               ...(changes ? { changes } : {}),
               ...(placementEffect ? { effects: [placementEffect] } : {}),
@@ -1753,9 +1759,27 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       setObjectMenu(null)
       const edit = tableColumnEdit(view.state, id, menu.block?.kind === 'table' ? menu.block : null)
       if (!edit) onStatusRef.current(id === 'table.delete' ? 'A table keeps at least one column' : 'There is no table here')
-      else if (id !== 'table.delete' || window.confirm('Delete this column?')) {
+      else if (id !== 'table.delete') {
         view.dispatch({ changes: edit, userEvent: 'input' })
         commandRan(id)
+      } else {
+        // The card is asynchronous: the document can change while it is open (an agent's insert, a tab switch).
+        // The edit is mapped through those changes on confirm and refused if the table is not there as it was.
+        const path = activePathRef.current
+        const pending = pendingTableEdit(view.state, edit)
+        marginListenersRef.current.add(pending.observe)
+        void askConfirm({ title: 'Delete this column?', detail: 'The column and its cells are removed from the table.', recover: 'Undo (⌘Z) puts it back.', confirmLabel: 'Delete column' }).then((ok) => {
+          marginListenersRef.current.delete(pending.observe)
+          const current = viewRef.current
+          if (!current) return
+          if (ok) {
+            const mapped = current === view && activePathRef.current === path ? pending.resolve(current.state) : null
+            if (mapped) { current.dispatch({ changes: mapped, userEvent: 'input' }); commandRan(id) }
+            else onStatusRef.current('The table changed while the card was open, so no column was deleted. Try again.')
+          }
+          current.focus()
+        })
+        return true
       }
       view.focus()
       return true
@@ -1779,9 +1803,9 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       event.dataTransfer.setData(EVIDENCE_DRAG_MIME, JSON.stringify({ kind: 'file', path, quote: view.state.doc.sliceString(range.from, range.to) }))
     }}>
       <div className="editor-host" ref={hostRef} />
-      {folioLineHost && folioPlace && onOpenFolioPlan && onOpenFolioPiece && createPortal(
+      {(folioStatusSlot ?? folioLineHost) && folioPlace && onOpenFolioPlan && onOpenFolioPiece && createPortal(
         <FolioLine place={folioPlace} onOpenPlan={onOpenFolioPlan} onOpenPiece={onOpenFolioPiece} />,
-        folioLineHost,
+        (folioStatusSlot ?? folioLineHost)!,
       )}
       {marginHost && margin && viewRef.current && createPortal(
         <ReviewMargin {...margin} view={viewRef.current} subscribe={subscribeMargin} />,

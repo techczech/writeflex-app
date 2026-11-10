@@ -14,6 +14,9 @@ import { readScratchInventory } from '../scratchpad-inventory'
 import { listScrapsWithScratchpad } from '../scrap-listing'
 import { listTasksInFile } from '../tasks'
 import { VersionStore } from '../versions'
+import { defaultFileVersionReads } from '../file-version-sources'
+import { FileVersionRefused, listFileVersions } from '../file-versions'
+import { isMarkdownDocument, usedBySentence, workingSentence } from '../../shared/file-versions'
 import { isPathInFolder } from '../workspace'
 import { CliError, type Operation } from './operation'
 import { visiblePath } from './paths'
@@ -173,12 +176,24 @@ export const READ_OPERATIONS: Operation[] = [
   },
   {
     name: 'versions', group: 'Review and versions', behaviour: 'direct',
-    summary: 'List saved versions, newest first, for one document or the whole Collection.',
-    args: [{ name: 'path', type: 'string', positional: true, description: 'Only this document\'s versions.' }],
+    summary: 'List saved versions, newest first, for one document, one table, widget page or image, or the whole Collection.',
+    args: [{ name: 'path', type: 'string', positional: true, description: 'Only this file\'s versions: a Markdown document, or an inserted table, widget page or image (then each version also says which Folio versions used it).' }],
     run: ({ workspace }, args) => guarded(async () => {
-      const path = args.path === undefined ? undefined : visiblePath(workspace, str(args.path), { markdown: true })
-      const versions = await new VersionStore(workspace).list(path ? { path } : undefined)
+      const path = args.path === undefined ? undefined : visiblePath(workspace, str(args.path), { file: true })
+      const store = new VersionStore(workspace)
+      const versions = await store.list(path ? { path } : undefined)
       const text = versions.map((v) => `${date(v.ts)}  ${v.path}  ${v.name}  (${v.author.name})  ${v.id}`).join('\n')
+      // A file that is not Markdown: each version also says which Folio versions used it (derived from the Folio journal, never stored on the version).
+      if (path !== undefined && !isMarkdownDocument(path)) {
+        try {
+          const listing = await listFileVersions(defaultFileVersionReads(workspace, store), path)
+          const lines = listing.versions.map((v) => `v${v.number}  ${date(v.ts)}  ${v.name}  (${v.author})  ${v.id}  ${usedBySentence(v.usedBy)}`)
+          return { data: { versions, file: listing }, text: [workingSentence(listing.working, listing.kind), ...(lines.length ? lines : ['No versions.'])].join('\n') }
+        } catch (error) {
+          if (error instanceof FileVersionRefused) throw new CliError(error.message)
+          throw error
+        }
+      }
       return { data: { versions }, text: text || 'No versions.' }
     }),
   },

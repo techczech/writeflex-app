@@ -16,9 +16,16 @@ import { attachSharingService } from './fake-sharing-service.ts'
 import type { FakeCloudflare } from './fake-cloudflare.ts'
 import { fakeService, type ServiceModule } from './sharing-service-runtime.ts'
 import { trackScratch } from './scratch-dirs.ts'
+import { SHARING_SERVICE_BUILD } from '../../sharing-service/version.ts'
+
+// Coordination has separate two-Mac tests. Fault indices here continue to target the publish
+// transaction, rather than registry reads that precede it.
+const isCoordination = (url: string) => /\/shares\/list$|\/record$|\/owner-token$|\/notes\/state$/.test(new URL(url).pathname)
 
 export async function publishWorld(options: { files?: Record<string, string>; render?: SharingPublisherPorts['render']; renderFolio?: SharingPublisherPorts['renderFolio']; fake?: FakeCloudflare; ports?: Partial<SharingPublisherPorts> } = {}) {
-  const w = world(options.fake ? { fake: options.fake } : {})
+  // This fixture runs today's real service. Its advertised version must match its routes.
+  // Older-service compatibility has its own build-13 fixture with legacy routes only.
+  const w = world(options.fake ? { fake: options.fake } : { build: SHARING_SERVICE_BUILD })
   expect((await w.setup.checkToken(TOKEN)).ok).toBe(true)
   expect((await w.setup.chooseAccount('acc1')).ok).toBe(true)
   expect((await w.setup.setUp()).ok).toBe(true)
@@ -44,6 +51,7 @@ export async function publishWorld(options: { files?: Record<string, string>; re
   const net = { offline: false }
   const serviceFetch: typeof fetch = async (input, init) => {
     if (net.offline) throw new TypeError('fetch failed')
+    if (new URL(String(input)).pathname === '/version' || isCoordination(String(input))) return w.fake.serviceFetch(input, init)
     const index = fault.count
     fault.count += 1
     if (fault.at !== index) return w.fake.serviceFetch(input, init)
@@ -75,7 +83,7 @@ export async function publishWorld(options: { files?: Record<string, string>; re
   const publisher = newPublisher()
   const base = w.setup.serviceAccess()!.base
   /** Requests the service got after set-up, other than `/version`. */
-  const serviceCalls = () => w.fake.requests.filter((entry) => entry.to === 'service' && new URL(entry.url).pathname !== '/version')
+  const serviceCalls = () => w.fake.requests.filter((entry) => entry.to === 'service' && new URL(entry.url).pathname !== '/version' && !isCoordination(entry.url))
   const publishes = () => serviceCalls().filter((entry) => entry.method === 'PUT' && entry.url.endsWith('/page')).map((entry) => ({ shareId: new URL(entry.url).pathname.split('/')[2], body: JSON.parse(entry.body) as Record<string, unknown> & { kind: string; title: string; chips: Array<{ label: string; value: string }>; parts: Array<{ title: string; html: string; missing?: boolean; headings: Array<{ id: string; text: string }> }>; images: string[]; comments: boolean; revision: number } }))
   /** What a reader gets at the link (the service's own answer). */
   const readerPage = async (shareId: string) => {

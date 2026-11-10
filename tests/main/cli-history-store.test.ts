@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -159,8 +159,9 @@ test('save: the object is written only if absent; an identical one is left alone
     expect(await asideNames(), phrase).toEqual(['secret.txt'])
     expect(await readFile(join(aside, 'secret.txt'), 'utf8'), phrase).toBe(SECRET)
   }
-  // Different content under the name.
-  await writeFile(join(objects(), name), 'not the document\n')
+  // Different content under the name, and the file also a name of one outside: refused, both files as they were.
+  await rm(join(objects(), name))
+  await link(join(aside, 'secret.txt'), join(objects(), name))
   await refusedWith('does not hold the text it is named for')
   // A link to a file outside that is not there yet (it would be created), and to one that is.
   await rm(join(objects(), name))
@@ -173,6 +174,38 @@ test('save: the object is written only if absent; an identical one is left alone
   await rm(join(objects(), name))
   await mkdir(join(objects(), name))
   await refusedWith('is not an ordinary file')
+})
+
+test('save: a damaged object at its name (a plain one-name file) is replaced by the right bytes, and the save goes through', async () => {
+  const text = await fx.read('notes.md')
+  const name = sha(text)
+  await mkdir(objects())
+  await writeFile(join(objects(), name), 'not the document\n')
+  const saved = await save()
+  expect(saved.json.error?.message ?? '').toBe('')
+  expect(await readFile(join(objects(), name), 'utf8')).toBe(text)
+  // The temporary file the repair wrote is gone: only the object stands in the folder.
+  expect(await readdir(objects())).toEqual([name])
+  expect(await versionNames()).toContain('Guarded')
+  expect(await asideNames()).toEqual(['secret.txt'])
+})
+
+test('save: a damaged object that changes while it is being replaced is left as the other writer made it, and the save refuses', async () => {
+  const name = sha(await fx.read('notes.md'))
+  await mkdir(objects())
+  await writeFile(join(objects(), name), 'not the document\n')
+  let changed = false
+  const result = await save({ betweenCheckAndWrite: async (checked) => {
+    if (checked !== '.bridle/objects' || changed) return
+    changed = true
+    await writeFile(join(objects(), name), 'someone else is writing this, and it is longer\n')
+  } })
+  expect(changed).toBe(true)
+  expect(result.code).toBe(1)
+  expect(result.json.error!.message).toContain('changed while')
+  expect(await readFile(join(objects(), name), 'utf8')).toBe('someone else is writing this, and it is longer\n')
+  expect(await readdir(objects())).toEqual([name])
+  expect(await fx.read('.writeflex/versions.jsonl').catch(() => '')).not.toContain('Guarded')
 })
 
 test('save: a link swapped in for the objects folder while the object is being written puts nothing outside and records no version', async () => {

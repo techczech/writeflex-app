@@ -61,8 +61,8 @@ describe('the panel', () => {
     expect(html).toContain('Rejected <span>1</span>')
   })
 
-  test('collapsed, it is the pill with its count', () => {
-    expect(render([item({})], 'collapsed')).toContain('Scratchpad · 1')
+  test('collapsed, the panel draws nothing in place: the pill is a chip in the status bar (R2/R7)', () => {
+    expect(render([item({})], 'collapsed')).not.toContain('sp-panel')
   })
 
   test('with nothing set aside, it says how to set text aside', () => {

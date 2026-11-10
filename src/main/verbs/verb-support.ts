@@ -93,6 +93,16 @@ export function assertPathSubset(declared: readonly string[], applied: readonly 
  *  change notifier. Absent in unit/e2e-double builds, where the scrap capabilities are simply omitted. */
 export type CapabilityServices = {
   scraps?: ScrapStore
+  /** Folio versions (ticket 03): the list and the save the app's window gives its agent. Absent in unit builds, where the verbs are omitted. */
+  folioVersions?: {
+    list: (dir: string) => Promise<import('../folio-version-listing').FolioVersionListing>
+    save: (input: import('../folio-version-save').FolioSaveInput) => Promise<import('../folio-version-save').SavedFolioVersion>
+    /** Two Folio versions, or a version and `working`, compared (ticket 08). Reads only. */
+    compare: (dir: string, from: string, to: string) => Promise<import('../../shared/folio-version-compare').FolioCompareResult>
+    /** Ticket 15: bring a co-author's Word revision in as staged suggestions (applies nothing), and take one back. Bound to the window's Collection. */
+    importRevision: (input: Omit<import('../requested-folio-revision').RevisionImportInput, 'by'>) => Promise<import('../../shared/folio-version-import').ImportCommitAnswer>
+    withdrawRevision: (id: string) => Promise<import('../folio-version-stage').WithdrawResult>
+  }
   onScrapsChanged?: () => void
   onVersionHistoryChanged?: () => void
   onFileRead?: (path: string) => void
@@ -651,6 +661,20 @@ export const CAPABILITY_PERMISSION_KEYS: Record<string, string | readonly string
   'sources.list': 'permissions.readWorkspace',
   'tasks.toggle': 'permissions.proseEdits',
   'scratchpad.sources': 'permissions.readWorkspace',
+  // Folio versions (ticket 03): the list reads history; the save writes only new history records (per-file versions and one Folio version), edits no document and settles no change.
+  'folio.versions': 'permissions.readWorkspace',
+  'folio.save_version': 'permissions.createFiles',
+  'folio.compare_versions': 'permissions.readWorkspace',
+  // Ticket 15: the import READS the Word file and the parts' text, creates history records and her file's objects, and stages suggestions in the margins
+  // (prose edits shown first, none applied), so it needs all three switches: with any one off, an agent cannot use it to read, keep or propose what that switch guards.
+  'folio.import_revision': ['permissions.readWorkspace', 'permissions.createFiles', 'permissions.proseEdits'],
+  // Taking staged suggestions back closes proposals and marks a version; it reads nothing back to the agent.
+  'folio.withdraw_revision': 'permissions.proseEdits',
+  // Ticket 10: reading a part of a saved version is a read; sending a copy of it to the Scratchpad creates the item's two store files and edits no document.
+  // The send reads the saved text itself and hands it back in the result (`details.item`), so it needs BOTH switches: with workspace reads off,
+  // an agent must not be able to read version text through the send.
+  'folio.version_part': 'permissions.readWorkspace',
+  'scratchpad.send_version_text': ['permissions.readWorkspace', 'permissions.createFiles'],
   // Filing a candidate creates the item's payload and record files; it edits no document.
   'scratchpad.send_text': 'permissions.createFiles',
   'scratchpad.cite': 'permissions.proseEdits',

@@ -9,6 +9,7 @@ import { formatRenameRepairMessage } from '../../src/shared/rename-repair-messag
 
 const ipcProbe = String.raw`
   import { mock } from 'bun:test'
+  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -25,6 +26,7 @@ const ipcProbe = String.raw`
     removeHandler: (channel) => handlers.delete(channel),
   }
   void mock.module('electron', () => ({
+    ...electronMainStandIn,
     app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
     clipboard: { write: () => {} },
     dialog: {},

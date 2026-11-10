@@ -97,7 +97,7 @@ export function FolioEvidenceInspector({ part, model, author, busy, onOpen, onIn
   if (evidenceUnreadable(model)) return <section className="fr-evidence-box" aria-label={`Evidence for ${part.title}`}><UnreadableEvidence model={model} /></section>
   return <section className="fr-evidence-box" aria-label={`Evidence for ${part.title}`} onDragOver={onEvidenceOver} onDrop={event => onEvidenceDrop?.(event, part)}>
     <div className="fr-isec"><span>Evidence ({data?.rows.length ?? 0})</span><button type="button" className="fr-linkbtn" disabled={busy || Boolean(part.titleClash)} onClick={() => setAdding(value => !value)}>Add evidence</button></div>
-    {!data?.rows.length && <p className="fr-note">Attach a source from Research or a workspace note. You can also drop sources and highlights here.</p>}
+    {!data?.rows.length && <p className="fr-note">Attach a source from Research or a vault note. You can also drop sources and highlights here.</p>}
     {adding && <form onSubmit={event => { event.preventDefault(); void attach() }} className="fr-evidence-add">
       <label>Source or note<select aria-label="Source or note" value={candidate} onChange={event => setCandidate(event.target.value)}><option value="">Choose a source or note</option>{candidates.map(value => <option key={value.path} value={value.path}>{value.kind === 'note' ? 'Note: ' : ''}{value.title} · {value.path}</option>)}</select></label>
       <button type="submit" className="fr-btn" disabled={busy || !candidate}>Attach evidence</button>

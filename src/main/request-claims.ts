@@ -58,6 +58,21 @@ export class InboxClaims {
     return read
   }
 
+  /**
+   * Read the request under whichever name it stands, WITHOUT claiming it: to learn which computer it
+   * is for (request-address.ts) before anything is done to it.
+   */
+  async peek(id: string, maxBytes: number): Promise<CappedRead> {
+    const plain = await this.inbox.read(requestFileName(id), maxBytes)
+    return plain.kind === 'missing' ? this.inbox.read(claimedFileName(id), maxBytes) : plain
+  }
+
+  /** The request is for another computer: it is not this app's to claim, give back or remove. */
+  leave(id: string): void {
+    this.#held.delete(id)
+    this.#settled.add(id)
+  }
+
   /** The request is answered or added: its file goes, under both names. */
   async settle(id: string): Promise<void> {
     this.#held.delete(id)

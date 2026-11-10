@@ -3,6 +3,7 @@ import { FileText, Folder, Search, Settings, Sparkles, type LucideIcon } from 'l
 import type { MarkdownFile, SkillMeta } from '../../../preload'
 import { isPathInSearchScope } from '../../../shared/search-scope'
 import { fuzzyFilter, fuzzyScore } from '../fuzzy'
+import { quickOpenFiles } from '../quick-open'
 import { AgentLaunchIcon, orderSkills, skillDisplayName } from './AgentSkillSurfaces'
 import { launchesAgent } from './agent-icon'
 import type { TaskGroup } from '../commands/command-task-groups'
@@ -44,6 +45,10 @@ type CommandPaletteProps = {
   mode: 'files' | 'commands'
   /** Workspace files (relative POSIX paths), for files mode. */
   files: MarkdownFile[]
+  /** Files mode: path to title (the vault's Titles), so a title is found as well as a file name. */
+  titles?: Readonly<Record<string, string>>
+  /** Files mode: what "Writing only" hides in the Files pane. Still searched, and marked. */
+  hiddenPaths?: readonly string[]
   /** Checklist notes' "done / total" (checkbox-lists frame 8), shown beside their file rows. */
   checklistProgress?: ChecklistProgressMap
   /** Workspace folders (relative POSIX paths), for files mode. */
@@ -82,7 +87,7 @@ type CommandPaletteProps = {
 
 /** A selectable palette row (arrow navigation flattens these across sections). */
 export type PaletteItem =
-  | { kind: 'file'; key: string; file: MarkdownFile }
+  | { kind: 'file'; key: string; file: MarkdownFile; title?: string | null; hidden?: boolean }
   | { kind: 'folder'; key: string; path: string; name: string }
   | { kind: 'command'; key: string; command: AppCommand }
   | { kind: 'skill'; key: string; skill: SkillMeta; disabled: boolean }
@@ -137,7 +142,11 @@ export function buildCommandPaletteSections({
   skills,
   activeFile,
   recentIds,
+  titles,
+  hiddenPaths,
 }: {
+  titles?: Readonly<Record<string, string>>
+  hiddenPaths?: readonly string[]
   mode: 'files' | 'commands'
   query: string
   files: MarkdownFile[]
@@ -152,10 +161,8 @@ export function buildCommandPaletteSections({
     const searchableFiles = files.filter((file) => isPathInSearchScope(file.path))
     const searchableFolders = folders.filter(isPathInSearchScope)
     const byPath = new Map(searchableFiles.map((file) => [file.path, file]))
-    const fileItems: PaletteItem[] = fuzzyFilter(q, searchableFiles.map((file) => file.path))
-      .map((path) => byPath.get(path))
-      .filter((file): file is MarkdownFile => file != null)
-      .map((file) => ({ kind: 'file', key: file.path, file }))
+    const fileItems: PaletteItem[] = quickOpenFiles(q, searchableFiles.map((file) => file.path), { titles, hiddenPaths })
+      .flatMap((hit) => { const file = byPath.get(hit.path); return file ? [{ kind: 'file' as const, key: file.path, file, title: hit.title, hidden: hit.hidden }] : [] })
     const folderItems: PaletteItem[] = fuzzyFilter(q, searchableFolders)
       .map((path) => ({ kind: 'folder', key: path, path, name: path.split('/').at(-1) ?? path }))
     const sections: PaletteSection[] = []
@@ -227,6 +234,8 @@ export function CommandPalette({
   mode,
   initialQuery = '',
   files,
+  titles,
+  hiddenPaths,
   checklistProgress = NO_CHECKLIST_PROGRESS,
   folders,
   commands,
@@ -256,8 +265,8 @@ export function CommandPalette({
   }, [])
 
   const sections = useMemo(() => buildCommandPaletteSections({
-    mode, query, files, folders, commands, skills, activeFile, recentIds,
-  }), [mode, query, files, folders, commands, skills, activeFile, recentIds])
+    mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths,
+  }), [mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths])
 
   const flatItems = useMemo(() => sections.flatMap((section) => section.items), [sections])
 
@@ -351,7 +360,7 @@ export function CommandPalette({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onInputKeyDown}
-            placeholder={mode === 'files' ? 'Find files and folders…' : 'Type a command, or ask the agent…'}
+            placeholder={mode === 'files' ? 'Find a file by title or name…' : 'Type a command, or ask the agent…'}
             aria-label={mode === 'files' ? 'File or folder name' : 'Command'}
           />
           <kbd>esc</kbd>
@@ -388,9 +397,11 @@ export function CommandPalette({
                       <>
                         <FileText className="icon sm" />
                         <span className="grow">
-                          <span className="pal-name">{item.file.name}</span>
-                          {item.file.directory && <span className="pal-dir">{item.file.directory}</span>}
+                          <span className="pal-name">{item.title && item.title !== item.file.name ? item.title : item.file.name}</span>
+                          {(item.title && item.title !== item.file.name) && <span className="pal-dir">{item.file.name}{item.file.directory ? ` · ${item.file.directory}` : ''}</span>}
+                          {!(item.title && item.title !== item.file.name) && item.file.directory && <span className="pal-dir">{item.file.directory}</span>}
                         </span>
+                        {item.hidden && <span className="file-hidden-tag" data-testid="palette-hidden-tag" title="Hidden by Writing only in the Files pane">hidden</span>}
                         <ChecklistProgressChip path={item.file.path} progress={checklistProgress} />
                       </>
                     ) : item.kind === 'folder' ? (

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Compass, Ellipsis, GitCommitHorizontal, StickyNote, type LucideIcon } from 'lucide-react'
+import { Telescope, Compass, Ellipsis, GitCommitHorizontal, StickyNote, type LucideIcon } from 'lucide-react'
 import { fitPaneTabs, type RightPaneTab } from '../app/pane-layout'
 import { AGENT_ICON } from './agent-icon'
 
@@ -7,13 +7,15 @@ type TabSpec = { id: RightPaneTab; label: string; icon: LucideIcon; chord?: stri
 
 /** Last in the row, and only while the person has opened it (the title-bar Guide button). */
 const GUIDE_TAB: TabSpec = { id: 'guide', label: 'Guide', icon: Compass }
+/** Only while the Scratchpad is docked here; before the Guide. */
+const SCRATCHPAD_TAB: TabSpec = { id: 'scratchpad', label: 'Scratchpad', icon: StickyNote }
+/** The three standing tabs, in the one order they ever appear (house rule R6): Versions, Agent, Research. */
 const BASE_TABS: readonly TabSpec[] = [
-  { id: 'agent', label: 'Agent', icon: AGENT_ICON, chord: '⌘J', keys: 'Meta+J' },
-  { id: 'scratchpad', label: 'Scratchpad', icon: StickyNote },
-  { id: 'agent-notes', label: 'Agent notes', icon: Bot },
   { id: 'versions', label: 'Versions', icon: GitCommitHorizontal, chord: '⌘3', keys: 'Meta+3' },
+  { id: 'agent', label: 'Agent', icon: AGENT_ICON, chord: '⌘J', keys: 'Meta+J' },
+  { id: 'research', label: 'Research', icon: Telescope },
 ]
-const SPEC = new Map([GUIDE_TAB, ...BASE_TABS].map((tab) => [tab.id, tab]))
+const SPEC = new Map([GUIDE_TAB, SCRATCHPAD_TAB, ...BASE_TABS].map((tab) => [tab.id, tab]))
 
 /** What the fit is computed from, all read from the real layout. */
 type RowMetrics = { widths: number[]; available: number; gap: number; more: number }
@@ -29,6 +31,8 @@ type RightPaneTabsProps = {
   onSelect: (tab: RightPaneTab) => void
   /** The Guide tab is open: it is last in the row. */
   guideShown?: boolean
+  /** The Scratchpad is docked here: its tab follows the three standing ones. */
+  scratchpadDocked?: boolean
 }
 
 /**
@@ -36,8 +40,8 @@ type RightPaneTabsProps = {
  * 4px padding, and the chord hidden at rest (`.pchord`, zero width until hover) — the same tabs as
  * the left pane's row.
  *
- * Five labelled tabs are wider than the pane's default 340px, so what does not fit goes under a "…"
- * at the row's right end (ticket 07, option D): the tabs that fit stay, the active tab always stays
+ * Three labelled tabs fit the pane's default 340px; the Scratchpad and the Guide, when both are there, may not, so what does not fit goes under a "…"
+ * at the row's right end (Versions never: it is first) (ticket 07, option D): the tabs that fit stay, the active tab always stays
  * (taking the place of the last tab that fits), and the row never scrolls. `fitPaneTabs` decides;
  * this component only measures. Widths come from a hidden copy of every tab, because a tab already
  * in the menu is not in the row to measure, and resizing the pane re-fits live.
@@ -46,8 +50,8 @@ type RightPaneTabsProps = {
  * move, ↵ activates, Esc closes back to the "…". Chords and ⌃⌘Tab never pass through this row, so
  * they reach hidden tabs as they reach the rest — and the tab they activate enters the row.
  */
-export function RightPaneTabs({ active, onSelect, guideShown = false }: RightPaneTabsProps): JSX.Element {
-  const TABS = useMemo<readonly TabSpec[]>(() => (guideShown ? [...BASE_TABS, GUIDE_TAB] : BASE_TABS), [guideShown])
+export function RightPaneTabs({ active, onSelect, guideShown = false, scratchpadDocked = false }: RightPaneTabsProps): JSX.Element {
+  const TABS = useMemo<readonly TabSpec[]>(() => [...BASE_TABS, ...(scratchpadDocked ? [SCRATCHPAD_TAB] : []), ...(guideShown ? [GUIDE_TAB] : [])], [guideShown, scratchpadDocked])
   const rowRef = useRef<HTMLDivElement | null>(null)
   const measureRef = useRef<HTMLDivElement | null>(null)
   const moreRef = useRef<HTMLButtonElement | null>(null)
@@ -152,15 +156,14 @@ export function RightPaneTabs({ active, onSelect, guideShown = false }: RightPan
   const tabContent = ({ label, icon: Icon, chord }: TabSpec): JSX.Element => (
     <>
       <Icon className="icon i sm" aria-hidden="true" />
-      {label}
-      {chord && <> <span className="pchord" aria-hidden="true">{chord}</span></>}
+      <span className="pt-label">{label}</span>
     </>
   )
 
   return (
     <>
       {/* data-fit-width: the row width the current fit was made for — what a layout test waits on. */}
-      <div className="pane-tabs" role="tablist" aria-label="Right pane tabs" ref={rowRef} data-fit-width={metrics?.available}>
+      <div className="pane-tabs" role="tablist" aria-label="Right sidebar tabs" ref={rowRef} data-fit-width={metrics?.available}>
         {fit.row.map((id) => {
           const spec = SPEC.get(id)!
           return (

@@ -6,6 +6,7 @@ import { FolioBinder } from './FolioOutline'
 import { ROOM_ON_SCREEN_EVENT, roomOnScreen } from '../plan/room-on-screen'
 import { announceUndoToast, onOtherUndoToast, refreshRoom, subscribeRoom } from '../plan/folio-room-store'
 import { dispatchSidebar, registerSidebarSlot, useSidebarState } from '../plan/folio-sidebar'
+import { useReadingVersion } from '../plan/folio-reading'
 
 /** A Folio write through the app's save queue (the running-order hook's `write`): open buffers saved first. */
 export type BinderWrite = <T>(dir: string, call: () => Promise<T>) => Promise<{ ok: true; value: T } | { ok: false; message: string }>
@@ -77,6 +78,9 @@ export function RoomBinderPane({ dir, contents, onOpenFile, write }: { dir: stri
     }
   }, [busy, dir, write])
   const sidebar = useSidebarState(dir)
+  // A saved version is open read-only (Folio versions ticket 07): the Binder shows that version's parts (the room draws them into the text slot) and
+  // nothing of the working Folio that could change it: no document outline, no research, notes or ideas, and no bin with its Restore and Undo.
+  const reading = useReadingVersion(dir) !== null
   const textSlot = useCallback((element: HTMLDivElement | null) => registerSidebarSlot(dir, 'text', element), [dir])
   const inspectorSlot = useCallback((element: HTMLDivElement | null) => registerSidebarSlot(dir, 'inspector', element), [dir])
   /** The toast's Undo and ⌘Z: the last Restore, exactly, or main's refusal (nothing written). */
@@ -87,22 +91,22 @@ export function RoomBinderPane({ dir, contents, onOpenFile, write }: { dir: stri
   useEffect(() => {
     if (!toast) return
     const onKey = (event: KeyboardEvent): void => {
-      if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'z' || focusTypes()) return
+      if (reading || event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'z' || focusTypes()) return
       event.preventDefault()
       undoRestore()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toast, undoRestore])
+  }, [toast, undoRestore, reading])
   const bin = binder?.bin ?? []
   const empty = binder === null || (binder.research.length === 0 && binder.notes.length === 0 && binder.ideas.length === 0)
   return (
     <aside className="outline fr-sidebar" aria-label="Binder" data-testid="room-binder" data-room-dir={dir} data-sidebar-mode={sidebar.mode}>
       <div className="fr-sidebody" style={{ display: sidebar.mode === 'inspector' ? 'none' : undefined }}>
-      {contents && <div className="fr-sidebar-contents">{contents}</div>}
+      {contents && !reading && <div className="fr-sidebar-contents">{contents}</div>}
       <div className="fr-sideslot-text" ref={textSlot} />
-      {enrichment ? <p className="ol-empty" role="status">{enrichment === 'pending' ? 'Loading sources…' : 'Sources could not be loaded.'}</p> : binder === null || empty ? <p className="ol-empty">No research, notes or ideas in this Folio yet.</p> : <FolioBinder binder={binder} onOpenFile={onOpenFile} />}
-      {binder !== null && !enrichment && (
+      {reading ? null : enrichment ? <p className="ol-empty" role="status">{enrichment === 'pending' ? 'Loading sources…' : 'Sources could not be loaded.'}</p> : binder === null || empty ? <p className="ol-empty">No research, notes or ideas in this Folio yet.</p> : <FolioBinder binder={binder} onOpenFile={onOpenFile} />}
+      {binder !== null && !enrichment && !reading && (
         <div className="fr-binder fr-bin" role="group" aria-label="Folio bin" data-testid="room-bin">
           <div className="fr-bh"><span>Bin ({bin.length})</span><small>removed parts</small>
             {bin.length > 0 && <button type="button" disabled={busy} data-action="show-bin" onClick={() => void ask({ op: 'showBin' })}>Show bin in Finder</button>}

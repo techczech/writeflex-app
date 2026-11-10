@@ -88,6 +88,7 @@ test('a folder repair whose folder moved on again before the write is not writte
 
 const interleavedRenameProbe = String.raw`
   import { mock } from 'bun:test'
+  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -95,6 +96,7 @@ const interleavedRenameProbe = String.raw`
   const handlers = new Map()
   const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: (channel) => handlers.delete(channel) }
   void mock.module('electron', () => ({
+    ...electronMainStandIn,
     app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
     clipboard: { write: () => {} }, dialog: {}, ipcMain,
     shell: { openExternal: async () => {}, showItemInFolder: () => {}, trashItem: async () => {} },

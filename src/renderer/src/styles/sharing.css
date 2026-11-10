@@ -114,7 +114,7 @@
 /* Ticket 09, frame `folio`: a shared Folio with a part missing on disk. */
 .sharemark.shared.missing{border-color:color-mix(in srgb,var(--amber) 55%,var(--line));background:var(--amber-soft)}
 .sharemark.shared.missing .icon{color:var(--amber)}
-@media (max-width:1039px){.sharemark .sm-word{display:none}.sharemark{padding:0 8px}}
+@media (max-width:1099px){.sharemark .sm-word{display:none}.sharemark{padding:0 8px}}
 
 /* Ticket 03: the Sharing page for a piece (frames make-link, shared-one, shared-several, problems) */
 .shr-head .grow{flex:1}
@@ -212,3 +212,27 @@
 .shr-filter[aria-pressed="true"] .icon{color:var(--accent)}
 /* The collection row's Shares button (frame `shares-list`, .fo-dash with its link icon) */
 .ws-row>button.fdash .icon{width:11px;height:11px;margin-right:4px;color:inherit}
+
+/* Personal links: the approved People rows sit inside the selected link's detail. */
+.shr-people{border-top:1px solid var(--line);padding:12px}
+.shr-people>header{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.shr-people>header .grow{flex:1}
+.shr-people h3{font-size:14px;margin:0;font-weight:650}
+.shr-person{display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--line)}
+.shr-person-id{min-width:130px;max-width:220px;overflow-wrap:anywhere}
+.shr-person-id b,.shr-person-id>span,.shr-person-facts>span{display:block}
+.shr-person-id>span,.shr-person-facts,.shr-people-help,.shr-plain-choice p{font-size:11px;color:var(--ink-3);line-height:1.5}
+.shr-person-facts{margin-right:auto;min-width:105px}
+.shr-person-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.shr-person-menu{position:relative}
+.shr-person-menu summary{cursor:pointer;list-style:none;color:var(--ink-3);padding:4px}
+.shr-person-menu summary::-webkit-details-marker{display:none}
+.shr-person-menu>div{position:absolute;z-index:5;right:0;top:100%;width:190px;padding:12px;background:var(--bg-elev);border:1px solid var(--line);border-radius:7px;box-shadow:0 8px 25px #0002}
+.shr-person-menu p{font-size:11px;color:var(--ink-3);margin-bottom:0}
+.shr-add-person{display:flex;align-items:end;gap:8px;margin-top:10px}
+.shr-add-person label{flex:1;font-size:11px;color:var(--ink-3);min-width:0}
+.shr-add-person .shr-inp{margin-top:4px}
+.shr-people-help{margin:9px 0}
+.shr-plain-choice{display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:10px;font-size:12px}
+.shr-plain-choice p{margin:2px 0 0}
+@media(max-width:1000px){.shr-person{flex-wrap:wrap}.shr-person-actions{margin-left:auto}.shr-add-person{flex-wrap:wrap}}

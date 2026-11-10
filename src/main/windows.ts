@@ -1,6 +1,5 @@
-import { app, BrowserWindow, dialog, shell, type Rectangle } from 'electron'
+import { app, BrowserWindow, dialog, shell, webFrameMain, type Rectangle } from 'electron'
 import { join, dirname, relative, basename, sep } from 'node:path'
-import { hostname } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { registerWindow, allStates, setQuitting, waitForAgentDisposals, type WindowState } from './state'
 import { waitForRequestDisposals } from './request-inbox-watch'
@@ -11,8 +10,9 @@ import type { SettingsStore } from './settings'
 import { forwardBrowserWindowFocus } from './window-focus'
 import { decideFrameNavigation, decideNavigation, navigationRefusalReason, type NavigationInitiator } from './navigation'
 import { recordMainProcessDiagnostic } from './shutdown'
+import { readerFrameOrigin, readerRegistry } from './reading-room-policy'
 import { applyWidgetNetworkPolicy } from './widget-network'
-import { attachKeyboardGate, isQuitKey } from './widget-keyboard'
+import { attachKeyboardGate, mainOwnKeyHooks } from './widget-keyboard'
 import { isMarkdownPath } from './writeflex-url'
 import type { ExampleCollection } from './example-collection'
 import { EXAMPLE_OBJECTS_FILE, OBJECTS_LESSON } from '../shared/example-files'
@@ -23,8 +23,7 @@ import { GuideProgressStore } from './guide-progress-store'
 import { lessonFileFor } from '../renderer/src/commands/guide-chapters'
 import type { TaskGroup } from '../renderer/src/commands/command-task-groups'
 import { REPLY_KEY_FOLDER } from './reply-key'
-import { busyNotice, claimWithRetry, CollectionOwnership, lostNotice, unavailableNotice, type OwnershipChange } from './collection-ownership'
-import type { OwnerLockBusyError } from './owner-lock'
+import { OpenCollections } from './open-collections'
 import { createWindowSwitch, routeToExistingWindow, whenRendererReady, type CloseAttempt, type WindowSwitch, type WindowSwitchOutcome } from './window-switch'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -66,9 +65,9 @@ export class WindowManager {
   /** The example's window as it was found just before a removal, while its folder was still there to name it. */
   #exampleWindowBeforeRemoval: WindowState | undefined
 
-  /** The Collection each window's owner lock was taken for, by webContents id. */
+  /** The Collection each window has open, by webContents id. */
   readonly #ownedRoots = new Map<number, string>()
-  /** The release of a closed window's owner lock still under way, by the root it was taken for. */
+  /** The close of a closed window's Collection still under way, by its root. */
   readonly #releasing = new Map<string, Promise<void>>()
 
   constructor(
@@ -77,23 +76,11 @@ export class WindowManager {
     private readonly example?: Pick<ExampleCollection, 'current' | 'isRoot' | 'startFile' | 'view'> & Partial<Pick<ExampleCollection, 'shownRoot'>>,
     /** The Guide's progress (ticket 07): the first steps are recorded where the person does them. */
     readonly guide: GuideProgressStore = new GuideProgressStore(settings),
-    /** One owner per Collection across processes (`.writeflex/owner.lock`); index.ts releases all on quit. */
-    readonly ownership = new CollectionOwnership({ diagnostic: recordMainProcessDiagnostic, keyFolder: join(app.getPath('userData'), REPLY_KEY_FOLDER) }),
-  ) {
-    // The ownership module itself stops writes to a Collection whose lock this app does not hold;
-    // this window manager only tells the user.
-    ownership.watch((root, change) => this.#ownershipChanged(root, change))
-  }
-
-  /** Tell the user their saves to `root` are paused, in the message-box style of the busy-folder notice. */
-  #ownershipChanged(root: string, change: OwnershipChange): void {
-    void recordMainProcessDiagnostic(`owner-lock.writes-${change === 'regained' ? 'resumed' : 'paused'}`, { root, ...(change === 'regained' ? {} : { why: change }) })
-    // A hidden e2e window must never raise a native dialog nobody can see.
-    if (change === 'regained' || process.env.WRITEFLEX_E2E === '1') return
-    const window = this.windowForRoot(root)?.window
-    if (!window || window.isDestroyed()) return
-    void dialog.showMessageBox(window, { type: 'warning', ...(change === 'lost' ? lostNotice(root) : unavailableNotice(root)), buttons: ['OK'], defaultId: 0 })
-  }
+    /** The Collections open in this app, on this computer (open-collections.ts): reply keys for the
+     *  command line, nothing else. No lock: another Mac or program never stops a Collection opening
+     *  or saving here. index.ts closes all on quit. */
+    readonly openCollections = new OpenCollections({ diagnostic: recordMainProcessDiagnostic, keyFolder: join(app.getPath('userData'), REPLY_KEY_FOLDER) }),
+  ) {}
 
   /** `placement`: the window is created hidden at that place, and whoever asked shows it (window-switch.ts). */
   createWindow(placement?: WindowPlacement): WindowState {
@@ -185,14 +172,24 @@ export class WindowManager {
       }
       refuseNavigation(event, targetURL, 'window.navigation.refused')
     }
+    window.webContents.on('did-frame-navigate', (_event, _url, _code, _status, main, process, routing) => {
+      if (main) return
+      const frame = webFrameMain.fromId(process, routing)
+      if (frame) readerRegistry.commitFrame(window.webContents.id, frame)
+    })
     // Widgets (ticket 02): no keystroke reaches a widget the writer has not engaged (widget-keyboard.ts).
     attachKeyboardGate(window.webContents, shellURL, (count) => { void recordMainProcessDiagnostic('widget.keys.dropped', { count }) }, {
       // A held key never reaches the menu (preventDefault skips menu shortcuts, and a key sent again is
-      // not a keystroke the menu hears), so ⌘Q pressed while a widget's frame had the focus did nothing.
-      // Main quits on that one key itself. The widget takes no part: it never sees the key, and only a
-      // real keystroke comes through before-input-event.
+      // not a keystroke the menu hears), so ⌘Q and ⌘W pressed while a widget's frame had the focus did
+      // nothing. Main acts on those two keys itself (quits; sends the menu's 'close-tab'), and takes ⌘Q
+      // from a widget the writer clicked into as well, which could otherwise swallow it. The widget takes
+      // no part: it never sees the key, and only a real keystroke comes through before-input-event.
       onHeld: (input) => { if (input.type === 'keyDown' && input.meta) void recordMainProcessDiagnostic('widget.keys.held', { meta: true }) },
-      actsOn: (input) => (isQuitKey(input, process.platform) ? () => app.quit() : null),
+      readerFrame: () => readerRegistry.keyboardFrame(window.webContents.id, window.webContents.mainFrame, window.webContents.focusedFrame),
+      ...mainOwnKeyHooks(process.platform, {
+        quit: () => app.quit(),
+        closeTab: () => { if (!window.isDestroyed()) window.webContents.send('menu:action', 'close-tab') },
+      }),
     })
     // Widgets (ticket 02): no WebRTC over UDP, and no permission for a frame that is not the app's own.
     applyWidgetNetworkPolicy(window.webContents, shellURL, (permission, url) => {
@@ -209,6 +206,7 @@ export class WindowManager {
         initiator: initiatorOf(event.initiator),
         frameOpaque: frameIsOpaque(event.frame),
         parentOpaque: parentIsOpaque(event.frame),
+        readerOrigin: readerFrameOrigin(event.initiator) ?? readerFrameOrigin(event.frame),
         url: event.url,
       })
       if (decision === 'continue') return
@@ -294,10 +292,10 @@ export class WindowManager {
       if (!root) return
       this.#ownedRoots.delete(webContentsId)
       // state.ts's own 'closed' handler (registered first) has started this window's agent and diary
-      // flushes; the Collection stays ours until they settle, so no other owner writes under them.
-      // The same for a command-line request the app was carrying out when the window closed.
+      // flushes; the Collection's reply key stays until they settle, and so does a command-line
+      // request the app was carrying out when the window closed.
       // Kept until it settles, so the example's removal can wait for it (`exampleLocksReleased`).
-      const releasing = Promise.all([waitForAgentDisposals(), waitForRequestDisposals()]).then(() => this.ownership.release(root))
+      const releasing = Promise.all([waitForAgentDisposals(), waitForRequestDisposals()]).then(() => this.openCollections.close(root))
       const after = Promise.all([this.#releasing.get(root), releasing]).then(() => undefined, () => undefined)
       this.#releasing.set(root, after)
       void after.then(() => { if (this.#releasing.get(root) === after) this.#releasing.delete(root) })
@@ -317,11 +315,8 @@ export class WindowManager {
    * windows on one root. Otherwise reuse `from` if it has no Workspace yet (the start screen), else
    * open a new window. Always records the recent.
    *
-   * A new binding first takes the Collection's owner lock, waiting for a short-lived owner (the
-   * command line mid-write). Resolves null when another owner still has it and the user, told so,
-   * chose not to try again. A Collection whose lock cannot be taken at all (collection-ownership.ts,
-   * `unlockable`) still opens, read-only: its write gate is closed before it is bound, and the user
-   * is told once the window shows it.
+   * Opening never waits for, or is refused because of, another program or another Mac that has the
+   * same Collection open: there is no Collection lock (open-collections.ts).
    */
   async openFolder(from: WindowState | null, root: string, options: { placement?: WindowPlacement } = {}): Promise<WindowState | null> {
     // Canonicalise BEFORE dedup and binding: dialogs return realpaths while argv/env use resolve(),
@@ -339,12 +334,12 @@ export class WindowManager {
       if (!existing.window.isDestroyed()) existing.window.focus()
       return existing
     }
-    if (!(await claimWithRetry(this.ownership, canonicalRoot, (busy) => this.#askRetry(busy)))) return null
-    // The wait can outlast the caller's picture of the world: this root may have opened meanwhile
-    // (its window shares the claim just taken), and `from` may have closed or been bound.
+    await this.openCollections.open(canonicalRoot)
+    // Opening is asynchronous: this root may have opened meanwhile in another window (which shares
+    // the open just made), and `from` may have closed or been bound.
     const opened = this.windowForRoot(canonicalRoot)
     if (opened) {
-      void this.ownership.release(canonicalRoot)
+      void this.openCollections.close(canonicalRoot)
       if (this.#switchingInto(opened, canonicalRoot)) return null
       this.#recordRecent(canonicalRoot)
       if (!opened.window.isDestroyed()) opened.window.focus()
@@ -359,15 +354,13 @@ export class WindowManager {
         created = true
       }
       this.#ownedRoots.set(target.window.webContents.id, canonicalRoot)
-      await bindWorkspace(target, canonicalRoot, this.settings, (root) => this.ownership.owns(root))
-      // Opened without its lock: nothing is saved until a later beat takes it. Say so now that a window shows it.
-      if (this.ownership.unavailable(canonicalRoot)) this.#ownershipChanged(canonicalRoot, 'unavailable')
+      await bindWorkspace(target, canonicalRoot, this.settings, (root) => this.openCollections.isOpen(root))
       this.#recordRecent(canonicalRoot)
       this.#recordGuideStep(canonicalRoot)
     } catch (error) {
       // A start-screen window this open reused that the bind got far enough to bind (round 3, T1): it
-      // stays bound, so the folder stays claimed (its heartbeat and write gate with it) until the window
-      // closes, whose 'closed' handler releases it. Undoing a part-made bind in place is not attempted.
+      // stays bound, so the Collection stays open here until the window closes, whose 'closed'
+      // handler closes it. Undoing a part-made bind in place is not attempted.
       // The window is returned and says what failed.
       if (target && !created && !target.window.isDestroyed() && target.workspace?.root === canonicalRoot) {
         const message = error instanceof Error ? error.message : String(error)
@@ -375,8 +368,8 @@ export class WindowManager {
         target.window.webContents.send('window:status', `${basename(canonicalRoot)} is open, but part of opening it failed: ${message}`)
         return target
       }
-      // Not bound, so not ours to hold — unless the window closed mid-bind and released it already.
-      if (!target || this.#ownedRoots.delete(target.window.webContents.id)) await this.ownership.release(canonicalRoot)
+      // Not bound, so not open here — unless the window closed mid-bind and closed it already.
+      if (!target || this.#ownedRoots.delete(target.window.webContents.id)) await this.openCollections.close(canonicalRoot)
       // A window this open made goes with it (round 2): nobody else is responsible for it. Its
       // 'closed' handlers dispose whatever the bind had made. A start-screen window it reused stays.
       if (created && target && !target.window.isDestroyed()) target.window.destroy()
@@ -410,7 +403,7 @@ export class WindowManager {
    * REPLACED, never rebound. `root` opens by `openFolder` in a new window created hidden at this
    * window's place; this window then closes by the ordinary close route (`#closeByNormalRoute`: its
    * renderer writes every document and drains its ledger, main makes the close checkpoints, disposes its
-   * services and releases its lock); once it has closed the new window is shown. The new window must
+   * services and closes the Collection); once it has closed the new window is shown. The new window must
    * first have loaded its root (`renderer:ready`). A close kept open, or one still undecided after the
    * switch's bound (then called off), closes the hidden window again and leaves this one as it was. The
    * order, its refusals and the per-window and per-root reservations are window-switch.ts's.
@@ -465,7 +458,7 @@ export class WindowManager {
     },
     discard: async (state) => {
       // A window nobody has seen or typed in: the ordinary close, then destroy if that did not finish
-      // (its 'closed' handler releases the lock either way).
+      // (its 'closed' handler closes the Collection either way).
       try {
         await this.#closeByNormalRoute(state)
       } finally {
@@ -556,20 +549,6 @@ export class WindowManager {
     return this.settings.recents().some((r) => normaliseRoot(r.root) === wanted)
       || this.settings.pinned().some((r) => normaliseRoot(r) === wanted)
       || ((await this.example?.current()) !== null && this.example?.isRoot(root) === true)
-  }
-
-  /** Tell the user another program has the folder, in the dialog style openFile uses; true = try again. */
-  async #askRetry(busy: OwnerLockBusyError): Promise<boolean> {
-    void recordMainProcessDiagnostic('owner-lock.busy', {
-      root: busy.root, waitedMs: busy.waitedMs,
-      owner: busy.owner ? { pid: busy.owner.pid, kind: busy.owner.kind, host: busy.owner.host } : null,
-    })
-    // A hidden e2e window must never block on a native dialog nobody can see.
-    if (process.env.WRITEFLEX_E2E === '1') return false
-    const { response } = await dialog.showMessageBox({
-      type: 'info', ...busyNotice(busy, hostname()), buttons: ['Try Again', 'Cancel'], defaultId: 0, cancelId: 1,
-    })
-    return response === 0
   }
 
   /**
@@ -702,8 +681,8 @@ export class WindowManager {
   }
 
   /**
-   * The removal's lock port (`example-removal.ts`, rule J): resolves once every release of a closed
-   * window's owner lock for the example, or a folder inside it, has finished. Called after
+   * The removal's close port (`example-removal.ts`, rule J): resolves once every release of a closed
+   * window on the example, or a folder inside it, has finished closing it. Called after
    * `closeExampleWindows` answered `closed`, so each of those windows has already started its release.
    */
   async exampleLocksReleased(root: string): Promise<void> {

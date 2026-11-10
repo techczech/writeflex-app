@@ -75,10 +75,10 @@ export function switcherList(input: SwitcherListInput): SwitcherList {
   return { vaults, folders, currentIsVault }
 }
 
-/** The small text on a vault row: `14 works`, `1,882 works`, or `—` when no count is cached. */
+/** The small text on a vault row: `14 pieces`, `1,882 pieces`, or `—` when no count is cached. */
 export function worksText(works: number | null): string {
   if (works === null) return '—'
-  return `${works.toLocaleString('en-GB')} ${works === 1 ? 'work' : 'works'}`
+  return `${works.toLocaleString('en-GB')} ${works === 1 ? 'piece' : 'pieces'}`
 }
 
 /** What the renderer asks main to switch to: a listed root, or the open dialog. */

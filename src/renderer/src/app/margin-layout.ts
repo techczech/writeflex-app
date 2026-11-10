@@ -25,6 +25,8 @@ export type LayoutCard = {
   height: number
   /** A thread (has replies) can fold to one line before the paragraph stacks. */
   isThread?: boolean
+  /** Root plus the nested reader replies drawn inside it. */
+  count?: number
   /** The passage's true top, before any floor. Typing moves a card by this, so a floor that moves does not move it. */
   passageTop?: number
   /** The lowest top a card may take (below the top of the margin). Re-applied on every pass, both ways. */
@@ -105,7 +107,7 @@ function planParagraph(group: LayoutCard[], fold: GroupFold, from: number, openI
     drift = top - first.anchorTop
     cursor = top + o.rowHeight + o.gap
     // A paragraph with one item folds to that item's own line (frame `many`), not to "1 items on this paragraph".
-    if (group.length === 1 && !openIds.has(first.id)) {
+    if (group.length === 1 && (first.count ?? 1) === 1 && !openIds.has(first.id)) {
       put(first, top, o.rowHeight, first.row ? 'row' : 'line')
       return { fold, placements, top, bottom: cursor, drift }
     }
@@ -143,7 +145,7 @@ function planParagraph(group: LayoutCard[], fold: GroupFold, from: number, openI
 function ladder(group: LayoutCard[]): GroupFold[] {
   const steps: GroupFold[] = ['full']
   if (group.some((card) => card.isThread)) steps.push('threads')
-  if (group.length > 1) steps.push('stack')
+  if (group.reduce((count, card) => count + (card.count ?? 1), 0) > 1) steps.push('stack')
   steps.push('line')
   return steps
 }
@@ -168,7 +170,7 @@ function crowdingPass(input: LayoutInput, o: Required<LayoutOptions>): MarginLay
     }
     const plan = chosen as Plan
     placements.push(...plan.placements)
-    groups.push({ paragraph: group[0].paragraph, fold: plan.fold, top: plan.top, bottom: plan.bottom, count: group.length })
+    groups.push({ paragraph: group[0].paragraph, fold: plan.fold, top: plan.top, bottom: plan.bottom, count: group.reduce((count, card) => count + (card.count ?? 1), 0) })
     cursor = plan.bottom
   })
   return { placements, groups }
@@ -216,7 +218,7 @@ function typingPass(input: LayoutInput, previous: MarginLayout, o: Required<Layo
       const own = placements.filter((p) => p.paragraph === group.paragraph)
       if (own.length === 0) return null
       const top = Math.min(...own.map((p) => p.top))
-      return { ...group, count: own.length, top, bottom: Math.max(...own.map((p) => p.top + p.height), top) }
+      return { ...group, count: input.cards.filter((card) => card.paragraph === group.paragraph).reduce((count, card) => count + (card.count ?? 1), 0), top, bottom: Math.max(...own.map((p) => p.top + p.height), top) }
     })
     .filter((g): g is ParagraphGroup => g !== null)
   return { placements, groups }
@@ -229,9 +231,9 @@ export function layoutMargin(input: LayoutInput): MarginLayout {
 }
 
 /** Under the passage there is no vertical alignment: three or more cards on one paragraph become a stack. */
-export function underPassageFolds(cards: Array<{ id: string; paragraph: string | number }>, openIds: ReadonlySet<string> = new Set()): Map<string, 'open' | 'stack'> {
+export function underPassageFolds(cards: Array<{ id: string; paragraph: string | number; count?: number }>, openIds: ReadonlySet<string> = new Set()): Map<string, 'open' | 'stack'> {
   const sizes = new Map<string | number, number>()
-  for (const card of cards) sizes.set(card.paragraph, (sizes.get(card.paragraph) ?? 0) + 1)
+  for (const card of cards) sizes.set(card.paragraph, (sizes.get(card.paragraph) ?? 0) + (card.count ?? 1))
   return new Map(cards.map((card) => [card.id, (sizes.get(card.paragraph) ?? 0) >= 3 && !openIds.has(card.id) ? 'stack' : 'open']))
 }
 
@@ -266,7 +268,7 @@ export function layoutUnder(input: Pick<LayoutInput, 'cards' | 'openIds' | 'typi
       placements.push({ id: card.id, paragraph: card.paragraph, top: cursor, height, fold })
       cursor += height + (fold === 'stack' ? 0 : o.gap)
     }
-    groups.push({ paragraph: group[0].paragraph, fold: stacked ? 'stack' : 'full', top: group[0].anchorTop, bottom: cursor, count: group.length })
+    groups.push({ paragraph: group[0].paragraph, fold: stacked ? 'stack' : 'full', top: group[0].anchorTop, bottom: cursor, count: group.reduce((count, card) => count + (card.count ?? 1), 0) })
   }
   return { placements, groups }
 }

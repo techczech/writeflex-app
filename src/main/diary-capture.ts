@@ -17,6 +17,7 @@ type ActiveSession = {
   baselines: Map<string, number>
   current: Map<string, number>
   pieces: string[]
+  edited: boolean
   activeMs: number
 }
 
@@ -43,19 +44,20 @@ export class DiaryCaptureTracker {
     return this.#active?.lastActivityAt ?? null
   }
 
-  observe(path: string, words: number, at = Date.now(), beforeWords = words, options: { splitOnIdle?: boolean } = {}): DiaryCaptureEvent {
+  observe(path: string, words: number, at = Date.now(), beforeWords = words, options: { splitOnIdle?: boolean; edited?: boolean } = {}): DiaryCaptureEvent {
     if (this.#active && options.splitOnIdle !== false && at - this.#active.lastActivityAt >= DIARY_IDLE_MS) {
       const closed = this.#persistable(this.#active)
-      this.#active = this.#start(path, words, at, beforeWords)
+      this.#active = this.#start(path, words, at, beforeWords, options.edited)
       const started = this.#persistable(this.#active)
       return closed || started ? { kind: 'split', closed, started } : { kind: 'none' }
     }
     if (!this.#active) {
-      this.#active = this.#start(path, words, at, beforeWords)
+      this.#active = this.#start(path, words, at, beforeWords, options.edited)
       const record = this.#persistable(this.#active)
       return record ? { kind: 'checkpoint', record } : { kind: 'none' }
     }
     const active = this.#active
+    active.edited ||= options.edited === true || words !== beforeWords || words !== active.current.get(path)
     const activityGap = Math.max(0, at - active.lastActivityAt)
     if (activityGap < DIARY_IDLE_MS) active.activeMs += activityGap
     if (!active.baselines.has(path)) active.baselines.set(path, beforeWords)
@@ -83,7 +85,7 @@ export class DiaryCaptureTracker {
     this.#primed.clear()
   }
 
-  #start(path: string, words: number, at: number, beforeWords: number): ActiveSession {
+  #start(path: string, words: number, at: number, beforeWords: number, edited = false): ActiveSession {
     const baseline = beforeWords
     return {
       id: randomUUID(),
@@ -93,6 +95,7 @@ export class DiaryCaptureTracker {
       baselines: new Map([[path, baseline]]),
       current: new Map([[path, words]]),
       pieces: [path],
+      edited: edited || words !== beforeWords,
       activeMs: 0,
     }
   }
@@ -105,12 +108,13 @@ export class DiaryCaptureTracker {
       startedAt: active.startedAt,
       minutes: Math.max(1, Math.ceil(active.activeMs / 60_000)),
       netWords,
+      edited: active.edited,
       pieces: [...active.pieces],
     }
   }
 
   #persistable(active: ActiveSession): DiarySessionRecord | null {
     const record = this.#record(active)
-    return record.netWords > 0 ? record : null
+    return active.edited ? record : null
   }
 }

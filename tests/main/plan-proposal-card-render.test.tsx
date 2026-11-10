@@ -52,7 +52,7 @@ test('frame 2 · the proposal: every change marked, the copy listed outside, thr
   expect(html).toContain('file stays')
   expect(html).toContain('Use this order <kbd class="k">⌘↵</kbd>')
   expect(html).toContain('Edit first')
-  expect(html).toContain('Discard')
+  expect(html).toContain('Decline')
   expect(html).not.toContain('Create the Index Note')
 })
 
@@ -136,7 +136,7 @@ test('frame 6 · stale: the card dims, names the changed file, and offers Propos
   expect(html).toContain('class="card plan-proposal dim"')
   expect(html).toContain('The folder changed after this was proposed: 02_key-strategic-moves.md was renamed.')
   expect(html).toContain('Propose again')
-  expect(html).toContain('Discard')
+  expect(html).toContain('Decline')
   expect(html).not.toContain('Use this order')
 })
 

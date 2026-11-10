@@ -2,7 +2,7 @@
  * Save a named version of a document's SAVED text, with no window and no agent turn: the version
  * save the command line asks for (specification sections 3 and 4). One function serves both routes:
  * the app carrying out a request (request-executor.ts, over the app's own stores and its agent's
- * snapshot store) and the command line under the owner lock with the app closed (cli/history-store.ts).
+ * snapshot store) and the command line with the app not having the Collection open on this computer (cli/history-store.ts).
  *
  * What it writes is what the app's own "Save version" writes for a document with nothing to settle,
  * in the same order and through the same store code:
@@ -26,6 +26,9 @@ import { lstat } from 'node:fs/promises'
 import type { VersionSnapshotResult } from './agent'
 import { assertCollectionWritable } from './collection-write-gate'
 import { documentPathRefusal, type Change, type ChangeStore } from './changes'
+import { ObjectRepairRefused, repairStandingObjectOf, repairStandingObjectOfBytes } from './history-object-repair'
+import type { SnapshotBytesMeta } from './snapshot-bytes'
+import { FILE_VERSION_CAP_BYTES, FILE_VERSION_CAP_LABEL, isMarkdownDocument } from '../shared/file-versions'
 import type { AuthorIdentity, Version, VersionStore } from './versions'
 import type { Workspace } from './workspace'
 
@@ -35,11 +38,16 @@ export type VersionSnapshots = {
   snapshotFile(absPath: string, meta: { sessionId?: string; capability?: string }): Promise<{ id: string }>
 }
 
-/** A refusal of a version save, in words for the person; nothing was written when it is thrown before the snapshot. */
+/** The two calls of the snapshot store a version save of bytes already in hand makes (`snapshotBytesOfSavedText`). */
+export type VersionByteSnapshots = Pick<VersionSnapshots, 'beginRestorePoint'> & {
+  snapshotBytes(absPath: string, bytes: Uint8Array, meta: SnapshotBytesMeta): Promise<{ id: string }>
+}
+
+/** A refusal of a version save, in words for the person; nothing was written when it is thrown before the snapshot. `out-of-backup-scope`: a Folio version a backup would hold back (folio-version-save.ts). */
 export class VersionSaveRefused extends Error {
   override readonly name = 'VersionSaveRefused'
   /** `version-unsettled`: the writer must save this version in WriteFlex (cli/outcome.ts). Otherwise a plain refusal. */
-  constructor(message: string, readonly code: 'refused' | 'version-unsettled' = 'refused') {
+  constructor(message: string, readonly code: 'refused' | 'version-unsettled' | 'out-of-backup-scope' = 'refused') {
     super(message)
   }
 }
@@ -55,14 +63,51 @@ export async function snapshotVersionOfSavedText(input: {
   snapshots: VersionSnapshots
   sessionId: string
   path: string
+  /** Default true. False only for a caller that has already put a damaged object right under a folder it holds (the command line, cli/history-store.ts). */
+  repairObject?: boolean
 }): Promise<VersionSnapshotResult> {
   const { workspace, snapshots, sessionId, path } = input
   const refusal = documentPathRefusal(workspace, path)
   if (refusal) throw new VersionSaveRefused(`A version cannot be saved: ${refusal}`)
+  // Bridle's store refuses to save over a damaged object of the same name, for ever. Every version snapshot passes here (a Folio
+  // save, the approved settle of a Folio save, an ordinary Save version, the first version on close), so the repair is made here,
+  // before the restore point is begun and anything is written (history-object-repair.ts).
+  if (input.repairObject !== false) {
+    await repairStandingObjectOf(workspace, path).catch((error: unknown) => {
+      if (error instanceof ObjectRepairRefused) throw new VersionSaveRefused(`${error.message} Nothing was saved.`)
+      throw error
+    })
+  }
   const versionId = await snapshots.beginRestorePoint(`version: ${path}`, sessionId)
   const lateRefusal = documentPathRefusal(workspace, path)
   if (lateRefusal) throw new VersionSaveRefused(`A version cannot be saved: ${lateRefusal}`)
   const snapshot = await snapshots.snapshotFile(workspace.absolute(path), { sessionId, capability: 'change.save-version' })
+  return { versionId, snapshotId: snapshot.id }
+}
+
+/**
+ * `snapshotVersionOfSavedText` for bytes the caller has already read and judged (a file version, file-versions.ts): one restore point and one snapshot
+ * of EXACTLY these bytes. The file is not read again, so what is stored cannot differ from what was judged, whatever the file became in between.
+ * The path is judged before and again after the restore point is begun, as there; an object standing at the bytes' name that is damaged is put right first.
+ */
+export async function snapshotBytesOfSavedText(input: {
+  workspace: Workspace
+  snapshots: VersionByteSnapshots
+  sessionId: string
+  path: string
+  bytes: Uint8Array
+}): Promise<VersionSnapshotResult> {
+  const { workspace, snapshots, sessionId, path, bytes } = input
+  const refusal = documentPathRefusal(workspace, path)
+  if (refusal) throw new VersionSaveRefused(`A version cannot be saved: ${refusal}`)
+  await repairStandingObjectOfBytes(workspace, bytes).catch((error: unknown) => {
+    if (error instanceof ObjectRepairRefused) throw new VersionSaveRefused(`${error.message} Nothing was saved.`)
+    throw error
+  })
+  const versionId = await snapshots.beginRestorePoint(`version: ${path}`, sessionId)
+  const lateRefusal = documentPathRefusal(workspace, path)
+  if (lateRefusal) throw new VersionSaveRefused(`A version cannot be saved: ${lateRefusal}`)
+  const snapshot = await snapshots.snapshotBytes(workspace.absolute(path), bytes, { sessionId, capability: 'change.save-version' })
   return { versionId, snapshotId: snapshot.id }
 }
 
@@ -106,6 +151,8 @@ export async function saveVersionOfSavedText(stores: SavedTextVersionStores, inp
     const info = await lstat(workspace.absolute(path)).catch(() => null)
     if (!info) throw new VersionSaveRefused(`${path} does not exist, so there is no text to save a version of.`)
     if (!info.isFile()) throw new VersionSaveRefused(`${path} is not an ordinary file (a link or a folder stands at that name), so no version was saved.`)
+    // A table, widget page or image over the cap is not given file versions (a Folio version lists it as a reference). Judged from its size, before a byte is read.
+    if (!isMarkdownDocument(path) && info.size > FILE_VERSION_CAP_BYTES) throw new VersionSaveRefused(`${path} is over ${FILE_VERSION_CAP_LABEL}, so it is not given file versions: a Folio version lists it as a reference and keeps no copy. No version was saved.`)
 
     const unsettled = changesAVersionWouldSettle(await stores.changes.list({ path }))
     if (unsettled.length > 0) {

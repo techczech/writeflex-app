@@ -2,9 +2,10 @@
 // collapsed to the pill, or docked, in which case it renders into the right rail's Scratchpad tab (there is
 // one Scratchpad, not two). App mounts this once and forwards ⌘⇧X, the editor's anchor changes and the
 // commands through `api`; everything else about the feature lives under src/renderer/src/scratchpad/.
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { createPortal } from 'react-dom'
-import type { ScratchMode } from '../../../shared/scratchpad-layout'
+import { besideFit, type BesidePlace, type ScratchMode } from '../../../shared/scratchpad-layout'
+import { useScratchpadSlot } from '../components/notice-slot'
 import type { EditorState } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import { ScratchpadPanel, type ScratchpadPanelCommands } from '../components/scratchpad/ScratchpadPanel'
@@ -259,7 +260,10 @@ export function ScratchpadHost({
   const mode = layout.layout.mode
   useEffect(() => { onModeChange?.(mode) }, [mode, onModeChange])
   // Docking means the rail's Scratchpad tab: open it when the panel docks.
-  useEffect(() => { if (mode === 'docked') openDock() }, [mode]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Only a change TO docked (the person pressing Dock) opens the sidebar; restoring a docked layout at start leaves the
+  // sidebar as the person left it, the Scratchpad docked but hidden with it (Sol S2).
+  const previousMode = useRef(mode)
+  useEffect(() => { if (mode === 'docked' && previousMode.current !== 'docked') openDock(); previousMode.current = mode }, [mode]) // eslint-disable-line react-hooks/exhaustive-deps
   // The placement note follows the caret while the panel is open; the selection bubble follows the
   // selection even when the panel is the pill, so this runs in every mode.
   useEffect(() => {
@@ -270,20 +274,50 @@ export function ScratchpadHost({
     return () => { cancelAnimationFrame(frame); document.removeEventListener('selectionchange', bump); document.removeEventListener('keyup', bump) }
   }, [mode])
 
-  // The pill sits at the bottom right of the text column, never over the rail (its composer, its lists).
-  const [pillRight, setPillRight] = useState(20)
-  useEffect(() => {
-    const rail = railOpen ? document.querySelector<HTMLElement>('aside.right-pane') : null
+  // The collapsed pill is a chip in the status bar (R2/R7). Expanded and floating, the panel opens BESIDE the text where
+  // the window leaves the editor 55% of its width (R3), reserving that room; where it does not, it overlays as before,
+  // and starts to type in the text and it folds back to the chip, so it covers text only while it is in use.
+  const chipSlot = useScratchpadSlot()
+  const [beside, setBeside] = useState<BesidePlace | null>(null)
+  const reserved = useRef(0)
+  const preferredWidth = layout.layout.box.w
+  const floatedRef = useRef(false)
+  floatedRef.current = layout.layout.floated === true
+  useLayoutEffect(() => {
+    const wrap = document.querySelector<HTMLElement>('.editor-wrap')
+    const release = (): void => { if (wrap) wrap.style.marginRight = ''; reserved.current = 0 }
+    if (mode !== 'float' || suspended || !wrap) { release(); setBeside((current) => (current === null ? current : null)); return release }
     const measure = (): void => {
-      const left = rail?.getBoundingClientRect().left ?? window.innerWidth
-      setPillRight(Math.max(20, Math.round(window.innerWidth - left + 20)))
+      const rect = wrap.getBoundingClientRect()
+      const next = besideFit({ viewportWidth: window.innerWidth, editor: { left: rect.left, right: rect.right + reserved.current, top: rect.top, bottom: rect.bottom }, preferredWidth })
+      // No room beside the text and no explicit Float: dock in the right sidebar rather than cover the text (R7).
+      if (!next && !floatedRef.current) { layout.dock(); window.setTimeout(() => setFocusTick((t) => t + 1), 120); return } // the tab shows a moment later: focus follows it
+      const width = next?.width ?? 0
+      if (reserved.current !== width) { wrap.style.marginRight = width ? `${width}px` : ''; reserved.current = width }
+      setBeside((current) => (current && next && current.left === next.left && current.top === next.top && current.width === next.width && current.height === next.height ? current : next))
     }
     measure()
     window.addEventListener('resize', measure)
-    const observer = rail && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
-    if (rail) observer?.observe(rail)
-    return () => { window.removeEventListener('resize', measure); observer?.disconnect() }
-  }, [railOpen, mode])
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
+    const shell = wrap.parentElement
+    if (shell) observer?.observe(shell)
+    observer?.observe(wrap)
+    return () => { window.removeEventListener('resize', measure); observer?.disconnect(); release() }
+  }, [mode, suspended, railOpen, preferredWidth])
+  useEffect(() => {
+    if (mode !== 'float' || beside !== null || suspended) return
+    // Overlaying: typing where the panel lies over the caret folds it away (its own fields and menus are exempt).
+    const typed = (event: Event): void => {
+      const target = event.target as HTMLElement | null
+      if (!target?.closest?.('.cm-editor') || target.closest('.sp-panel')) return
+      const editorView = live.current.view()
+      const panelBox = document.querySelector('.sp-panel.floating')?.getBoundingClientRect()
+      const caret = editorView?.coordsAtPos(editorView.state.selection.main.head)
+      if (panelBox && caret && caret.left < panelBox.right && caret.right > panelBox.left && caret.top < panelBox.bottom && caret.bottom > panelBox.top) layout.collapse()
+    }
+    document.addEventListener('beforeinput', typed, true)
+    return () => document.removeEventListener('beforeinput', typed, true)
+  }, [mode, beside, suspended, layout])
 
   const editor = view()
   const placement: Placement = useMemo(() => {
@@ -356,7 +390,9 @@ export function ScratchpadHost({
       docked={mode === 'docked'}
       externalSources={externalSources}
       onOpenSettings={onOpenSettings}
-      pillRight={pillRight}
+      chipSlot={suspended ? null : chipSlot}
+      beside={beside}
+      onChip={mode === 'docked' && !dockVisible ? openDock : undefined}
       handlers={{
         show: (item) => { void show(item) },
         showAt,
@@ -402,7 +438,7 @@ export function ScratchpadHost({
           {suspended ? suspendedNote : null}
         </>,
         dockSlot,
-      ) : null}
+      ) : <div hidden>{panel}</div>}
       <div style={suspensionStyle} aria-hidden={suspended || undefined}>{bubble}</div>
     </>
   )
@@ -412,15 +448,6 @@ export function ScratchpadHost({
         {panel}
         {bubble}
       </div>
-      {dockSlot ? createPortal(
-        suspended ? suspendedNote : (
-          <div className="sp-rail-away">
-            <p>The Scratchpad is {mode === 'collapsed' ? 'collapsed to the pill at the bottom right' : 'floating over the text'}.</p>
-            <button type="button" onClick={layout.dock}>Dock it here</button>
-          </div>
-        ),
-        dockSlot,
-      ) : null}
     </>
   )
 }

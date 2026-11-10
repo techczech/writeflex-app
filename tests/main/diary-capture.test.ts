@@ -28,7 +28,7 @@ test('pieces touched and net words accrue across documents in one session', () =
   tracker.observe('a.md', 10, start)
   tracker.observe('a.md', 15, start + 10_000)
   tracker.observe('b.md', 20, start + 20_000)
-  const event = tracker.close(start + 30_000)
+  const event = tracker.close()
   expect(event?.pieces).toEqual(['a.md', 'b.md'])
   expect(event?.netWords).toBe(5)
 })
@@ -66,5 +66,15 @@ test('a newly touched file uses its pre-change count so a first paste is counted
 test('a zero-word first observation does not request persistence', () => {
   const tracker = new DiaryCaptureTracker()
   expect(tracker.observe('a.md', 10, Date.now(), 10)).toEqual({ kind: 'none' })
+  expect(tracker.close()).toBeNull()
+})
+
+test('cutting and subsequent zero-net editing persist; an untouched session does not', () => {
+  const tracker = new DiaryCaptureTracker()
+  tracker.observe('a.md', 80, 1000, 100)
+  expect(tracker.close()).toMatchObject({ netWords: -20, edited: true })
+  tracker.observe('a.md', 100, 2000, 100, { edited: true })
+  expect(tracker.close()).toMatchObject({ netWords: 0, edited: true })
+  tracker.begin('a.md', 100, 3000)
   expect(tracker.close()).toBeNull()
 })

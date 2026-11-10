@@ -1,3 +1,8 @@
+import { SyncPanel, SyncTitleStatus, SyncTabStatus } from '../sync/SyncStatus'
+import { useSyncStatus } from '../sync/use-sync-status'
+import { createHelperSyncAdapter } from '../sync/helper-sync-adapter'
+import { createHelperReceiptAdapter, type HelperReceiptAdapter, type ReceiptApi } from './backup-helper-receipts'
+import type { SyncAdapter } from '../sync/sync-status'
 import type { ScratchMode } from '../../../shared/scratchpad-layout'
 import { createNoticeTimer } from './notice-timer'
 import { ROOM_ON_SCREEN_EVENT, roomOnScreen } from '../plan/room-on-screen'
@@ -11,9 +16,11 @@ import { reportRendererError } from './RendererErrorBoundary'
 import { closeWindowIfClean, closeWithEditor, editorIsPresent, queueCloseRetry, setEditorPresent, setSaveBasisSource, takeCloseRetry, unsaved } from './unsaved-text'
 import { acceptThroughOwner as acceptRoute, replayAcceptRedo, resolveProposalThroughOwner, type AcceptAnswer, type AcceptRouteResult } from './resolution-routes'
 import { createDocumentOwner, type DocumentOwner, type MainWriteOutcome, type OutsideOutcome, type Snapshot } from './document-owner'
+import { createAutosaveScheduler, type AutosaveScheduler } from './autosave-scheduler'
+import { fanOutReceipts } from './save-receipts'
 import { documentsUnder as documentsUnderFrom, folderPrefix, renameMembers } from './documents-under'
 import { useAmbientSnapshot } from '../hooks/useAmbientSnapshot'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Transaction, type StateCommand } from '@codemirror/state'
 import type { Command as EditorViewCommand } from '@codemirror/view'
 import { isolateHistory, redo, undo, undoDepth } from '@codemirror/commands'
@@ -23,106 +30,7 @@ import type { ReadingRoomWriteRefusal, ReadingRoomWriteResult } from '../../../p
 import { createOutboxSyncRunner, outboxResultAnnouncement } from '../reading-room-sync'
 import { applyReadingRoomSetting } from '../reading-room-settings'
 import { humanReadableError } from '../error-text'
-import {
-  AlignCenterVertical,
-  Anchor,
-  AudioLines,
-  BookOpen,
-  Bold,
-  Bot,
-  CaseLower,
-  CaseSensitive,
-  CaseUpper,
-  Check,
-  ClipboardCopy,
-  ClipboardType,
-  ChevronsDownUp,
-  ChevronsLeft,
-  ChevronsRight,
-  ChevronsUpDown,
-  ChevronLeft,
-  ChevronRight,
-  Columns3,
-  Command,
-  CornerUpLeft,
-  CopyPlus,
-  RemoveFormatting,
-  Code,
-  Download,
-  Eraser,
-  Focus,
-  FileCode,
-  FilePlus2,
-  FoldVertical,
-  FolderTree,
-  Folder,
-  Files as FilesIcon,
-  GitCommitHorizontal,
-  Heading,
-  Highlighter,
-  Info,
-  Italic,
-  Keyboard,
-  LayoutPanelLeft,
-  Link,
-  List,
-  ListFilter,
-  LayoutGrid,
-  ListTree,
-  FileText,
-  Columns2,
-  ListOrdered,
-  ListPlus,
-  LocateFixed,
-  Maximize2,
-  Minimize2,
-  MessageSquare,
-  Minus,
-  Moon,
-  Pause,
-  PanelRightOpen,
-  PanelTop,
-  Plus,
-  GitMerge,
-  RefreshCw,
-  Quote,
-  RotateCcw,
-  Save,
-  Scan,
-  Search,
-  Settings,
-  SlidersHorizontal,
-  Sparkles,
-  Square,
-  SquarePen,
-  Star,
-  StickyNote,
-  Sun,
-  Target,
-  Timer,
-  Text,
-  TextCursorInput,
-  TriangleAlert,
-  Volume2,
-  X,
-  Glasses,
-  Lightbulb,
-  Library,
-  Undo2,
-  ArrowUp,
-  ArrowDown,
-  Pin,
-  PinOff,
-  type LucideIcon,
-  Compass,
-  AppWindow,
-  FolderOpen,
-  Rows3,
-  Send,
-  History,
-  Pencil,
-  BookOpenCheck,
-} from 'lucide-react'
+import { AlignCenterVertical, Anchor, AudioLines, BookOpen, Bold, CaseLower, CaseSensitive, CaseUpper, Check, ClipboardCopy, ClipboardType, ChevronsDownUp, ChevronsLeft, ChevronsRight, ChevronsUpDown, ChevronLeft, ChevronRight, Columns3, Command, CornerUpLeft, CopyPlus, RemoveFormatting, Code, Download, Eraser, Focus, FileCode, FilePlus2, FoldVertical, FolderTree, Folder, Files as FilesIcon, FileDown, GitCommitHorizontal, Heading, Highlighter, Info, Italic, Keyboard, LayoutPanelLeft, Link, List, ListFilter, LayoutGrid, ListTree, FileText, Columns2, ListOrdered, ListPlus, LocateFixed, Maximize2, Minimize2, MessageSquare, Minus, Moon, Pause, PanelRightOpen, PanelTop, Plus, GitMerge, RefreshCw, Quote, RotateCcw, Save, Scan, Search, Settings, SlidersHorizontal, Sparkles, Square, SquarePen, Star, StickyNote, Sun, Target, Timer, Text, TextCursorInput, TriangleAlert, Volume2, X, Glasses, Lightbulb, Library, Undo2, ArrowUp, ArrowDown, Pin, PinOff, type LucideIcon, Compass, AppWindow, FolderOpen, Rows3, Send, Upload, History, Eye, GitCompare, Pencil, BookOpenCheck, Telescope } from 'lucide-react'
 import { documentIdentityLabel, Toolbar } from '../components/Toolbar'
 import { ActionBar } from '../components/ActionBar'
 import { filesHeaderSummary } from '../components/files-header-summary'
@@ -139,6 +47,11 @@ import {
   actionBarVisibleFrom,
   serialiseActionBarItems,
 } from '../../../shared/action-bar-settings'
+import { UpdateNotices, runCheckForUpdates, showWhatsNew } from '../components/UpdateNotices'
+import { BackNameProvider } from '../components/BackControl'
+import { useVaultSidebar } from '../hooks/useVaultSidebar'
+import { ConfirmHost } from '../components/ConfirmCard'
+import { askConfirm } from '../components/confirm-bus'
 import { StatusBar } from '../components/StatusBar'
 import type { ReviewAsk } from '../components/ReviewBulkPopovers'
 import { FocusPicker } from '../components/FocusPicker'
@@ -198,7 +111,7 @@ import { DocumentFind, type FindStatus } from '../components/DocumentFind'
 import { TabBar } from '../components/TabBar'
 import { Sidebar, type SidebarFileOps, type SidebarFocusedRow, type SidebarTreeFocusRequest } from '../components/Sidebar'
 import SearchPanel from '../components/SearchPanel'
-import ArchiveSearchDock from '../components/ArchiveSearchDock'
+import { ResearchPane, type ResearchScope } from '../components/ResearchPane'
 import { archiveLinkInsert, archiveQuoteInsert, insertedRange } from '../editor/archive-insert'
 import type { ArchiveResult } from '../../../shared/scout'
 import { RemoveExampleConfirm, REMOVE_EXAMPLE_TEXT } from '../components/RemoveExampleConfirm'
@@ -206,6 +119,7 @@ import { DiskMergeSheet } from '../components/DiskMergeSheet'
 import { applyDiskMerge, beginDiskMerge, diskMergeMessage, offersMerge, type DiskMergeSession } from './disk-merge'
 import type { ConflictPick } from '../../../shared/three-way-merge'
 import { StartScreen } from '../components/StartScreen'
+import { AgentSkillStep } from '../components/AgentSkillOffer'
 import { WorkspaceEmpty } from '../components/WorkspaceEmpty'
 import { EditorPane, type EditorHandle } from '../components/EditorPane'
 import { readPreferredView, type MarginControl } from '../components/ReviewMargin'
@@ -229,7 +143,11 @@ import { Board } from '../components/Board'
 import { Rail, type QueryInsertionContext } from '../components/Rail'
 import { InsertQueryConfirm } from '../components/InsertQueryConfirm'
 import { folioOpenTarget, readFolioOpenParts } from '../components/FolioOpenButton'
-import { ROOM_VIEW_EVENT } from '../components/FolioRoom'
+import { FOLIO_VERSION_COMMAND_EVENT, ROOM_VIEW_EVENT } from '../components/FolioRoom'
+import { runFileVersionsCommand, type FileVersionsAction } from '../plan/file-versions-focus'
+import { OPEN_COMPARE_EVENT, OPEN_EXPORT_EVENT, OPEN_IMPORT_EVENT, OPEN_MARK_SENT_EVENT, OPEN_READ_ONLY_EVENT, requestImportOnNextVersionsTab } from '../components/FolioRoomVersions'
+import { OPEN_VERSION_NUDGE_EVENT, OPEN_VERSION_REQUEST_EVENT, anyVersionRead, setWaitingOpenVersion, useAnyReadingVersion, useAnyVersionRead, type OpenVersionRequest } from '../plan/folio-reading'
+import { registerVersionSendHost, sendVersionSelectionFromCommand } from '../scratchpad/version-send'
 import { ROOM_VIEWS, WORKSPACE_TAB_CHORDS } from '../../../shared/folio-room'
 import { folderIsFolio } from './folio-routing'
 import { dispatchSidebar } from '../plan/folio-sidebar'
@@ -245,11 +163,10 @@ import { insertWidgetLine } from '../editor/insert-widget'
 import { ActionsHereContext, type ActionsHereApi } from '../components/ActionsHere'
 import { FolderPieceChooser, type FolderPieceChoice } from '../components/FolderPieceChooser'
 import { AgentPanel, type AgentActionRequest, type AgentConfigurationRequest, type ComposerRequest } from '../components/AgentPanel'
-import { AgentNotes } from '../components/AgentNotes'
+import { AgentNotesSection } from '../components/AgentNotesSection'
 import { SkillCompletionToast, orderSkills, skillDisplayName, type SkillToast } from '../components/AgentSkillSurfaces'
 import { REPORT_SKILL, REPORT_SKILL_COMMAND, skillLaunchTarget } from '../plan/report-skill'
 import { SkillsManager, SkillProvenanceBelt, activeSkillForPath } from '../components/SkillsManager'
-import { SourcesSection } from '../components/SourcesSection'
 import { ScratchpadHost, type ScratchpadHostApi } from '../scratchpad/ScratchpadHost'
 import { isLosslessItemId as isLosslessScrapId } from '../../../shared/scratchpad-items'
 import { VersionsPane } from '../components/VersionsPane'
@@ -260,6 +177,12 @@ import { SuggestionCallout, type CalloutViewRequest } from '../components/Sugges
 import { SettingsWindow } from '../components/SettingsWindow'
 import { classifyExternalDrop, type DroppedPath } from '../external-drop'
 import { CheatSheet } from '../components/CheatSheet'
+import { FolioVersionSheet, SaveChooser } from '../components/FolioVersionSave'
+import { FolioVersionsCursorPanel } from '../components/FolioVersionsCursorPanel'
+import { setMarginSince, useFolioCues } from '../plan/folio-cues-store'
+import { cueChipText, cueTotal, embedOnLine } from '../../../shared/folio-version-changes'
+import { createSaveGate, describeSheetChange, refusalSentence, SAVING_NOW, savedToast, saveChanged, type SaveChoice } from './folio-version-save'
+import type { FolioSheetFacts } from '../../../main/folio-version-sheet'
 import { ExportSheet, type ExportPresetOpenAction, type ExportScope, type ExportSheetOutcome } from '../components/ExportSheet'
 import type { ExportFormat, FolioLeftOut, FolioPlace, HtmlExportOptions, TocDepthScope, TocDepthSource } from '../../../preload'
 import type { ExportTocDepthHome } from '../components/export-sheet-options'
@@ -315,7 +238,7 @@ import { useOutsideSourceBulk } from './use-outside-source-bulk'
 import { reviseSuggestionWithWarning } from './revise-suggestion'
 import { findLiveSuggestionForChange } from './change-suggestion-match'
 import { ReviewCursor, owedReveal } from './review-cursor'
-import { guideNeedsRoom, rightPaneTabsFor, usePaneLayout } from './pane-layout'
+import { SIDEBARS_TAKE_TURNS_BELOW, fitSidebars, guideNeedsRoom, initialSidebars, planSidebars, readRightSidebarChoice, readSidebarTurn, rightPaneTabsFor, usePaneLayout, writeRightSidebarChoice, writeSidebarTurn } from './pane-layout'
 import { RightPaneTabs } from '../components/RightPaneTabs'
 import { GuidePane } from '../components/GuidePane'
 import { useGuideConnectionSources } from '../components/guide-connections-live'
@@ -500,8 +423,13 @@ async function statusBarCollectionDirFor(path: string, resolvedCollectionDir: st
 /** Commands the app chord table dispatches on a modified ⌫ (eventToChord produces no ⌫ chord). */
 const BACKSPACE_APP_CHORDS = new Set(['review.declineAll'])
 
-export default function App(): JSX.Element {
+export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {}): JSX.Element {
   const [readingRoomOpen, setReadingRoomOpen] = useState(false)
+  const readingRoomLifetime = useRef<(() => Promise<void>) | null>(null)
+  const readingRoomVisibility = useRef(false)
+  const readingRoomClosing = useRef<Promise<void> | null>(null)
+  const [readingRoomInstance, setReadingRoomInstance] = useState(0)
+  const registerReadingRoomLifetime = useCallback((dispose: (() => Promise<void>) | null): void => { readingRoomLifetime.current = dispose }, [])
   const [readingRoomSide, setReadingRoomSide] = useState<'left' | 'right'>('left')
   // Each bump of this counter raises the Shelf inside the Room and lands the keyboard in its field.
   const [readingRoomShelfRequest, setReadingRoomShelfRequest] = useState(0)
@@ -549,6 +477,9 @@ export default function App(): JSX.Element {
   const [compareView, setCompareView] = useState<{ fromId: VersionCompareEndpointId; toId: VersionCompareEndpointId } | null>(null)
   const [liveCompareRefreshTick, setLiveCompareRefreshTick] = useState(0)
   const [historicalView, setHistoricalView] = useState<HistoricalView | null>(null)
+  // Read after an asynchronous confirm card: the view the card was asked about may have closed meanwhile.
+  const historicalViewRef = useRef(historicalView)
+  historicalViewRef.current = historicalView
   const [versionDialogError, setVersionDialogError] = useState('')
   const [versionName, setVersionName] = useState('')
   // The file `changes` were loaded for — the editor-side surfaces (inline, marks) render only when this
@@ -615,6 +546,12 @@ export default function App(): JSX.Element {
   const [removeExampleOpen, setRemoveExampleOpen] = useState(false)
   const [scratchpadMode, setScratchpadMode] = useState<ScratchMode>('collapsed')
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
+  // The take-turns choice from the last run (Sol S4), applied before the take-turns effect first runs.
+  // The right sidebar is closed when WriteFlex first opens; after that the person's own choice holds (house rule R6).
+  // Intended (owner decision, Sol S3): an upgrade's first run counts as a first open, so an existing user's right sidebar
+  // starts closed once, on Versions, and is remembered from then on.
+  // A test run keeps the earlier open-by-default unless it asks for the real first open (WRITEFLEX_E2E_FRESH_SIDEBARS=1).
+  const [initialSidebarState] = useState(() => initialSidebars(window.innerWidth < SIDEBARS_TAKE_TURNS_BELOW, readSidebarTurn(), readRightSidebarChoice() ?? (window.writeflex.e2eEnabled && !window.writeflex.e2eFreshSidebars ? 'open' : null)))
   const {
     leftTab,
     rightTab,
@@ -631,15 +568,17 @@ export default function App(): JSX.Element {
     collapseRightPane,
     startPaneResize,
   } = usePaneLayout({
+    initialCollapsed: { left: initialSidebarState.leftCollapsed, right: initialSidebarState.rightCollapsed },
     guideShown: guideInRow,
     scratchpadDocked: scratchpadMode === 'docked',
     viewportWidth,
+    defaultRightTab: window.writeflex.e2eEnabled && !window.writeflex.e2eFreshSidebars ? 'agent' : undefined,
     onLeftTabOpened: (tab) => {
       if (tab === 'outline') setOutlineOpen(true)
     },
     onRightTabOpened: (tab) => {
       if (tab === 'agent' || tab === 'scratchpad') setAgentOpen(true)
-      if (tab === 'agent-notes' || tab === 'versions') setChangesOpen(true)
+      if (tab === 'versions') setChangesOpen(true)
     },
   })
   // The narrow-window rule (ticket 07, state 34): with the Guide open and the window too narrow to keep the
@@ -655,6 +594,30 @@ export default function App(): JSX.Element {
   const guideCrowded = guideContext.shown && rightTab === 'guide' && !rightPaneCollapsed
     && guideNeedsRoom({ viewportWidth, leftWidth: leftPaneWidth, rightWidth: rightPaneWidth })
   useEffect(() => { if (guideCrowded) collapseLeftPane() }, [guideCrowded, collapseLeftPane])
+  // R3: below 1260 px the sidebars take turns (opening one closes the other, widening gives it back); where both fit,
+  // the left narrows to 220 px so the editor keeps 55%.
+  const sidebarSeen = useRef({ left: leftPaneCollapsed, right: rightPaneCollapsed })
+  // The right sidebar's own state is remembered when the person changes it; a close or reopen made by the take-turns and fit rules is a loan and is not.
+  const rightMovedByRules = useRef(false)
+  const rightSeenCollapsed = useRef(rightPaneCollapsed)
+  useEffect(() => {
+    if (rightPaneCollapsed === rightSeenCollapsed.current) return
+    rightSeenCollapsed.current = rightPaneCollapsed
+    if (rightMovedByRules.current) { rightMovedByRules.current = false; return }
+    writeRightSidebarChoice(rightPaneCollapsed ? 'closed' : 'open')
+  }, [rightPaneCollapsed])
+  const sidebarLoan = useRef({ left: initialSidebarState.autoLeft, right: initialSidebarState.autoRight })
+  const sidebarFit = fitSidebars({ viewportWidth, leftWidth: leftPaneWidth, rightWidth: rightPaneWidth, leftOpen: !leftPaneCollapsed, rightOpen: !rightPaneCollapsed, lastOpened: null })
+  useEffect(() => {
+    const plan = planSidebars({ viewportWidth, leftWidth: leftPaneWidth, rightWidth: rightPaneWidth, leftCollapsed: leftPaneCollapsed, rightCollapsed: rightPaneCollapsed, seenLeftCollapsed: sidebarSeen.current.left, seenRightCollapsed: sidebarSeen.current.right, autoLeft: sidebarLoan.current.left, autoRight: sidebarLoan.current.right })
+    if (plan.remember) writeSidebarTurn(plan.remember)
+    sidebarSeen.current = { left: plan.seenLeftCollapsed, right: plan.seenRightCollapsed }
+    sidebarLoan.current = { left: plan.autoLeft, right: plan.autoRight }
+    if (plan.closeLeft) collapseLeftPane()
+    if (plan.closeRight) { rightMovedByRules.current = true; collapseRightPane() }
+    if (plan.openLeft) toggleLeftPane()
+    if (plan.openRight) { rightMovedByRules.current = true; toggleRightPane() }
+  }, [viewportWidth, leftPaneWidth, rightPaneWidth, leftPaneCollapsed, rightPaneCollapsed, collapseLeftPane, collapseRightPane, toggleLeftPane, toggleRightPane])
   // Display commands for the outline panel (expand/collapse all, levels, word counts): the palette sets a
   // request, the panel (which owns the collapse state) acts on it. Opening the tab shows the result.
   const [outlineRequest, setOutlineRequest] = useState<OutlineRequest | null>(null)
@@ -798,6 +761,8 @@ export default function App(): JSX.Element {
   // answer stays on screen until the new one lands while the file is inside the same Folio's folder, so
   // moving between pieces does not blink the line; any other file clears it first. A slower earlier
   // answer is dropped.
+  const backTarget = active ?? lastEditablePath ?? tabs[0] ?? null
+  const { index: paletteVaultIndex } = useVaultSidebar(root ?? '')
   const folioPlacePath = active ?? (boardActive ? lastEditablePath : null)
   const refreshFolioPlace = useCallback(() => {
     const request = ++folioPlaceRequest.current
@@ -921,6 +886,37 @@ export default function App(): JSX.Element {
   // dot and queue, and is the only one that rebases, replaces or forgets a buffer. It is created once
   // (below, with its ports); `ownerRef` lets callbacks declared before it reach it.
   const ownerRef = useRef<DocumentOwner | null>(null)
+  // The autosave's timers (autosave-scheduler.ts), created with savePath below; the owner's receipts reach
+  // it through this. The editor receipts (backup-helper-receipts.ts), one adapter per root: edit reports
+  // coalesced per debt episode, the save identity on file:save, main's states for Sync. Main answers
+  // `disabled` while the trial is off, which turns the adapter off.
+  const autosaveSchedulerRef = useRef<AutosaveScheduler | null>(null)
+  const backupReceiptsRef = useRef<HelperReceiptAdapter | null>(null)
+  // The window's receipt port, read once for the App's lifetime: every root's adapter shares its one set of
+  // call slots (backup-helper-receipts.ts), whatever object the bridge would hand out on a later read.
+  const receiptPortRef = useRef<ReceiptApi | null>(null)
+  // When backup enrolment changes (Settings › Backup, any window) main replaces its receipt instance: the
+  // current root's adapter binds again and reports again what it still owes, keeping its documents and
+  // their original times (backup-helper-receipts.ts rebind). No new adapter, no React state, never per keystroke.
+  useEffect(() => window.writeflex.backupEnrolment?.onChanged(() => backupReceiptsRef.current?.rebind()), [])
+  const helperComposition = useMemo(() => {
+    receiptPortRef.current ??= window.writeflex.backupHelper.receipts
+    const receipts = createHelperReceiptAdapter({
+      api: receiptPortRef.current,
+      ...(root ? { root } : {}),
+      owedSince: (path, epoch, gen) => autosaveSchedulerRef.current?.owedSince(path, epoch, gen),
+    })
+    return { receipts, adapter: createHelperSyncAdapter(window.writeflex.backupHelper, receipts) }
+  }, [root])
+  useLayoutEffect(() => {
+    // Inactive outside its root's lifetime: nothing armed for the old root is sent after a change.
+    helperComposition.receipts.activate()
+    backupReceiptsRef.current = helperComposition.receipts
+    return () => {
+      helperComposition.receipts.deactivate()
+      if (backupReceiptsRef.current === helperComposition.receipts) backupReceiptsRef.current = null
+    }
+  }, [helperComposition])
   // The path whose buffer the editor view currently shows. Guards save() against writing the
   // PREVIOUS file's buffer to a just-activated tab whose readFile hasn't resolved yet.
   const loadedPath = useRef<string | null>(null)
@@ -959,6 +955,9 @@ export default function App(): JSX.Element {
   // A monotonic save signal for the outline's disk-backed folder scope: bumped whenever a save lands
   // on disk, so a just-saved bookmark/comment/task re-scans into the folder view without a scope toggle.
   const [savedTick, setSavedTick] = useState(0)
+  const readSyncDocument = useCallback(() => editorRef.current?.view()?.state.doc, [])
+  const syncStatus = useSyncStatus(root ?? null, dirtyPaths, savedTick, syncAdapter, readSyncDocument, helperComposition.adapter)
+  const [syncPopoverOpen, setSyncPopoverOpen] = useState(false)
   const [skillToast, setSkillToast] = useState<SkillToast | null>(null)
   const [paletteSkills, setPaletteSkills] = useState<SkillMeta[]>([])
   const [paletteSkillErrors, setPaletteSkillErrors] = useState<Array<{ source: string; message: string }>>([])
@@ -1004,7 +1003,7 @@ export default function App(): JSX.Element {
   }, [refresh])
   // A note the agent leaves about a piece must be seen, not hunted for : the
   // completed notes.create opens the Agent notes tab; the pane re-lists on the main-side push.
-  const showAgentNotesTab = useCallback(() => openRightTab('agent-notes'), [openRightTab])
+  const showAgentNotesTab = useCallback(() => openRightTab('agent'), [openRightTab])
   const agent = useAgent({ onWorkspaceChanged: handleAgentWorkspaceChange, onNoteCreated: showAgentNotesTab, activeFile: active, activeCollectionDir: shownCollectionDir ?? '' })
   const historicalActive = historicalView !== null
   // Read by the floating Scratchpad after its awaits: a saved version or session recall is never written to.
@@ -1090,9 +1089,10 @@ export default function App(): JSX.Element {
   const [scratchpadDockSlot, setScratchpadDockSlot] = useState<HTMLElement | null>(null)
   const openScratchpadDock = useCallback(() => openRightTab('scratchpad'), [openRightTab])
   const openScratchpad = useCallback((focus: boolean) => {
-    openRightTab('scratchpad')
+    // The Scratchpad tab exists only while the Scratchpad is docked there; otherwise the chip in the status bar is where it shows.
+    if (scratchpadMode === 'docked') openRightTab('scratchpad')
     setScratchpadRequest((r) => ({ tick: r.tick + 1, focus }))
-  }, [openRightTab])
+  }, [openRightTab, scratchpadMode])
   // A composer focus/prefill request (⌘J, the toolbar Sparkles, the palette ask-row). A tick bump —
   // not an imperative ref call — because the panel may be un-hiding in the same update, and only a
   // post-commit effect can focus an input that was display:none when the request was made.
@@ -1140,10 +1140,12 @@ export default function App(): JSX.Element {
       },
       notice: (p) => externalDiskNoticesRef.current.get(p),
       registry: unsaved,
-      write: (p, doc, basis) => {
+      write: (p, doc, basis, identity) => {
         // e2e only: every save the owner sends to main, in order (autosave.spec.ts reads it; review S3).
         if (window.writeflex.e2eWriteHooks) e2eSavesSentRef.current.push({ path: p, content: doc })
-        return window.writeflex.saveFile(p, doc, basis)
+        // The identity the owner captured with these bytes, for main's save receipt (absent: none applies).
+        const receipt = identity ? backupReceiptsRef.current?.saveMeta(p, identity) : undefined
+        return window.writeflex.saveFile(p, doc, basis, receipt)
       },
       beforeSave: window.writeflex.e2eWriteHooks
         ? async () => {
@@ -1164,6 +1166,8 @@ export default function App(): JSX.Element {
       renameBuffer: (from, to) => editorRef.current?.renamePath(from, to),
       replaceBuffer: (p, diskText, discardLocal) => editorRef.current?.setContent(p, diskText, { silent: true, ...(discardLocal ? { discardLocal: true } : {}) }),
       dirtyChanged: (paths) => setDirtyPaths(new Set(paths)),
+      // Edit, save-start and save-completion receipts: the autosave's deadline, and a backup client's slot.
+      receipts: fanOutReceipts(() => [autosaveSchedulerRef.current?.receipts, backupReceiptsRef.current]),
       report: {
         slow: (p, slow) => setSlowSavePaths((current) => {
           if (current.has(p) === slow) return current
@@ -1292,34 +1296,26 @@ export default function App(): JSX.Element {
   // Auto-save (ADR-0012/0013, tier 1): write on a short pause after typing, and flush immediately on
   // tab-switch, window-blur, and close — so there is never an unsaved state to lose. It only writes disk;
   // history is made by tier-2 checkpoints, so continuous auto-save never touches the snapshot journal.
-  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingAutosave = useRef<string | null>(null)
-  const flushAutosave = useCallback(() => {
-    if (autosaveTimer.current) {
-      clearTimeout(autosaveTimer.current)
-      autosaveTimer.current = null
-    }
-    const path = pendingAutosave.current
-    pendingAutosave.current = null
-    // No automatic write under an unanswered changed-on-disk notice (savePath would refuse it, and say so
-    // after every pause in typing).
-    if (path && mayWriteUnderDiskNotice(externalDiskNoticesRef.current.get(path))) void savePath(path)
-  }, [savePath])
-  const queueAutosave = useCallback(
-    (path: string) => {
-      pendingAutosave.current = path
-      if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
-      autosaveTimer.current = setTimeout(flushAutosave, 700)
-    },
-    [flushAutosave],
-  )
-
-  const cancelAutosaveFor = useCallback((path: string) => {
-    if (pendingAutosave.current !== path) return
-    pendingAutosave.current = null
-    if (autosaveTimer.current) clearTimeout(autosaveTimer.current)
-    autosaveTimer.current = null
-  }, [])
+  // Per path (autosave-scheduler.ts): the 700 ms quiet save, and a deadline from the oldest edit not yet
+  // confirmed on disk that typing never postpones, so continuous typing is written within 60 s.
+  const autosaveSavePathRef = useRef(savePath)
+  autosaveSavePathRef.current = savePath
+  if (!autosaveSchedulerRef.current) {
+    autosaveSchedulerRef.current = createAutosaveScheduler({
+      // No automatic write under an unanswered changed-on-disk notice (savePath would refuse it, and say so
+      // after every pause in typing). The deadline grants no more than the quiet save does.
+      flush: (path) => mayWriteUnderDiskNotice(externalDiskNoticesRef.current.get(path))
+        ? autosaveSavePathRef.current(path)
+        : Promise.resolve(false),
+      isSaved: (path) => ownerRef.current?.isSaved(path) ?? true,
+    })
+  }
+  const autosave = autosaveSchedulerRef.current
+  useEffect(() => () => autosave.dispose(), [autosave])
+  const flushAutosave = useCallback(() => autosave.flushPending(), [autosave])
+  const queueAutosave = useCallback((path: string) => autosave.request(path), [autosave])
+  // A route writes the path itself: its quiet save goes; what it owes and its deadline stay.
+  const cancelAutosaveFor = useCallback((path: string) => autosave.cancel(path), [autosave])
 
   // A document under a changed-on-disk notice with nothing typed over its version: it cannot be written
   // until the writer answers. The structural routes (rename, move, duplicate) hold it unwritten and the
@@ -1396,11 +1392,17 @@ export default function App(): JSX.Element {
         .catch((error: unknown) => flashRef.current?.(humanReadableError(error, 'Could not update the Diary.')))
     }, 500))
   }, [])
-  useEffect(() => () => {
+  const flushDiaryActivity = useCallback(async () => {
     for (const timer of diaryActivityTimers.current.values()) clearTimeout(timer)
     diaryActivityTimers.current.clear()
+    const pending = [...diaryActivityPending.current]
     diaryActivityPending.current.clear()
+    await Promise.all(pending.map(([path, { beforeDoc, doc }]) => window.writeflex.diary.activity(
+      path, countWords(doc, { excludeCommentLines: true }), undefined,
+      countWords(beforeDoc, { excludeCommentLines: true }),
+    )))
   }, [])
+  useEffect(() => () => { void flushDiaryActivity().catch(() => {}) }, [flushDiaryActivity])
 
   const lastWriterEditAt = useRef<string>()
   const handleDocChanged = useCallback(
@@ -2464,8 +2466,13 @@ export default function App(): JSX.Element {
   const restoreHistoricalVersion = useCallback(() => {
     void (async () => {
       if (!historicalView || historicalView.kind !== 'version') return
-      if (!window.confirm(`Restore “${historicalView.version.name}” as the current document?`)) return
+      if (!(await askConfirm({ title: `Restore “${historicalView.version.name}” as the current document?`, detail: 'It replaces the text you have now.', recover: 'Your current text is kept as a version first; restore it from the Versions tab if you change your mind.', confirmLabel: 'Restore' }))) return
       const restore = restoreHistoricalView(historicalView)
+      // The card is asynchronous (Sol S1): restore only if this version view and its document are still the ones showing.
+      if (historicalViewRef.current !== historicalView || loadedPath.current !== restore.path) {
+        flash(`“${historicalView.version.name}” was not restored: the document changed while the card was open.`)
+        return
+      }
       // The live buffer (kept aside while the view shows the past) is what the flush writes.
       editorRef.current?.exitHistorical()
       setHistoricalView(null)
@@ -2492,8 +2499,13 @@ export default function App(): JSX.Element {
           flash('Open the document before restoring a version.')
           return
         }
-        if (!window.confirm(`Restore “${version.name}” as the current document?`)) return
-        if (historicalView) {
+        if (!(await askConfirm({ title: `Restore “${version.name}” as the current document?`, detail: 'It replaces the text you have now.', recover: 'Your current text is kept as a version first; restore it from the Versions tab if you change your mind.', confirmLabel: 'Restore' }))) return
+        // The card is asynchronous (Sol S1): the document must still be the one open.
+        if (loadedPath.current !== version.path) {
+          flash(`“${version.name}” was not restored: the document changed while the card was open.`)
+          return
+        }
+        if (historicalViewRef.current) {
           editorRef.current?.exitHistorical()
           setHistoricalView(null)
         }
@@ -2670,7 +2682,7 @@ export default function App(): JSX.Element {
   }, [dockChanges, loadedFile, active])
   const rejectOutside = useCallback((which: Parameters<typeof window.writeflex.rejectOutsideChanges>[0]) => {
     void window.writeflex.rejectOutsideChanges(which).then(
-      ({ rejected }) => flash(`Rejected ${rejected} change${rejected === 1 ? '' : 's'}`),
+      ({ rejected }) => flash(`Declined ${rejected} change${rejected === 1 ? '' : 's'}`),
       (error) => flash(error instanceof Error ? error.message : 'Could not reject those changes.'),
     )
   }, [flash])
@@ -3166,15 +3178,20 @@ export default function App(): JSX.Element {
   // ⌘⇧X and the old pane's + button both go through the floating Scratchpad's controller: the exact text
   // is saved first and the unchanged span removed only after (scratchpad-controller.ts). ⌘Z restores it.
   const handleCutToScrap = useCallback(() => { void scratchpadApi.current?.cut() }, [])
+  // Send a copy to Scratchpad (Folio versions ticket 10): while a saved version or a Compare is on screen the command sends what is selected
+  // there (by paragraph number, read in main); otherwise it is the editor's own, as before.
+  const sendCopyToScratchpad = useCallback(async (): Promise<void> => {
+    if ((await sendVersionSelectionFromCommand()) === 'not-reading') await scratchpadApi.current?.sendCopy()
+  }, [])
   // The native menu's Scratchpad items run the same registered commands as the palette (ticket 04).
   useEffect(() => window.writeflex.onMenuAction((action) => {
     if (action === 'open-scratchpad') scratchpadApi.current?.toggle()
-    else if (action === 'scratchpad-send-copy') void scratchpadApi.current?.sendCopy()
+    else if (action === 'scratchpad-send-copy') void sendCopyToScratchpad()
     else if (action === 'scratchpad-cut') void scratchpadApi.current?.cut()
     else if (action === 'scratchpad-insert-copy') scratchpadApi.current?.insertSelected()
     else if (action === 'scratchpad-compare') scratchpadApi.current?.compareTicked()
     else if (action === 'scratchpad-search') scratchpadApi.current?.focusSearch()
-  }), [])
+  }), [sendCopyToScratchpad])
   const cutSelectionToScrap = handleCutToScrap
   // A scrap dropped into the document (the editor already inserted its text): remove it from the store.
   // A floating Scratchpad item (p_…) is never removed: the editor left its text out and the Scratchpad
@@ -3256,6 +3273,10 @@ export default function App(): JSX.Element {
     openLeftTab('outline')
     setOutlineOpen(true)
     setOutlineFocusTick((n) => n + 1)
+  }, [openLeftTab])
+  const openSyncTab = useCallback(() => {
+    openLeftTab('sync')
+    requestAnimationFrame(() => (document.querySelector<HTMLElement>('.sync-panel button:not(:disabled):not([aria-disabled="true"])') ?? document.querySelector<HTMLElement>('.sync-panel'))?.focus())
   }, [openLeftTab])
   const openSearchTab = useCallback(() => {
     openLeftTab('search')
@@ -3637,12 +3658,27 @@ export default function App(): JSX.Element {
    * Only a deliberate open collapses; the Room always starts closed on launch.
    */
   const setReadingRoomVisibility = useCallback((open: boolean): void => {
+    readingRoomVisibility.current = open
     if (open) {
       collapseLeftPane()
       collapseRightPane()
     }
-    setReadingRoomOpen(open)
-  }, [collapseLeftPane, collapseRightPane])
+    if (readingRoomClosing.current) return
+    if (open) {
+      setReadingRoomOpen(true)
+      return
+    }
+    // Disposal is irreversible. Finish it before a newer open intent mounts a fresh Room.
+    readingRoomClosing.current = (readingRoomLifetime.current?.() ?? Promise.resolve()).then(() => {
+      readingRoomClosing.current = null
+      setReadingRoomInstance(instance => instance + 1)
+      setReadingRoomOpen(readingRoomVisibility.current)
+    }).catch(error => {
+      readingRoomClosing.current = null
+      flash(error instanceof Error ? error.message : String(error))
+    })
+  }, [collapseLeftPane, collapseRightPane, flash])
+
   /** Search the Shelf: open the Room if it is closed, then raise the Shelf inside it. */
   const searchTheShelf = useCallback((): void => {
     setReadingRoomVisibility(true)
@@ -4691,7 +4727,8 @@ export default function App(): JSX.Element {
     else if (action === 'materialise-stub') runMaterialiseCommand()
   }), [openCapture, followWikilink, runMaterialiseCommand])
 
-  const requestNameVersion = useCallback(() => {
+  // The per-part Save Version sheet, unchanged (⇧⌘S outside a Folio; "This part only" in one; the Versions pane's own button).
+  const openPartVersionSheet = useCallback(() => {
     if (!active) {
       flash('Open a document before saving a version.')
       return
@@ -4702,6 +4739,229 @@ export default function App(): JSX.Element {
     openRightTab('versions')
     openOverlay('version')
   }, [active, flash, openOverlay, openRightTab])
+
+  // Folio versions (ticket 04). The Folio the writer is in: the Folio workspace's own folder, or the Folio the open file belongs to.
+  // The ⇧⌘S choice and the whole-Folio sheet are modals; neither writes anything until the sheet's own button.
+  type FolioSaveState =
+    | { stage: 'choose'; last: SaveChoice; dir: string; partName: string; parts: number | null }
+    | { stage: 'sheet'; /** Which sheet this is: a save answers only to the sheet it was started from. */ sheetId: number; dir: string; facts: FolioSheetFacts; folioName: string; busy: boolean; error: string; changed: string[] | null; /** A name the finishing offer of the decide step proposes (ticket 16). */ suggestedName?: string }
+    | null
+  const [folioSave, setFolioSaveState] = useState<FolioSaveState>(null)
+  // The state, also in a ref that is right at this instant: a second menu click, palette entry or ⇧⌘S in the same tick reads the ref, not a render that has not happened yet.
+  const folioSaveRef = useRef<FolioSaveState>(null)
+  const setFolioSave = useCallback((next: FolioSaveState): void => { folioSaveRef.current = next; setFolioSaveState(next) }, [])
+  // One open-or-save at a time, decided synchronously (a ref, not the replaceable sheet state).
+  const folioSaveGate = useRef(createSaveGate())
+  const folioSheetIsUp = useCallback((): boolean => folioSaveRef.current?.stage === 'sheet', [])
+  const folioSheetCounter = useRef(0)
+  const folioVersionDir = useCallback(async (): Promise<string | null> => (
+    collectionDir !== null ? window.writeflex.readFolioDir(collectionDir) : folioPlace?.dir ?? null
+  ), [collectionDir, folioPlace])
+  const openFolioSaveSheet = useCallback(async (dir: string, suggestedName?: string): Promise<void> => {
+    // Every way in (File menu, palette, the ⇧⌘S choice) lands here. While a save is running, or another sheet is being
+    // opened, or the sheet is already up, this does nothing: the sheet in front is never replaced with a fresh one.
+    const held = folioSaveGate.current.held()
+    if (held === 'saving') { flash(SAVING_NOW); return }
+    if (held !== null || folioSheetIsUp()) return
+    const token = folioSaveGate.current.begin('opening')
+    if (token === null) return
+    try {
+      // The sheet states what is waiting, so the buffers are recorded first, as the per-part save does.
+      const drained = await flushWriterChangesNow()
+      const flushed = await flushPaths(documentsUnder(folderPrefix(dir)))
+      if (drained.failed.length > 0 || flushed.status !== 'saved') {
+        const notice = flushed.status === 'saved' ? undefined : externalDiskNoticesRef.current.get(flushed.path)
+        flash(notice
+          ? `${flushed.status === 'saved' ? '' : (flushed.path.split('/').at(-1) ?? flushed.path)} changed on disk, so no Folio version was saved. Choose Reload or Keep mine above the text, then save again.`.trim()
+          : 'WriteFlex could not save the latest text, so no Folio version sheet was opened.')
+        return
+      }
+      try {
+        const facts = await window.writeflex.folioVersionSave.sheet(dir)
+        folioSheetCounter.current += 1
+        setFolioSave({ stage: 'sheet', sheetId: folioSheetCounter.current, dir, facts, folioName: dir === '' ? (root?.split('/').at(-1) ?? 'Folio') : (dir.split('/').at(-1) ?? dir), busy: false, error: '', changed: null, ...(suggestedName !== undefined && suggestedName.trim() !== '' ? { suggestedName: suggestedName.slice(0, 200) } : {}) })
+        openOverlay('folioSave')
+      } catch (error) {
+        flash(refusalSentence(error))
+      }
+    } finally {
+      folioSaveGate.current.end(token)
+    }
+  }, [flushWriterChangesNow, flushPaths, documentsUnder, flash, openOverlay, root, setFolioSave, folioSheetIsUp])
+  // ⇧⌘S: in a Folio it asks "Whole Folio or this part only?" with the last answer first; elsewhere it is the per-part sheet.
+  const requestNameVersion = useCallback(() => {
+    void (async () => {
+      const held = folioSaveGate.current.held()
+      if (held === 'saving') { flash(SAVING_NOW); return }
+      if (held !== null || folioSheetIsUp()) return
+      const dir = await folioVersionDir().catch(() => null)
+      if (dir === null) { openPartVersionSheet(); return }
+      const last = await window.writeflex.folioVersionSave.choice().catch((): SaveChoice => 'folio')
+      // The part count and the open part's name come from the same read the sheet makes (a quiet one: nothing is flushed or written).
+      const facts = await window.writeflex.folioVersionSave.sheet(dir).catch(() => null)
+      const here = active ? facts?.partList.find((entry) => entry.path === active) : undefined
+      // Another way in may have won while the reads above were out.
+      if (folioSaveGate.current.held() !== null || folioSheetIsUp()) return
+      setFolioSave({ stage: 'choose', last, dir, partName: here ? `${here.order} ${here.title}` : '', parts: facts && facts.refused === undefined ? facts.parts : null })
+      openOverlay('folioSaveChoose')
+    })()
+  }, [folioVersionDir, openPartVersionSheet, active, openOverlay, flash, setFolioSave, folioSheetIsUp])
+  // File ▸ Save Folio Version… and the palette entry: straight to the sheet, no question.
+  // Folio versions ticket 07: Open Folio Version Read-only opens the version the Versions tab shows. From any other tab it takes the writer to the Versions tab to choose one.
+  const versionRead = useAnyVersionRead()
+  const readingVersionNow = useAnyReadingVersion()
+  const openFolioVersionReadOnly = useCallback(() => {
+    const detail = { handled: false }
+    window.dispatchEvent(new CustomEvent(OPEN_READ_ONLY_EVENT, { detail }))
+    if (detail.handled) return
+    window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' }))
+    flash('Choose a Folio version in the Versions tab, then open it read-only.')
+  }, [flash])
+  // Ticket 08: Compare Folio Versions… compares the version the Versions tab shows with the working draft; from another tab it takes the writer there to choose.
+  const openFolioVersionCompare = useCallback(() => {
+    const detail = { handled: false }
+    window.dispatchEvent(new CustomEvent(OPEN_COMPARE_EVENT, { detail }))
+    if (detail.handled) return
+    window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' }))
+    flash('Choose a Folio version in the Versions tab, then compare it.')
+  }, [flash])
+  // Ticket 11: Export This Folio Version… and Mark Version as Sent… act on the version open read-only, else the one the Versions tab shows; from another tab they take the writer there to choose.
+  const openFolioVersionExport = useCallback(() => {
+    const detail = { handled: false }
+    window.dispatchEvent(new CustomEvent(OPEN_EXPORT_EVENT, { detail }))
+    if (detail.handled) return
+    window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' }))
+    flash('Choose a Folio version in the Versions tab, then export it.')
+  }, [flash])
+  // Ticket 14: Import Revision from Word… opens Import (step 1) in the Versions tab; from another tab it takes the writer there and opens it.
+  const openFolioRevisionImport = useCallback(() => {
+    const detail = { handled: false }
+    window.dispatchEvent(new CustomEvent(OPEN_IMPORT_EVENT, { detail }))
+    if (detail.handled) return
+    requestImportOnNextVersionsTab()
+    window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' }))
+  }, [])
+  // Ticket 19: the four file-version commands act on the table, widget or image the cursor is on, or the file chosen under Inserted files in the Folio's
+  // Inspector. The panel that shows it answers; when nothing does, the writer is told where to choose one.
+  const runFileVersion = useCallback((action: FileVersionsAction) => {
+    if (runFileVersionsCommand(action)) return
+    flash('Put the cursor on a table, widget or image in a Folio part, or choose one under Inserted files in the Folio’s Details, then try again.')
+  }, [flash])
+  const openFolioVersionMarkSent = useCallback(() => {
+    const detail = { handled: false }
+    window.dispatchEvent(new CustomEvent(OPEN_MARK_SENT_EVENT, { detail }))
+    if (detail.handled) return
+    window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' }))
+    flash('Choose a Folio version in the Versions tab, then mark it as sent.')
+  }, [flash])
+  // Compare's "Take that text" (Folio versions ticket 09) is refused while the part has typed text that is not saved, or an open notice
+  // that its file changed on disk: the same record the title-conflict buttons and the close path read (the owner's dirty set and the
+  // unsaved-text record).
+  const partIsUnsaved = useCallback(
+    (path: string): boolean => owner.isDirty(path) || unsaved.textOf(path) !== undefined || externalDiskNoticesRef.current.has(path),
+    [owner, unsaved],
+  )
+  // `suggestedName` comes from the decide step's finishing offer. A click handler passes its event here too, which is no name.
+  const requestSaveFolioVersion = useCallback((suggestedName?: unknown) => {
+    void (async () => {
+      const dir = await folioVersionDir().catch(() => null)
+      if (dir === null) { flash('Open a Folio first: a Folio version keeps the whole Folio.'); return }
+      await openFolioSaveSheet(dir, typeof suggestedName === 'string' ? suggestedName : undefined)
+    })()
+  }, [folioVersionDir, flash, openFolioSaveSheet])
+  // Folio versions ticket 06: the change cues. The Folio the open file belongs to is read again whenever the open file or the Collection
+  // changes; its cues (Binder dots, the chip below, the margin's heading, the working-draft row) share one read (folio-cues-store.ts).
+  const [cueDir, setCueDir] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void folioVersionDir().then((dir) => { if (live) setCueDir(dir) }, () => { if (live) setCueDir(null) })
+    return () => { live = false }
+  }, [folioVersionDir, active])
+  const folioCues = useFolioCues(cueDir)
+  // Pressing the chip, or Open Versions tab: the Folio's Versions tab, on the latest version (the tab starts there). Away from the room, the room opens on it.
+  const openFolioVersionsTab = useCallback((): void => {
+    const dir = cueDir
+    if (dir === null) return
+    void (async () => {
+      if (collectionDir === dir) { window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' })); return }
+      await window.writeflex.folioRoom.setState(dir, { view: 'versions', split: false }).catch(() => undefined)
+      setSelectedFolderPiece(null)
+      setOpenPlanRequested(true)
+      setCollectionDir(dir)
+    })()
+  }, [cueDir, collectionDir])
+  // Ticket 10: a Scratchpad card that came from a saved version asks to be opened in that version, on that part. The app makes sure the Folio's room is
+  // open (as for the Versions tab above) and nudges it; the room takes the request waiting for its Folio and opens the version read-only.
+  useEffect(() => {
+    const onRequest = (event: Event): void => {
+      const request = (event as CustomEvent<OpenVersionRequest>).detail
+      if (!request || typeof request.dir !== 'string' || typeof request.versionId !== 'string' || typeof request.path !== 'string') return
+      setWaitingOpenVersion(request)
+      void (async () => {
+        if (collectionDir === request.dir) { window.dispatchEvent(new Event(OPEN_VERSION_NUDGE_EVENT)); return }
+        setSelectedFolderPiece(null)
+        setOpenPlanRequested(true)
+        setCollectionDir(request.dir)
+      })()
+    }
+    window.addEventListener(OPEN_VERSION_REQUEST_EVENT, onRequest)
+    return () => window.removeEventListener(OPEN_VERSION_REQUEST_EVENT, onRequest)
+  }, [collectionDir])
+  // Ticket 10: where the status line is and which folder this window is bound to, for sending a copy of a saved version's text to the Scratchpad.
+  const rootNow = useRef<string | null>(null)
+  rootNow.current = typeof root === 'string' && root !== '' ? root : null
+  useEffect(() => registerVersionSendHost({
+    root: () => rootNow.current,
+    say: (message, action) => flashWithAction(message, action ? { ...action, kind: 'scratchpad' } : undefined),
+  }), [flashWithAction])
+  // While a saved version is open read-only, the reading chip (ticket 07) stands in for the change chip: the text on screen is the version's, not the draft's.
+  const folioCue = useMemo(() => (folioCues.state === 'ready' && readingVersionNow === null
+    ? { text: cueChipText(folioCues), clean: cueTotal(folioCues) === 0, ...(resolveChord('folio.room.versions', shortcutOverrides) ? { chord: formatShortcutKey(resolveChord('folio.room.versions', shortcutOverrides) ?? '') } : {}), onOpen: openFolioVersionsTab }
+    : null), [folioCues, openFolioVersionsTab, shortcutOverrides, readingVersionNow])
+  // The margin's heading: "Changes since “<version>”", only for a file of that Folio.
+  const marginSince = folioCues.state === 'ready' && readingVersionNow === null && active !== null && cueDir !== null && (cueDir === '' || active.startsWith(`${cueDir}/`)) ? `Changes since “${folioCues.since.name}”` : null
+  useEffect(() => { setMarginSince(marginSince) }, [marginSince])
+  useEffect(() => () => setMarginSince(null), [])
+  // The file the cursor's line inserts, for the rail's panel.
+  const cursorEmbed = snapshot && snapshot.path === active ? embedOnLine(snapshot.docText, snapshot.selHead) : null
+  // Compare on an inserted file: the file opens, then the existing compare runs on it once it is the open document.
+  const pendingFileCompare = useRef<{ path: string; fromId: string } | null>(null)
+  useEffect(() => {
+    const pending = pendingFileCompare.current
+    if (!pending || active !== pending.path) return
+    pendingFileCompare.current = null
+    setChangesOpen(true)
+    openRightTab('versions')
+    openCompareView(pending.fromId, 'working')
+  }, [active, openCompareView, openRightTab])
+  // Save version… on an inserted file: the file-version save (the file as it is on disk), under the name given.
+  const saveInsertedFileVersion = useCallback(async (path: string, name: string): Promise<string | null> => {
+    try {
+      // The file-version door (Folio versions ticket 19): it refuses a file over 25 MiB, and a file with no change since its newest version, in words.
+      const answer = await window.writeflex.fileVersions.save({ path, name })
+      if (!answer.ok) return answer.message
+      await reloadVersions().catch(() => undefined)
+      flash(`Version “${answer.version.name}” of ${path.split('/').pop() ?? path} saved`)
+      return null
+    } catch (error) {
+      return refusalSentence(error)
+    }
+  }, [flash, reloadVersions])
+  const chooseSaveScope = useCallback((choice: SaveChoice) => {
+    if (folioSave?.stage !== 'choose') return
+    const dir = folioSave.dir
+    void window.writeflex.folioVersionSave.setChoice(choice).catch(() => false)
+    setFolioSave(null)
+    closeOverlay()
+    if (choice === 'part') openPartVersionSheet()
+    else void openFolioSaveSheet(dir)
+  }, [folioSave, closeOverlay, openPartVersionSheet, openFolioSaveSheet, setFolioSave])
+  const closeFolioSave = useCallback(() => {
+    // The sheet cannot be closed under a running save: its own buttons and Escape are off then, and so is this.
+    if (folioSaveGate.current.held() === 'saving') return
+    setFolioSave(null)
+    closePalette()
+  }, [closePalette, setFolioSave])
 
   const clearDocument = useCallback(() => {
     const path = activeRef.current
@@ -4876,14 +5136,15 @@ export default function App(): JSX.Element {
     if (view) view.focus()
     else shellRef.current?.focus()
   }, [openFilesTab])
-  // The archive search dock (WF-4B, ⌃⌘F): its own 460 px dock that hides both side panes while open
-  // (CSS on .archive-open, so their state survives), closing after an insert with the caret back in
-  // the draft. The ref lets the window chord handler hand the dock its own keys (⏎, ⌘⏎, arrows).
-  const [archiveSearchOpen, setArchiveSearchOpen] = useState(false)
+  // The archive search (WF-4B, ⌃⌘F) is the Archive scope of the right sidebar's Research tab (house rule R6): the chord
+  // opens the sidebar on Research with that scope and puts the keyboard in the search field. An insert or Esc gives the
+  // keyboard back to the draft and leaves the tab where it is. The ref lets the window chord handler hand the search its
+  // own keys (⏎, ⌘⏎, arrows) while focus is in it.
+  const [researchScope, setResearchScope] = useState<ResearchScope>('sources')
+  const archiveSearchOpen = rightTab === 'research' && researchScope === 'archive' && !rightPaneCollapsed
   const archiveSearchOpenRef = useRef(false)
   archiveSearchOpenRef.current = archiveSearchOpen
   const closeArchiveSearch = useCallback(() => {
-    setArchiveSearchOpen(false)
     requestAnimationFrame(() => {
       const view = editorRef.current?.view()
       if (view) view.focus()
@@ -4891,12 +5152,13 @@ export default function App(): JSX.Element {
     })
   }, [])
   const toggleArchiveSearch = useCallback(() => {
-    if (archiveSearchOpenRef.current) closeArchiveSearch()
+    if (archiveSearchOpenRef.current && document.activeElement?.closest?.('.archive-dock')) closeArchiveSearch()
     else {
-      setArchiveSearchOpen(true)
-      requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.archive-dock .archive-field input')?.focus())
+      setResearchScope('archive')
+      openRightTab('research')
+      requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.archive-dock .archive-field input')?.focus()))
     }
-  }, [closeArchiveSearch])
+  }, [closeArchiveSearch, openRightTab])
   const insertArchiveQuote = useCallback((result: ArchiveResult, block: string): boolean => {
     const view = editorRef.current?.view()
     if (!view || !active || active.startsWith("writeflex://")) return false
@@ -5067,7 +5329,7 @@ export default function App(): JSX.Element {
     if (viewed && viewed.rows.length === 0) { flash('There are no documents in this collection to export.'); return }
     const path = viewed?.rows[0]?.path ?? viewed?.cover?.path ?? from ?? activeRef.current
     if (!path) { flash('Open a document to export it'); return }
-    if (!root) { flash('Open a Workspace to export a document'); return }
+    if (!root) { flash('Open a vault to export a document'); return }
     const text = path === activeRef.current
       ? editorRef.current?.currentDoc() ?? ''
       : await window.writeflex.readFile(path).then((read) => read.content).catch(() => '')
@@ -5261,8 +5523,8 @@ export default function App(): JSX.Element {
       { id: 'metadata.edit', label: 'Edit metadata', icon: Command, run: () => editorRef.current?.editMetadata() },
       { id: NEXT_TAB_COMMAND.id, label: NEXT_TAB_COMMAND.label, icon: ChevronRight, keys: NEXT_TAB_COMMAND.keys as string, run: () => cycle(1) },
       { id: PREVIOUS_TAB_COMMAND.id, label: PREVIOUS_TAB_COMMAND.label, icon: ChevronLeft, keys: PREVIOUS_TAB_COMMAND.keys as string, run: () => cycle(-1) },
-      { id: NEXT_PANEL_TAB_COMMAND.id, label: NEXT_PANEL_TAB_COMMAND.label, icon: ChevronRight, keys: NEXT_PANEL_TAB_COMMAND.keys as string, run: () => cycleRightTab(1, rightPaneTabsFor(guideInRow)) },
-      { id: PREVIOUS_PANEL_TAB_COMMAND.id, label: PREVIOUS_PANEL_TAB_COMMAND.label, icon: ChevronLeft, keys: PREVIOUS_PANEL_TAB_COMMAND.keys as string, run: () => cycleRightTab(-1, rightPaneTabsFor(guideInRow)) },
+      { id: NEXT_PANEL_TAB_COMMAND.id, label: NEXT_PANEL_TAB_COMMAND.label, icon: ChevronRight, keys: NEXT_PANEL_TAB_COMMAND.keys as string, run: () => cycleRightTab(1, rightPaneTabsFor(guideInRow, scratchpadMode === 'docked')) },
+      { id: PREVIOUS_PANEL_TAB_COMMAND.id, label: PREVIOUS_PANEL_TAB_COMMAND.label, icon: ChevronLeft, keys: PREVIOUS_PANEL_TAB_COMMAND.keys as string, run: () => cycleRightTab(-1, rightPaneTabsFor(guideInRow, scratchpadMode === 'docked')) },
       { id: NEXT_FOLDER_FILE_COMMAND.id, label: NEXT_FOLDER_FILE_COMMAND.label, icon: ChevronRight, keys: NEXT_FOLDER_FILE_COMMAND.keys as string, run: () => void browseFolderFile(1) },
       { id: PREVIOUS_FOLDER_FILE_COMMAND.id, label: PREVIOUS_FOLDER_FILE_COMMAND.label, icon: ChevronLeft, keys: PREVIOUS_FOLDER_FILE_COMMAND.keys as string, run: () => void browseFolderFile(-1) },
       { id: 'outline.rowMenu', label: registryCommand('outline.rowMenu').label, icon: List, run: () => requestOutline('rowMenu') },
@@ -5277,8 +5539,13 @@ export default function App(): JSX.Element {
       { id: 'navigation.previousBlock', label: 'Previous rendered block', icon: ChevronLeft, keys: '⌃⌘↑', run: () => { const view = editorRef.current?.view(); if (view) jumpToBlock(view, -1) } },
       { id: HIDE_STRIKES_COMMAND.id, label: HIDE_STRIKES_COMMAND.label, icon: Highlighter, run: toggleHideStrikes },
       { id: HIDE_INSERTS_COMMAND.id, label: HIDE_INSERTS_COMMAND.label, icon: Highlighter, run: toggleHideInserts },
+      { id: 'sync.open', label: registryCommand('sync.open').label, icon: RefreshCw, run: openSyncTab },
+      { id: 'sync.status', label: registryCommand('sync.status').label, icon: RefreshCw, run: () => setSyncPopoverOpen(true) },
+      { id: 'sync.now', label: registryCommand('sync.now').label, icon: RefreshCw, disabled: syncStatus.reason('syncNow') !== null, disabledReason: syncStatus.reason('syncNow') ?? undefined, run: () => { void syncStatus.run('syncNow') } },
+      { id: 'sync.check', label: registryCommand('sync.check').label, icon: RefreshCw, disabled: syncStatus.reason('check') !== null, disabledReason: syncStatus.reason('check') ?? undefined, run: () => { void syncStatus.run('check') } },
+      { id: 'sync.history', label: registryCommand('sync.history').label, icon: RefreshCw, disabled: syncStatus.reason('history') !== null, disabledReason: syncStatus.reason('history') ?? undefined, run: () => { void syncStatus.run('history') } },
       { id: 'view.toggleLeftPane', label: 'Show/hide left sidebar', icon: LayoutPanelLeft, keys: '⌘[', run: toggleLeftPane },
-      { id: 'view.toggleRightPane', label: 'Show/hide right pane', icon: Columns3, keys: '⌘]', run: toggleRightPane },
+      { id: 'view.toggleRightPane', label: 'Show/hide right sidebar', icon: Columns3, keys: '⌘]', run: toggleRightPane },
       { id: 'view.files', label: 'Open Files', icon: LayoutPanelLeft, keys: '⇧⌘E', run: openFilesTab },
       { id: ACTION_BAR_COMMAND.id, label: ACTION_BAR_COMMAND.label, icon: PanelTop, run: toggleActionBar },
       { id: CONFIGURE_ACTION_BAR_COMMAND.id, label: CONFIGURE_ACTION_BAR_COMMAND.label, icon: SlidersHorizontal, run: () => setConfigureActionBarOpen(true) },
@@ -5306,7 +5573,7 @@ export default function App(): JSX.Element {
       { id: 'folio.movePieceDown', label: registryCommand('folio.movePieceDown').label, icon: ArrowDown, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('down') } },
       { id: 'folio.addToRunningOrder', label: registryCommand('folio.addToRunningOrder').label, icon: Plus, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('add') } },
       { id: 'folio.addAllToRunningOrder', label: registryCommand('folio.addAllToRunningOrder').label, icon: ListPlus, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('addAll') } },
-      { id: 'folio.undoLastChange', label: registryCommand('folio.undoLastChange').label, icon: Undo2, disabled: !folioRunningOrder.canUndo, disabledReason: 'There is no running-order change to undo', run: () => { void folioRunningOrder.undo() } },
+      { id: 'folio.undoLastChange', label: registryCommand('folio.undoLastChange').label, icon: Undo2, disabled: !folioRunningOrder.canUndo || versionRead, disabledReason: versionRead ? 'A saved version is open read-only. Go back to the working draft first.' : 'There is no running-order change to undo', run: () => { if (anyVersionRead()) return; void folioRunningOrder.undo() } },
       { id: 'folio.previousPiece', label: 'Previous piece in Folio', icon: ChevronLeft, disabled: !folioPlace?.previous, disabledReason: 'This file has no previous piece in a Folio', run: () => { if (folioPlace?.previous) open(folioPlace.previous.path) } },
       { id: 'folio.nextPiece', label: 'Next piece in Folio', icon: ChevronRight, disabled: !folioPlace?.next, disabledReason: 'This file has no next piece in a Folio', run: () => { if (folioPlace?.next) open(folioPlace.next.path) } },
       { id: 'board.makeIdeaFromOffcut', label: 'Make idea from offcut', icon: Lightbulb, disabled: !boardCommandsOn, disabledReason: 'Open the Board and select an offcut first', run: () => dispatchBoardCommand('make-idea') },
@@ -5315,7 +5582,7 @@ export default function App(): JSX.Element {
       { id: 'board.moveColumnLeft', label: 'Move column left', icon: ChevronLeft, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-left') },
       { id: 'board.moveColumnRight', label: 'Move column right', icon: ChevronRight, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-right') },
       ...COLLECTION_PAGE_COMMANDS.filter(([name]) => (name !== 'bulk-folio' || (collectionDir !== null && canTurnBack)) && (name !== 'make-folio' || canStartCollectionFolio)).map(([name, label]) => ({ id: `collection.page.${name}`, label, icon: FolderOpen, disabled: collectionDir === null, disabledReason: 'Open a collection first', run: () => dispatchCollectionPageCommand(name) })),
-      { id: 'collection.newDocument', label: 'New document', icon: FilePlus2, disabled: !root, disabledReason: 'Open a folder first', run: () => { void newPiece(collectionDir ?? (boardActive ? boardDir : activeCollectionDir)) } },
+      { id: 'collection.newDocument', label: 'New piece', icon: FilePlus2, disabled: !root, disabledReason: 'Open a folder first', run: () => { void newPiece(collectionDir ?? (boardActive ? boardDir : activeCollectionDir)) } },
       { id: 'collection.startFolio', label: 'Start a Folio outline', icon: BookOpen, disabled: !canStartCollectionFolio, disabledReason: collectionDir !== null ? "Folios can't contain another Folio from here." : 'Open a collection first', run: () => { if (collectionDir !== null) startNestedFolio(collectionDir) } },
       { id: 'folio.turnBack', label: 'Turn back into a collection', icon: FolderOpen, disabled: !canTurnBack, disabledReason: 'Open a Folio first', run: turnBackFolio },
       { id: 'board.toggleSources', label: 'Show / Hide sources', icon: PanelRightOpen, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-sources') },
@@ -5329,7 +5596,7 @@ export default function App(): JSX.Element {
         disabledReason: 'Focus a folder first',
         run: () => { if (folderFocus) helpWithReport(folderFocus.path) },
       },
-      ...ROOM_VIEWS.map((view) => ({ id: `folio.room.${view}`, label: registryCommand(`folio.room.${view}`).label, icon: view === 'text' ? FileText : view === 'cards' ? LayoutGrid : ListTree, keys: WORKSPACE_TAB_CHORDS[view], disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: view })) })),
+      ...ROOM_VIEWS.map((view) => ({ id: `folio.room.${view}`, label: registryCommand(`folio.room.${view}`).label, icon: view === 'text' ? FileText : view === 'cards' ? LayoutGrid : view === 'versions' ? History : ListTree, keys: WORKSPACE_TAB_CHORDS[view], disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: view })) })),
       { id: 'folio.room.inspector', label: registryCommand('folio.room.inspector').label, icon: ListTree, keys: '⌥⌘I', disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => { openLeftTab('outline'); dispatchSidebar('toggle-inspector') } },
       { id: 'folio.room.split', label: 'Folio room: Text beside the cards', icon: Columns2, keys: '⌥S', disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'split' })) },
       { id: 'plan.addPart', label: 'Add a Folio outline part', icon: Plus, keys: 'N', disabled: collectionDir === null, disabledReason: 'Open a Collection first', run: () => runFolioPlanCommand('add') },
@@ -5354,7 +5621,7 @@ export default function App(): JSX.Element {
       { id: 'title.useHeadingsAsTitlesAll', label: registryCommand('title.useHeadingsAsTitlesAll').label, icon: Heading, keys: '⌃⌥⇧⌘H', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('titles-heading-to-title') },
       { id: 'title.useTitlesAsHeadingsAll', label: registryCommand('title.useTitlesAsHeadingsAll').label, icon: Heading, keys: '⌃⌥⇧⌘T', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('titles-title-to-heading') },
       { id: 'title.dismissConflictBar', label: registryCommand('title.dismissConflictBar').label, icon: X, keys: '⌃⌥⌘X', disabled: !shownTitleConflict, disabledReason: 'There is no title-differs bar on this document', run: dismissOpenTitleConflict },
-      { id: 'title.undoLastChange', label: registryCommand('title.undoLastChange').label, icon: Undo2, keys: '⌃⌥⌘Z', disabled: !titleConflictActions.canUndo, disabledReason: 'There is no title change from the Folio outline or the Outline to undo (in the document, ⌘Z undoes it)', run: () => { void titleConflictActions.undo() } },
+      { id: 'title.undoLastChange', label: registryCommand('title.undoLastChange').label, icon: Undo2, keys: '⌃⌥⌘Z', disabled: !titleConflictActions.canUndo || versionRead, disabledReason: versionRead ? 'A saved version is open read-only. Go back to the working draft first.' : 'There is no title change from the Folio outline or the Outline to undo (in the document, ⌘Z undoes it)', run: () => { if (anyVersionRead()) return; void titleConflictActions.undo() } },
       {
         id: 'collection.toggleRail',
         label: 'Summon Rail',
@@ -5444,7 +5711,7 @@ export default function App(): JSX.Element {
         label: readingRoomOpen ? 'Close Reading Room' : READING_ROOM_TOGGLE_COMMAND.label,
         icon: BookOpen,
         keys: READING_ROOM_TOGGLE_COMMAND.keys as string,
-        run: () => setReadingRoomVisibility(!readingRoomOpen),
+        run: () => setReadingRoomVisibility(!readingRoomVisibility.current),
       },
       {
         id: READING_ROOM_DOCUMENT_COMMAND.id,
@@ -5556,7 +5823,20 @@ export default function App(): JSX.Element {
       // Real overlay opens (Task 17): runPaletteCommand closes the palette first, then these raise
       // the settings / cheat-sheet sheet through the same overlay guard.
       { id: 'file.nameVersion', label: 'Save Version…', icon: GitCommitHorizontal, keys: '⇧⌘S', run: requestNameVersion },
+      { id: 'folio.versions.openReadOnly', label: registryCommand('folio.versions.openReadOnly').label, icon: Eye, disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is already open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioVersionReadOnly },
+      { id: 'folio.versions.compare', label: registryCommand('folio.versions.compare').label, icon: GitCompare, disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioVersionCompare },
+      { id: 'folio.versions.backToWorking', label: registryCommand('folio.versions.backToWorking').label, icon: Undo2, disabled: !versionRead, disabledReason: 'No saved version is open', run: () => window.dispatchEvent(new CustomEvent(FOLIO_VERSION_COMMAND_EVENT, { detail: 'back-to-working-draft' })) },
+      { id: 'file.exportFolioVersion', label: registryCommand('file.exportFolioVersion').label, icon: Upload, disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: openFolioVersionExport },
+      { id: 'file.importFolioRevision', label: registryCommand('file.importFolioRevision').label, icon: FileDown, disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioRevisionImport },
+      { id: 'file.markFolioVersionSent', label: registryCommand('file.markFolioVersionSent').label, icon: Send, disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: openFolioVersionMarkSent },
+      { id: 'file.saveFileVersion', label: registryCommand('file.saveFileVersion').label, icon: History, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('save') },
+      { id: 'file.compareFileVersion', label: registryCommand('file.compareFileVersion').label, icon: GitCompare, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('compare') },
+      { id: 'file.restoreFileVersion', label: registryCommand('file.restoreFileVersion').label, icon: RotateCcw, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('restore') },
+      { id: 'file.saveFileVersionCopy', label: registryCommand('file.saveFileVersionCopy').label, icon: CopyPlus, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('copy') },
+      { id: 'file.saveFolioVersion', label: registryCommand('file.saveFolioVersion').label, icon: History, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: requestSaveFolioVersion },
       { id: 'app.settings', label: 'Open Settings…', icon: Settings, keys: '⌘,', run: () => openSettings() },
+      { id: 'app.checkForUpdates', label: 'Check for Updates…', icon: RefreshCw, run: runCheckForUpdates },
+      { id: 'app.whatsNew', label: 'What’s new in WriteFlex', icon: Info, run: showWhatsNew },
       { id: 'app.about', label: 'About WriteFlex', icon: Info, run: () => openSettings('sec-about') },
       { id: 'guide.open', label: registryCommand('guide.open').label, icon: Compass, run: openTheGuide },
       { id: 'sharing.setUp', label: registryCommand('sharing.setUp').label, icon: Link, run: openSharingSetup },
@@ -5564,16 +5844,16 @@ export default function App(): JSX.Element {
       { id: 'sharing.sharesList', label: registryCommand('sharing.sharesList').label, icon: Link, run: openSharesList },
       { id: 'example.restore', label: registryCommand('example.restore').label, icon: RotateCcw, run: restoreExampleOrSay },
       workspacePinned
-        ? { id: 'workspace.unpin', label: 'Unpin this workspace', icon: PinOff, run: togglePinWorkspace }
-        : { id: 'workspace.pin', label: 'Pin this workspace', icon: Pin, run: togglePinWorkspace },
+        ? { id: 'workspace.unpin', label: 'Unpin this vault', icon: PinOff, run: togglePinWorkspace }
+        : { id: 'workspace.pin', label: 'Pin this vault', icon: Pin, run: togglePinWorkspace },
       { id: SHORTCUTS_COMMAND.id, label: SHORTCUTS_COMMAND.label, icon: Keyboard, keys: (SHORTCUTS_COMMAND.keys as string[]).map(formatShortcutKey).join('  '), run: () => openCheatSheet() },
-      { id: 'app.search', label: 'Search Workspace…', icon: Search, keys: '⇧⌘F', run: openSearch },
-      { id: 'archive.search', label: archiveSearchOpen ? 'Close archive search' : registryCommand('archive.search').label, icon: Library, keys: '⌃⌘F', run: toggleArchiveSearch },
+      { id: 'app.search', label: 'Search vault…', icon: Search, keys: '⇧⌘F', run: openSearch },
+      { id: 'archive.search', label: registryCommand('archive.search').label, icon: Library, keys: '⌃⌘F', run: toggleArchiveSearch },
       { id: 'idea.capture', label: 'Capture an idea', icon: Plus, keys: '⇧⌘N', run: openCapture },
       { id: 'idea.materialise', label: 'Materialise dead wikilink', icon: Plus, keys: '⌘↵', run: runMaterialiseCommand },
       { id: 'navigation.followWikilink', label: 'Follow wikilink', icon: Link, keys: '⌥↵', run: followWikilink },
       { id: 'app.scratchpad', label: 'Open Scratchpad', icon: StickyNote, keys: '⇧⌘J', run: () => scratchpadApi.current?.toggle() },
-      { id: 'scratchpad.sendCopy', label: registryCommand('scratchpad.sendCopy').label, icon: StickyNote, run: () => { void scratchpadApi.current?.sendCopy() } },
+      { id: 'scratchpad.sendCopy', label: registryCommand('scratchpad.sendCopy').label, icon: StickyNote, run: () => { void sendCopyToScratchpad() } },
       { id: 'scratchpad.cut', label: registryCommand('scratchpad.cut').label, icon: StickyNote, run: () => { void scratchpadApi.current?.cut() } },
       { id: 'scratchpad.insertCopy', label: registryCommand('scratchpad.insertCopy').label, icon: StickyNote, run: () => scratchpadApi.current?.insertSelected() },
       { id: 'scratchpad.putBack', label: registryCommand('scratchpad.putBack').label, icon: StickyNote, run: () => scratchpadApi.current?.putBackSelected() },
@@ -5585,8 +5865,8 @@ export default function App(): JSX.Element {
       { id: 'scratchpad.focusSearch', label: registryCommand('scratchpad.focusSearch').label, icon: StickyNote, run: () => scratchpadApi.current?.focusSearch() },
       { id: 'app.agent', label: 'Open Agent', icon: Sparkles, keys: '⌘J', run: () => focusComposer() },
       { id: 'agent.askHere', label: 'Ask the agent about this…', icon: Sparkles, run: askHere },
-      { id: 'threads.new', label: 'Start a new conversation', icon: MessageSquare, run: () => requestAgentAction('new-conversation') },
-      { id: 'threads.switcher', label: 'Show conversations', icon: MessageSquare, run: () => requestAgentAction('show-conversations') },
+      { id: 'threads.new', label: 'Start a new conversation', icon: Sparkles, run: () => requestAgentAction('new-conversation') },
+      { id: 'threads.switcher', label: 'Show conversations', icon: Sparkles, run: () => requestAgentAction('show-conversations') },
       { id: 'threads.closeCurrent', label: 'Close the current conversation', icon: X, run: () => requestAgentAction('close-current-conversation') },
       { id: 'agent.switchModel', label: 'Switch the model for this chat', icon: Sparkles, run: () => openAgentConfiguration('model') },
       { id: 'agent.setMode', label: 'Set assistant mode', icon: Sparkles, run: () => openAgentConfiguration('mode') },
@@ -5679,6 +5959,7 @@ export default function App(): JSX.Element {
     requestOutline,
     cycleRightTab,
     guideInRow,
+    scratchpadMode,
     openTheGuide,
     openSharingSetup,
     openSharingPage,
@@ -5689,6 +5970,8 @@ export default function App(): JSX.Element {
     toggleHideInserts,
     runEditorCommand,
     openFilesTab,
+    openSyncTab,
+    syncStatus.run, syncStatus.reason, syncStatus.commandState,
     toggleLeftPane,
     toggleRightPane,
     toggleActionBar,
@@ -5767,6 +6050,15 @@ export default function App(): JSX.Element {
     openAgentConfiguration,
     openRightTab,
     requestNameVersion,
+    requestSaveFolioVersion,
+    openFolioDir,
+    versionRead,
+    openFolioVersionReadOnly,
+    openFolioVersionCompare,
+    openFolioVersionExport,
+    openFolioVersionMarkSent,
+    runFileVersion,
+    openFolioRevisionImport,
     snapshot,
     overlayActive,
   ])
@@ -6121,12 +6413,9 @@ export default function App(): JSX.Element {
   // the dirty dots. With the editor gone (unmounted by an error) this app can write nothing and the
   // flush stops; the close is then finished by unsaved-text.ts.
   const flushEveryDirtyBuffer = useCallback((failedPaths?: string[]): Promise<CloseFlushResult> => {
-    // Cancel any pending auto-save timer; every unsaved buffer is being written now.
-    if (autosaveTimer.current) {
-      clearTimeout(autosaveTimer.current)
-      autosaveTimer.current = null
-    }
-    pendingAutosave.current = null
+    // Cancel every pending quiet save; every unsaved buffer is being written now. What a buffer owes stays
+    // until a write of it is confirmed (a refused write keeps the window open and the deadline armed).
+    autosave.cancelQuiet()
     // A document under a hold (a suggestion redo's calls to main are in flight) is written after them.
     return flushUntilClean({
       unsaved: () => (editorIsPresent() ? unsaved.pending() : []),
@@ -6137,7 +6426,7 @@ export default function App(): JSX.Element {
         return saved
       },
     })
-  }, [savePath, owner])
+  }, [savePath, owner, autosave])
 
   // One close at a time. Main already ignores a close request while one is in flight; this is the
   // renderer's own guard for the same rule, so a repeat can never start a second flush.
@@ -6165,6 +6454,7 @@ export default function App(): JSX.Element {
         // Ack immediately — before the (possibly slow) flush — so main knows the renderer is alive. A
         // blank/crashed renderer never reaches this line.
         void window.writeflex.acknowledgeClose()
+        await flushDiaryActivity().catch((error: unknown) => flashRef.current?.(humanReadableError(error, 'Could not update the Diary.')))
         // A request while a close runs: main sends one only after it called the running close off
         // (window:abandon-close), so it is run once the called-off flush has ended.
         // Queued under the current close generation: a later call-off drops it (round 3, S1).
@@ -6306,8 +6596,19 @@ export default function App(): JSX.Element {
         else if (action === 'switch-margin-view') switchMarginView()
         else if (action === 'toggle-margin') toggleMargin()
         else if (action === 'open-versions') openRightTab('versions')
+        else if (action === 'open-folio-versions') window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' }))
+        else if (action === 'open-folio-version-read-only') openFolioVersionReadOnly()
+        else if (action === 'compare-folio-versions') openFolioVersionCompare()
+        else if (action === 'export-folio-version') openFolioVersionExport()
+        else if (action === 'mark-folio-version-sent') openFolioVersionMarkSent()
+        else if (action === 'import-folio-revision') openFolioRevisionImport()
+        else if (action === 'save-file-version') runFileVersion('save')
+        else if (action === 'compare-file-version') runFileVersion('compare')
+        else if (action === 'restore-file-version') runFileVersion('restore')
+        else if (action === 'save-file-version-copy') runFileVersion('copy')
+        else if (action === 'back-to-working-draft') window.dispatchEvent(new CustomEvent(FOLIO_VERSION_COMMAND_EVENT, { detail: 'back-to-working-draft' }))
       }),
-    [toggleLeftPane, toggleRightPane, openFilesTab, toggleOutline, openRightTab, runMarginCommand, switchMarginView, toggleMargin],
+    [toggleLeftPane, toggleRightPane, openFilesTab, toggleOutline, openRightTab, runMarginCommand, switchMarginView, toggleMargin, openFolioVersionReadOnly, openFolioVersionCompare, openFolioVersionExport, openFolioVersionMarkSent, openFolioRevisionImport, runFileVersion],
   )
 
   // The View menu's Toggle Typewriter item (⌘T, registerAccelerator:false) routes here on click.
@@ -6317,6 +6618,19 @@ export default function App(): JSX.Element {
         if (action === 'toggle-typewriter') toggleTypewriter()
       }),
     [toggleTypewriter],
+  )
+
+  // R14: the menu's Settings…, Export…, Share… and theme items.
+  useEffect(
+    () =>
+      window.writeflex.onMenuAction((action) => {
+        if (action === 'open-settings') openSettings()
+        else if (action === 'export-document') void openExportSheet()
+        else if (action === 'share-document') openSharingPage()
+        else if (action === 'theme-light') runThemeCommand('appearance.lightTheme', setSetting)
+        else if (action === 'theme-dark') runThemeCommand('appearance.darkTheme', setSetting)
+      }),
+    [openSettings, openExportSheet, openSharingPage, setSetting],
   )
 
   // ⇧⌘E / ⇧⌘O (Open Files / Open Outline) are dispatched by the T6 chord table. They remain
@@ -6694,7 +7008,12 @@ export default function App(): JSX.Element {
         // failed): the save is refused until the writer chooses Keep mine, which writes the file again.
         // Closing the tab is the other answer: the text in it is discarded, and only when the writer
         // confirms that, here, in so many words.
-        if (externalDiskNoticesRef.current.get(path)?.kind === 'removed' && window.confirm(removedTabDiscardQuestion(fileName))) {
+        if (externalDiskNoticesRef.current.get(path)?.kind === 'removed' && await askConfirm({ title: `Close ${fileName} and discard its text?`, detail: `${fileName} was removed on disk, and this tab holds text that is not saved anywhere.`, recover: 'Cancel keeps the tab; Keep mine above the text writes the file again.', confirmLabel: 'Discard and close' })) {
+          // The card is asynchronous (Sol S1): discard only if the file is still removed and the tab still open.
+          if (externalDiskNoticesRef.current.get(path)?.kind !== 'removed' || !tabsRef.current.includes(path)) {
+            flash(`${fileName} changed while the card was open; nothing was discarded`)
+            return
+          }
           owner.discardConfirmed(path)
           closeForgotten()
           flash(`Closed ${fileName}; the text that was only in the tab was discarded`)
@@ -6867,6 +7186,10 @@ export default function App(): JSX.Element {
     moveExternalDiskNotice(from, to)
     const uncheckpointedBefore = uncheckpointed.current.has(from)
     const kept = owner.moved(from, to)
+    if (kept !== 'forgotten') {
+      autosave.moved(from, to) // what the buffer owes goes with it
+      backupReceiptsRef.current?.moved(from, to)
+    }
     forgetAppTraces(from)
     if (kept === 'carried') {
       uncheckpointed.current.add(to)
@@ -6874,7 +7197,7 @@ export default function App(): JSX.Element {
     } else if (kept === 'renamed' && uncheckpointedBefore) {
       uncheckpointed.current.add(to) // saved, not yet checkpointed: the next ⌘S/close checkpoints it there
     }
-  }, [owner, forgetAppTraces, moveExternalDiskNotice, queueAutosave])
+  }, [owner, autosave, forgetAppTraces, moveExternalDiskNotice, queueAutosave])
   moveHoldRef.current = { withPathsSaved: (paths, act) => withPathsSaved(paths, () => act()), afterMainMoved }
 
   const sidebarFileOps: SidebarFileOps = useMemo(
@@ -6977,7 +7300,7 @@ export default function App(): JSX.Element {
           const moved = flushed.result
           await refresh()
           if (wasOpen) open(moved.file.path)
-          flash(formatRenameRepairMessage(`Moved to ${directory ?? 'workspace root'}`, moved.repair))
+          flash(formatRenameRepairMessage(`Moved to ${directory ?? 'vault root'}`, moved.repair))
           return true
         } catch (error) {
           flash(humanReadableError(error, 'Could not move the file.'))
@@ -7259,6 +7582,17 @@ export default function App(): JSX.Element {
       resolveChange: (id, act) => window.writeflex.resolveChange(id, act),
     }, change, action),
     [acceptThroughOwner, inDocumentQueue],
+  )
+  // The three texts of the decide step (Folio versions ticket 17) accept or decline a suggestion by the same routes the margin and the Agent notes pane use,
+  // then bring the margin and the ledger up to date as an Accept in the margin does.
+  const resolveFolioSuggestion = useCallback(
+    async (change: { id: string; path: string }, action: 'accept' | 'reject'): Promise<{ applied: boolean; message?: string }> => {
+      const result = await resolveProposalThroughOwner({ accept: acceptThroughOwner, inQueue: inDocumentQueue, resolveChange: (id, act) => window.writeflex.resolveChange(id, act) }, change, action)
+      handleAgentWorkspaceChange()
+      await reloadChanges()
+      return result
+    },
+    [acceptThroughOwner, inDocumentQueue, handleAgentWorkspaceChange, reloadChanges],
   )
   // Accept all / Decline all from one outside source, across the collection. A document this window holds is
   // accepted through the single click's own route (acceptThroughOwner); main accepts the rest the same way.
@@ -7605,10 +7939,10 @@ export default function App(): JSX.Element {
         break
       }
       case 'toggle-margin': toggleMargin(); break
-      case 'save-version': requestNameVersion(); break
+      case 'save-version': openPartVersionSheet(); break
       case 'outside-source': setReviewAskState(null); outsideSourceBulk.open(action.action, action.source); break
     }
-  }, [stepReview, nextPieceWithItems, bulkAccept, toggleMargin, requestNameVersion, outsideSourceBulk])
+  }, [stepReview, nextPieceWithItems, bulkAccept, toggleMargin, openPartVersionSheet, outsideSourceBulk])
   // The one handler for the run-level review keys. The margin acts on its selection, else on what its filter shows; with no margin mounted
   // (no document open, a collection page) the keys fall back to the whole pending run.
   marginCommandRef.current = (what): void => {
@@ -7667,12 +8001,69 @@ export default function App(): JSX.Element {
       flash(`Version “${result.record.name}” saved — ${result.accepted} kept, ${result.pending} pending`)
     })()
   }, [active, owner, cancelPendingFlush, flushWriterChanges, clearFileWriterState, reconcileAppliedFile, reloadChanges, reloadVersions, closePalette, flash])
+  // The sheet's go-ahead: the buffers are recorded and saved again, then main saves the Folio version, accepting the
+  // writer's own waiting changes into their files first (the sheet said so). Open buffers of those files are then
+  // reconciled with what was written, as the per-part save does. A refusal is a sentence in the sheet; nothing was written.
+  const runFolioSave = useCallback(async (input: { name: string; note: string; includeUnlisted: boolean; expect: string }) => {
+    // The gate is taken here, synchronously, before anything is awaited: a second go-ahead, or a second way to open a sheet,
+    // finds it held. Everything this invocation does afterwards is bound to ITS sheet (`sheetId`) and ITS token.
+    const sheet = folioSaveRef.current
+    if (sheet?.stage !== 'sheet' || sheet.busy) return
+    const token = folioSaveGate.current.begin('saving')
+    if (token === null) return
+    const { dir, sheetId } = sheet
+    const ours = (): boolean => {
+      const current = folioSaveRef.current
+      return current?.stage === 'sheet' && current.sheetId === sheetId
+    }
+    const show = (patch: { busy?: boolean; error?: string; changed?: string[] | null; facts?: FolioSheetFacts }): void => {
+      const current = folioSaveRef.current
+      if (current?.stage === 'sheet' && current.sheetId === sheetId) setFolioSave({ ...current, ...patch })
+    }
+    show({ busy: true, error: '', changed: null })
+    holdOverlay(true)
+    try {
+      cancelPendingFlush()
+      const drained = await flushWriterChangesNow()
+      const flushed = await flushPaths(documentsUnder(folderPrefix(dir)))
+      if (drained.failed.length > 0 || flushed.status !== 'saved') {
+        show({ busy: false, error: 'WriteFlex could not save the latest text, so no Folio version was saved. Check that the files can be written and try again.' })
+        return
+      }
+      const saved = await window.writeflex.folioVersionSave.save({ dir, ...input })
+      if (saveChanged(saved)) {
+        // The Folio moved on while the sheet was open. Nothing was written. Show the Folio as it is, say what moved, and wait for another go-ahead.
+        const before = sheet.facts
+        show({ busy: false, facts: saved.facts, changed: describeSheetChange(before, saved.facts, input.includeUnlisted) })
+        return
+      }
+      for (const entry of saved.settled) {
+        editorRef.current?.settleWriterChanges(entry.path)
+        clearFileWriterState(entry.path)
+        try { await reconcileAppliedFile(await window.writeflex.readFile(entry.path)) } catch { /* the file was just saved; a later reload shows it */ }
+      }
+      await reloadChanges()
+      await reloadVersions()
+      // Only this invocation's own sheet is dismissed.
+      if (ours()) {
+        setFolioSave(null)
+        closePalette()
+      }
+      flash(savedToast(saved))
+    } catch (error) {
+      show({ busy: false, error: refusalSentence(error) })
+    } finally {
+      folioSaveGate.current.end(token)
+      holdOverlay(false)
+    }
+  }, [holdOverlay, cancelPendingFlush, flushWriterChangesNow, flushPaths, documentsUnder, clearFileWriterState, reconcileAppliedFile, reloadChanges, reloadVersions, closePalette, flash, setFolioSave])
   useEffect(
     () =>
       window.writeflex.onMenuAction((action) => {
         if (action === 'name-version') requestNameVersion()
+        else if (action === 'save-folio-version') requestSaveFolioVersion()
       }),
-    [requestNameVersion],
+    [requestNameVersion, requestSaveFolioVersion],
   )
   // ⇧⌘S (Save Version…) is dispatched by the T6 chord table; the menu item stays the mouse path.
   // Revise hands off to the agent: open the composer for a fresh instruction on this change.
@@ -7685,7 +8076,7 @@ export default function App(): JSX.Element {
     () =>
       window.writeflex.onMenuAction((action) => {
         if (action === 'search') toggleSearch()
-        else if (action === 'archive-search' && !archiveSearchOpenRef.current) toggleArchiveSearch()
+        else if (action === 'archive-search') toggleArchiveSearch()
       }),
     [toggleSearch, toggleArchiveSearch],
   )
@@ -7733,6 +8124,7 @@ export default function App(): JSX.Element {
   if (root === undefined) {
     return (
       <div className="app-shell">
+        <UpdateNotices protectedMode={distractionFree} />
         <div className="toolbar">
           <div className="traffic-spacer" aria-hidden="true" />
         </div>
@@ -7746,6 +8138,7 @@ export default function App(): JSX.Element {
   if (root === null) {
     return (
       <div className="app-shell">
+        <UpdateNotices protectedMode={distractionFree} />
         <div className="toolbar">
           <div className="traffic-spacer" aria-hidden="true" />
         </div>
@@ -7753,6 +8146,7 @@ export default function App(): JSX.Element {
           <StartScreen onOpen={() => void openDialog()} onOpenRecent={(r) => void openRecent(r)} onOpenExample={(target) => void openExample(target)} onRemoveExample={() => setRemoveExampleOpen(true)} />
         </div>
         {removeExampleOpen && <RemoveExampleConfirm onClose={() => setRemoveExampleOpen(false)} />}
+        <AgentSkillStep />
       </div>
     )
   }
@@ -7822,7 +8216,10 @@ export default function App(): JSX.Element {
 
   return (
     <ActionsHereContext.Provider value={actionsHereApi}>
+    <UpdateNotices protectedMode={distractionFree} />
+    <ConfirmHost />
     <TitleConflictContext.Provider value={titleConflictActions}>
+    <BackNameProvider value={(active ?? lastEditablePath)?.split('/').pop() ?? 'text'}>
     <div className={`app-shell window${distractionFree ? ' df' : ''}`} ref={shellRef} tabIndex={-1}>
       <Toolbar
         sidebarOpen={!leftPaneCollapsed}
@@ -7847,7 +8244,7 @@ export default function App(): JSX.Element {
         actionBarShortcut={actionBarShortcut}
         readingRoomOpen={readingRoomOpen}
         readingRoomShortcut={formatShortcutKey(resolveChord(READING_ROOM_TOGGLE_COMMAND.id, shortcutOverrides) ?? '')}
-        onToggleReadingRoom={() => setReadingRoomVisibility(!readingRoomOpen)}
+        onToggleReadingRoom={() => setReadingRoomVisibility(!readingRoomVisibility.current)}
         boardFilter={boardActive ? { value: boardFilter, onChange: setBoardFilter } : undefined}
         onToggleTabsList={toggleTabsList}
         tabsListOpen={tabsListOpen}
@@ -7879,29 +8276,30 @@ export default function App(): JSX.Element {
       </Toolbar>
       {folderFocus && !distractionFree && (
         <FocusPathBar
-          rootName={workspaceName ?? 'Workspace'}
+          rootName={workspaceName ?? 'Vault'}
           focus={folderFocus.path}
           onFocus={setFolderFocus}
           onClear={() => setFolderFocus(null)}
         />
       )}
-      <div className={`body tabbed-shell${leftPaneCollapsed ? ' left-collapsed' : ''}${rightPaneCollapsed ? ' right-collapsed' : ''}${archiveSearchOpen ? ' archive-open' : ''}`}>
+      <div className={`body tabbed-shell${leftPaneCollapsed ? ' left-collapsed' : ''}${rightPaneCollapsed ? ' right-collapsed' : ''}`}>
         {!leftPaneCollapsed && (
-          <aside className={`chrome-pane left-pane${distractionFree ? ' df-pane' : ''}`} aria-label="Left pane" style={distractionFree ? undefined : { width: leftPaneWidth }}>
-            {distractionFree && <div className="df-ph">{leftTab === 'files' ? <FolderTree className="icon sm" /> : leftTab === 'outline' ? <List className="icon sm" /> : <Search className="icon sm" />}<span>{`${leftTab[0].toUpperCase()}${leftTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title={`Close panel (${formatShortcutKey(resolveChord('view.toggleLeftPane', shortcutOverrides) ?? '')})`} onClick={toggleLeftPane}><X className="icon sm" /></button></div>}
-            {!distractionFree && <div className="pane-tabs" role="tablist" aria-label="Sidebar sections">
+          <aside className={`chrome-pane left-pane${distractionFree ? ' df-pane' : ''}${sidebarFit.leftWidth < 260 ? ' narrow' : ''}`} aria-label="Left sidebar" style={distractionFree ? undefined : { width: sidebarFit.leftWidth }}>
+            {distractionFree && <div className="df-ph">{leftTab === 'files' ? <FolderTree className="icon sm" /> : leftTab === 'outline' ? <List className="icon sm" /> : leftTab === 'sync' ? <RefreshCw className="icon sm" /> : <Search className="icon sm" />}<span>{`${leftTab[0].toUpperCase()}${leftTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title={`Close panel (${formatShortcutKey(resolveChord('view.toggleLeftPane', shortcutOverrides) ?? '')})`} onClick={toggleLeftPane}><X className="icon sm" /></button></div>}
+            {!distractionFree && <div className="pane-tabs sync-tabs" role="tablist" aria-label="Sidebar sections">
               <button type="button" className={leftTab === 'files' ? 'pane-tab on' : 'pane-tab'} role="tab" aria-selected={leftTab === 'files'} onClick={openFilesTab} title="Files (⇧⌘E)" aria-keyshortcuts="Shift+Meta+E">
                 <FolderTree className="icon i sm" aria-hidden="true" />
-                Files <span className="pchord" aria-hidden="true">⇧⌘E</span>
+                <span className="pt-label">Files</span>
               </button>
               <button type="button" className={leftTab === 'outline' ? 'pane-tab on' : 'pane-tab'} role="tab" aria-selected={leftTab === 'outline'} onClick={openOutlineTab} title="Outline (⇧⌘O)" aria-keyshortcuts="Shift+Meta+O">
                 <List className="icon i sm" aria-hidden="true" />
-                Outline <span className="pchord" aria-hidden="true">⇧⌘O</span>
+                <span className="pt-label">Outline</span>
               </button>
               <button type="button" className={leftTab === 'search' ? 'pane-tab on' : 'pane-tab'} role="tab" aria-selected={leftTab === 'search'} onClick={openSearchTab} title="Search (⇧⌘F)" aria-keyshortcuts="Shift+Meta+F">
                 <Search className="icon i sm" aria-hidden="true" />
-                Search <span className="pchord" aria-hidden="true">⇧⌘F</span>
+                <span className="pt-label">Search</span>
               </button>
+              <SyncTabStatus controller={syncStatus} selected={leftTab === 'sync'} onOpen={openSyncTab} />
               <button type="button" className="sidebar-fold" onClick={toggleLeftPane} title={`Collapse sidebar (${formatShortcutKey(resolveChord('view.toggleLeftPane', shortcutOverrides) ?? '')})`} aria-label="Collapse sidebar">
                 <ChevronLeft className="icon sm" aria-hidden="true" />
               </button>
@@ -7919,6 +8317,7 @@ export default function App(): JSX.Element {
                 }}>
                   <Sidebar
                     files={files}
+                    syncMarks={syncStatus.presentation.marks}
                     checklistProgress={checklistProgress}
                     waitingCounts={waitingCounts}
                     folders={folders}
@@ -7957,18 +8356,23 @@ export default function App(): JSX.Element {
                 {renderDocumentOutline()}
                 </RoomBinderSwitch>
               </div>
-              <div className={leftTab === 'search' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Search workspace">
+              <div className={leftTab === 'sync' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Sync">
+                <SyncPanel controller={syncStatus} selectedPath={active} />
+              </div>
+              <div className={leftTab === 'search' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Search vault">
                 <SearchPanel onOpenHit={(match) => { jumpToMatch(match); noteOpenSource(match.path, 'search') }} onClose={closeSearch} focus={folderFocus} />
               </div>
             </div>
           </aside>
         )}
         {!leftPaneCollapsed && (
-          <div className="pane-resize" onPointerDown={startPaneResize('left')} role="separator" aria-orientation="vertical" aria-label="Resize left pane" />
+          <div className="pane-resize" onPointerDown={startPaneResize('left')} role="separator" aria-orientation="vertical" aria-label="Resize left sidebar" />
         )}
         <div className={`reading-room-editor-group side-${readingRoomSide}`}>
         {readingRoomOpen && (
           <ReadingRoom
+            key={readingRoomInstance}
+            registerLifetime={registerReadingRoomLifetime}
             side={readingRoomSide}
             draftPath={active}
             citeRequest={readingRoomCiteRequest}
@@ -7996,6 +8400,7 @@ export default function App(): JSX.Element {
             // the editor's buffers untouched underneath.
             <div className="cv-overlay">
               <CollectionView
+                onBack={backTarget ? () => open(backTarget) : undefined}
                 key={`${root}:${collectionDir}`}
                 dir={collectionDir}
                 canAddToFolio={canTurnBack}
@@ -8029,7 +8434,7 @@ export default function App(): JSX.Element {
                   }
                   if (action === 'folio') {
                     const target = await window.writeflex.readFolioPieces(collectionDir)
-                    if (!target) throw new Error('Add documents from the Folio’s own collection folder.')
+                    if (!target) throw new Error('Add pieces from the Folio’s own collection folder.')
                     const current = await window.writeflex.listCollection(collectionDir)
                     return addCollectionBatchToFolio(folioRunningOrder, collectionDir, target.pieces, paths, current.rows)
                   }
@@ -8080,6 +8485,9 @@ export default function App(): JSX.Element {
                 onStartFolio={startNestedFolio}
                 onFolderPieceSelected={setSelectedFolderPiece}
                 shortcutOverrides={shortcutOverrides}
+                onSaveFolioVersion={requestSaveFolioVersion}
+                partIsUnsaved={partIsUnsaved}
+                resolveSuggestion={resolveFolioSuggestion}
                 openPlanRequested={openPlanRequested}
                 onHelpWithReport={helpWithReport}
                 onMakeVault={openMakeVault}
@@ -8091,12 +8499,13 @@ export default function App(): JSX.Element {
               />
             </div>
           )}
-          {distractionFree && dfControlsVisible && <><button type="button" className="df-exit" onClick={toggleDistractionFree} title="Leave distraction-free (⌥⌘D or Esc)"><Minimize2 className="icon sm" />Esc</button><div className="moderail" role="group" aria-label="Writing mode"><span className="rl">Mode</span><div className="rseg" role="group" aria-label="Writing mode"><button type="button" aria-pressed={writerMode === 'drafting'} title="Drafting (⌥⌘M)" onClick={() => changeWriterMode('drafting')}><SquarePen className="icon sm" />Drafting</button><button type="button" aria-pressed={writerMode === 'reviewing'} title="Reviewing (⌥⌘M)" onClick={() => changeWriterMode('reviewing')}><Glasses className="icon sm" />Reviewing</button></div><span className="rk">⌥⌘M</span></div></>}
+          {distractionFree && dfControlsVisible && <><button type="button" className="df-exit" onClick={toggleDistractionFree} title="Leave distraction-free (⌥⌘D or Esc)"><Minimize2 className="icon sm" />Esc</button><div className="moderail" role="group" aria-label="Writing mode"><span className="rl">Mode</span><div className="rseg" role="group" aria-label="Writing mode"><button type="button" aria-pressed={writerMode === 'reviewing'} title="Track my changes (⌥⌘M)" onClick={() => changeWriterMode(writerMode === 'reviewing' ? 'drafting' : 'reviewing')}><Glasses className="icon sm" />Track my changes</button></div><span className="rk">⌥⌘M</span></div></>}
           {/* The formatting toolbar sits inside the document pane (ticket 15): above the text, below the tab
               strip, with the read-aloud and review bars stacking under it. The sidebar therefore starts
               directly under the tab strip. Hidden costs ZERO pixels: when the bar is off it is not in the
               tree at all — no lip, no hairline, no reserved height. There is one document pane, so one bar. */}
-          {actionBarVisible && <ActionBar groups={actionBarGroups} onConfigure={() => setConfigureActionBarOpen(true)} />}
+          {/* A workspace mode's header replaces the action bar (R1): under the Collection/Folio overlay the bar was covered, now it is not drawn. */}
+          {actionBarVisible && collectionDir === null && <ActionBar groups={actionBarGroups} onConfigure={() => setConfigureActionBarOpen(true)} />}
           {documentFindOpen && <DocumentFind query={documentFindQuery} replacement={documentFindReplacement} replaceOpen={documentFindReplaceOpen} status={documentFindStatus} onQuery={updateDocumentFindQuery} onReplacement={setDocumentFindReplacement} onToggleReplace={() => setDocumentFindReplaceOpen((open) => !open)} onMove={moveDocumentFind} onReplace={replaceDocumentFind} onClose={closeDocumentFind} />}
           {/* The editor stack stays MOUNTED whenever a collection is shown — its per-tab buffer cache
               (the live CM view + unsaved background-tab edits) is the only home for that text, so a swap
@@ -8300,6 +8709,8 @@ export default function App(): JSX.Element {
             />
           )}
           <StatusBar
+            noticeSlot={<SyncTitleStatus controller={syncStatus} open={syncPopoverOpen} onOpenChange={setSyncPopoverOpen} onOpenSync={openSyncTab} />}
+            readingVersionName={readingVersionNow?.name ?? null}
             outboxWaiting={outboxWaiting}
             outboxRejected={outboxRejected}
             outboxNeedsZoteroOpen={outboxRefusal?.code === 'zotero-closed'}
@@ -8345,6 +8756,7 @@ export default function App(): JSX.Element {
             version={appVersion}
             place={place}
             onPlaceChip={onPlaceChip}
+            folioCue={folioCue}
             review={statusReview}
             reviewMenu={reviewCountMenu}
             onReviewMenuPick={runCountMenuAction}
@@ -8455,6 +8867,7 @@ export default function App(): JSX.Element {
           {boardActive && (
             <div className="board-page-overlay">
               <Board
+                onBack={backTarget ? () => open(backTarget) : undefined}
                 dir={boardDir}
                 name={collectionName ?? 'Collection'}
                 filter={boardFilter}
@@ -8513,8 +8926,9 @@ export default function App(): JSX.Element {
           )}
           {railOpen && (
             <Rail
+              onDiarySettings={() => openSettings('sec-diary')}
               dir={railDir}
-              name={collectionName ?? workspaceName ?? 'Workspace'}
+              name={collectionName ?? workspaceName ?? 'Vault'}
               activePath={railActivePath}
               activeContent={railActivePath ? editorRef.current?.currentDoc() ?? snapshot?.docText ?? null : null}
               onClose={dismissRail}
@@ -8553,15 +8967,16 @@ export default function App(): JSX.Element {
         </main>
         </div>
         {!rightPaneCollapsed && (
-          <div className="pane-resize" onPointerDown={startPaneResize('right')} role="separator" aria-orientation="vertical" aria-label="Resize right pane" />
+          <div className="pane-resize" onPointerDown={startPaneResize('right')} role="separator" aria-orientation="vertical" aria-label="Resize right sidebar" />
         )}
         {!rightPaneCollapsed && (
-          <aside className={`chrome-pane right-pane${distractionFree ? ' df-pane' : ''}`} aria-label="Right pane" style={distractionFree ? undefined : { width: rightPaneWidth }}>
-            {distractionFree && <div className="df-ph">{rightTab === 'agent' ? <Sparkles className="icon sm" /> : rightTab === 'scratchpad' ? <StickyNote className="icon sm" /> : rightTab === 'agent-notes' ? <Bot className="icon sm" /> : <GitCommitHorizontal className="icon sm" />}<span>{rightTab === 'agent-notes' ? 'Agent notes' : rightTab === 'versions' ? 'Versions' : `${rightTab[0].toUpperCase()}${rightTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title={`Close panel (${formatShortcutKey(resolveChord('view.toggleRightPane', shortcutOverrides) ?? '')})`} onClick={toggleRightPane}><X className="icon sm" /></button></div>}
+          <aside className={`chrome-pane right-pane${distractionFree ? ' df-pane' : ''}`} aria-label="Right sidebar" style={distractionFree ? undefined : { width: rightPaneWidth }}>
+            {distractionFree && <div className="df-ph">{rightTab === 'agent' ? <Sparkles className="icon sm" /> : rightTab === 'scratchpad' ? <StickyNote className="icon sm" /> : rightTab === 'research' ? <Telescope className="icon sm" /> : <GitCommitHorizontal className="icon sm" />}<span>{`${rightTab[0].toUpperCase()}${rightTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title={`Close panel (${formatShortcutKey(resolveChord('view.toggleRightPane', shortcutOverrides) ?? '')})`} onClick={toggleRightPane}><X className="icon sm" /></button></div>}
             {!distractionFree && (
               <RightPaneTabs
                 active={rightTab}
                 guideShown={guideInRow}
+                scratchpadDocked={scratchpadMode === 'docked'}
                 onSelect={(tab) => (tab === 'agent' ? focusComposer() : tab === 'scratchpad' ? openScratchpad(true) : openRightTab(tab))}
               />
             )}
@@ -8616,6 +9031,7 @@ export default function App(): JSX.Element {
                     onShowSkillToast={setSkillToast}
                     onOpenReviewing={reviewSkillChanges}
                     onOpenNotes={openSkillNotes}
+                    notesSection={<AgentNotesSection dir={shownCollectionDir ?? ''} activePath={active} workspaceOpen={typeof root === 'string' && root !== ''} resolveProposal={resolveAgentProposal} onRestage={restageAgentNote} onOpenFile={open} onReveal={revealFileInFiles} />}
                     embedded
                     scratchpad={{
                       items: scraps.scraps,
@@ -8632,18 +9048,35 @@ export default function App(): JSX.Element {
                   />
                 </aside>
               </div>
+              <div className={rightTab === 'research' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Research">
+                <ResearchPane
+                  scope={researchScope}
+                  onScope={setResearchScope}
+                  sources={sources}
+                  onOpenSource={open}
+                  onRevealSource={revealSource}
+                  active={rightTab === 'research' && !rightPaneCollapsed}
+                  onInsertQuote={insertArchiveQuote}
+                  onInsertLink={insertArchiveLink}
+                  onExit={closeArchiveSearch}
+                />
+              </div>
               <div className={rightTab === 'scratchpad' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Scratchpad">
                 <div className="sp-rail">
                   <div className="sp-rail-slot" ref={setScratchpadDockSlot} />
-                  <SourcesSection sources={sources} onOpen={open} onReveal={revealSource} />
                 </div>
-              </div>
-              <div className={rightTab === 'agent-notes' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Agent notes">
-                <AgentNotes dir={shownCollectionDir ?? ''} activePath={active} workspaceOpen={typeof root === 'string' && root !== ''} resolveProposal={resolveAgentProposal} onRestage={restageAgentNote} onOpenFile={open} onReveal={revealFileInFiles} />
               </div>
               <div className={rightTab === 'versions' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Versions">
                 <div className="change-dock embedded versions-only" aria-label="Versions">
                   <div className="rlist cardlist">
+                    <FolioVersionsCursorPanel
+                      dir={cueDir}
+                      activePath={active}
+                      embed={cursorEmbed}
+                      onCompareWithLast={(fileVersionId) => openCompareView(fileVersionId, 'working')}
+                      onSaveFileVersion={saveInsertedFileVersion}
+                      onCompareFile={(path, fileVersionId) => { pendingFileCompare.current = { path, fromId: fileVersionId }; open(path) }}
+                    />
                     <VersionsPane
                       activePath={active}
                       versions={versions}
@@ -8673,6 +9106,7 @@ export default function App(): JSX.Element {
                       onRenameVersion={renameVersion}
                       onReturnToCurrent={exitHistoricalView}
                       onSaveVersion={requestNameVersion}
+                      saveAsksScope={cueDir !== null}
                     />
                     <div className="comments-lane" aria-hidden="true" />
                   </div>
@@ -8681,20 +9115,14 @@ export default function App(): JSX.Element {
             </div>
           </aside>
         )}
-        {archiveSearchOpen && (
-          <ArchiveSearchDock
-            shortcut={formatShortcutKey(resolveChord('archive.search', shortcutOverrides) ?? '')}
-            onInsertQuote={insertArchiveQuote}
-            onInsertLink={insertArchiveLink}
-            onClose={closeArchiveSearch}
-          />
-        )}
       </div>
       {(overlayActive === 'files' || overlayActive === 'commands') && (
         <CommandPalette
           mode={overlayActive}
           initialQuery={overlayActive === 'commands' ? paletteSeed : ''}
           files={files}
+          titles={paletteVaultIndex?.labels}
+          hiddenPaths={paletteVaultIndex?.hidden.paths}
           checklistProgress={checklistProgress}
           folders={folders}
           commands={paletteCommandList}
@@ -8844,6 +9272,7 @@ export default function App(): JSX.Element {
           words={exportSubject.words}
           collection={exportSubject.collection}
           inFolio={exportSubject.inFolio}
+          onSaveFolioVersionFirst={(dir) => { closePalette(); void openFolioSaveSheet(dir) }}
           onExport={runExport}
           initialPresetAction={exportSubject.presetAction}
           tocDepthHomes={exportSubject.tocDepthHomes}
@@ -8869,6 +9298,12 @@ export default function App(): JSX.Element {
           onClose={restoreCaptureFocus}
           onError={flash}
         />
+      )}
+      {overlayActive === 'folioSaveChoose' && folioSave?.stage === 'choose' && (
+        <SaveChooser last={folioSave.last} partName={folioSave.partName} parts={folioSave.parts} onChoose={chooseSaveScope} onCancel={closeFolioSave} />
+      )}
+      {overlayActive === 'folioSave' && folioSave?.stage === 'sheet' && (
+        <FolioVersionSheet key={folioSave.sheetId} {...(folioSave.suggestedName !== undefined ? { initialName: folioSave.suggestedName } : {})} facts={folioSave.facts} folioName={folioSave.folioName} today={new Date()} busy={folioSave.busy} error={folioSave.error} changed={folioSave.changed} onCancel={closeFolioSave} onSave={(input) => void runFolioSave(input)} />
       )}
       {overlayActive === 'version' && (
         <div className="version-modal-backdrop" role="presentation" onMouseDown={closePalette}>
@@ -8927,7 +9362,8 @@ export default function App(): JSX.Element {
         assetBaseUrl={assetBaseUrl}
         view={() => editorRef.current?.view() ?? null}
         editorPath={() => loadedPath.current ?? active}
-        editable={() => !historicalActiveRef.current}
+        // A saved Folio version open read-only is not the current text either: the Scratchpad inserts nothing into the working draft behind it (ticket 10).
+        editable={() => !historicalActiveRef.current && !anyVersionRead()}
         suspended={workbenchActive}
         liveKey={historicalActive}
         say={(message, action) => flashWithAction(message, action ? { ...action, kind: 'scratchpad' } : undefined)}
@@ -8939,6 +9375,7 @@ export default function App(): JSX.Element {
         onOpenSettings={() => openSettings('sec-scratchpad')}
       />
     </div>
+    </BackNameProvider>
     </TitleConflictContext.Provider>
     </ActionsHereContext.Provider>
   )

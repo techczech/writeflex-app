@@ -13,6 +13,7 @@ import {
 import { memorySecrets, testCipher } from '../helpers/memory-secrets.ts'
 
 const FAKE: Record<SecretSlot, string> = {
+  'backup-github-auth': 'synthetic-backup-auth-slot-fixture',
   'cloudflare-token': 'cfut_test-token-0001-abcdefghijklmnop',
   'sharing-keys': JSON.stringify({ format: 1, entries: [{ accountId: 'acc1', scriptName: 'writeflex-sharing', computerId: 'mac1', key: 'test-admin-key-0002-abcdefgh' }] }),
   'sharing-links': JSON.stringify({ format: 1, tokens: { AbCdEfGhIjKlMnOpQrStUv: 'test-owner-token-0003-abcdefgh' } }),
@@ -21,8 +22,8 @@ const holds = (haystack: Buffer, needle: string) => haystack.includes(Buffer.fro
 const errorText = (error: unknown) => [String(error), (error as Error)?.message, (error as Error)?.stack, JSON.stringify(error), String((error as Error)?.cause ?? '')].join('\n')
 
 describe('slots', () => {
-  test('the three slots, each one file in the user-data folder holding what the cipher returned', () => {
-    expect(SECRET_SLOT_NAMES).toEqual(['cloudflare-token', 'sharing-keys', 'sharing-links'])
+  test('the four slots, each one file in the user-data folder holding what the cipher returned', () => {
+    expect(SECRET_SLOT_NAMES).toEqual(['backup-github-auth', 'cloudflare-token', 'sharing-keys', 'sharing-links'])
     for (const slot of SECRET_SLOT_NAMES) {
       const { store, files, cipher, dir } = memorySecrets()
       const path = join(dir, SECRET_SLOTS[slot].file)

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { SearchField } from './SearchField'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { ChevronLeft, Search } from 'lucide-react'
 import type { FolderFocus, SearchMatch } from '../../../preload'
@@ -126,7 +127,7 @@ export default function SearchPanel({ onOpenHit, onClose, focus = null }: Search
   }
 
   return (
-    <div className="search-panel" onKeyDown={onPanelKeyDown} aria-label="Search workspace">
+    <div className="search-panel" onKeyDown={onPanelKeyDown} aria-label="Search vault">
       <div className="search-head">
         <span className="search-title">Search</span>
         <span className="spacer" />
@@ -136,20 +137,16 @@ export default function SearchPanel({ onOpenHit, onClose, focus = null }: Search
       </div>
 
       <div className="search-line">
-        <div className="search-field">
-          <Search className="icon sm" aria-hidden="true" />
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={onInputKeyDown}
-            placeholder={focus && side === 'folder' ? `Search ${scopeLabel(focus.kind).toLowerCase()}…` : 'Search every file…'}
-            aria-label="Search query"
-            spellCheck={false}
-          />
-          <kbd>esc</kbd>
-        </div>
+        <SearchField
+          ref={inputRef}
+          wrapClassName="search-panel-field search-field"
+          value={query}
+          onValueChange={(value) => setQuery(value)}
+          onKeyDown={onInputKeyDown}
+          placeholder={focus && side === 'folder' ? `Search ${scopeLabel(focus.kind).toLowerCase()}…` : 'Search every file…'}
+          aria-label="Search query"
+          clearLabel="Clear search"
+        />
         {focus && (
           <div className="search-scope" role="group" aria-label="Search scope">
             {(['folder', 'everywhere'] as const).map((option) => {
@@ -160,7 +157,7 @@ export default function SearchPanel({ onOpenHit, onClose, focus = null }: Search
                   key={option}
                   type="button"
                   aria-pressed={side === option}
-                  title={option === 'folder' ? `Search only ${focus.path}` : 'Search the whole workspace'}
+                  title={option === 'folder' ? `Search only ${focus.path}` : 'Search the whole vault'}
                   onClick={() => setSide(option)}
                 >
                   {option === 'folder' ? scopeLabel(focus.kind) : 'Everywhere'}
@@ -170,9 +167,6 @@ export default function SearchPanel({ onOpenHit, onClose, focus = null }: Search
             })}
           </div>
         )}
-        <div className="search-hint">
-          Words match anywhere in a piece. Try <code>"a phrase"</code>, <code>-word</code>, <code>/regex/</code>, or <code>tag:draft</code>.
-        </div>
       </div>
 
       <div className="search-results" ref={listRef}>
@@ -182,7 +176,7 @@ export default function SearchPanel({ onOpenHit, onClose, focus = null }: Search
           <div className="search-empty">
             {focus && side === 'folder'
               ? `Type a query to search ${scopeLabel(focus.kind).toLowerCase()}, ${focus.path.split('/').at(-1)}.`
-              : 'Type a query to search across the whole workspace.'}
+              : 'Type a query to search across the whole vault.'}
           </div>
         ) : error ? (
           <div className="search-empty">Search failed: {error}</div>

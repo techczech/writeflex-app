@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
-import { ArrowRight, Bot, Check, Clock3, Columns3, Eye, FilePlus2, Flame, Folder, ListOrdered, ListPlus, ListTree, MoreHorizontal } from 'lucide-react'
+import { BackControl } from './BackControl'
+import { ArrowRight, Sparkles, Check, Clock3, Columns3, Eye, FilePlus2, Flame, Folder, ListOrdered, ListPlus, ListTree, MoreHorizontal } from 'lucide-react'
 import type { BoardStepResult, DrawerScrap, Offcut, QueryRow } from '../../../preload'
 import { REFERENCE_STATUS_ORDER, UNSORTED_STATUS } from '../../../shared/collection-status'
 import { projectionQuerySource } from '../../../shared/query-source'
@@ -14,6 +15,8 @@ import type { QueryInsertionContext } from './Rail'
 import { useDragAutoScroll } from './useDragAutoScroll'
 
 export type BoardProps = {
+  /** R10: the way back to the document the writer came from; absent when no document is open. */
+  onBack?: () => void
   /** The embedded Folio utility has a distinct name from its status Board. */
   label?: string
   dir: string
@@ -41,7 +44,7 @@ function includesFilter(row: QueryRow, filter: string): boolean {
 }
 
 /** The Board page is a renderer-only projection of collection.query('', …), never a second engine. */
-export function Board({ label = 'Board', dir, name, filter, onOpenPiece, onNewPiece, onStatus, onListSources, setPieceStatus, seenStatuses, onFolderPieceSelected, onQueryContext, onInsertQuery, onOpenPlan, onOpenCollection }: BoardProps): JSX.Element {
+export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece, onNewPiece, onStatus, onListSources, setPieceStatus, seenStatuses, onFolderPieceSelected, onQueryContext, onInsertQuery, onOpenPlan, onOpenCollection }: BoardProps): JSX.Element {
   const [isFolio, setIsFolio] = useState(false)
   const [savedOrder, setSavedOrder] = useState(() => columnOrder(dir))
   const [selectedColumn, setSelectedColumn] = useState<string | null>(null)
@@ -464,6 +467,7 @@ export function Board({ label = 'Board', dir, name, filter, onOpenPiece, onNewPi
   return (
     <div className="board-wrap" ref={rootRef} tabIndex={0} onKeyDown={onKeyDown} aria-label={`${label} — ${name}`}>
       <div className="board-head">
+        {onBack && <BackControl onBack={onBack} />}
         <h1>{name}</h1>
         <span className="bh-count">{shownRows.length} {shownRows.length === 1 ? 'piece' : 'pieces'} · {columns.length} stages{showOffcuts ? ` · ${offcuts.length} ${offcuts.length === 1 ? 'offcut' : 'offcuts'}` : ''} · {sources.length} {sources.length === 1 ? 'source' : 'sources'} · {shownRows.length} shown</span>
         <div className="board-view-menu">
@@ -510,7 +514,7 @@ export function Board({ label = 'Board', dir, name, filter, onOpenPiece, onNewPi
             ))}
           </div>
           <div className="be-act">
-            <button className="btn primary" type="button" onClick={() => onNewPiece(dir)}><FilePlus2 aria-hidden="true" /> New document</button>
+            <button className="btn primary" type="button" onClick={() => onNewPiece(dir)}><FilePlus2 aria-hidden="true" /> New piece</button>
           </div>
           <p className="empty-note">Nothing is written until you choose an action.</p>
         </div>
@@ -641,7 +645,7 @@ export function Board({ label = 'Board', dir, name, filter, onOpenPiece, onNewPi
                           void attachSource(row.path, dragSource)
                         }}
                       >
-                        <div className="bc-title">{row.title}{row.agentAuthored && <Bot className="agent-mark" aria-label="Agent-authored Piece" />}</div>
+                        <div className="bc-title">{row.title}{row.agentAuthored && <Sparkles className="agent-mark" aria-label="Agent-authored Piece" />}</div>
                         <div className={`bc-desc${row.description ? '' : ' muted'}`}>{row.folderPath && <Folder className="folder-piece-mark" aria-label="Folder Piece" />}{row.description ?? '— no description yet'}</div>
                         <div className="bc-foot">
                           <span className={`age${row.provenance.date === 'derived' ? ' derived' : ''}`}>{age.label}</span>

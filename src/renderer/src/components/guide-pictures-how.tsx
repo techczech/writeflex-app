@@ -57,8 +57,8 @@ export const PictureBlocks = (): JSX.Element => (
 )
 
 export const PictureModes = (): JSX.Element => (
-  <Pic label="Drafting hides the marks; Reviewing shows them">
-    <Label x={74} y={20} mid strong>Drafting</Label><Label x={216} y={20} mid strong>Reviewing</Label>
+  <Pic label="Track my changes: off hides the marks; on shows them">
+    <Label x={74} y={20} mid strong>Off</Label><Label x={216} y={20} mid strong>On</Label>
     <Page x={14} y={30} w={120} h={88} lines={7} />
     <Page x={156} y={30} w={120} h={88} lines={7}>
       <rect x="162" y="39" width="64" height="7" rx="1.5" className="hl" />
@@ -74,7 +74,7 @@ export const PictureAgent = (): JSX.Element => (
     <Arrow x={82} y={40} len={22} />
     <Card x={112} y={14} w={168} h={50} title="Suggestion">
       <path d="M120 38h110" className="ln" /><rect x="120" y="44" width="50" height="15" rx="7.5" className="fp" /><Label x={145} y={55} mid><tspan fill="#fff">Accept</tspan></Label>
-      <rect x="176" y="44" width="50" height="15" rx="7.5" className="pg" /><Label x={201} y={55} mid>Reject</Label>
+      <rect x="176" y="44" width="50" height="15" rx="7.5" className="pg" /><Label x={201} y={55} mid>Decline</Label>
     </Card>
     <Card x={112} y={74} w={168} h={50} title="Tidy-up, done at once">
       <Label x={120} y={104}>renames, files</Label><rect x="226" y="92" width="46" height="15" rx="7.5" className="pg tone-green" /><Label x={249} y={103} mid>Undo</Label>

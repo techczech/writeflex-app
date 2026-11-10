@@ -3,7 +3,7 @@ import type { WriteAccess } from './write-access'
 
 /** The write access of an operation declared `writes`; its absence is a wiring fault, never a user's. */
 export function writeAccess(ctx: OperationContext): WriteAccess {
-  if (!ctx.write) throw new CliError('This operation changes the Collection and was run without the owner lock.', 'failed')
+  if (!ctx.write) throw new CliError('This operation changes the Collection and was run without write access.', 'failed')
   return ctx.write
 }
 

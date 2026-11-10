@@ -30,6 +30,9 @@ export type ReaderNoteFields = {
   /** The name the reader typed. */
   name: string
   kind: 'note' | 'edit'
+  person?: { id: string; name: string; email: string }
+  /** The original thread this reader answered, on the same share. */
+  replyTo?: { key: string; name: string; text: string }
   /** A note's text, or a proposed edit's replacement for the quoted words. */
   text: string
   /** The words the reader selected, as they read them. */
@@ -55,7 +58,7 @@ export type ReaderOutcome = 'accepted' | 'declined' | 'done' | 'failed'
  * it never will be: `full`, the service refused it because the note has its 20 replies; `gone`, the
  * service no longer holds the note. A reply with `notSent` is never sent again and never shown as Sent.
  */
-export type ReaderReply = { id: string; text: string; at: number; by: string; sent?: number; notSent?: ReaderReplyNotSent }
+export type ReaderReply = { id: string; text: string; at: number; by: string; visibility?: 'private' | 'open'; sent?: number; notSent?: ReaderReplyNotSent }
 export type ReaderReplyNotSent = 'full' | 'gone'
 
 /** What the link's sharing service last confirmed it holds for the note: its outcome (null: open) and when it was decided. */
@@ -64,6 +67,8 @@ export type ReaderHeard = { outcome: ReaderOutcome | null; at: number | null }
 /** The fields an outside Change carries beside the shared ledger's own (main/outside-change-fields.ts reads them). */
 export type OutsideRequestRef = { id: string; index: number; count: number; at: number }
 export type OutsideChangeFields = {
+  /** This Mac's last service observation, added only for the window; never synced in the ledger. */
+  readerClaim?: { at: number; mine: boolean }
   /** Present on a Change that came through the command line; chosen by the app from the closed list. */
   outsideSource?: OutsideSource
   /** The request it came from, this Change's place among that request's (1-based), and when the request says it was made. */

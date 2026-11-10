@@ -2,6 +2,7 @@
 // Cloudflare (fake-cloudflare.ts), for publishing tests. The service's admin keys are the
 // secrets the set-up added to the fake account's script, read again on every request, so a Mac's key
 // works exactly when the set-up put it there. No network: requests are handed to the service's fetch.
+// Build-16 /content and visible-notes revision therefore use the real handlers, not canned JSON.
 import type { FakeCloudflare } from './fake-cloudflare.ts'
 import type { ServiceModule } from './sharing-service-runtime-core.ts'
 

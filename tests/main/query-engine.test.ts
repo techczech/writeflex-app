@@ -465,3 +465,29 @@ test('scraps files and research notes are marked as material; a scraps file carr
   // Hand-written ids carry no cut time, so the scraps file's own date stands in.
   expect(hall[0].cutOn).toMatch(/^\d{4}-\d{2}-\d{2}$/)
 })
+
+test('saved Diary queries read dated files, signed ranges, weekly sums and project filters without writes', async () => {
+  await write('2026-11-01.md', '---\nwords_written: 100\nmins_spent: 20\nproject: book\ngoal: 200\n---\n# Sunday\n')
+  await write('2026-11-02.md', '---\nwords_written: -30\nmins_spent: 10\nproject: book\ngoal: 100\n---\n# Monday\n')
+  await write('plan.md', '---\nwords_written: 900\n---\n# Plan\n')
+  const result = await evaluateCollectionQuery(ws, '', 'diary: true\nproject: book\nwords_written: -50..150\ndate: 2026-11-01..2026-11-07\ngroup: week\nsort: date asc')
+  expect(result.ok).toBe(true)
+  if (result.ok) expect(result.rows.map(row => [row.date, row.words_written, row.mins_spent, row.goal])).toEqual([
+    ['2026-10-26', 100, 20, 200], ['2026-11-02', -30, 10, 100],
+  ])
+  const negative = await evaluateCollectionQuery(ws, '', 'diary: true\nwords_written: <0')
+  if (negative.ok) expect(negative.rows.map(row => row.words_written)).toEqual([-30])
+  expect(parseQuery('words: 50..10').ok).toBe(false)
+  expect(parseQuery('words: lots').ok).toBe(false)
+})
+
+
+test('dated ordinary Pieces filter on their displayed date; Diary queries use the filename for both', async () => {
+  await write('2025-01-01.md', doc({ date: '2026-08-02', body: 'Words.' }))
+  const ordinary = await evaluateCollectionQuery(ws, '', 'date: 2026-08-02')
+  expect(ordinary.ok && ordinary.rows.map(row => row.date)).toEqual(['2026-08-02'])
+  const excluded = await evaluateCollectionQuery(ws, '', 'date: 2025-01-01')
+  expect(excluded.ok && excluded.rows).toEqual([])
+  const diary = await evaluateCollectionQuery(ws, '', 'diary: true\ndate: 2025-01-01')
+  expect(diary.ok && diary.rows.map(row => row.date)).toEqual(['2025-01-01'])
+})

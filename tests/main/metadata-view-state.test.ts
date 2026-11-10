@@ -4,13 +4,14 @@ import { metadataCollapsed, rememberMetadataCollapsed } from '../../src/renderer
 test('collapse state persists per workspace and handles unavailable storage', () => {
   const values = new Map<string, string>()
   const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } }
-  expect(metadataCollapsed('one', storage)).toBe(false)
-  rememberMetadataCollapsed('one', true, storage)
+  // The card starts collapsed to one line (house rule R1); only an explicit expand is remembered.
   expect(metadataCollapsed('one', storage)).toBe(true)
-  expect(metadataCollapsed('two', storage)).toBe(false)
   rememberMetadataCollapsed('one', false, storage)
   expect(metadataCollapsed('one', storage)).toBe(false)
-  expect(metadataCollapsed('one', { getItem: () => { throw Error() } })).toBe(false)
+  expect(metadataCollapsed('two', storage)).toBe(true)
+  rememberMetadataCollapsed('one', true, storage)
+  expect(metadataCollapsed('one', storage)).toBe(true)
+  expect(metadataCollapsed('one', { getItem: () => { throw Error() } })).toBe(true)
 })
 
 

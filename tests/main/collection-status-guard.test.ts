@@ -109,6 +109,7 @@ test('planning a status writes nothing (I-4)', async () => {
 
 const probe = String.raw`
   import { mock } from 'bun:test'
+  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
   import { join } from 'node:path'
   import { tmpdir } from 'node:os'
@@ -117,6 +118,7 @@ const probe = String.raw`
   const handlers = new Map()
   const sent = []
   mock.module('electron', () => ({
+    ...electronMainStandIn,
     app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
     clipboard: {}, dialog: {}, shell: {},
     ipcMain: { handle: (name, fn) => handlers.set(name, fn), removeHandler: name => handlers.delete(name) },

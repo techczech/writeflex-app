@@ -1,3 +1,6 @@
+import { readDiaryGlance } from './diary-views'
+import { askConfirm, registerConfirmIpc } from './confirm-ask'
+import { createFolioManifest } from './folio-manifest-create'
 import { withFolioTitleIdentity } from './folio-title-write'
 import { announcesFolioDocumentWrite } from '../shared/folio-write-preparation'
 import { clearFolioDeclarations, activateFolioDeclaration, folioDeclaration } from './folio-declaration'
@@ -9,7 +12,7 @@ import { gatedSnapshots } from './gated-snapshots'
 import { CollectionChangeBatches } from './collection-change-batch'
 import { workspaceMetadataValues } from './metadata-vocabulary'
 import { AmbientState, type AmbientSnapshot } from './ambient'
-import { app, clipboard, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { basename, dirname, extname, isAbsolute, join, posix, resolve } from 'node:path'
 import { existsSync, statSync, watch } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -18,6 +21,8 @@ import { BridleAuth, createModelService, scriptedSessionFactory, sweepSnapshots,
 import { registerWriteFlexAuth } from './auth'
 import { fetchLinkTitle } from './fetch-title'
 import { allStates, notifyWindowReleased, onWindowReleased, stateForSender, setQuitting, trackPendingDisposal, type WindowState } from './state'
+import { saveReceiptPort } from './backup-helper/save-port'
+import type { MainSaveReceipt } from './backup-helper/receipt-service'
 import { basisAllows, isSaveBasis } from '../shared/save-basis'
 import { e2eWriteHooksAllowed } from '../shared/e2e-write-hooks'
 import { preserveVersion } from './preserve-version'
@@ -27,14 +32,14 @@ import { RestoreNotCompletedError } from './restore-failure'
 import { toggleAgentNoteTask } from './tasks'
 import { parseFrontmatter } from './frontmatter'
 import { collectionMoveFolderPieces, assertCollectionMove, addCollectionPieceTags, collectionPattern, collectionStatus, createIndexNote, listCollection, createPiece, unresolvedFolderPieces, setCollectionPieceMode, setCollectionPieceStatus } from './collection'
-import { countedCollections, countedSettingKey, diaryCaptureRoot, DIARY_FOLDER_SETTING, invalidateCountedCollectionCache, isCountedCollection, isInsideDiaryRoot, parseCountedSettingKey, persistDiarySession, resumeDiaryDayFile, setCollectionCounted } from './diary'
+import { countedCollections, countedSettingKey, diaryCaptureRoot, DIARY_FOLDER_SETTING, invalidateCountedCollectionCache, isCountedCollection, isInsideDiaryRoot, parseCountedSettingKey, persistDiarySession, setCollectionCounted } from './diary'
 import { DiaryCaptureTracker, DIARY_IDLE_MS } from './diary-capture'
 import { ExplicitSessionRecorder, shouldIdleCloseExplicitSession, type ExplicitSessionOptions } from './explicit-session'
 import { endRunningExplicitSessions } from './explicit-session-guard'
 import type { ExplicitSessionEndReason, ExplicitSessionState } from '../shared/explicit-session'
 import { normaliseCollectionStatus } from '../shared/collection-status'
 import { OBJECTS_LESSON } from '../shared/example-files'
-import { collectionQueryInvalidation, evaluateCollectionQuery } from './query-engine'
+import { collectionQueryInvalidation, evaluateCollectionQuery, parseQuery } from './query-engine'
 import { randomUUID } from 'node:crypto'
 import { TURN_BACK_DESCRIPTION, createNestedFolio, recordFolioInstructionOwnership, turnBackIntoCollection } from './folio-conversion'
 import { collectionLinks, createCollectionStub, previewCollectionStub, type StubInput } from './wikilinks'
@@ -50,6 +55,14 @@ import { MANIFEST_NAME, indexNotePath, assertManifestAbsent, folioPieces, orderE
 import { registerPlanIpcHandlers } from './plan-ipc'
 import { registerFolioDetailsIpc } from './folio-details-ipc'
 import { registerFolioRoomIpc } from './folio-room-ipc'
+import { registerFolioVersionsIpc } from './folio-versions-ipc'
+import { registerFileVersionsIpc } from './file-versions-ipc'
+import { registerFolioVersionExportIpc } from './folio-version-export-ipc'
+import { registerFolioVersionImportIpc } from './folio-version-import-ipc'
+import { registerFolioVersionDecideIpc } from './folio-version-decide-ipc'
+import { windowOwner } from './folio-version-import'
+import { compareFolioVersions } from './folio-version-compare'
+import { defaultCompareSources, defaultReaderSources } from './folio-version-sources'
 import { registerFolioAgentInstructionsIpc } from './folio-agent-instructions-ipc'
 import { writeFolioAgentInstructions } from './folio-agent-instructions'
 import { registerScoutIpcHandlers } from './scout-ipc'
@@ -75,7 +88,9 @@ import { configureScratchpadHolders, scratchpadHolder } from './scratchpad-holde
 import { isLosslessScrapId, listScrapsWithScratchpad } from './scrap-listing'
 import { ChangeStore, isChangeJournalPath } from './changes'
 import type { Change, ChangeScope, ChangeStatus, EditClass, NewChange } from './changes'
-import { humanAuthorForWorkspace, VersionStore, WRITEFLEX_SELF_AUTHOR } from './versions'
+import { humanAuthorForWorkspace, VersionStore, WRITEFLEX_AGENT_AUTHOR, WRITEFLEX_SELF_AUTHOR } from './versions'
+import { FolioVersionStore } from './folio-versions'
+import { listFolioVersions } from './folio-version-listing'
 import type { AuthorIdentity, VersionScope } from './versions'
 import { scanFolder, scanText } from './jumps'
 import {
@@ -95,7 +110,10 @@ import { GuideProgressStore } from './guide-progress-store'
 import { GUIDE_LINKS, isGuideLink } from './guide-connections'
 import { TASK_GROUPS, type TaskGroup } from '../renderer/src/commands/command-task-groups'
 import { resolveModelDefaults, type ResolvedModelDefaults, type SettingsStore, type SettingValue } from './settings'
-import { readVersionContent, restoreVersionContent, type VersionContentRequest } from './version-content'
+import { readVersionContent, replicaAwareReader, restoreVersionContent, type VersionContentRequest } from './version-content'
+import { preserveDocumentVersion, replicaCheckpointer, replicaHistoryRoute, SyncReplicaSession } from './sync-replica-session'
+import { replicaRecoveryDir } from './replica-save-cycles'
+import { versionTextReader } from './cli/history-store'
 import { compareVersionRange, type VersionCompareRequest } from './version-compare'
 import { saveInitialVersionOnClose, saveNamedVersion } from './save-version'
 import { requestedVersionSave } from './requested-version-save'
@@ -109,7 +127,14 @@ import { VaultIndexService } from './vault-index-service'
 import { previewSettingsFrom } from './vault-preview'
 import { assertCollectionWritable, collectionWritesPaused } from './collection-write-gate'
 import { OPERATIONS_SAVING_A_VERSION, RequestExecutor } from './request-executor'
-import { repliesNeedServiceUpdate, startReaderNotesCollection } from './sharing-reader-notes-run'
+import { folioVersionSaveWithApproval, requestedFolioVersionSave } from './requested-folio-version-save'
+import { requestedRevisionImport, requestedRevisionWithdraw } from './requested-folio-revision'
+import { folioSaveSheetFacts, type FolioSaveChangedAnswer, type FolioSheetStores } from './folio-version-sheet'
+import { FolioSaveChanged } from './folio-version-save'
+import { verifiedSnapshotHash } from './cli/history-store'
+import { readBytes } from './cli/guarded-fs'
+import type { CapabilityServices } from './verbs/verb-support'
+import { readerClaimFor, releaseReaderClaim, readerReplyVisibility, repliesNeedServiceUpdate, startReaderNotesCollection } from './sharing-reader-notes-run'
 import { outsideSummary, readerNoteOf } from './outside-change-fields'
 import { readerReplyFor } from './sharing-reader-replies'
 import { MAX_UNDECIDED_OUTSIDE_CHANGES, MAX_UNDECIDED_PER_SOURCE } from './cli/review-format'
@@ -318,8 +343,62 @@ function prepareFolioInstructions(state: WindowState, dir: string): Promise<void
   })
 }
 
-export function agentFileServices(state: WindowState): { prepareFolioInstructions: (dir: string) => Promise<void>; trashFile: (absolute: string) => Promise<void>; onFileRenamed: (from: string, to: string) => Promise<void>; onVersionHistoryChanged: () => void; notifyFilesChangedOnDisk: (paths: string[]) => void } {
+/**
+ * The agent's Folio version verbs (verbs/folio-versions.ts), bound to this window's Collection at the
+ * time of the call: the window's own stores and the agent serving it now, never a snapshot taken
+ * earlier. The save is the same function a requested `save-folio-version` runs and it settles nothing.
+ */
+function folioVersionServices(state: WindowState): { folioVersions?: NonNullable<CapabilityServices['folioVersions']> } {
   return {
+    folioVersions: {
+      list: async (dir) => {
+        if (!state.workspace) throw new Error('No Collection is open in this window.')
+        return listFolioVersions(state.workspace, new FolioVersionStore(state.workspace), dir)
+      },
+      compare: async (dir, from, to) => {
+        if (!state.workspace) throw new Error('No Collection is open in this window.')
+        return compareFolioVersions(defaultCompareSources(state.workspace), dir, from, to)
+      },
+      save: async (input) => {
+        const workspace = state.workspace
+        const versions = state.versions
+        const changes = state.changes
+        if (!workspace || !versions || !changes) throw new Error('No Collection is open in this window.')
+        const bound = state.bindGeneration
+        return requestedFolioVersionSave({
+          workspace, versions, changes, live: () => state.bindGeneration === bound && state.workspace === workspace,
+          agent: async () => (state.bindGeneration === bound ? state.agentReady ?? null : null),
+          author: async () => WRITEFLEX_AGENT_AUTHOR,
+          onSaved: () => sendSafe(state, 'versions:changed', null),
+        })({ ...input, author: WRITEFLEX_AGENT_AUTHOR }, async () => {})
+      },
+      importRevision: async (input) => {
+        const bound = revisionBinding(state)
+        return requestedRevisionImport(bound)({ ...input, by: WRITEFLEX_AGENT_AUTHOR.name }, async () => {})
+      },
+      withdrawRevision: async (id) => requestedRevisionWithdraw(revisionBinding(state))(id, async () => {}),
+    },
+  }
+}
+
+/** The binding of this window's Collection for a revision import or withdrawal by the in-app agent: stores, snapshot agent and `live`, captured when the call begins. */
+function revisionBinding(state: WindowState): Parameters<typeof requestedRevisionImport>[0] {
+  const workspace = state.workspace
+  const versions = state.versions
+  const changes = state.changes
+  if (!workspace || !versions || !changes) throw new Error('No Collection is open in this window.')
+  const bound = state.bindGeneration
+  return {
+    workspace, versions, changes, live: () => state.bindGeneration === bound && state.workspace === workspace,
+    agent: async () => (state.bindGeneration === bound ? state.agentReady ?? null : null),
+    author: async () => WRITEFLEX_AGENT_AUTHOR,
+    onSaved: () => { sendSafe(state, 'versions:changed', null); sendSafe(state, 'changes:changed', null) },
+  }
+}
+
+export function agentFileServices(state: WindowState): { prepareFolioInstructions: (dir: string) => Promise<void>; trashFile: (absolute: string) => Promise<void>; onFileRenamed: (from: string, to: string) => Promise<void>; onVersionHistoryChanged: () => void; notifyFilesChangedOnDisk: (paths: string[]) => void; folioVersions?: NonNullable<CapabilityServices['folioVersions']> } {
+  return {
+    ...folioVersionServices(state),
     onVersionHistoryChanged: () => sendSafe(state, 'versions:changed', null),
     prepareFolioInstructions: (dir) => prepareFolioInstructions(state, dir),
     trashFile: (absolute) => shell.trashItem(absolute),
@@ -344,15 +423,34 @@ export function onWorkspaceOpened(listener: (root: string) => void): () => void 
   workspaceOpenedListeners.add(listener)
   return () => { workspaceOpenedListeners.delete(listener) }
 }
+/** Editor receipts (backup-helper/receipt-service.ts): a window was bound to a Collection (another one or the same one
+ *  again), so the window's receipt owner is retired, whether or not any receipt arrived in between. */
+const workspaceBoundListeners = new Set<(webContentsId: number) => void>()
+export function onWindowWorkspaceBound(listener: (webContentsId: number) => void): () => void {
+  workspaceBoundListeners.add(listener)
+  return () => { workspaceBoundListeners.delete(listener) }
+}
 function notifyDocumentsTrashed(state: WindowState, paths: string[]): void {
   if (state.workspace) tellDocumentsTrashed(state.workspace.root, paths)
 }
+const sharingIdentityChangedListeners = new Set<(root: string) => void>()
+export function onSharingIdentityChanged(listener: (root: string) => void): () => void {
+  sharingIdentityChangedListeners.add(listener)
+  return () => { sharingIdentityChangedListeners.delete(listener) }
+}
+
 /**
  * Sharing ticket 04: what the workspace watcher saw change outside WriteFlex, told before the save
  * signal for the same paths, so a shared piece that vanished is held (moved or ended) rather than
  * published (sharing-outside-changes.ts).
  */
 const documentsChangedOutsideListeners = new Set<(root: string, paths: readonly string[]) => void>()
+/** The Mac woke (powerMonitor 'resume', index.ts): sync may have delivered while it slept. Reconcile every
+ *  synced Collection open in a window; nothing waits for it. */
+export function reconcileSyncedCollectionsAfterWake(): void {
+  for (const state of allStates()) void state.syncReplicas?.reconcile()
+}
+
 export function onDocumentsChangedOutside(listener: (root: string, paths: readonly string[]) => void): () => void {
   documentsChangedOutsideListeners.add(listener)
   return () => { documentsChangedOutsideListeners.delete(listener) }
@@ -419,13 +517,42 @@ function notifyCollectionChanged(state: WindowState, paths: string[] = [], ownSa
 function configureWorkspaceWatcher(state: WindowState, enabled: boolean): void {
   state.workspaceWatcher?.dispose()
   state.workspaceWatcher = null
-  if (!enabled || !state.workspace || state.window.isDestroyed()) return
+  if (!state.workspace || state.window.isDestroyed()) return
+  // Bound to this Workspace: the session is looked up when an event comes (the watcher is made before the
+  // session on opening), and only a session of this same Workspace is given it.
+  const workspace = state.workspace
+  const replicas = (): SyncReplicaSession | null => {
+    const session = state.workspace === workspace ? state.syncReplicas : null
+    return session?.workspace === workspace && session.open ? session : null
+  }
+  // A OneDrive Collection's replica records and objects that sync delivers go to the session alone, in
+  // either display setting; they never reach the listing or the banner. Undefined for other Collections.
+  const history = replicaHistoryRoute(workspace, replicas)
+  if (!enabled) {
+    // "Watch outside changes" is a display preference. A OneDrive Collection's versions and reconciliation
+    // still need to see what sync delivers (contract rule 6), so it gets a watcher that only does that:
+    // no banner, no listing refresh. No other Collection gets one, as before.
+    if (!state.syncReplicas) return
+    try {
+      state.workspaceWatcher = createWorkspaceWatcher(workspace, (paths) => { void replicas()?.arrived(paths) }, undefined, history)
+    } catch (error) {
+      recordMainProcessDiagnostic('workspace.watcher.failed', {
+        windowId: state.window.webContents.id,
+        root: state.workspace.root,
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+    return
+  }
   try {
-    state.workspaceWatcher = createWorkspaceWatcher(state.workspace, (paths) => {
+    state.workspaceWatcher = createWorkspaceWatcher(workspace, (paths) => {
       // An external edit (another agent in the same folder) must invalidate the Query projections
       // — Board and query objects — as well as the Collection view, then raise the disk-notice banner.
       // The search content cache drops the same paths so the next query re-reads them.
       state.workspace?.searchIndex.invalidate(paths)
+      // A synced Collection (OneDrive): keep this Mac's last save and what arrived as versions, then
+      // reconcile copies sync made (sync-replica-session.ts). Never delays the notice below.
+      void replicas()?.arrived(paths)
       if (state.workspace) {
         for (const listener of documentsChangedOutsideListeners) {
           try { listener(state.workspace.root, paths) } catch { /* a listener never breaks the watcher */ }
@@ -433,6 +560,10 @@ function configureWorkspaceWatcher(state: WindowState, enabled: boolean): void {
       }
       notifyCollectionChanged(state, paths)
       sendSafe(state, 'file:changed-on-disk', paths)
+    }, undefined, history, () => {
+      for (const listener of sharingIdentityChangedListeners) {
+        try { listener(workspace.root) } catch { /* one listener never breaks the watcher */ }
+      }
     })
   } catch (error) {
     recordMainProcessDiagnostic('workspace.watcher.failed', {
@@ -453,16 +584,18 @@ function syncWorkspaceWatcherSetting(settings: SettingsStore): void {
  *  WRITEFLEX_E2E_FOLIO='cancel' declines) — the same e2e-fence pattern the agent:stub seam uses. */
 async function confirmMakeFolio(state: WindowState, dir: string, draft: string, warning?: string): Promise<boolean> {
   if (process.env.WRITEFLEX_E2E === '1') return process.env.WRITEFLEX_E2E_FOLIO !== 'cancel'
-  const { response } = await dialog.showMessageBox(state.window, {
-    type: 'question',
-    message: `Make ${dir || 'this folder'} a Folio?`,
+  return askConfirm(state.window, {
+    title: `Make ${dir || 'this folder'} a Folio?`,
     detail: folioConfirmSummaryFromDraft(draft, warning),
-    buttons: ['Create Folio', 'Cancel'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true
+    recover: 'You can turn it back into a collection later; Undo restores the folder as it was.',
+    confirmLabel: 'Create Folio',
+    tone: 'neutral',
   })
-  return response === 0
+}
+
+/** After an asynchronous confirm card (R11): the window must still have the folder the card was asked about open. */
+function assertSameWorkspaceAfterConfirm(state: WindowState, ws: Workspace): void {
+  if (state.workspace !== ws) throw new Error('The folder changed while the card was open. Nothing was changed.')
 }
 
 /** What the last look at the request inbox did, per window, for `changes:outside-summary`. Cleared when the window is bound again. */
@@ -505,6 +638,7 @@ export function registerIpc(
       for (const state of allStates()) if (state.workspace?.root === root) sendSafe(state, 'window:status', 'The folder moved, but its completed chapter-linking state could not be saved.')
     }
   })
+  const disposeConfirmIpc = registerConfirmIpc()
   const authFilePath = resolve(join(app.getPath('userData'), 'auth.json'))
   const vaultIndexDir = join(app.getPath('userData'), 'vault-index')
   vaultIndexService = new VaultIndexService({ cacheDir: vaultIndexDir })
@@ -1028,6 +1162,18 @@ export function registerIpc(
   ipcMain.handle('export-presets:set', (_event, input: unknown) =>
     settings.setExportPresetSettings(input as Parameters<SettingsStore['setExportPresetSettings']>[0]))
   // ---- Diary (0.18 Parcel 4) -----------------------------------------------------------------
+  ipcMain.handle('diary:glance', async (event, dir: string) => {
+    const state = stateForSender(event.sender.id)
+    const root = settings.get(DIARY_FOLDER_SETTING)
+    const designated = typeof root === 'string' && root.trim() !== ''
+    const counted = await isCountedCollection(requireWorkspace(state), collectionDir({ dir }))
+    const session = state.explicitSession?.state()
+    const automatic = state.diaryCapture?.current()
+    const active = session?.status === 'running'
+    const minutes = active ? Math.floor((Date.now() - session.startedAt) / 60_000) : automatic?.minutes
+    return { designated, counted, ...(designated ? await readDiaryGlance(root) : { todayWords: 0, streak: 0, days: [] }),
+      sessionLine: active || automatic ? `writing now · ${minutes} min` : 'no session running' }
+  })
   ipcMain.handle('diary:choose-folder', async (event) => {
     const state = stateForSender(event.sender.id)
     const scripted = process.env.WRITEFLEX_E2E === '1' ? process.env.WRITEFLEX_E2E_DIARY_FOLDER : undefined
@@ -1155,7 +1301,6 @@ export function registerIpc(
     const workspace = requireWorkspace(state)
     const diaryRoot = settings.get(DIARY_FOLDER_SETTING)
     if (typeof diaryRoot === 'string' && isInsideDiaryRoot(diaryRoot, workspace.absolute(input.path))) return false
-    resumeDiaryDayFile(workspace.absolute(input.path))
     const now = Date.now()
     let at = now
     if (process.env.WRITEFLEX_E2E === '1' && input.at !== undefined) {
@@ -1185,7 +1330,7 @@ export function registerIpc(
     }
     state.diaryRoot = target
     state.diaryCapture ??= new DiaryCaptureTracker()
-    const capture = state.diaryCapture.observe(input.path, Math.trunc(input.words as number), at, beforeWords)
+    const capture = state.diaryCapture.observe(input.path, Math.trunc(input.words as number), at, beforeWords, { edited: true })
     if (capture.kind === 'checkpoint') await persistDiaryRecord(state, capture.record)
     else if (capture.kind === 'split') {
       await persistDiaryRecord(state, capture.closed)
@@ -1266,11 +1411,15 @@ export function registerIpc(
     const name = input?.scope === 'collection'
       ? await suggestedName(workspace, { scope: 'collection', dir: String(input?.dir ?? ''), format })
       : await suggestedName(workspace, { scope: 'piece', path: String(input?.path ?? ''), format })
+    return { target: await askExportTarget(state, name, format), name }
+  })
+  // The save dialog for an export, one for the document and Folio exports and for a saved Folio version's (ticket 11).
+  const askExportTarget = async (state: ReturnType<typeof stateForSender>, name: string, format: ExportFormat): Promise<string | null> => {
     // A native save sheet is not drivable by Playwright, so under the e2e flag the destination comes
     // from the environment — the same fence Make Folio uses. Unset means the writer cancelled.
     if (process.env.WRITEFLEX_E2E === '1') {
       const scripted = process.env.WRITEFLEX_E2E_EXPORT
-      return { target: !scripted || scripted === 'cancel' ? null : scripted, name }
+      return !scripted || scripted === 'cancel' ? null : scripted
     }
     // The sheet opens in the last export folder. The folder only — the name always comes from the piece's own title, so a
     // remembered name would offer to overwrite a different piece's export.
@@ -1284,7 +1433,16 @@ export function registerIpc(
     const folder = exportFolderToRemember(target)
     // Live-surface state, not a change the writer made in Settings — so no changelog entry.
     if (folder) settings.set(LAST_EXPORT_FOLDER_KEY, folder, 'Last export folder', { log: false })
-    return { target, name }
+    return target
+  }
+  // A saved Folio version exported, and marked as sent (Folio versions ticket 11): the version is read from the history, never the working files.
+  registerFolioVersionExportIpc(ipcMain, {
+    stateForSender,
+    requireWorkspace,
+    chooseTarget: (event, name, format) => askExportTarget(stateForSender(event.sender.id), name, format),
+    exported: (event, target) => { lastExport.set(event.sender.id, target) },
+    // The staged suggestions are ledger records: the margins and the Versions tab both read again.
+    versionsChanged: (event) => { const state = stateForSender(event.sender.id); sendSafe(state, 'versions:changed', null); sendSafe(state, 'changes:changed', null) },
   })
   // An HTML export asked to keep its Contents depth saves it with the file it exported (export.ts); a
   // file that was written is announced as any direct write is.
@@ -1459,7 +1617,8 @@ export function registerIpc(
   ipcMain.handle('changes:list', async (event, scope?: ChangeScope) =>
     (await requireChanges(stateForSender(event.sender.id)).list(scope)).map(asFrontmatterForWindow).map((change) => {
       const note = readerNoteOf(change)
-      return note && repliesNeedServiceUpdate(note.shareId) ? { ...change, readerRepliesWait: true } as Change : change
+      const claim = readerClaimFor(change)
+      return { ...change, ...(claim ? { readerClaim: claim } : {}), ...(note && repliesNeedServiceUpdate(note.shareId) ? { readerRepliesWait: true } : {}) } as Change
     }))
   ipcMain.handle('changes:add', async (event, input: NewChange) => {
     const state = stateForSender(event.sender.id)
@@ -1496,12 +1655,33 @@ export function registerIpc(
   // The writer's reply on a reader's note or proposed edit (0.24 ticket 08): kept on the record as plain
   // text, then sent to the link the note came through by the window that collects (sharing-reader-replies.ts).
   // Never a write to a piece; never a decision on the note.
+  ipcMain.handle('changes:release-reader-claim', async (event, id: unknown) => {
+    const state = stateForSender(event.sender.id), workspace = requireWorkspace(state)
+    if (typeof id !== 'string') return false
+    const change = await requireChanges(state).get(id)
+    if (!change) return false
+    const released = await releaseReaderClaim(workspace.root, change, async () => {
+      const ok = await askConfirm(state.window, {
+        title: 'Release this reader edit?',
+        detail: 'The edit may already be in the file on the other Mac. Check the text before accepting it again.',
+        recover: 'Releasing allows another Mac to handle this item. It does not undo any edit.',
+        confirmLabel: 'Release', tone: 'neutral',
+      })
+      assertSameWorkspaceAfterConfirm(state, workspace)
+      return ok
+    })
+    sendSafe(state, 'changes:changed', null)
+    return released
+  })
   ipcMain.handle('changes:reader-reply', async (event, input: { id?: unknown; text?: unknown }) => {
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
     if (typeof input?.id !== 'string' || input.id === '') throw new Error('Name the comment to reply to.')
+    const target = (await requireChanges(state).list()).find((change) => change.id === input.id)
+    const note = target ? readerNoteOf(target) : null
+    const visibility = note ? readerReplyVisibility(workspace.root, note.shareId) : 'private'
     const author = await humanAuthorForWorkspace(workspace.root)
-    const change = await requireChanges(state).addReaderReply(input.id, readerReplyFor(input.text, author.name, Date.now()))
+    const change = await requireChanges(state).addReaderReply(input.id, readerReplyFor(input.text, author.name, Date.now(), undefined, visibility))
     sendSafe(state, 'changes:changed', null)
     hearBackSoon(state, change)
     return change
@@ -1611,11 +1791,12 @@ export function registerIpc(
     const count = plan.assignments.length
     const confirmed = process.env.WRITEFLEX_E2E === '1'
       ? process.env.WRITEFLEX_E2E_ATTACH_HISTORY !== 'cancel'
-      : (await dialog.showMessageBox(state.window, {
-        type: 'question', message: 'Attach history here?', detail: `Move ${count} ${count === 1 ? 'version' : 'versions'} from ${input.from} to ${input.to}. You can undo this attachment.`,
-        buttons: ['Cancel', 'Attach history'], defaultId: 0, cancelId: 0,
-      })).response === 1
+      : await askConfirm(state.window, {
+        title: 'Attach history here?', detail: `Move ${count} ${count === 1 ? 'version' : 'versions'} from ${input.from} to ${input.to}.`,
+        recover: 'You can undo this attachment.', confirmLabel: 'Attach history', tone: 'neutral',
+      })
     if (!confirmed) return null
+    assertSameWorkspaceAfterConfirm(state, ws)
     const result = await ws.exclusiveAll(async () => {
       const current = await validate()
       if (JSON.stringify(current) !== JSON.stringify(plan)) throw new Error('History attachment changed since confirmation. Try again. Nothing was written.')
@@ -1641,9 +1822,17 @@ export function registerIpc(
     sendSafe(state, 'versions:changed', null)
     return version
   })
+  // Version text: replica versions need no agent; other versions are read from the agent's History, and in
+  // a synced Collection without the agent from the same store (version-content.ts replicaAwareReader).
+  // Outside a synced Collection the agent is required as it always was.
+  // In a OneDrive Collection only an agent already running is asked; one still starting is never waited for.
+  const versionReader = (state: WindowState) =>
+    state.syncReplicas
+      ? replicaAwareReader(requireWorkspace(state).root, async () => state.agent ?? null, versionTextReader(requireWorkspace(state).root), (sha) => state.syncReplicas?.localBytes(sha) ?? null)
+      : replicaAwareReader(requireWorkspace(state).root, async () => requireAgent(state))
   ipcMain.handle('versions:content', async (event, input: VersionContentRequest) => {
     const state = stateForSender(event.sender.id)
-    return readVersionContent(requireVersions(state), await requireAgent(state), input)
+    return readVersionContent(requireVersions(state), versionReader(state), input)
   })
   ipcMain.handle('versions:compare', async (event, input: VersionCompareRequest) => {
     const state = stateForSender(event.sender.id)
@@ -1652,7 +1841,7 @@ export function registerIpc(
     return compareVersionRange(
       requireVersions(state),
       requireChanges(state),
-      await requireAgent(state),
+      versionReader(state),
       workspace,
       input,
       await humanAuthorForWorkspace(workspace.root),
@@ -1662,9 +1851,26 @@ export function registerIpc(
     // A restore replaces the open document: like every editor write it says which version it replaces.
     if (!isSaveBasis(input?.basis)) throw new SaveWithoutBasis(input?.path ?? 'the document')
     const state = stateForSender(event.sender.id)
-    const agent = await requireAgent(state)
+    const workspace = requireWorkspace(state)
+    const replicas = state.syncReplicas ?? null
+    // Outside a synced Collection a restore needs the agent's checkpoints, as it always has.
+    const agent = replicas ? null : await requireAgent(state)
+    // In a OneDrive Collection the text a restore replaces is kept by the replica store first, locally and
+    // durably, with no agent; an agent already running also checkpoints, one still starting is not waited for.
+    const checkpointFile = replicas
+      ? replicaCheckpointer({
+        replicas,
+        read: async (path) => (await workspace.readFile(path).catch(() => null))?.content ?? null,
+        liveAgent: () => state.agent ?? null,
+      })
+      : async (path: string) => { await agent!.checkpointFile(path) }
+    const restorer = {
+      readSnapshotContent: (id: string) => versionReader(state).readSnapshotContent(id),
+      checkpointFile,
+    }
     try {
-      const restored = await restoreVersionContent(requireVersions(state), agent, requireWorkspace(state), { ...input, basis: input.basis })
+      const restored = await restoreVersionContent(requireVersions(state), restorer, workspace, { ...input, basis: input.basis })
+      if (restored && replicas) sendSafe(state, 'versions:changed', null)
       if (restored?.file.path) notifyCollectionChanged(state, [restored.file.path])
       return restored
     } catch (error) {
@@ -1746,6 +1952,12 @@ export function registerIpc(
     collectionPattern(requireWorkspace(stateForSender(event.sender.id)), collectionDir(input)))
   ipcMain.handle('collection:query', async (event, input: { dir?: string; source?: string }) => {
     if (typeof input?.source !== 'string') throw new Error('Invalid collection:query source.')
+    const parsed = parseQuery(input.source)
+    if (parsed.ok && parsed.query.diary) {
+      const root = settings.get(DIARY_FOLDER_SETTING)
+      if (typeof root !== 'string' || !root.trim()) return { ok: false, source: input.source, error: { line: 1, message: 'No Diary designated.', humanReadable: 'Choose a Diary in Settings → Diary.' } }
+      return evaluateCollectionQuery(new Workspace(root), '', input.source)
+    }
     return evaluateCollectionQuery(requireWorkspace(stateForSender(event.sender.id)), collectionDir(input), input.source)
   })
   ipcMain.handle('collection:unresolved-folder-pieces', async (event, input: { dir?: string }) =>
@@ -1950,12 +2162,16 @@ export function registerIpc(
     if (!declaration.isFolio && !declaration.repairNeeded) throw new Error('This folder is not a Folio.')
     const confirmed = process.env.WRITEFLEX_E2E === '1'
       ? process.env.WRITEFLEX_E2E_FOLIO !== 'cancel'
-      : (await dialog.showMessageBox(state.window, {
-        type: 'question', message: `Turn ${dir || 'this Folio'} back into a collection?`,
+      : await askConfirm(state.window, {
+        title: `Turn ${dir || 'this Folio'} back into a collection?`,
         detail: TURN_BACK_DESCRIPTION,
-        buttons: ['Turn back into a collection', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
-      })).response === 0
+        recover: 'Undo restores the current Folio.', confirmLabel: 'Turn back into a collection',
+      })
     if (!confirmed) return false
+    // Re-check after the card: the folder must still be this window's and still a Folio.
+    assertSameWorkspaceAfterConfirm(state, ws)
+    const after = folioDeclaration(ws, dir)
+    if (!after.isFolio && !after.repairNeeded) throw new Error('This folder stopped being a Folio while the card was open. Nothing was changed.')
     await prepareFolioInstructions(state, dir)
     const paths = await turnBackIntoCollection(ws, dir)
     notifyCollectionChanged(state, paths)
@@ -1973,6 +2189,7 @@ export function registerIpc(
     let { draft, warning, receiptSource } = await prepareMakeFolio(ws, dir)
     const confirmed = await confirmMakeFolio(state, dir, draft, warning)
     if (!confirmed) return null
+    assertSameWorkspaceAfterConfirm(state, ws)
     // Re-check after the (blocking) confirm: the writer may have sat on the dialog while the agent
     // declared the same folder a Folio. Never clobber a manifest that appeared in the meantime.
     await assertManifestAbsent(ws, dir, message => sendSafe(state, 'window:status', message))
@@ -1992,14 +2209,12 @@ export function registerIpc(
     if (!restored && receiptSource !== undefined) {
       ({ draft, warning } = await prepareMakeFolio(ws, dir))
       if (!await confirmMakeFolio(state, dir, draft, warning)) return null
+      assertSameWorkspaceAfterConfirm(state, ws)
       await assertManifestAbsent(ws, dir, message => sendSafe(state, 'window:status', message))
       await prepareFolioInstructions(state, dir)
     }
-    const saved = await ws.exclusiveAll(async () => {
-      const saved = await ws.saveFile(dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME, draft)
-      await activateFolioDeclaration(ws, dir)
-      return saved
-    })
+    // Checked again inside the write turn and created exclusively: the awaits above leave room for another manifest.
+    const saved = await createFolioManifest(ws, dir, draft, message => sendSafe(state, 'window:status', message))
     // The Folio's agent instructions (ticket 0.23-08). The manifest is the Folio; a failure here leaves
     // it made, and the Agent instructions row offers to write what is missing.
     let instructions: string[] = []
@@ -2111,6 +2326,153 @@ export function registerIpc(
 
   // The Folio room (ADR-0048): a read-only model of the Folio, and its UI state kept in app state, never in the Folio.
   registerFolioRoomIpc(ipcMain, { stateForSender, requireWorkspace, store: settings })
+  // The Versions tab (Folio versions ticket 05): read-only lists of a Folio's versions and what one holds.
+  registerFolioVersionsIpc(ipcMain, { stateForSender, requireWorkspace, requireChanges, afterTake: (state) => sendSafe(state, 'changes:changed', null), requireScratchpad: (state) => state.scratchpad ?? null, afterSend: announceScratchpad })
+  // Versions of an inserted file (Folio versions ticket 19): list, compare, save a version, restore, save as a copy. Each runs over the Collection the window
+  // held when the call began (`live`, and `windowOwner` before every write) and judges the path again in main.
+  registerFileVersionsIpc(ipcMain, {
+    context: async (event) => {
+      const state = stateForSender(event.sender.id)
+      const workspace = requireWorkspace(state)
+      const versions = requireVersions(state)
+      const bound = state.bindGeneration
+      const live = (): boolean => state.bindGeneration === bound && state.workspace === workspace
+      return {
+        workspace, versions, confirmOwner: windowOwner(live),
+        binding: {
+          workspace, versions, live,
+          agent: async () => (state.bindGeneration === bound ? state.agentReady ?? null : null),
+          author: () => humanAuthorForWorkspace(workspace.root),
+          onSaved: () => sendSafe(state, 'versions:changed', null),
+          onFileWritten: (path: string) => notifyCollectionChanged(state, [path]),
+        },
+      }
+    },
+  })
+
+  // Save Folio version (Folio versions ticket 04). The sheet's facts are read only; the save is the writer's go-ahead
+  // (folioVersionSaveWithApproval: it accepts the writer's own waiting changes first, as the sheet says). Neither is a
+  // request or a command: those never settle (requestedFolioVersionSave). The ⇧⌘S answer is app state, not a setting.
+  const folioSheetDir = (input: { dir?: unknown } | undefined): string => {
+    const dir = input?.dir
+    if (typeof dir !== 'string' || dir.includes('\\') || dir.includes('\u0000')) throw new Error('Invalid Folio folder.')
+    return collectionDir({ dir })
+  }
+  const folioSheetStores = async (state: ReturnType<typeof stateForSender>): Promise<FolioSheetStores> => {
+    const workspace = requireWorkspace(state)
+    return {
+      workspace, versions: requireVersions(state), changes: requireChanges(state), folioVersions: new FolioVersionStore(workspace),
+      snapshotHash: (snapshotId) => verifiedSnapshotHash(workspace.root, snapshotId), readBytes: (path) => readBytes(workspace, path),
+      author: await humanAuthorForWorkspace(workspace.root),
+    }
+  }
+  ipcMain.handle('folio-version-save:sheet', async (event, input: { dir?: unknown }) => {
+    const state = stateForSender(event.sender.id)
+    requireWorkspace(state)
+    return folioSaveSheetFacts(await folioSheetStores(state), folioSheetDir(input))
+  })
+  ipcMain.handle('folio-version-save:save', async (event, input: { dir?: unknown; name?: unknown; note?: unknown; includeUnlisted?: unknown; expect?: unknown }) => {
+    const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
+    const dir = folioSheetDir(input)
+    if (typeof input.name !== 'string') throw new Error('Name the version before saving.')
+    const bound = state.bindGeneration
+    const agent = await requireAgent(state)
+    const author = await humanAuthorForWorkspace(workspace.root)
+    try {
+      const saved = await folioVersionSaveWithApproval({
+        workspace, versions: requireVersions(state), changes: requireChanges(state),
+        live: () => state.bindGeneration === bound && state.workspace === workspace,
+        agent: async () => agent, settleAgent: async () => agent,
+        author: async () => author,
+      })({
+        dir, name: input.name, includeUnlisted: input.includeUnlisted !== false,
+        ...(typeof input.note === 'string' && input.note.trim() !== '' ? { note: input.note } : {}),
+        // The facts the writer read, by their fingerprint: the save compares it under the Folio's lock (nothing is written if it differs).
+        ...(typeof input.expect === 'string' ? { expectFingerprint: input.expect } : {}),
+      }, async () => {})
+      sendSafe(state, 'changes:changed', null)
+      sendSafe(state, 'versions:changed', null)
+      return saved
+    } catch (error) {
+      if (!(error instanceof FolioSaveChanged)) throw error
+      // Nothing was written. The sheet is given the Folio as it is now and says what moved; the writer decides again.
+      const answer: FolioSaveChangedAnswer = { changed: true, facts: await folioSaveSheetFacts(await folioSheetStores(state), dir) }
+      return answer
+    }
+  })
+  ipcMain.handle('folio-version-save:choice', () => settings.folioSaveChoice())
+  ipcMain.handle('folio-version-save:set-choice', (_event, input: { choice?: unknown }) =>
+    input?.choice === 'folio' || input?.choice === 'part' ? settings.setFolioSaveChoice(input.choice) : false)
+
+  // Import a co-author's Word revision, steps 1 and 2 (Folio versions ticket 14). Only the commit writes (the safety version, her objects, one record),
+  // and only on the writer's "Bring changes into the Folio". The window never names a file: the system dialog does (under the e2e fence, the environment).
+  registerFolioVersionImportIpc(ipcMain, {
+    stateForSender,
+    requireWorkspace,
+    chooseFile: async (event) => {
+      const state = stateForSender(event.sender.id)
+      if (process.env.WRITEFLEX_E2E === '1') {
+        const scripted = process.env.WRITEFLEX_E2E_IMPORT
+        return !scripted || scripted === 'cancel' ? null : scripted
+      }
+      const result = await dialog.showOpenDialog(state.window, {
+        title: 'Choose the Word file',
+        properties: ['openFile'],
+        filters: [{ name: 'Word document', extensions: ['docx'] }],
+      })
+      return result.canceled ? null : result.filePaths[0] ?? null
+    },
+    deps: async (event, workspace) => {
+      const state = stateForSender(event.sender.id)
+      const bound = state.bindGeneration
+      const agent = await requireAgent(state)
+      const author = await humanAuthorForWorkspace(workspace.root)
+      const stores = await folioSheetStores(state)
+      const save = requestedFolioVersionSave({
+        workspace, versions: requireVersions(state), changes: requireChanges(state),
+        live: () => state.bindGeneration === bound && state.workspace === workspace,
+        agent: async () => agent, author: async () => author,
+      })
+      return {
+        workspace, folioVersions: new FolioVersionStore(workspace), reader: defaultReaderSources(workspace), compare: defaultCompareSources(workspace),
+        // Her changes are staged in this window's review ledger (ticket 15): one batch write, over the parts as the guarded reader finds them.
+        changes: requireChanges(state), readWorking: (path) => readBytes(workspace, path).catch(() => null),
+        sheetFacts: (dir) => folioSaveSheetFacts(stores, dir),
+        // Asked before every write: the window must still hold the Collection it held when this import began.
+        confirmOwner: windowOwner(() => state.bindGeneration === bound && state.workspace === workspace),
+        // The app's own Folio save, which settles nothing: the writer's own waiting changes make it refuse, and the import says so.
+        save: ({ dir, name }) => save({ dir, name }, async () => {}),
+      }
+    },
+    versionsChanged: (event) => sendSafe(stateForSender(event.sender.id), 'versions:changed', null),
+  })
+
+  // The decide step of Import (Folio versions ticket 16): the list is read only; a structure decision (add her new section as a part, her order or
+  // mine, take a part out of the running order) writes only on the writer's click, through the Outline's own guarded routes, and records itself in the Folio journal.
+  registerFolioVersionDecideIpc(ipcMain, {
+    stateForSender,
+    requireWorkspace,
+    deps: async (event, workspace) => {
+      const state = stateForSender(event.sender.id)
+      const bound = state.bindGeneration
+      return {
+        workspace, folioVersions: new FolioVersionStore(workspace), reader: defaultReaderSources(workspace), changes: requireChanges(state),
+        readWorking: (path) => readBytes(workspace, path).catch(() => null),
+        confirmOwner: windowOwner(() => state.bindGeneration === bound && state.workspace === workspace),
+        // The same checkpoint every Outline write takes before it touches the Index Note or the manifest.
+        planOptions: {
+          beforeIndexWrite: async (path) => { if (state.agentReady) await (await requireAgent(state)).checkpointFile(path) },
+          beforeManifestWrite: async (path) => { if (state.agentReady) await (await requireAgent(state)).checkpointFile(path) },
+        },
+        published: (paths) => {
+          notifyCollectionChanged(state, paths)
+          sendSafe(state, 'file:changed-on-disk', paths)
+        },
+      }
+    },
+    changed: (event) => { const state = stateForSender(event.sender.id); sendSafe(state, 'versions:changed', null); sendSafe(state, 'changes:changed', null) },
+  })
 
   // Widgets (interactive-widgets-in-documents, ticket 02): the HTML of an embed line's file, resolved
   // inside this window's workspace and read here; the renderer runs it in a sealed frame.
@@ -2321,30 +2683,45 @@ export function registerIpc(
     e2eSaveOutsideTaken.add(path)
     return text
   }
-  ipcMain.handle('file:save', async (event, input: { path: string; content: string; basis?: unknown }) => {
-    // Tier 1 (ADR-0013): auto-save writes to disk only — it never snapshots. History (tier 2) is made
-    // by explicit checkpoints via snapshot:checkpoint below, and by agent turns.
+  ipcMain.handle('file:save', async (event, input: { path: string; content: string; basis?: unknown; receipt?: unknown }) => {
+    // Autosave keeps local recovery and replica versions for OneDrive Collections. Agent snapshots
+    // elsewhere still follow ADR-0013's explicit checkpoint policy.
     const state = stateForSender(event.sender.id)
     // The Change journal is ChangeStore's alone: a proposal's record (the new file it shows) is not editable here.
     if (isChangeJournalPath(input.path)) throw new Error('The change journal cannot be saved from the editor.')
+    // This save's editor receipt (backup-helper/receipt-service.ts): null unless the backup trial is enabled for
+    // this window's folder and the save says which epoch and gen it carries (`receipt`, checked there).
+    let receipt: MainSaveReceipt | null = null
     try {
       // The editor's text is LF; saveEditorText writes nothing for an unchanged document and restores
       // the file's own line endings and BOM for an edited one (bug 01).
       // `basis` is the version of the file the buffer was based on; main is the rule that the disk still
       // holds it when the write commits (shared/save-basis.ts). A save that does not say is refused.
       if (!isSaveBasis(input.basis)) throw new SaveWithoutBasis(input.path)
-      const saved = await requireWorkspace(state).saveEditorText(input.path, input.content, input.basis)
+      const workspace = requireWorkspace(state)
+      // Pin the recovery owner across awaits: a window may close or bind another Collection meanwhile.
+      const replicas = state.syncReplicas
+      receipt = await saveReceiptPort().beginSave(event.sender.id, workspace.root, input.path, input.receipt)
+      // A synced Collection (OneDrive): the text this save replaces is kept as a version first.
+      // Local and synchronous: never waits for OneDrive (replica-save-cycles.ts). Keep mine refuses here if
+      // the other copy cannot be kept.
+      replicas?.beforeSave(input.path, input.basis)
+      const saved = await workspace.saveEditorText(input.path, input.content, input.basis, receipt ? { receipt } : {})
+      replicas?.saved(saved.file.path, saved.written, input.basis)
+      // Durable only after the file and its folder are synced and read back (never a claim of backup).
+      if (receipt) await receipt.saved(workspace.absolute(input.path), saved.written)
       // Saved in place: the renderer patches this one listing entry instead of re-listing the folder.
-      notifyCollectionChanged(state, [saved.file.path], saved.file.path === input.path ? saved.file : undefined)
+      if (state.workspace === workspace) notifyCollectionChanged(state, [saved.file.path], saved.file.path === input.path ? saved.file : undefined)
       // e2e only: another program writes the file between this save's commit and its readback, once per
       // path named in WRITEFLEX_E2E_SAVE_OUTSIDE_WRITE (a JSON object of path → text).
       const outside = takeE2eSaveOutsideWrite(input.path)
       if (outside !== undefined) {
-        await writeFile(requireWorkspace(state).absolute(input.path), outside, 'utf8')
-        return { ...(await requireWorkspace(state).readFile(input.path)), written: saved.written, seq: saved.seq }
+        await writeFile(workspace.absolute(input.path), outside, 'utf8')
+        return { ...(await workspace.readFile(input.path)), written: saved.written, seq: saved.seq }
       }
       return saved
     } catch (error) {
+      if (receipt) await receipt.failed()
       if (error instanceof DiskChangedUnderBuffer) {
         return { refused: 'disk-changed' as const, path: error.path, diskText: error.diskText, message: error.message }
       }
@@ -2391,18 +2768,15 @@ export function registerIpc(
     }
     const response = process.env.WRITEFLEX_E2E === '1'
       ? (process.env.WRITEFLEX_E2E_CLEAR_DOCUMENT === 'confirm' ? 1 : 0)
-      : (await dialog.showMessageBox(state.window, {
-          type: 'warning',
-          message: `Clear ${input.path}?`,
-          detail:
-            `This removes all text from the document. The previous content is still intact, and rescue ` +
-            `copies are in ${refusal.rescueDirectory}. Clear the document only if you meant to remove everything.`,
-          buttons: ['Keep previous content', 'Clear document'],
-          defaultId: 0,
-          cancelId: 0,
-          noLink: true,
-        })).response
+      : (await askConfirm(state.window, {
+          title: `Clear ${input.path}?`,
+          detail: 'This removes all text from the document. Clear it only if you meant to remove everything.',
+          recover: `The previous content is still intact, and rescue copies are in ${refusal.rescueDirectory}.`,
+          confirmLabel: 'Clear document',
+          cancelLabel: 'Keep previous content',
+        })) ? 1 : 0
     if (response !== 1) return null
+    assertSameWorkspaceAfterConfirm(state, workspace)
     // The writer confirmed clearing the version that was rescued before the dialog. Another version on
     // disk now (written while the dialog was up) is not cleared: compared in the tick of the rename.
     let cleared: Awaited<ReturnType<Workspace['saveFile']>>
@@ -2470,10 +2844,11 @@ export function registerIpc(
     // A spec makes keeping slow, to press keys while the Merge sheet is writing.
     const e2eDelay = process.env.WRITEFLEX_E2E === '1' ? Number(process.env.WRITEFLEX_E2E_PRESERVE_DELAY_MS ?? 0) : 0
     if (e2eDelay > 0) await new Promise((resolve) => setTimeout(resolve, e2eDelay))
-    const agentNow = state.agent ?? state.agentReady
-    const result = await preserveVersion({
-      text: input.text,
-      history: agentNow ? async () => (await agentNow).snapshotForPreserve(input.path) : null,
+    // A OneDrive Collection: the replica store keeps it (same hash check), never waiting for an agent that is
+    // still starting. Elsewhere History through the agent, as before (sync-replica-session.ts).
+    const result = await preserveDocumentVersion({
+      path: input.path, text: input.text, replicas: state.syncReplicas ?? null,
+      liveAgent: state.agent ?? null, pendingAgent: state.agentReady ?? null, preserveVersion,
     })
     void recordMainProcessDiagnostic('snapshot.preserve.settled', { kept: result.kept, store: result.kept ? result.receipt.store : result.refused })
     return result
@@ -2499,6 +2874,8 @@ export function registerIpc(
   }
   /** Never fails a rename: a Change left on the old path closes with its reason at accept. */
   const followRenameInLedger = async (state: WindowState, from: string, to: string): Promise<void> => {
+    // A synced Collection's pending save version follows the document to its new name.
+    state.syncReplicas?.cycles.renamed(from, to)
     try {
       if (await state.changes?.followRename(from, to)) sendSafe(state, 'changes:changed', null)
     } catch (error) {
@@ -2957,6 +3334,7 @@ export function registerIpc(
   return {
     evictWindow: (webContentsId: number) => { e2eScripts.delete(webContentsId); widgetWatches.disposeWindow(webContentsId) },
     dispose: () => {
+      disposeConfirmIpc()
       unsubscribeFolioIdentityMoves()
       unsubscribeModels()
       unsubscribeVault()
@@ -2975,7 +3353,7 @@ export function registerIpc(
  */
 export async function bindWorkspace(
   state: WindowState, root: string, settings: SettingsStore,
-  /** Whether this app holds `root`'s owner lock now (collection-ownership.ts `owns`). */
+  /** Whether this app still has `root` open on this computer (open-collections.ts `isOpen`). */
   ownsRoot: (root: string) => boolean,
 ): Promise<void> {
   const previousWorkspace = state.workspace
@@ -2985,6 +3363,10 @@ export async function bindWorkspace(
   // anything of the new Collection exists in this window.
   const previousRequests = state.requestInbox
   state.requestInbox = null
+  // The previous Collection's pending save versions are kept before this window leaves it.
+  const previousReplicas = state.syncReplicas
+  state.syncReplicas = null
+  await previousReplicas?.dispose().catch(() => {})
   state.readerNotes?.dispose()
   state.readerNotes = null
   await previousRequests?.dispose()
@@ -3042,11 +3424,20 @@ export async function bindWorkspace(
     },
     onWarning: message => sendSafe(state, 'window:status', message),
   })
+  for (const listener of workspaceBoundListeners) {
+    try { listener(state.window.webContents.id) } catch { /* a listener never breaks opening a Collection */ }
+  }
   const workspace = state.workspace
-  // Storage announces commits; it never imports or rewrites Folio content. This covers commands, restores,
-  // agents and Undo too, including partial structural commits whose handler ultimately throws.
+  // Storage announces commits, including a Day Entry's capture written from another window: the
+  // native watcher suppresses that own write, so its saved editor must learn the new disk baseline here.
+  // Folio notifications cover commands, restores, agents and Undo, including partial structural commits.
   workspace.onDocumentWritten = path => {
-    if (state.workspace !== workspace || !announcesFolioDocumentWrite(path)) return
+    if (state.workspace !== workspace) return
+    const diaryRoot = settings.get(DIARY_FOLDER_SETTING)
+    const diaryDay = /^\d{4}-\d{2}-\d{2}\.md$/.test(path)
+      && typeof diaryRoot === 'string' && diaryRoot.trim() !== ''
+      && isInsideDiaryRoot(diaryRoot, workspace.absolute(path))
+    if (!announcesFolioDocumentWrite(path) && !diaryDay) return
     sendSafe(state, 'file:changed-on-disk', [path])
   }
   // A write that succeeded with a note (a temporary file left as a second name for a document): logged here and
@@ -3077,8 +3468,32 @@ export async function bindWorkspace(
   // The Change Ledger store shares the same guard; .writeflex/changes.jsonl on the first captured change.
   state.changes = new ChangeStore(state.workspace)
   const changes = state.changes
-  state.versions = new VersionStore(state.workspace)
+  // In a OneDrive Collection, texts held only in local recovery are listed too (sync-replica-session.ts).
+  state.versions = new VersionStore(state.workspace, { extra: () => (state.workspace === workspace ? state.syncReplicas?.localVersions() ?? [] : []) })
   const versions = state.versions
+  // A Collection in a synced folder (OneDrive): replica versions and automatic reconciliation of copies
+  // sync made, on opening now and on every arrival and wake (sync-replica-session.ts). Null elsewhere.
+  state.syncReplicas = SyncReplicaSession.for(workspace, {
+    versionsChanged: () => { if (state.workspace === workspace && !state.window.isDestroyed()) sendSafe(state, 'versions:changed', null) },
+    reconciled: (_report, changed) => {
+      if (state.workspace !== workspace || state.window.isDestroyed()) return
+      const paths = [...new Set([...changed.written, ...changed.moved])]
+      if (!paths.length) return
+      workspace.searchIndex.invalidate(paths)
+      notifyCollectionChanged(state, paths)
+      // An open document WriteFlex updated: the editor re-reads it (or, with unsaved edits, shows the banner).
+      if (changed.written.length) sendSafe(state, 'file:changed-on-disk', changed.written)
+    },
+    divergent: (pairs) => {
+      if (state.workspace !== workspace) return
+      for (const pair of pairs) workspace.announceWriteNotice(`Sync kept two different copies of ${pair.original}: ${pair.copy} is left beside it, and both texts are in ${pair.original}'s Versions.`)
+    },
+    report: (event, details) => { void recordMainProcessDiagnostic(event, { root: workspace.root, ...details }) },
+  }, { recoveryDir: replicaRecoveryDir(app.getPath('userData')) })
+  void state.syncReplicas?.reconcile()
+  // With "watch outside changes" off, the watcher made above was none: a OneDrive Collection still gets its
+  // arrivals-only watcher.
+  if (state.syncReplicas && settings.get('workspace.watchExternalChanges') === false) configureWorkspaceWatcher(state, false)
   /** This binding is still the window's: not bound to another Collection since, and not closed. */
   const stillBound = (): boolean => state.workspace === workspace && state.bindGeneration === generation
   // The command line's writes while this Collection is open here: carried out by the app, on request.
@@ -3098,9 +3513,9 @@ export async function bindWorkspace(
     // Receipts, undelivered answers and the undo journal: in this app's own folder, outside the Collection.
     appData: app.getPath('userData'),
     replyKey: () => readReplyKey(join(app.getPath('userData'), REPLY_KEY_FOLDER), workspace.root),
-    // Real ownership, not "writes are not paused": a request is carried out only under the lock.
+    // A request is carried out only while this window still has the Collection open here (no lock: open-collections.ts).
     ownsCollection: () => stillBound() && ownsRoot(workspace.root),
-    // Putting back what a request in flight wrote, when the window closes under it: the lock is kept until then (windows.ts).
+    // Putting back what a request in flight wrote, when the window closes under it: the Collection stays open here until then (windows.ts).
     holdsLock: () => ownsRoot(workspace.root),
     trash: (absolute) => shell.trashItem(absolute),
     // Sharing (ticket 04): a requested move or Trash tells the publisher as the app's own does.
@@ -3133,6 +3548,27 @@ export async function bindWorkspace(
       author: async () => beforeRequest.had()?.author ?? humanAuthorForWorkspace(workspace.root),
       onSaved: () => { if (stillBound()) sendSafe(state, 'versions:changed', null) },
     }),
+    // A requested Folio version save (ticket 03): the same binding, the same agent. It settles nothing.
+    saveFolioVersion: requestedFolioVersionSave({
+      workspace, versions, changes, live: stillBound,
+      agent: async () => (stillBound() ? beforeRequest.had()?.agent ?? null : null),
+      author: async () => beforeRequest.had()?.author ?? humanAuthorForWorkspace(workspace.root),
+      onSaved: () => { if (stillBound()) sendSafe(state, 'versions:changed', null) },
+    }),
+    // A requested revision import and its withdrawal (ticket 15): the same binding, the same agent. The import saves the writer's text as a version
+    // (settling nothing) and stages her changes as suggestions in THIS Collection's ledger; the margins refresh when it is done.
+    importRevision: requestedRevisionImport({
+      workspace, versions, changes, live: stillBound,
+      agent: async () => (stillBound() ? beforeRequest.had()?.agent ?? null : null),
+      author: async () => beforeRequest.had()?.author ?? humanAuthorForWorkspace(workspace.root),
+      onSaved: () => { if (stillBound()) { sendSafe(state, 'versions:changed', null); sendSafe(state, 'changes:changed', null) } },
+    }),
+    withdrawRevision: requestedRevisionWithdraw({
+      workspace, versions, changes, live: stillBound,
+      agent: async () => (stillBound() ? beforeRequest.had()?.agent ?? null : null),
+      author: async () => beforeRequest.had()?.author ?? humanAuthorForWorkspace(workspace.root),
+      onSaved: () => { if (stillBound()) { sendSafe(state, 'versions:changed', null); sendSafe(state, 'changes:changed', null) } },
+    }),
     onChanged: (paths) => {
       if (!stillBound()) return
       notifyCollectionChanged(state, paths)
@@ -3141,9 +3577,15 @@ export async function bindWorkspace(
   }), { report: (event, details) => { void recordMainProcessDiagnostic(`request-inbox.${event}`, details) } })
 
   // Readers' notes and proposed edits (0.24 ticket 07): into THIS Collection's ledger, through the
-  // outside-changes door, only while this window holds the Collection's owner lock. Never a write to a piece.
+  // outside-changes door, only while this window has the Collection open. Never a write to a piece.
   state.readerNotes = startReaderNotesCollection({
     workspace, changes,
+    focused: () => BrowserWindow.getFocusedWindow() !== null,
+    onFocusChanged: (changed) => {
+      app.on('browser-window-focus', changed)
+      app.on('browser-window-blur', changed)
+      return () => { app.off('browser-window-focus', changed); app.off('browser-window-blur', changed) }
+    },
     owns: () => stillBound() && ownsRoot(workspace.root),
     onCollected: () => { if (stillBound()) { sendSafe(state, 'changes:changed', null); sendSafe(state, 'sharing:changed', null) } },
     // Ticket 08: the service confirmed outcomes or replies; the cards' "Sent" marks follow.
@@ -3207,13 +3649,14 @@ export async function bindWorkspace(
       // one must never hang silently (review finding B1 P1).
       const isActiveThread = () => state.threads?.activeThreadId() === threadId
       // Snapshot retention (Task 17): sweep aged-out journal entries + orphaned objects BEFORE an
-      // agent opens the store. Unset = the default 90 days; only an explicit 'forever' skips. The
+      // agent opens the store. Unset = the default, Forever: only an explicit '30' or '90' sweeps, because
+      // the sweep does not yet spare snapshots that named versions depend on. The
       // sweep runs before every thread boot — it is idempotent and the store is workspace-scoped —
       // and a failed sweep must never block the boot.
       const retention = settings.get('snapshots.retention')
       // The sweep rewrites the journal inside the Collection, so not while another owner holds it.
-      if (retention !== 'forever' && !collectionWritesPaused(root)) {
-        await sweepSnapshots(join(root, '.bridle'), retention === '30' ? 30 : 90).catch(() => {})
+      if ((retention === '30' || retention === '90') && !collectionWritesPaused(root)) {
+        await sweepSnapshots(join(root, '.bridle'), Number(retention)).catch(() => {})
       }
       let checkpointCreated: (path: string) => Promise<void>
       await deps.modelServiceReady

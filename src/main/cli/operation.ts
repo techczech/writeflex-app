@@ -20,6 +20,8 @@ export type ArgSpec = {
   required?: boolean
   /** Filled from bare words after the operation name, in schema order. */
   positional?: boolean
+  /** A string flag that may be given more than once: the values arrive joined by a newline. */
+  repeatable?: boolean
 }
 
 export type OutputMode = 'text' | 'json'
@@ -33,8 +35,8 @@ export type OperationContext = {
   cwd: string
   /** Everything piped to the command, for operations that take a document's text with `--stdin`. */
   stdin: () => Promise<string>
-  /** Present only while an operation that `writes` runs: the owner lock is held and this is the one
-   *  route by which the Collection may be changed (write-access.ts). */
+  /** Present only while an operation that `writes` runs: the one route by which the Collection may
+   *  be changed (write-access.ts). */
   write?: WriteAccess
   /** Present for a `shown-first` operation: files the request for review (review-route.ts) and
    *  reports where it went. The operation has validated it first, from what is saved on disk. */
@@ -45,8 +47,8 @@ export type OperationContext = {
   /** Where the records kept outside the Collection are (collection-records.ts), for an operation
    *  that only reads them (`undo --list`, `waiting`). */
   records?: RecordsPlace
-  /** True when the app has this Collection open and the operation runs here all the same, with no
-   *  owner lock and no write access, because it changes nothing in the Collection (export). */
+  /** True when the app on this computer has this Collection open and the operation runs here all the
+   *  same, with no write access, because it changes nothing in the Collection (export). */
   appOwnsCollection?: boolean
 }
 
@@ -68,8 +70,8 @@ export type Operation = {
   details?: string
   args: ArgSpec[]
   behaviour: Behaviour
-  /** Whether this invocation changes anything on disk. When it does, the run takes the Collection's
-   *  owner lock for its length and insists on a root the user chose (write-access.ts). */
+  /** Whether this invocation changes anything on disk. When it does, the run insists on a root the
+   *  user chose and goes through the guarded write route (write-access.ts). */
   writes?: boolean | ((args: ParsedArgs) => boolean)
   run: (ctx: OperationContext, args: ParsedArgs) => Promise<OperationResult>
 }

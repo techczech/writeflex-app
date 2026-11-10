@@ -1,0 +1,25 @@
+:root {
+        color-scheme: light !important;
+        --sidebar-width: 0px !important;
+        --bottom-placeholder-height: 0px !important;
+      }
+      body { background: #ffffff !important; }
+      /* #reader-ui is not the reader's chrome — it is the reader's WHOLE React root, and the
+         selection and annotation popups mount inside it. Hiding it hid the only way to make a
+         highlight (usability review on 0.15.1: "no highlighting ui, I select and nothing happens"), so the
+         root stays displayed and each piece of furniture the Room supplies itself is named and
+         hidden here instead. Read-aloud has no UI in 0.12 (ADR-0024). */
+      #reader-ui .toolbar,
+      #reader-ui #sidebarContainer,
+      #reader-ui .sidebar-resizer,
+      #reader-ui .split-view-resizer,
+      .read-aloud-annotation-popup { display: none !important; }
+      /* Two elements match: the real #split-view holding the document iframes, and a second
+         .split-view inside #reader-ui that carries the popups. The reader offsets both by its
+         toolbar height, so with the toolbar hidden both must start at the top or every popup
+         lands 41px below the text it belongs to. */
+      #split-view, .split-view {
+        inset-inline-start: 0 !important;
+        top: 0 !important;
+        bottom: 0 !important;
+      }

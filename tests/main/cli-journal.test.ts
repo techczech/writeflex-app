@@ -5,7 +5,6 @@ import { existsSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import type { JournalEntry } from '../../src/main/cli/journal'
 import { MANIFEST_NAME } from '../../src/main/folio'
-import { inspectOwnerLock } from '../../src/main/owner-lock'
 import { INTRO, MANIFEST, NOTES, YORK, writeFixture, type WriteFixture } from '../helpers/cli-write-fixture'
 
 // Ticket 04: the command line's own undo journal (record, list, undo, prune).
@@ -47,7 +46,7 @@ test('rename with link repair, then undo, restores every touched file and path b
   expect(undone.json.result).toMatchObject({ undone: entry.id })
   expect((undone.json.result!.restored as string[]).sort()).toEqual(['notes.md', 'talks/intro.md', `talks/${MANIFEST_NAME}`].sort())
   expect(await fx.snapshot()).toEqual(before)
-  expect((await inspectOwnerLock(fx.root)).state).toBe('free')
+  expect(existsSync(join(fx.root, '.writeflex', 'owner.lock'))).toBe(false)
   // Undone once: there is nothing left to undo, and the entry cannot be undone twice.
   expect((await fx.cli(['undo'])).json.error!.message).toContain('nothing to undo')
   expect((await fx.cli(['undo', entry.id])).json.error!.message).toContain('already undone')
@@ -99,7 +98,7 @@ test('a rename whose repair fails partway restores content and path and reports 
   expect(failed.json.error!.message).toContain('the disk refused the second repair')
   expect(failed.json.error!.message).toContain('every file and path the command had touched was put back')
   expect(await fx.snapshot({ journal: true })).toEqual(before)
-  expect((await inspectOwnerLock(fx.root)).state).toBe('free')
+  expect(existsSync(join(fx.root, '.writeflex', 'owner.lock'))).toBe(false)
 })
 
 test('journal entries older than 30 days are pruned on the next write; other files in the folder are left', async () => {

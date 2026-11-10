@@ -59,6 +59,7 @@ export type FolioEntry = { path: string; missing: boolean }
 
 /** A part as published: its key (the id prefix), its title, and its text unless it is missing on disk. */
 export type RenderedFolioPart = {
+  savedAt?: number
   path: string
   key: string
   title: string
@@ -72,6 +73,8 @@ export type RenderedFolio = {
   chips: { label: string; value: string }[]
   /** The latest save among the parts, the manifest and the Index Note (ms). */
   savedAt: number
+  structureSavedAt?: number
+  structureKind?: 'index' | 'manifest'
   parts: RenderedFolioPart[]
   /** Every picture the parts show, by name, each once. */
   pictures: SharedPicture[]
@@ -285,7 +288,12 @@ export async function renderFolioForSharing(
   const pictures = new Map<string, SharedPicture>()
   let refusedPictures = 0
   const manifestPath = posix.join(dir, MANIFEST_NAME)
-  let savedAt = Math.max(head.savedAt, isEligibleFolioMetadata(root, manifestPath) ? await savedTime(ws, manifestPath) : 0)
+  // The saved structure/index decides order; Index-Note membership comes from the folder listing.
+  // Directory metadata is unrelated to the structure's save time.
+  const hasManifest = isEligibleFolioMetadata(root, manifestPath)
+  const structureSavedAt = hasManifest
+    ? await savedTime(ws, manifestPath) : await savedTime(sharingMetadataWorkspace(root, dir), indexNotePath(ws, dir))
+  let savedAt = Math.max(head.savedAt, structureSavedAt)
   const parts: RenderedFolioPart[] = []
   const ordered = [...entries.filter(entry => entry.path === head.titlePage), ...entries.filter(entry => entry.path !== head.titlePage)]
   for (const entry of ordered) {
@@ -306,10 +314,10 @@ export async function renderFolioForSharing(
     for (const picture of rendered.pictures) if (!pictures.has(picture.name)) pictures.set(picture.name, picture)
     refusedPictures += rendered.refusedPictures
     savedAt = Math.max(savedAt, rendered.savedAt)
-    parts.push({ path: entry.path, key, title: rendered.title, missing: false, html: rendered.html, headings: rendered.headings })
+    parts.push({ path: entry.path, key, title: rendered.title, missing: false, html: rendered.html, headings: rendered.headings, savedAt: rendered.savedAt })
   }
   const chips = head.chips.slice(0, SHARE_LIMITS.chips)
-  return { title: head.title, chips, savedAt, parts, pictures: [...pictures.values()], refusedPictures }
+  return { title: head.title, chips, savedAt, structureSavedAt, structureKind: hasManifest ? 'manifest' : 'index', parts, pictures: [...pictures.values()], refusedPictures }
 }
 
 /**

@@ -1,5 +1,6 @@
+import { applyReaderItemState, uniqueReaderItems, type ReaderItemState } from './sharing-review-state'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { posix } from 'node:path'
 import { isHiddenWorkspacePath, type Workspace } from './workspace'
@@ -236,6 +237,59 @@ function safeOutsidePath(input: NewChange): NewChange {
 /** Hidden per-workspace store dir (WriteFlex-owned metadata, like `.bridle` is Bridle-owned). */
 const STORE_DIR = '.writeflex'
 const JOURNAL_REL = `${STORE_DIR}/changes.jsonl`
+/** A copy of the change journal made by sync (`changes-Example-Mac.jsonl`, `changes (1).jsonl`). `.writeflex`
+ *  is the app's own folder, so a `changes…jsonl` there can only be this journal's copy. */
+const JOURNAL_COPY = /^changes[- ].+\.jsonl$/
+
+function parseJournal(raw: string): Change[] {
+  const out: Change[] = []
+  for (const line of raw.split('\n')) {
+    const change = parseChangeLine(line)
+    if (change) out.push(change)
+  }
+  return out
+}
+
+/**
+ * The change journal merged with copies of it that sync made on another Mac (contract rule 7). By id:
+ *  - a record only in a copy is added (a change made on the other Mac);
+ *  - the same record in both is kept once;
+ *  - the same id, one side still `pending` and the other decided (accepted, rejected, held), and nothing
+ *    else different but the fields a decision sets: the decided record stands. A decision is made from
+ *    pending, so pending is the earlier state of that same record;
+ *  - the same id with any other difference (two different decisions, or different content): BOTH are
+ *    kept. The journal's own record keeps the id; the copy's is kept beside it under a derived id
+ *    (`<id>x<first 8 hex of the SHA-256 of the copy's record>`), the same on every read, so it is added once
+ *    and never again, and neither side's status is lost.
+ * Order: the journal's own records first, then what the copies add, in the copies' own order.
+ */
+export function mergeChangeJournalCopies(primary: readonly Change[], copies: ReadonlyArray<readonly Change[]>): Change[] {
+  const out = [...primary]
+  const index = new Map(out.map((change, at) => [change.id, at]))
+  for (const copy of copies) {
+    for (const change of copy) {
+      const at = index.get(change.id)
+      if (at === undefined) { index.set(change.id, out.length); out.push(change); continue }
+      const own = out[at]
+      const ownJson = JSON.stringify(own)
+      const copyJson = JSON.stringify(change)
+      if (ownJson === copyJson) continue
+      // The same record before and after a decision differs only in the fields a decision sets (withStatus, closedWith).
+      const undecided = (c: Change) => {
+        const { status: _s, closedReason: _r, closedAt: _a, closedCode: _c, readerDecidedAt: _d, appliedBy: _b, ...rest } = c as Change & Record<string, unknown>
+        return JSON.stringify(rest)
+      }
+      const sameRecord = undecided(own) === undecided(change)
+      if (sameRecord && own.status === 'pending' && change.status !== 'pending') { out[at] = change; continue }
+      if (sameRecord && change.status === 'pending' && own.status !== 'pending') continue
+      const derived = `${change.id}x${createHash('sha256').update(copyJson).digest('hex').slice(0, 8)}`
+      if (index.has(derived)) continue
+      index.set(derived, out.length)
+      out.push({ ...change, id: derived })
+    }
+  }
+  return uniqueReaderItems(out)
+}
 const defaultIdFactory = createChangeIdFactory({ now: () => Date.now(), random: () => Math.random() })
 
 /**
@@ -304,17 +358,24 @@ export class ChangeStore {
     return result
   }
 
-  /** Read + parse the journal (skips corrupt lines). Empty when the store has never been written. */
+  /** Read + parse the journal (skips corrupt lines), merged with every copy of it sync made (contract
+   *  rule 7, `mergeChangeJournalCopies`). Empty when the store has never been written. The copies are read
+   *  only: never rewritten, moved or removed. Their records enter the journal when it is next written. */
   async #readAll(): Promise<Change[]> {
     const abs = this.ws.absolute(JOURNAL_REL)
-    if (!existsSync(abs)) return []
-    const raw = await readFile(abs, 'utf8')
-    const out: Change[] = []
-    for (const line of raw.split('\n')) {
-      const change = parseChangeLine(line)
-      if (change) out.push(change)
+    const primary = existsSync(abs) ? parseJournal(await readFile(abs, 'utf8')) : []
+    const copies: Change[][] = []
+    // The folder is reached through the journal's own name (the store's writes alone ask for the folder).
+    const folder = posix.dirname(abs.split('\\').join('/'))
+    const names = (await readdir(folder).catch(() => [] as string[])).filter((name) => JOURNAL_COPY.test(name)).sort()
+    for (const name of names) {
+      const at = this.ws.absolute(`${STORE_DIR}/${name}`)
+      // Only an ordinary file: a link standing at a copy's name is not read through.
+      const info = await lstat(at).catch(() => null)
+      if (!info?.isFile()) continue
+      copies.push(parseJournal(await readFile(at, 'utf8').catch(() => '')))
     }
-    return out
+    return copies.length ? mergeChangeJournalCopies(primary, copies) : uniqueReaderItems(primary)
   }
 
   /** Atomic journal write: stage to a sibling temp file, then rename over the target (atomic on one
@@ -345,6 +406,33 @@ export class ChangeStore {
   async add(input: NewChange): Promise<Change> {
     const { newFile: _dropped, capability: _verb, ...plain } = input as NewChange & { newFile?: unknown; capability?: unknown }
     return this.#add(plain as NewChange)
+  }
+
+  /**
+   * Append several new changes in ONE write of the journal: all of them or none. Every record is checked (a document path, a well-formed
+   * record) before anything is written, so one bad record refuses the whole batch and the journal is as it was. Used by staging a revision
+   * (folio-version-stage.ts), which must never leave half of a co-author's changes behind. The same field rules as `add`.
+   */
+  async addMany(inputs: readonly NewChange[]): Promise<Change[]> {
+    if (inputs.length === 0) return []
+    const plains = inputs.map((input) => {
+      const { newFile: _dropped, capability: _verb, ...plain } = input as NewChange & { newFile?: unknown; capability?: unknown }
+      assertChangeTargetsADocument(plain.path)
+      return plain as NewChange
+    })
+    return this.#run(async () => {
+      const existing = await this.#readAll()
+      const taken = new Set(existing.map((c) => c.id))
+      const filed: Change[] = plains.map((input) => {
+        const change: Change = { ...input, id: this.makeId(taken), ts: input.ts ?? Date.now(), category: input.category ?? null, status: input.status ?? 'pending' }
+        taken.add(change.id)
+        const settled = change.status === 'pending' ? change : this.#moved(change, change.status)
+        this.#assertWellFormed(settled)
+        return settled
+      })
+      await this.#writeAll([...existing, ...filed])
+      return filed
+    })
   }
 
   /** The agent's proposal that also creates a file: the Change plus the file the writer must be shown. In-process only. */
@@ -525,6 +613,43 @@ export class ChangeStore {
     })
   }
 
+  /**
+   * Close undecided Changes and file their replacements in ONE write of the journal: all of it or none. Every new record is checked (a document path, a well-formed
+   * record) and every closure must still apply (the Change is there and undecided) before anything is written; otherwise it throws and the journal is as it was.
+   * Used where a suggestion that can no longer be placed is replaced by a fresh one (folio-version-text.ts): the old one is never closed without its replacement filed.
+   */
+  async replaceMany(closures: Array<{ id: string; reason: string; code: ClosedCode }>, inputs: readonly NewChange[]): Promise<Change[]> {
+    const wanted = new Map(closures.map((closure) => [closure.id, { reason: closure.reason.trim(), code: closure.code }]))
+    if (wanted.size === 0 || [...wanted.values()].some((closure) => closure.reason === '')) throw new Error('Nothing to replace: a closure needs a reason.')
+    const plains = inputs.map((input) => {
+      const { newFile: _dropped, capability: _verb, ...plain } = input as NewChange & { newFile?: unknown; capability?: unknown }
+      assertChangeTargetsADocument(plain.path)
+      return plain as NewChange
+    })
+    return this.#run(async () => {
+      const existing = await this.#readAll()
+      const next = existing.map((change) => {
+        const closure = wanted.get(change.id)
+        if (closure === undefined) return change
+        if (!undecided(change)) throw new Error('The suggestion to replace was decided or closed in the meantime.')
+        const updated = closedWith(change, closure.reason, closure.code)
+        this.#assertWellFormed(updated)
+        return updated
+      })
+      if (existing.filter((change) => wanted.has(change.id)).length !== wanted.size) throw new Error('The suggestion to replace is not in the ledger any more.')
+      const taken = new Set(existing.map((c) => c.id))
+      const filed: Change[] = plains.map((input) => {
+        const change: Change = { ...input, id: this.makeId(taken), ts: input.ts ?? Date.now(), category: input.category ?? null, status: input.status ?? 'pending' }
+        taken.add(change.id)
+        const settled = change.status === 'pending' ? change : this.#moved(change, change.status)
+        this.#assertWellFormed(settled)
+        return settled
+      })
+      await this.#writeAll([...next, ...filed])
+      return filed
+    })
+  }
+
   /** Proposed replacements pass through one store-owned seam before they become ledger records. */
   async addProposedReplacement(input: NewChange): Promise<Change | null> {
     const minimal = minimiseProposedReplacement(input)
@@ -677,7 +802,7 @@ export class ChangeStore {
       const replies = Array.isArray(current.readerReplies) ? current.readerReplies.filter(keptReply) : []
       if (replies.length >= READER_REPLIES_MOST) throw new Error(`A note takes at most ${READER_REPLIES_MOST} replies.`)
       if (replies.some((r) => r.id === reply.id)) return current
-      const updated = { ...current, readerReplies: [...replies, { id: reply.id, text: reply.text, at: reply.at, by: reply.by }] } as Change
+      const updated = { ...current, readerReplies: [...replies, { id: reply.id, text: reply.text, at: reply.at, by: reply.by, visibility: reply.visibility === 'open' ? 'open' : 'private' }] } as Change
       this.#assertWellFormed(updated)
       all[index] = updated
       await this.#writeAll(all)
@@ -694,6 +819,19 @@ export class ChangeStore {
    * Both final answers end sending. Changes nothing else; a record that is not a reader's, or is gone
    * from the ledger, is skipped. One write.
    */
+  /** Service receipts update cards only. No document write or Accept is reachable from this door. */
+  async syncReaderState(shareId: string, items: ReaderItemState[]): Promise<void> {
+    const byKey = new Map(items.map((item) => [item.key, item]))
+    await this.#door(async () => {
+      const all = await this.#readAll()
+      const next = all.map((change) => {
+        const f = readerNoteOf(change), item = f?.shareId === shareId ? byKey.get(f.key) : null
+        return item ? applyReaderItemState(change, item, Date.now()) : change
+      })
+      if (JSON.stringify(next) !== JSON.stringify(all)) await this.#writeAll(next)
+    })
+  }
+
   async markReaderHeard(acks: ReaderHeardAck[]): Promise<number> {
     const byId = new Map(acks.map((ack) => [ack.id, ack]))
     if (byId.size === 0) return 0

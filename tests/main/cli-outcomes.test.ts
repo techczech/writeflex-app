@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
 import { ChangeStore, type NewChange } from '../../src/main/changes'
-import { acquireOwnerLock, releaseOwnerLock } from '../../src/main/owner-lock'
 import { Workspace } from '../../src/main/workspace'
 import { ERROR_CODES, ERROR_OUTCOME, OUTCOMES, OUTCOME_LINES, type Outcome } from '../../src/main/cli/outcome'
 import { MAX_UNDECIDED_PER_SOURCE } from '../../src/main/cli/review-format'
@@ -97,15 +96,8 @@ test('every result path of every operation yields one outcome from the closed li
   const full = await drive('allowance full', ['insert', 'notes.md', '--text', 'One more.', '--source', 'codex'])
   expect_(full, 'needs-writer', 1, 'allowance full')
   expect(full.json.error!.code).toBe('review-allowance-full')
-  // not-verified: a lock that names an app, and no key.
-  const lock = await acquireOwnerLock(fx.root, { kind: 'app' })
-  try {
-    const unverified = await drive('owner not verified', ['create', 'b.md'], QUICK)
-    expect_(unverified, 'not-verified', 1, 'owner not verified')
-    expect(unverified.json.error).toMatchObject({ code: 'owner-not-verified', sent: false })
-  } finally {
-    await releaseOwnerLock(lock)
-  }
+  // (A lock naming an app no longer routes anywhere: there is no Collection lock. `owner-not-verified`
+  // is left only for a reply key that vanished between choosing the route and sending.)
 
   // With the app open: answered (done, filed now), refused by the app, silent, and answered with junk.
   app = await openAsApp(fx, { changes: new ChangeStore(new Workspace(fx.root)) })
@@ -250,10 +242,13 @@ test('plain text: a write-kind result begins with the fixed line of its outcome;
   await app.executor.drain()
   const stop = app.answering()
   try {
-    const now = await plain(['insert', 'notes.md', '--text', 'More.', '--source', 'codex'])
+    // Answered requests: the CLI returns as soon as the reply exists, so a wider window costs nothing when the app
+    // answers and keeps a loaded run from missing a 60 ms one. The silent step above keeps its 60 ms: it must time out.
+    const answered = { write: { keyFolders: [fx.keys], appDataFolders: [fx.appData], request: { waitMs: 2_000, pollMs: 10 } } }
+    const now = await plain(['insert', 'notes.md', '--text', 'More.', '--source', 'codex'], answered)
     expect(first(now.out)).toBe('Waiting for review in WriteFlex (not applied):')
     expect(now.out).toContain("It is in WriteFlex's review dock now.")
-    expect(first((await plain(['create', 'f.md'])).out)).toBe('Done:')
+    expect(first((await plain(['create', 'f.md'], answered)).out)).toBe('Done:')
   } finally {
     await stop()
   }

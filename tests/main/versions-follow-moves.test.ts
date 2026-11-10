@@ -354,26 +354,26 @@ test('saveVersionOfSavedText holds the write turn through its snapshot and journ
   expect(await store.list({ path: 'a.md' })).toEqual([])
 })
 
-test('failed finish logs and retries at the next owner-lock settle', async () => {
+test('failed finish logs and retries when the Collection is next opened', async () => {
   const { pauseCollectionWrites, resumeCollectionWrites } = await import('../../src/main/collection-write-gate')
   const { spyOn } = await import('bun:test')
-  const { CollectionOwnership } = await import('../../src/main/collection-ownership')
+  const { OpenCollections } = await import('../../src/main/open-collections')
   const first = await seed()
   const intent = prepareVersionMove(root, 'a.md', 'b.md')
   await rename(join(root, 'a.md'), join(root, 'b.md'))
   const log = spyOn(console, 'error').mockImplementation(() => {})
-  const owner = new CollectionOwnership({ schedule: () => () => {} })
+  const owner = new OpenCollections()
   try {
-    pauseCollectionWrites(root, 'Lost lock')
+    pauseCollectionWrites(root, 'Saving is paused for this test.')
     intent.finish()
     expect(log).toHaveBeenCalled()
     resumeCollectionWrites(root)
-    await owner.claim(root)
+    await owner.open(root)
     expect((await readFile(join(root, '.writeflex/versions.jsonl'), 'utf8'))).toContain(`"id":"${intent.id}","state":"done"`)
     await writeFile(join(root, 'a.md'), '# Other\n')
     expect(await store.list({ path: 'a.md' })).toEqual([])
     expect((await store.list({ path: 'b.md' }))[0].id).toBe(first.id)
-  } finally { log.mockRestore(); resumeCollectionWrites(root); await owner.releaseAll() }
+  } finally { log.mockRestore(); resumeCollectionWrites(root); await owner.closeAll() }
 })
 
 test('attachment Undo is derived from the last un-undone journal record per file', async () => {
@@ -431,15 +431,15 @@ test.each(['save', 'claim'])('R2-1: interrupted unmoved intent is cancelled befo
   const first = await seed()
   const second = await seed('a.md', 2)
   const intent = prepareVersionMove(root, 'a.md', 'b.md')
-  const { CollectionOwnership } = await import('../../src/main/collection-ownership')
-  const owner = new CollectionOwnership({ schedule: () => () => {} })
+  const { OpenCollections } = await import('../../src/main/open-collections')
+  const owner = new OpenCollections()
   try {
-    if (mode === 'claim') await owner.claim(root)
+    if (mode === 'claim') await owner.open(root)
     else await ws.saveFile('a.md', '# Saved after interruption\n')
     expect((await store.list({ path: 'a.md' })).map(v => v.id)).toEqual([second.id, first.id])
     expect(await store.list({ path: 'b.md' })).toEqual([])
     expect(await readFile(join(root, '.writeflex/versions.jsonl'), 'utf8')).toContain(`"id":"${intent.id}","state":"cancelled"`)
-  } finally { await owner.releaseAll() }
+  } finally { await owner.closeAll() }
 })
 
 test('R2-2: changed map after preview is refused without any journal write', async () => {

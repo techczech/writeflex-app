@@ -52,14 +52,14 @@ test('a note about the open piece renders its markdown body with title, kind, sk
   expect(onThisPiece).toContain('aria-label="Open as file: Review of why-schemas-matter"')
   expect(onThisPiece).toContain('aria-label="Reveal in sidebar: Review of why-schemas-matter"')
   // The sibling note is in the collapsed section; the far-away note is in neither; objects keep theirs.
-  const other = html.slice(html.indexOf('Other notes in this folder'), html.indexOf('Discarded objects'))
+  const other = html.slice(html.indexOf('Other notes in this folder'), html.indexOf('Declined objects'))
   expect(html).toMatch(/<details class="an-section an-collapsed"><summary/)
   expect(html).not.toContain('<details class="an-section an-collapsed" open')
   expect(other).toContain('Comments of another-piece')
   expect(other).toContain('Sibling note body.')
   expect(onThisPiece).not.toContain('Comments of another-piece')
   expect(html).not.toContain('Review of metaphor')
-  expect(html.slice(html.indexOf('Discarded objects'))).toContain('aria-label="Restage"')
+  expect(html.slice(html.indexOf('Declined objects'))).toContain('aria-label="Restage"')
 })
 
 test('the source path is matched by the document it names, not by its spelling', () => {
@@ -163,7 +163,7 @@ test('without a tick handler the boxes are drawn but cannot be ticked', () => {
   expect(boxes(html).every((input) => input.includes('disabled'))).toBe(true)
 })
 
-test("the agent's proposed tick shows on its box with Accept and Discard", () => {
+test("the agent's proposed tick shows on its box with Accept and Decline", () => {
   const [, second] = readTaskLines(reviewBody)
   const from = 140 + second.from
   const change = (over: Partial<Change>): Change => ({
@@ -183,7 +183,7 @@ test("the agent's proposed tick shows on its box with Accept and Discard", () =>
   expect(html).toContain('data-change-id="c1"')
   expect(html).toContain('Agent proposes ticking')
   expect(html).toContain('aria-label="Accept: tick this box"')
-  expect(html).toContain('aria-label="Discard the proposal"')
+  expect(html).toContain('aria-label="Decline the proposal"')
   // The chip sits on the second point only.
   expect(html.indexOf('data-change-id')).toBeGreaterThan(html.indexOf('No example of a schema.'))
 })

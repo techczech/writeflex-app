@@ -98,6 +98,8 @@ type AgentPanelProps = {
   /** The persistent handoff row's actions (same handlers as the transient toast's). */
   onOpenReviewing: () => void
   onOpenNotes: (path: string) => void
+  /** The Agent notes section (the tab of its own is retired): drawn right under the Digest line. */
+  notesSection?: React.ReactNode
 }
 
 const ACTIVITY_ICON: Record<ActivityRow['kind'], LucideIcon> = {
@@ -280,6 +282,7 @@ export function AgentPanel({
   onShowSkillToast,
   onOpenReviewing,
   onOpenNotes,
+  notesSection,
 }: AgentPanelProps): JSX.Element {
   const [tab, setTab] = useState<'agent' | 'scratchpad'>('agent')
   const [histOpen, setHistOpen] = useState(false)
@@ -667,6 +670,7 @@ export function AgentPanel({
             />
           )}
           <Digest dir={activeCollectionDir} onOpenPiece={onOpenDigestPiece} />
+          {notesSection}
           <div className="agent-transcript" ref={scrollRef} role="log" aria-label="Agent conversation">
             {agent.history.length > 0 && (
               <>
@@ -696,13 +700,7 @@ export function AgentPanel({
             {empty && !activeSkill && (
               <div className="rpane-empty">
                 <Sparkles className="icon" />
-                <p>
-                  Ask for a read-through, a tighter opening, or a new file. Prose changes are always staged for your
-                  review; housekeeping is snapshotted and undoable.
-                </p>
-                <p className="hint">
-                  <kbd>⌘J</kbd> focuses the console
-                </p>
+                <p>Ask the agent</p>
               </div>
             )}
             {agent.messages.map((turn, index) => {

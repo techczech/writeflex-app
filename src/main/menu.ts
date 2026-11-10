@@ -18,6 +18,12 @@ function sendMenuAction(action: MenuAction): void {
   BrowserWindow.getFocusedWindow()?.webContents.send('menu:action', action)
 }
 
+/** With no focused window, answer in an existing editor (including a hidden test window). */
+function sendUpdateAction(action: 'check-for-updates' | 'whats-new'): void {
+  const target = BrowserWindow.getFocusedWindow() ?? allStates()[0]?.window
+  target?.webContents.send('menu:action', action)
+}
+
 export function updateCollectionMenu(): void {
   const item = Menu.getApplicationMenu()?.getMenuItemById('collection-page')
   const enabled = focusedState()?.collectionPageActive === true
@@ -76,7 +82,7 @@ function effectiveAccelerator(settings: SettingsStore, commandId: string, fallba
     /* malformed overrides read as none */
   }
   const override = overrides[commandId]
-  if (typeof override !== 'string') return { accelerator: fallback }
+  if (typeof override !== 'string') return fallback === '' ? {} : { accelerator: fallback }
   if (override === '') return {}
   const accelerator = chordToAccelerator(override)
   return accelerator ? { accelerator } : {}
@@ -100,10 +106,19 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         ...(pinned.length && recentRoots.length ? [{ type: 'separator' as const }] : []),
         ...recentRoots.map(open),
       ]
-    : [{ label: 'No Recent Workspaces', enabled: false }]
+    : [{ label: 'No Recent Vaults', enabled: false }]
 
   const template: MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ role: 'appMenu' as const }] : []),
+    ...(isMac ? [{ label: 'WriteFlex', submenu: [
+      { role: 'about' as const },
+      { label: 'Check for Updates…', click: () => sendUpdateAction('check-for-updates') },
+      { type: 'separator' as const },
+      // R14: Settings… belongs in the app menu. ⌘, is owned by the renderer, so the item only shows it.
+      { label: 'Settings…', accelerator: 'CmdOrCtrl+,', registerAccelerator: false, click: () => sendMenuAction('open-settings') },
+      { type: 'separator' as const }, { role: 'services' as const },
+      { type: 'separator' as const }, { role: 'hide' as const }, { role: 'hideOthers' as const }, { role: 'unhide' as const },
+      { type: 'separator' as const }, { role: 'quit' as const },
+    ] }] : []),
     {
       label: 'File',
       submenu: [
@@ -130,7 +145,7 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         // own keydown handler is the sole owner of ⇧⌘F (Task 18), so a native registration here
         // would double-fire the panel toggle.
         { label: 'Show/Hide Left Sidebar', ...accel('view.toggleLeftPane', 'CmdOrCtrl+['), registerAccelerator: false, click: () => sendMenuAction('toggle-left-pane') },
-        { label: 'Show/Hide Right Pane', ...accel('view.toggleRightPane', 'CmdOrCtrl+]'), registerAccelerator: false, click: () => sendMenuAction('toggle-right-pane') },
+        { label: 'Show/Hide Right Sidebar', ...accel('view.toggleRightPane', 'CmdOrCtrl+]'), registerAccelerator: false, click: () => sendMenuAction('toggle-right-pane') },
         { label: 'Open Files', ...accel('view.files', 'Shift+CmdOrCtrl+E'), registerAccelerator: false, click: () => sendMenuAction('open-files') },
         { label: 'Search Files…', ...accel('app.search', 'Shift+CmdOrCtrl+F'), registerAccelerator: false, click: () => sendMenuAction('search') },
         // The archive search dock (WF-4B); the renderer owns ⌃⌘F, so the menu only shows it.
@@ -138,6 +153,21 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         // Saving is automatic (ADR-0013); ⌘S makes a tier-2 CHECKPOINT — a returnable point in history.
         { label: 'Checkpoint', accelerator: 'CmdOrCtrl+S', click: () => sendMenuAction('save') },
         { label: 'Save Version…', ...accel('file.nameVersion', 'Shift+CmdOrCtrl+S'), registerAccelerator: false, click: () => sendMenuAction('name-version') },
+        // Folio versions (ticket 04): keyless by default (⇧⌘S in a Folio asks whole Folio or this part); the effective chord shows if the writer binds one.
+        { label: 'Save Folio Version…', ...accel('file.saveFolioVersion', ''), registerAccelerator: false, click: () => sendMenuAction('save-folio-version') },
+        // Ticket 11: keyless by default; both act on the version the Versions tab shows (or the one open read-only).
+        { label: 'Export This Folio Version…', ...accel('file.exportFolioVersion', ''), registerAccelerator: false, click: () => sendMenuAction('export-folio-version') },
+        // Ticket 14: keyless by default; opens Import in the Versions tab.
+        { label: 'Import Revision from Word…', ...accel('file.importFolioRevision', ''), registerAccelerator: false, click: () => sendMenuAction('import-folio-revision') },
+        { label: 'Mark Version as Sent…', ...accel('file.markFolioVersionSent', ''), registerAccelerator: false, click: () => sendMenuAction('mark-folio-version-sent') },
+        // Ticket 19: keyless by default; each acts on the table, widget or image the cursor is on, or the file chosen in the Folio's Inspector.
+        { label: 'Save Version of This File…', ...accel('file.saveFileVersion', ''), registerAccelerator: false, click: () => sendMenuAction('save-file-version') },
+        { label: 'Compare This File Version with Working Copy', ...accel('file.compareFileVersion', ''), registerAccelerator: false, click: () => sendMenuAction('compare-file-version') },
+        { label: 'Restore This File Version…', ...accel('file.restoreFileVersion', ''), registerAccelerator: false, click: () => sendMenuAction('restore-file-version') },
+        { label: 'Save This File Version as a Copy…', ...accel('file.saveFileVersionCopy', ''), registerAccelerator: false, click: () => sendMenuAction('save-file-version-copy') },
+        // R14: Export… and Share… are in File. Both chords belong to the renderer, so the items only show them.
+        { label: 'Export…', ...accel('export.document', 'Alt+CmdOrCtrl+E'), registerAccelerator: false, click: () => sendMenuAction('export-document') },
+        { label: 'Share…', ...accel('sharing.share', 'Alt+CmdOrCtrl+S'), registerAccelerator: false, click: () => sendMenuAction('share-document') },
         { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => sendMenuAction('close-tab') },
         ...(isMac ? [] : [{ type: 'separator' as const }, { role: 'quit' as const }])
       ]
@@ -195,6 +225,13 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         { label: 'Switch Margin / Inline', ...accel('review.switchMarginView', 'Shift+Alt+CmdOrCtrl+V'), registerAccelerator: false, click: () => sendMenuAction('switch-margin-view') },
         { label: 'Show or Hide Margin', ...accel('review.toggleMargin', 'Shift+Alt+CmdOrCtrl+M'), registerAccelerator: false, click: () => sendMenuAction('toggle-margin') },
         { label: 'Open Versions', ...accel('app.versions', 'CmdOrCtrl+3'), registerAccelerator: false, click: () => sendMenuAction('open-versions') },
+        // The Folio workspace's Versions tab (ADR-0052). Display only: the renderer's chord handler owns ⌥8.
+        { label: 'Open Folio Versions', ...accel('folio.room.versions', 'Alt+8'), registerAccelerator: false, click: () => sendMenuAction('open-folio-versions') },
+        // Folio versions ticket 07: keyless by default; the effective chord shows if the writer binds one.
+        { label: 'Open Folio Version Read-only', ...accel('folio.versions.openReadOnly', ''), registerAccelerator: false, click: () => sendMenuAction('open-folio-version-read-only') },
+        // Ticket 08: keyless by default; opens a comparison of the version the Versions tab shows with the working draft.
+        { label: 'Compare Folio Versions…', ...accel('folio.versions.compare', ''), registerAccelerator: false, click: () => sendMenuAction('compare-folio-versions') },
+        { label: 'Back to Working Draft', ...accel('folio.versions.backToWorking', ''), registerAccelerator: false, click: () => sendMenuAction('back-to-working-draft') },
         // Same registerAccelerator: false pattern as Toggle Outline above — the renderer's keydown
         // handler is the sole owner of ⌘T (Task 14), so a native registration here would double-fire.
         { label: 'Toggle Typewriter', ...accel('view.typewriter', 'CmdOrCtrl+T'), registerAccelerator: false, click: () => sendMenuAction('toggle-typewriter') },
@@ -212,6 +249,10 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         // non-native pattern. Width has no dedicated reset item: ⌥⌘0 / Reset Prose Size resets both.
         { label: 'Increase Column Width', accelerator: 'Alt+CmdOrCtrl+Plus', registerAccelerator: false, click: () => sendMenuAction('column-width-in') },
         { label: 'Decrease Column Width', accelerator: 'Alt+CmdOrCtrl+-', registerAccelerator: false, click: () => sendMenuAction('column-width-out') },
+        { type: 'separator' },
+        // R14: the theme commands were palette-only.
+        { label: 'Use Light Theme', click: () => sendMenuAction('theme-light') },
+        { label: 'Use Dark Theme', click: () => sendMenuAction('theme-dark') },
         { type: 'separator' },
         // ⌥⌘I is the Folio workspace's inspector key (registry: folio.room.inspector), and a menu accelerator is taken before the
         // renderer sees the keydown, so the role's own accelerator moves to ⇧⌥⌘I (ADR-0049; the menu still shows it).
@@ -234,7 +275,12 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
         { role: 'zoom' },
         ...(isMac ? [{ type: 'separator' as const }, { role: 'front' as const }] : [])
       ]
-    }
+    },
+    // R14: Help is last.
+    { role: 'help', submenu: [
+      ...(!isMac ? [{ label: 'Settings…', accelerator: 'CmdOrCtrl+,', registerAccelerator: false, click: () => sendMenuAction('open-settings') }, { label: 'Check for Updates…', click: () => sendUpdateAction('check-for-updates') }] : []),
+      { label: 'What’s new in WriteFlex', click: () => sendUpdateAction('whats-new') },
+    ] },
   ]
   return Menu.buildFromTemplate(template)
 }

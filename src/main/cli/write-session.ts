@@ -1,11 +1,12 @@
 /**
  * One direct change to a Collection, as the command line makes it. A WriteSession is the only route by
- * which a write operation touches the Collection: before each file it confirms the owner lock is
- * still held, it remembers what every existing file held and every path that moved, and it can put
+ * which a write operation touches the Collection: before each file it asks `confirmOwner` (the app's
+ * executor refuses there once its window has closed the Collection; the command line's never refuses:
+ * there is no Collection lock), it remembers what every existing file held and every path that moved, and it can put
  * all of that back (`rollback`) or hand it to the journal (`record`).
  *
- * PUTTING BACK IS A WRITE LIKE ANY OTHER. `rollback` asks for the owner lock before it does anything
- * and again before each thing it writes; once the lock is another's it writes nothing, and says so.
+ * PUTTING BACK IS A WRITE LIKE ANY OTHER. `rollback` asks `confirmRollback` before it does anything
+ * and again before each thing it writes; once that refuses it writes nothing, and says so.
  * It restores a file only when the file holds exactly what this session wrote to it: a file somebody
  * has written since is theirs, and is left and named. This is the interrupted-change rule
  * (journal-intent.ts), which is what finishes the job later from the intent that is then kept.
@@ -27,6 +28,7 @@ import { ChangedSinceChecked, dropSecondName, folderIdentity, makeFolders, moveP
 import type { CommitTarget } from '../guarded-document-write'
 import { CliError } from './operation'
 import { markdownPath } from './paths'
+import { documentWriteVersionsFor, refusingDocumentWriteVersions, type DocumentWriteVersions } from '../document-write-versions'
 
 /** The fingerprint of a file's bytes (one definition: guarded-document-read.ts). */
 export const fingerprint = fingerprintOf
@@ -54,7 +56,7 @@ export type Rollback = {
 }
 
 export type SessionOptions = {
-  /** Throws when this process no longer holds the Collection's owner lock. */
+  /** Throws when this writer may no longer write the Collection (the app's window closed it). */
   confirmOwner: () => Promise<void>
   /** Asked instead of `confirmOwner` before `rollback` writes, by a caller whose `confirmOwner` also
    *  refuses for a reason other than ownership (the app's executor, once disposed, still holds the
@@ -78,6 +80,15 @@ export type SessionOptions = {
    *  removed (guarded-document-write.ts `leftover`). The app passes its window's notice; the default, for the
    *  command line, is a `writeflex: note:` line on stderr. A notice that throws never changes the write's outcome. */
   onNotice?: (message: string) => void
+  /** Versions of the documents this session rewrites or creates, in a OneDrive Collection (contract rule 3):
+   *  the text replaced (kept first, durably in local recovery; a failure refuses the write) and the text
+   *  written; the synced store follows asynchronously and is never waited for by a write. Default: decided
+   *  from the Collection's location (document-write-versions.ts `documentWriteVersionsFor`) with
+   *  `recoveryDir`; null turns it off. */
+  versions?: DocumentWriteVersions | null
+  /** This variant's local recovery folder (replica-save-cycles.ts `replicaRecoveryDir`). Required for a
+   *  Collection in OneDrive unless `versions` is given: without it every rewrite there is refused. */
+  recoveryDir?: string
 }
 
 /** The command line's notice: a line on stderr, as its other notes are (run.ts). */
@@ -113,7 +124,32 @@ export class WriteSession {
   /** The path the session was about to write, move or trash when `firstFailure` stopped it. */
   stoppedAt: string | undefined
 
-  constructor(private readonly ws: Workspace, private readonly options: SessionOptions) {}
+  readonly #versions: DocumentWriteVersions | null
+
+  constructor(private readonly ws: Workspace, private readonly options: SessionOptions) {
+    // The one route every command-line and app-carried request write takes: versions are kept here.
+    this.#versions = options.versions !== undefined ? options.versions
+      : options.recoveryDir ? documentWriteVersionsFor(ws.root, { recoveryDir: options.recoveryDir }) : refusingDocumentWriteVersions(ws.root)
+  }
+
+  /** Paths whose written text could not be kept (not even in local recovery): the write stands. */
+  readonly unkeptVersions: string[] = []
+
+  /** The text written is a version too. A failure never undoes the committed write; it is said (the
+   *  notice) and recorded (`unkeptVersions`), so the caller does not report it as a fully kept write. */
+  async #keptAfter(path: string, content: string | Uint8Array, before: Uint8Array | null): Promise<void> {
+    if (!this.#versions) return
+    try { await this.#versions.after(path, content, before) } catch (error) {
+      this.unkeptVersions.push(path)
+      try { (this.options.onNotice ?? noteOnStderr)(`${path} was written, but its new text could not be kept as a version, not even on this Mac: ${error instanceof Error ? error.message : String(error)}. If sync replaces it, that text is not in Versions.`) } catch { /* telling must not change a committed write */ }
+    }
+  }
+
+  /** Whether this session's writes to the synced version store finished within `graceMs` (they never
+   *  hold up a write; a command line waits this long before it exits). True when there are none. */
+  versionsSettled(graceMs: number): Promise<boolean> {
+    return this.#versions ? this.#versions.settled(graceMs) : Promise.resolve(true)
+  }
 
   /** `excused`: a refusal the caller handles itself, so it is not this session's failure. */
   async #guard<T>(path: string, act: (seams: WriteSeams) => Promise<T>, excused?: (error: unknown) => boolean): Promise<T> {
@@ -146,7 +182,7 @@ export class WriteSession {
     this.options.onWrite?.(path)
   }
 
-  /** Throws (the session's own refusal) when this process no longer holds the Collection's owner lock. */
+  /** Throws (the session's own refusal) when `confirmOwner` refuses. */
   async assertOwned(path: string): Promise<void> {
     try {
       await this.options.seams?.beforeWrite?.(path)
@@ -182,6 +218,7 @@ export class WriteSession {
     await this.#guard(path, async (seams) => {
       const { leftover } = await writeWhole(this.ws, path, content, 'create', seams, undefined, this.#committing(path))
       this.#created.set(path, fingerprint(content))
+      await this.#keptAfter(path, content, null)
       this.#steps.push({ did: 'created', path })
       // Created; only a create can leave a second name (a rewrite commits by rename). Said, never thrown.
       if (leftover) {
@@ -232,9 +269,18 @@ export class WriteSession {
     await this.#guard(path, async (seams) => {
       const known = this.#files.get(path)?.before
       const before = known ?? await readBytes(this.ws, path)
+      // What this rewrite replaces is kept first (it may be another Mac's text sync just delivered). The text
+      // on disk now, not the session's first `before`: a second rewrite in one session replaces its own text.
+      const replaced = this.#versions && known ? await readBytes(this.ws, path) : before
+      if (this.#versions) {
+        try { await this.#versions.before(path, replaced) } catch (error) {
+          throw new CliError(`${path} was not changed: the text it holds could not be kept as a version first (${error instanceof Error ? error.message : String(error)}).`, 'failed')
+        }
+      }
       await this.options.intent?.file(path, known ? null : before, fingerprint(content))
       await writeWhole(this.ws, path, content, 'replace', seams, expect, this.#committing(path))
       this.#files.set(path, { before, after: fingerprint(content) })
+      await this.#keptAfter(path, content, replaced)
       this.#steps.push({ did: 'rewrote', path })
     }, excused)
   }
@@ -327,15 +373,15 @@ export class WriteSession {
 
   /**
    * Put back what this session changed: content first, then paths in reverse, then the folders it
-   * made (only if empty). The owner lock is asked for first and again before each write; when it is
-   * no longer held, nothing (more) is written and `lost` carries the refusal. A file is restored only
+   * made (only if empty). `confirmRollback` is asked first and again before each write; when it
+   * refuses, nothing (more) is written and `lost` carries the refusal. A file is restored only
    * if it holds exactly what this session wrote to it; one that holds anything else is left and
    * named in `problems`. What the session remembers is forgotten only when everything is back.
    * The check is made twice: once on reading the file, and again by the write itself, on the handle,
    * immediately before the rename (`expect`), so a file written by somebody in between is left too.
    *
-   * THE LAST CALL THAT CAN STILL LAND. Ownership is asked immediately before each write and cannot
-   * be held across it, so when the lock changes hands the one write whose check had just passed may
+   * THE LAST CALL THAT CAN STILL LAND. The check is made immediately before each write and cannot
+   * be held across it, so when it starts refusing the one write whose check had just passed may
    * still complete: its final system call is the `rename` that puts a rewritten file in place (or,
    * for a move, the `rename`, or the `link` and `unlink` pair). Nothing is started after a check fails.
    */

@@ -56,7 +56,7 @@ export type CaptureResult = CaptureSuccess | CaptureFailure
 /**
  * `afterValidated` (a test seam) runs between the project being judged and the last look before scout is spawned.
  * `beforeSpawn` is the last step before the spawn, after the final canonical-path check: it throws to refuse
- * (the write gate, then the command line's owner-lock check).
+ * (the write gate, then the command line's write-session check).
  */
 export type CaptureSeams = { afterValidated?: () => Promise<void>; beforeSpawn?: () => void | Promise<void> }
 
@@ -192,7 +192,7 @@ export async function captureResearch(
   if (artefactAgain !== null && typeof artefactAgain !== 'string') return artefactAgain
   if (artefactAgain !== artefactChecked) return fail('invalid', 'The artefact changed while the capture was being prepared, so nothing was captured.')
   const project = checked
-  // The one ordered sequence before the spawn: the canonical checks above, then the gate and owner lock; nothing awaited in between.
+  // The one ordered sequence before the spawn: the canonical checks above, then the gate and the session's check; nothing awaited in between.
   await seams.beforeSpawn?.()
   let outcome
   try {
@@ -253,7 +253,7 @@ export type WorkspaceCaptureHooks = {
   seams?: CaptureSeams
   /** Told the Workspace-relative paths scout wrote (the new file and the folder's manifest), so the caller can register them as touched. */
   wrote?: (paths: string[]) => void
-  /** Runs last before scout is spawned (after the write gate); throws to refuse. The command line asks the owner lock here. */
+  /** Runs last before scout is spawned (after the write gate); throws to refuse. The command line asks its write session here. */
   beforeSpawn?: () => void | Promise<void>
 }
 

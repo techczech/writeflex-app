@@ -1,0 +1,53 @@
+/* The file-versions panel in the Folio Inspector (Folio versions ticket 19). After the locked mockup
+   docs/design/2026-11-02-folio-versions/mockup/locked/ scene `asset`: a bounded card, the working copy first, each version with the
+   Folio versions that used it, four plain buttons. Restore and Save as a copy are modals on the Save sheet's own classes (.fvs-*). */
+.fvp-section{margin:0 0 10px;color:var(--ink-2);font:12.5px/1.45 var(--ui)}
+.fvp-list{display:grid;gap:2px;margin:0;padding:0;list-style:none}
+.fvp-file{display:flex;align-items:center;gap:7px;width:100%;padding:6px 12px;border:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.fvp-file:hover{background:var(--hover)}
+.fvp-file[aria-current="true"]{background:var(--accent-soft)}
+.fvp-file svg{width:14px;height:14px;flex:none;color:var(--ink-3)}
+.fvp-file .n{margin-left:auto;font-size:11px;color:var(--ink-3);white-space:nowrap}
+.fvp-file:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fvp{margin:8px 12px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--bg-pane)}
+.fvp-head{display:flex;align-items:center;gap:6px;margin:0;padding:6px 12px;background:var(--bg-sunk);font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);border-bottom:1px solid var(--line)}
+.fvp-head svg{width:13px;height:13px;flex:none}
+.fvp-head .path{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;max-width:55%}
+.fvp-rows{margin:0;padding:0;list-style:none}
+.fvp-row{display:flex;gap:9px;align-items:flex-start;width:100%;padding:8px 12px;border:0;border-bottom:1px solid var(--line-soft);background:transparent;color:var(--ink);font:inherit;text-align:left}
+button.fvp-row{cursor:pointer}
+button.fvp-row:hover{background:var(--hover)}
+.fvp-row[aria-pressed="true"]{background:var(--accent-soft)}
+.fvp-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fvp-row>svg{width:14px;height:14px;flex:none;margin-top:3px;color:var(--ink-3)}
+.fvp-row .t{flex:1;min-width:0;display:grid;gap:2px}
+.fvp-row .nm{font-weight:600;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.fvp-row .meta{font-size:11.5px;color:var(--ink-3)}
+.fvp-chip{font-weight:500;font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);color:var(--ink-2);background:var(--bg-elev)}
+.fvp-chip.acc{border-color:color-mix(in srgb,var(--accent) 40%,var(--line));color:var(--accent);background:var(--accent-soft)}
+.fvp-chip.warn{border-color:color-mix(in srgb,var(--amber) 40%,var(--line));color:var(--ink);background:var(--amber-soft)}
+.fvp-actions{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px}
+.fvp-btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg-elev);font:12px var(--ui);color:var(--ink-2);white-space:nowrap}
+.fvp-btn svg{width:13px;height:13px;flex:none}
+.fvp-btn[aria-disabled="true"],.fvp-btn:disabled{opacity:.5;cursor:default}
+.fvp-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fvp-btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.fvp-name{display:flex;gap:6px;padding:8px 12px}
+.fvp-name input{flex:1;min-width:0;height:28px;padding:0 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg-elev);color:var(--ink);font:12.5px var(--ui)}
+.fvp-name input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.fvp-note{margin:0;padding:6px 12px 8px;font-size:11.5px;color:var(--ink-3);line-height:1.45}
+.fvp-err{margin:0;padding:6px 12px;color:var(--danger);font-size:12px}
+.fvp-compare{border-top:1px solid var(--line);padding:8px 12px}
+.fvp-compare h4{margin:0 0 6px;font:600 11.5px var(--ui);color:var(--ink-2);display:flex;gap:8px;align-items:center}
+.fvp-compare h4 button{margin-left:auto}
+.fvp-scroll{max-width:100%;overflow:auto;border:1px solid var(--line-soft);border-radius:6px}
+.fvp-table{border-collapse:collapse;font:12px var(--ui);width:100%}
+.fvp-table th{padding:3px 8px;background:var(--bg-sunk);font:600 10.5px var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);text-align:left;white-space:nowrap}
+.fvp-table td{padding:3px 8px;border-top:1px solid var(--line-soft);white-space:nowrap}
+.fvp-table .c{background:var(--amber-soft)}
+.fvp-table .c .old{color:var(--ink-3)}
+.fvp-table .c ins{text-decoration:none;font-weight:600}
+.fvp-table .c del{color:var(--ink-3)}
+.fvp-empty{padding:12px;color:var(--ink-3)}
+.fvs-sheet.fvs-file{width:min(560px,calc(100vw - 48px))}
+.fvs-file-list{margin:6px 0 0;padding-left:18px;font-size:12.5px;line-height:1.5;color:var(--ink-2)}

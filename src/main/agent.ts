@@ -1,3 +1,4 @@
+import { guardReaderAcceptance } from './sharing-reader-notes-run'
 import { prepareVersionRestore, versionMovesForRestore } from './version-moves'
 import { assertCollectionWritable } from './collection-write-gate'
 import type { AssistantMode, AssistantTurnUndo, AssistantTurnsState, AssistantTurnActivity } from '../shared/assistant-turns'
@@ -40,7 +41,8 @@ import { buildWriteFlexManifest, resolveProseInsert, resolveProseInsertAt, resol
 import { objectBlock } from '../shared/object-markup'
 import { queueThenTurn } from './collection-write-order'
 import { minimiseProposedReplacement } from './proposed-replacement'
-import { placeRecordedReplacement } from './recorded-placement'
+import { placeRecordedReplacement, stagedInsertUnplaced } from './recorded-placement'
+import { folioRevisionOf } from '../shared/folio-version-stage'
 import { applyFrontmatterEdit, frontmatterEditOf } from './frontmatter-change'
 import { acceptOrder, bulkAcceptTargets, byDocument, MOVE_LEFT_REASON, type BulkAcceptOutcome } from './outside-bulk-accept'
 import type { OutsideSource } from '../shared/outside-source'
@@ -57,7 +59,7 @@ import { documentOnlyView, type DocumentOnlyView } from './document-only-workspa
 import { WritesPausedError, collectionWritesPaused } from './collection-write-gate'
 import { gatedSnapshots, type CollectionSnapshots } from './gated-snapshots'
 import { outsideMoveAfterOf, outsideSourceOf, readerNoteOf, unplaceableIn, wholeDocumentMismatch, type Unplaceable } from './outside-change'
-import { snapshotVersionOfSavedText } from './saved-text-version'
+import { snapshotBytesOfSavedText, snapshotVersionOfSavedText } from './saved-text-version'
 import { addHeadingAcceptRefusal } from './folio-part-proposals'
 import { WRITEFLEX_AGENT_AUTHOR } from './versions'
 import { recordMainProcessDiagnostic } from './shutdown'
@@ -1313,7 +1315,13 @@ export class WorkspaceAgent {
    * (`queueThenTurn`, the one order): accepting may run a capability that asks for it.
    */
   private resolveChangeOnce(changeId: string, action: 'accept' | 'reject'): Promise<ResolveChangeResult> {
-    return queueThenTurn(this.scrapQueue, this.workspace, () => this.resolveChangeInTurn(changeId, action))
+    return queueThenTurn(this.scrapQueue, this.workspace, async () => {
+      const candidate = action === 'accept' ? await this.changes?.get(changeId) : null
+      if (candidate && (candidate.status === 'pending' || candidate.status === 'held') && !closedReasonOf(candidate)) {
+        return guardReaderAcceptance(this.workspace.root, candidate, () => this.resolveChangeInTurn(changeId, action))
+      }
+      return this.resolveChangeInTurn(changeId, action)
+    })
   }
 
   /** Accept a live suggestion through the same door as the margin callout, answered as a Change's decision. */
@@ -1376,7 +1384,7 @@ export class WorkspaceAgent {
     if (suggestionId !== undefined && live) {
       if (action === 'reject') {
         const { settlementWarning: warning } = await this.discardSuggestion(suggestionId)
-        return { applied: true, ...(warning ? { message: `Change rejected, but its Agent note failed: ${warning}` } : {}) }
+        return { applied: true, ...(warning ? { message: `Change declined, but its Agent note failed: ${warning}` } : {}) }
       }
       const change = await this.changes?.get(changeId)
       if (change?.editClass === 'move' && change.moveFrom && change.moveTo) {
@@ -1418,7 +1426,7 @@ export class WorkspaceAgent {
         // placed by the same function that judged it when it was added (`resolveOutsideInsert`: with
         // no anchor, at the end of the document); the in-app agent's keeps its own placement.
         const outside = outsideSourceOf(change) !== null
-        const written = await this.applyToDocument(change, (content) => addHeadingChecked(change, content, (
+        const written = await this.applyToDocument(change, (content) => (folioRevisionOf(change) !== null ? stagedInsertUnplaced(content, change) : null) ?? addHeadingChecked(change, content, (
           change.anchor && change.anchor.from === change.anchor.to && change.insertAfter === undefined
             ? resolveProseInsertAt(content, change.anchor.from, change.newText).nextContent
             : outside
@@ -1469,7 +1477,7 @@ export class WorkspaceAgent {
       ? await this.settlementWarning(agentObjectFromChange(change), 'discarded', rejectedOrigin)
       : undefined
     this.onChangesChanged?.()
-    return { applied: true, ...(warning ? { message: `Change rejected, but its Agent note failed: ${warning}` } : {}) }
+    return { applied: true, ...(warning ? { message: `Change declined, but its Agent note failed: ${warning}` } : {}) }
   }
 
   /**
@@ -2105,6 +2113,11 @@ export class WorkspaceAgent {
    */
   async snapshotReviewVersion(relPath: string): Promise<VersionSnapshotResult> {
     return snapshotVersionOfSavedText({ workspace: this.workspace, snapshots: this.snapshots, sessionId: this.sessionId(), path: relPath })
+  }
+
+  /** `snapshotReviewVersion` for bytes the caller already read and judged (a file version, file-versions.ts): stores exactly them, never reads the file again. */
+  async snapshotVersionBytes(relPath: string, bytes: Uint8Array): Promise<VersionSnapshotResult> {
+    return snapshotBytesOfSavedText({ workspace: this.workspace, snapshots: this.snapshots, sessionId: this.sessionId(), path: relPath, bytes })
   }
 
   async abort(): Promise<void> {

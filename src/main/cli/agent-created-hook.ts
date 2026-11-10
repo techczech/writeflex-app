@@ -9,8 +9,8 @@
  *     block; text that already carries the key keeps the value it came with.
  *  2. A RECORD IN WRITEFLEX'S HISTORY FOR THE FILE: a first version of the document, named `Created
  *     by Claude Code` and authored by that source, saved through the one version-save route there is
- *     (`WriteAccess.saveVersion`: the command line's guarded history writer under its lock with the
- *     app closed, the app's own stores when it carries out the request). The History pane lists it
+ *     (`WriteAccess.saveVersion`: the command line's guarded history writer when the app on this
+ *     computer does not have the Collection open, the app's own stores when it carries out the request). The History pane lists it
  *     like any version and can show and restore its text; nothing in the renderer changes.
  *
  * WHO. The source is what the caller declared (`--source`, global or the operation's own, or

@@ -11,3 +11,4 @@ test-results/
 playwright-report/
 sharing-service-dist/
 sharing-service-dist.staged-*/
+agent-skill-dist/

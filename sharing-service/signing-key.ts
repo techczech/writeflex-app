@@ -18,6 +18,7 @@
 // clears its storage. It would end every owner token, so no app could publish to or turn off any
 // share again (wrangler.jsonc carries the same warning).
 import { errorResponse, jsonResponse, registryStub, type Env } from './http.ts'
+import { ShareDirectory } from './share-directory.ts'
 import { NoteBudgetTable } from './note-budget.ts'
 
 const SIGNING_KEY_PATH = '/internal/signing-key'
@@ -71,15 +72,17 @@ export class SigningKeyTable {
 export class SharingRegistry {
   private readonly keys: SigningKeyTable
   private readonly budget: NoteBudgetTable
+  private readonly directory: ShareDirectory
 
   constructor(state: DurableObjectState, _env: unknown) {
     this.keys = new SigningKeyTable(state.storage.sql)
     this.budget = new NoteBudgetTable(state.storage.sql)
+    this.directory = new ShareDirectory(state.storage.sql)
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
-    return this.keys.route(request, url) ?? await this.budget.route(request, url) ?? errorResponse('not_found', 'Registry route not found.', 404)
+    return this.keys.route(request, url) ?? await this.directory.route(request, url) ?? await this.budget.route(request, url) ?? errorResponse('not_found', 'Registry route not found.', 404)
   }
 }
 

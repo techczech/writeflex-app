@@ -296,7 +296,7 @@ export function useWriterMode(deps: WriterModeDeps): WriterMode {
     setWriterMode(mode)
     if (mode === 'drafting') void foldWriterEdits(active)
     else editorRef.current?.revealDraftingSession(active)
-    flash(mode === 'reviewing' ? "Reviewing — showing this session's edits" : 'Drafting — edits recorded quietly')
+    flash(mode === 'reviewing' ? "Track my changes on — showing this session's edits" : 'Track my changes off — edits recorded quietly')
   }, [active, root, flash, foldWriterEdits, editorRef])
 
   const clearFileWriterState = useCallback((path: string) => {

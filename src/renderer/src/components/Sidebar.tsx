@@ -1,11 +1,12 @@
+import { SyncMark } from '../sync/SyncStatus'
+import { syncMarkFor, type SyncPresentation } from '../sync/sync-status'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { commandRan } from '../commands/command-ran'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import {
-  Archive,
   BookOpenText,
   BookMarked,
-  Bot,
+  Sparkles,
   ChevronDown,
   ChevronsUpDown,
   FileText,
@@ -20,11 +21,9 @@ import {
   Plus,
   Search,
   Settings,
-  Star,
   StickyNote,
   Link2,
-  Tag,
-  Trash2,
+  SlidersHorizontal,
   X,
 } from 'lucide-react'
 import type { MarkdownFile } from '../../../preload'
@@ -36,10 +35,11 @@ import { hasSearchTerms } from '../file-query'
 import { createSidebarSearch, searchResultRows } from '../sidebar-search'
 import { CompletionPop, PrefixHints, useSearchAssist } from './FileSearchAssist'
 import { vaultCountText } from '../vault-sidebar'
+import { SearchField } from './SearchField'
 import { useVaultSidebarPrefs } from '../hooks/useVaultSidebarPrefs'
 import { VaultSwitcherMenu, type SwitcherChoice } from './VaultSwitcherMenu'
 import { useVaultSidebar } from '../hooks/useVaultSidebar'
-import { movePin, pinnedRows } from '../vault-pins'
+import { migrateFavouritesToPins, movePin, pinnedRows } from '../vault-pins'
 import { PIN_DOCUMENT_EXTENSION, type VaultWriteResult } from '../../../shared/vault'
 import type { ActionRow } from '../commands/actions-here'
 import { BinPopover, MoveFolderPicker } from './file-menu'
@@ -68,6 +68,7 @@ export type SidebarProps = {
   files: MarkdownFile[]
   /** Checklist notes' "done / total" (checkbox-lists frame 8); a file absent from it has no chip. */
   checklistProgress?: ChecklistProgressMap
+  syncMarks?: SyncPresentation['marks']
   /** Review items waiting per piece (path to count), shown as a count on the piece's row (0.23 ticket 04). */
   waitingCounts?: Readonly<Record<string, number>>
   /** Every workspace directory (including EMPTY ones — a just-created folder is visible, ADR-0017). */
@@ -167,8 +168,8 @@ function StarButton({ path, on, onToggle }: { path: string; on: boolean; onToggl
       tabIndex={0}
       className={on ? 'fav-star on' : 'fav-star'}
       aria-pressed={on}
-      aria-label={on ? 'Unpin favourite' : 'Pin favourite'}
-      title={on ? 'Unpin from Favourites' : 'Pin to Favourites'}
+      aria-label={on ? 'Unpin' : 'Pin to the top of the sidebar'}
+      title={on ? 'Unpin' : 'Pin to the top of the sidebar'}
       onClick={(e) => {
         e.stopPropagation() // don't also open the row we're pinning
         onToggle(path)
@@ -181,7 +182,7 @@ function StarButton({ path, on, onToggle }: { path: string; on: boolean; onToggl
         }
       }}
     >
-      <Star className="icon sm" />
+      <Pin className="icon sm" />
     </span>
   )
 }
@@ -221,6 +222,7 @@ function SidebarView({
   files,
   checklistProgress = NO_CHECKLIST_PROGRESS,
   waitingCounts,
+  syncMarks,
   folders,
   pieceCount,
   folderPiecePaths = new Set(),
@@ -274,7 +276,8 @@ function SidebarView({
   }, [onSwitcherOpenChange])
   const [tip, setTip] = useState<{ text: string; mono: boolean; x: number; y: number } | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
-  const [filterVisible, setFilterVisible] = useState(false)
+  const [viewOpen, setViewOpen] = useState(false)
+  const viewPopRef = useRef<HTMLDivElement | null>(null)
   const [filterQuery, updateFilterQuery] = useState('')
   const [searchCollapse, setSearchCollapse] = useState<{ query: string; paths: Set<string> }>({ query: '', paths: new Set() })
   const setFilterQuery = useCallback((query: string): void => {
@@ -300,12 +303,20 @@ function SidebarView({
   useEffect(() => setCollapsed(readCollapsed(root)), [root])
   useEffect(() => {
     if (focusFilterTick === 0) return
-    setFilterVisible(true)
+    requestAnimationFrame(() => filterInputRef.current?.focus())
   }, [focusFilterTick])
   useEffect(() => {
-    if (!filterVisible) return
-    requestAnimationFrame(() => filterInputRef.current?.focus())
-  }, [filterVisible, focusFilterTick])
+    if (!viewOpen) return
+    const outside = (event: PointerEvent): void => {
+      const target = event.target as Node
+      if (viewPopRef.current?.contains(target) || (target as Element).closest?.('[data-testid="files-view-button"]')) return
+      setViewOpen(false)
+    }
+    const escape = (event: KeyboardEvent): void => { if (event.key === 'Escape') { event.stopPropagation(); setViewOpen(false) } }
+    document.addEventListener('pointerdown', outside, true)
+    document.addEventListener('keydown', escape, true)
+    return () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', escape, true) }
+  }, [viewOpen])
 
   // ⌘N / ⌃⌘N from App: start a ghost row (dialog-free creation).
   useEffect(() => {
@@ -364,7 +375,13 @@ function SidebarView({
     () => (isVault ? vaultSidebarTree(focusedTree, { writingOnly: prefs.writingOnly, titles: prefs.titles, index: vaultIndex }) : focusedTree),
     [isVault, focusedTree, prefs, vaultIndex],
   )
-  const searchIndex = useMemo(() => createSidebarSearch(vaultTree, files, vaultIndex), [vaultTree, files, vaultIndex])
+  // R12: the filter searches everything, including what "Writing only" hides, and marks those results.
+  const searchTree = useMemo(
+    () => (isVault ? vaultSidebarTree(focusedTree, { writingOnly: false, titles: prefs.titles, index: vaultIndex }) : focusedTree),
+    [isVault, focusedTree, prefs.titles, vaultIndex],
+  )
+  const hiddenByView = useCallback((path: string): boolean => isVault && prefs.writingOnly && (vaultIndex?.hidden.paths.some((hidden) => path === hidden || path.startsWith(`${hidden}/`)) ?? false), [isVault, prefs.writingOnly, vaultIndex])
+  const searchIndex = useMemo(() => createSidebarSearch(searchTree, files, vaultIndex), [searchTree, files, vaultIndex])
   const searchHits = useMemo(() => searchIndex.search(filterQuery), [searchIndex, filterQuery])
   const searchCollapsed = useMemo(() => searchCollapse.query === filterQuery ? searchCollapse.paths : new Set<string>(), [searchCollapse, filterQuery])
   const shownTree = useMemo(() => hasFilter ? searchResultRows(searchHits, searchCollapsed) : vaultTree, [hasFilter, searchHits, searchCollapsed, vaultTree])
@@ -401,6 +418,31 @@ function SidebarView({
       onStatus('The pinned items could not be changed.')
     }
   }, [onStatus])
+  // Favourites merged into Pinned: in a vault, an old favourite becomes a pin and stops being a favourite only once
+  // the pin exists (Sol S3). Each favourite is tried once per folder opening; one that could not be pinned stays a
+  // favourite and is tried again the next time. The toggle is not repeated for a favourite already handled.
+  const migratingFavourites = useRef(false)
+  const handledFavourites = useRef({ root, paths: new Set<string>() })
+  useEffect(() => {
+    if (handledFavourites.current.root !== root) handledFavourites.current = { root, paths: new Set() }
+    const handled = handledFavourites.current.paths
+    const todo = favourites.filter((path) => !handled.has(path))
+    // Wait for the file list: without it every favourite would look like a missing document.
+    if (!isVault || !pins || migratingFavourites.current || todo.length === 0 || files.length === 0) return
+    migratingFavourites.current = true
+    todo.forEach((path) => handled.add(path))
+    const pinnedNow = new Set(pins)
+    const documents = new Set(files.map((file) => file.path))
+    void migrateFavouritesToPins({
+      favourites: todo,
+      isPinned: (path) => pinnedNow.has(path),
+      canPin: (path) => pinnable(path, 'file') && documents.has(path),
+      addPin: (path) => window.writeflex.vault.addPin(path),
+      removeFavourite: onToggleFavourite,
+    }).then(({ message }) => { if (message) onStatus(message) })
+      .finally(() => { migratingFavourites.current = false })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root, isVault, pins, favourites, files])
   /** Work folders in the Titles view: one row that opens, never expands. */
   const workFolderKeys = useMemo(() => {
     const out = new Set<string>()
@@ -790,7 +832,7 @@ function SidebarView({
       commandRan('sheet.FileSearch.3')
       event.preventDefault()
       event.stopPropagation()
-      setFilterVisible(false)
+      filterInputRef.current?.blur()
       focusRow((focusKey && visibleRows.some((row) => row.key === focusKey) ? focusKey : visibleRows[0]?.key) ?? null)
     }
   }
@@ -831,6 +873,10 @@ function SidebarView({
     )
   }
 
+  function syncMark(path: string, descendants = false, end = false, rollup = false): JSX.Element | null {
+    return syncMarks ? <SyncMark row={syncMarkFor(syncMarks, path, descendants)} end={end} rollup={rollup} /> : null
+  }
+
   function fileRow(node: TreeFile, depth: number): JSX.Element {
     if (renaming && !renaming.isNew && renaming.key === node.path) return renameRow('file', depth, node.name, node.path)
     const active = node.path === activePath
@@ -863,13 +909,14 @@ function SidebarView({
           setDropDir(null)
         }}
       >
-        <span className="gtr" aria-hidden="true" />
+        <span className="gtr">{syncMark(node.path)}</span>
         {glyphFor(node)}
-        <span className="flex-name">{node.label ?? node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Workspace root'}</span>}</span>
+        <span className="flex-name">{node.label ?? node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Vault root'}</span>}</span>
+        {hasFilter && hiddenByView(node.path) && <span className="file-hidden-tag" data-testid="file-hidden-tag" title="Hidden by Writing only; shown here because a search includes everything">hidden</span>}
         <ChecklistProgressChip path={node.path} progress={checklistProgress} />
         {(waitingCounts?.[node.path] ?? 0) > 0 && <span className="wait-count" data-waiting-count={waitingCounts![node.path]} title={`${waitingCounts![node.path]} waiting for review`} aria-label={`${waitingCounts![node.path]} waiting for review`}><MessagesSquare className="icon" aria-hidden="true" />{waitingCounts![node.path]}</span>}
-        {node.path.split('/').includes('agent-notes') && <Bot className="agent-provenance" aria-label="Agent-authored Piece" />}
-        <StarButton path={node.path} on={favSet.has(node.path)} onToggle={onToggleFavourite} />
+        {node.path.split('/').includes('agent-notes') && <Sparkles className="agent-provenance" aria-label="Agent-authored Piece" />}
+        {!isVault && <StarButton path={node.path} on={favSet.has(node.path)} onToggle={onToggleFavourite} />}
         {pinButton(node.path, node.label ?? node.name, true, 'file')}
       </button>
     )
@@ -947,9 +994,9 @@ function SidebarView({
           openMenuFor(node.path, 'folder', { x: e.clientX, y: e.clientY })
         }}
       >
-        <span className="gtr" aria-hidden="true" />
+        <span className="gtr">{syncMark(node.path, true)}</span>
         {workRowIcon(true, node.work) === 'folio' ? <BookMarked className="icon sm" aria-label="Folio" /> : <Folder className="icon sm" aria-label="Folder piece" />}
-        <span className="flex-name">{node.label ?? node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Workspace root'}</span>}</span>
+        <span className="flex-name">{node.label ?? node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Vault root'}</span>}</span>
         {pinButton(node.path, node.label ?? node.name, true)}
       </button>
     )
@@ -1018,11 +1065,12 @@ function SidebarView({
               : <FolderOpen className="icon sm" aria-label={folderPiecePaths.has(node.path) ? 'Folder Piece' : undefined} />}
           </button>
           <button className="fname" tabIndex={-1} title={agentFolder ? 'Agent notes — written by the agent, not by you' : (isVault && !prefs.titles ? (vaultTipFor(node)?.text ?? node.name) : node.name)} onClick={() => onOpenCollection(node.path)}>
-            {node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Workspace root'}</span>}
+            {node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Vault root'}</span>}
           </button>
           {dashboardButton(node.name, node.path, focusKey === node.path)}
           {pinButton(node.path, node.name)}
-          {agentFolder && <Bot className="agent-provenance" aria-label="Agent-authored folder" />}
+          {isCollapsed && syncMark(node.path, true, true, true)}
+          {agentFolder && <Sparkles className="agent-provenance" aria-label="Agent-authored folder" />}
         </div>
         {/* A collapsed folder's rows are not drawn at all (R6): the ring (visibleRows) already skips them,
             and every path that lands on a row inside one expands its ancestors first. */}
@@ -1155,6 +1203,7 @@ function SidebarView({
                       )}
                     </>
                   )}
+                  {!row.missing && syncMark(row.path, !isDocument, true)}
                 </div>
               </div>
             )
@@ -1191,6 +1240,7 @@ function SidebarView({
   const menuNode = menu ? nodeFor(menu.key) : null
   const moveNode = movePick ? nodeFor(movePick.key) : null
   const binNode = binAsk ? nodeFor(binAsk.key) : null
+  const hiddenNow = isVault && prefs.writingOnly && vaultIndex ? vaultIndex.hidden.paths.length : 0
   const moveOptions = movePick
     ? [
         ...allFolders
@@ -1200,16 +1250,14 @@ function SidebarView({
             return dir !== currentDir
           })
           .map((dir) => ({ label: dir, dir: dir as string | null })),
-        ...(movePick.key.includes('/') ? [{ label: 'Workspace root', dir: null }] : []),
+        ...(movePick.key.includes('/') ? [{ label: 'Vault root', dir: null }] : []),
       ]
     : []
 
   return (
     <>
-      <div className="ws-row lv-root">
-        <ChevronDown className="icon sm" aria-hidden="true" />
-        {/* The root name is the vault switcher on a vault and on a plain folder alike (spec § Sidebar);
-            a plain folder's dashboard is its Folder dashboard button beside it. */}
+      <div className="lv-head ws-row" data-testid="files-head">
+        {/* One row (R1/R2): the vault switcher, a real filter field, and a View popover that holds the rest. */}
         <button
           ref={rootNameRef}
           className="wsname"
@@ -1221,85 +1269,99 @@ function SidebarView({
           <span>{isVault ? vault.settings.name : workspaceName}</span>
           <ChevronsUpDown className="icon sm" aria-hidden="true" />
         </button>
+        <SearchField
+          ref={filterInputRef}
+          value={filterQuery}
+          onValueChange={(value, caret) => assist.onChange(value, caret)}
+          onFocus={assist.onFocus}
+          onBlur={assist.onBlur}
+          onSelect={(event) => assist.onSelect(event.currentTarget.selectionStart)}
+          onKeyDown={onFilterKeyDown}
+          placeholder="Find a file (⇧⌘K)"
+          aria-label="Find a file by name"
+          clearLabel="Clear file filter (Esc)"
+        />
         {!isVault && dashboardButton(workspaceName, '', false, true)}
-        {onOpenSharesList && (
-          <button className={`fdash${sharesListOn ? ' on' : ''}`} title={`Shares list for ${workspaceName}`} aria-label={`Shares list for ${workspaceName}`} aria-pressed={sharesListOn} data-testid="shares-list-button" onClick={onOpenSharesList}>
-            <Link2 className="icon" aria-hidden="true" />Shares
-          </button>
-        )}
-        <span className="spacer" />
-        <button className="tbtn" title="Filter files" aria-label="Filter files" onClick={() => {
-          setFilterVisible(true)
-        }}>
-          <span className="filter-glyph" aria-hidden="true">⌕</span>
-        </button>
-      </div>
-      {isVault && vaultIndex && (
-        <div className="lv-count">
-          <span>{vaultCountText(vaultIndex.works, vault.settings.statusMap)}</span>
-          {/* Until the vault dashboard exists this opens today's Folder dashboard for the root. */}
-          <button
-            className={`fdash${dashboardDir === '' ? ' on' : ''}`}
-            title="Open the dashboard"
-            aria-label={`Dashboard for ${vault.settings.name}`}
-            onClick={() => onOpenCollection('')}
-          >
-            Dashboard
-          </button>
-        </div>
-      )}
-      {isVault && (
-        <div className="lv-fbar">
-          <div className="l1">
-            <span className={`lv-sel${prefs.writingOnly ? ' on' : ''}`}>
-              <select
-                aria-label="Which files the sidebar shows"
-                value={prefs.writingOnly ? 'writing' : 'all'}
-                onChange={(event) => choosePrefs({ writingOnly: event.target.value === 'writing' })}
-              >
-                <option value="writing">Writing only</option>
-                <option value="all">All files</option>
-              </select>
-              <ChevronDown className="icon sm" aria-hidden="true" />
-            </span>
-            <div className="lv-seg" role="radiogroup" aria-label="Show in sidebar">
-              {([['Titles', true], ['File names', false]] as const).map(([label, value]) => (
-                <button
-                  key={label}
-                  type="button"
-                  role="radio"
-                  aria-checked={prefs.titles === value}
-                  tabIndex={prefs.titles === value ? 0 : -1}
-                  className={prefs.titles === value ? 'on' : ''}
-                  onClick={() => choosePrefs({ titles: value })}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-                    event.preventDefault()
-                    choosePrefs({ titles: !prefs.titles })
-                    const sibling = event.currentTarget.parentElement?.querySelector<HTMLElement>('button:not([aria-checked="true"])')
-                    requestAnimationFrame(() => sibling?.focus())
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-          {prefs.writingOnly
-            ? vaultIndex && (
-              <div className="l2">
-                <span>{vaultIndex.hidden.countText}</span>
-                <button type="button" className="lv-link" onClick={() => choosePrefs({ writingOnly: false })}>Show all files</button>
-              </div>
-            )
-            : (
-              <div className="l2">
-                <span>Showing everything in the folder</span>
-                <button type="button" className="lv-link" onClick={() => choosePrefs({ writingOnly: true })}>Writing only</button>
+        {(isVault || onOpenSharesList) && <button
+          type="button"
+          className="lv-viewbtn"
+          data-testid="files-view-button"
+          title={hiddenNow > 0 ? `View: ${vaultIndex?.hidden.countText}` : 'View: what the sidebar shows'}
+          aria-label={hiddenNow > 0 ? `View options, ${vaultIndex?.hidden.countText}` : 'View options'}
+          aria-haspopup="dialog"
+          aria-expanded={viewOpen}
+          onClick={() => setViewOpen((open) => !open)}
+        >
+          <SlidersHorizontal className="icon" aria-hidden="true" />
+          {hiddenNow > 0 && <span className="lv-mark" data-testid="files-hidden-mark" aria-hidden="true" />}
+        </button>}
+        {viewOpen && (
+          <div className="lv-viewpop" role="dialog" aria-label="View options" data-testid="files-view-popover" ref={viewPopRef} onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setViewOpen(false) } }}>
+            {isVault && vaultIndex && <div className="vp-row"><span>{vaultCountText(vaultIndex.works, vault.settings.statusMap)}</span></div>}
+            {isVault && (
+              <div className="vp-row">
+                <span className="lbl">Show</span>
+                <span className={`lv-sel${prefs.writingOnly ? ' on' : ''}`}>
+                  <select aria-label="Which files the sidebar shows" value={prefs.writingOnly ? 'writing' : 'all'} onChange={(event) => choosePrefs({ writingOnly: event.target.value === 'writing' })}>
+                    <option value="writing">Writing only</option>
+                    <option value="all">All files</option>
+                  </select>
+                  <ChevronDown className="icon sm" aria-hidden="true" />
+                </span>
               </div>
             )}
-        </div>
-      )}
+            {isVault && (
+              <div className="vp-row">
+                <span className="lbl">Name by</span>
+                <div className="lv-seg" role="radiogroup" aria-label="Show in sidebar">
+                  {([['Titles', true], ['File names', false]] as const).map(([label, value]) => (
+                    <button
+                      key={label}
+                      type="button"
+                      role="radio"
+                      aria-checked={prefs.titles === value}
+                      tabIndex={prefs.titles === value ? 0 : -1}
+                      className={prefs.titles === value ? 'on' : ''}
+                      onClick={() => choosePrefs({ titles: value })}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+                        event.preventDefault()
+                        choosePrefs({ titles: !prefs.titles })
+                        const sibling = event.currentTarget.parentElement?.querySelector<HTMLElement>('button:not([aria-checked="true"])')
+                        requestAnimationFrame(() => sibling?.focus())
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {isVault && vaultIndex && (
+              prefs.writingOnly
+                ? <div className="vp-hidden" data-testid="files-hidden-line"><span>{vaultIndex.hidden.countText}</span>{hiddenNow > 0 && <button type="button" className="lv-link" onClick={() => choosePrefs({ writingOnly: false })}>Show all</button>}</div>
+                : <div className="vp-hidden"><span>Showing everything in the folder</span><button type="button" className="lv-link" onClick={() => choosePrefs({ writingOnly: true })}>Writing only</button></div>
+            )}
+            <div className="vp-row">
+              {isVault && (
+                <button
+                  className={`fdash${dashboardDir === '' ? ' on' : ''}`}
+                  title="Open the dashboard"
+                  aria-label={`Dashboard for ${vault.settings.name}`}
+                  onClick={() => { setViewOpen(false); onOpenCollection('') }}
+                >
+                  Dashboard
+                </button>
+              )}
+              {onOpenSharesList && (
+                <button className={`fdash${sharesListOn ? ' on' : ''}`} title={`Shares list for ${workspaceName}`} aria-label={`Shares list for ${workspaceName}`} aria-pressed={sharesListOn} data-testid="shares-list-button" onClick={() => { setViewOpen(false); onOpenSharesList() }}>
+                  <Link2 className="icon" aria-hidden="true" />Shares
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
       {!isVault && pieceCount !== undefined && (
         <div className="ws-count">
           {pieceCount} {pieceCount === 1 ? 'piece' : 'pieces'} · {folderPiecePaths.size} folder {folderPiecePaths.size === 1 ? 'piece' : 'pieces'}
@@ -1319,32 +1381,11 @@ function SidebarView({
         />
       )}
 
-      {filterVisible && <div className="file-filter" aria-label="Filter files">
-        <div className="facet-search file-filter-search">
-          <Search className="icon sm" aria-hidden="true" />
-          <input
-            ref={filterInputRef}
-            type="text"
-            value={filterQuery}
-            onChange={(event) => assist.onChange(event.target.value, event.target.selectionStart)}
-            onFocus={assist.onFocus}
-            onBlur={assist.onBlur}
-            onSelect={(event) => assist.onSelect(event.currentTarget.selectionStart)}
-            onKeyDown={onFilterKeyDown}
-            placeholder="Find files — fo: folder · fi: file name"
-            aria-label="Filter files by name"
-            spellCheck={false}
-          />
-          {filterQuery && (
-            <button className="filter-clear" aria-label="Clear file filter" title="Clear filter (Esc)" onClick={() => { setFilterQuery(''); filterInputRef.current?.focus() }}>
-              <X className="icon sm" />
-            </button>
-          )}
-        </div>
+      {(filterQuery || assist.completion || assist.hintVisible) && <div className="file-filter" aria-label="Filter files">
         {assist.completion
           ? <CompletionPop completion={assist.completion} active={assist.active} onPick={assist.pick} onHover={assist.setActive} />
           : assist.hintVisible ? <PrefixHints onPick={assist.pickHint} /> : null}
-        <div className="file-filter-count">{hasFilter ? `${shownTree.length} results` : `${filesInFocus} files`} · Esc clears</div>
+        {filterQuery && <div className="file-filter-count">{hasFilter ? `${shownTree.length} results` : `${filesInFocus} files`}{hiddenNow > 0 ? ` · ${hiddenNow} hidden by Writing only are searched too` : ''}</div>}
       </div>}
 
       <div className="tree-region" ref={treeRef} onKeyDown={onTreeKeyDown}>
@@ -1373,10 +1414,10 @@ function SidebarView({
               </div>
             ) : null}
 
-            {!hasFilter && (
+            {!hasFilter && !isVault && favFiles.length > 0 && (
               <>
                 <div className="side-sep" />
-                <div className="side-label">Favourites</div>
+                <div className="side-label">Pinned</div>
                 {favFiles.map((file) => (
                   <button
                     key={`fav:${file.path}`}
@@ -1388,20 +1429,9 @@ function SidebarView({
                     <span className="gtr" aria-hidden="true" />
                     <StarButton path={file.path} on onToggle={onToggleFavourite} />
                     <span className="flex-name">{file.name}</span>
+                    {syncMark(file.path, false, true)}
                   </button>
                 ))}
-
-                <div className="side-sep" />
-                <button className="trow" title="Archive" aria-label="Archive" onClick={() => onStatus('Archive lands later in this build')}>
-                  <span className="gtr" aria-hidden="true" />
-                  <Archive className="icon sm" />
-                  <span className="flex-name">Archive</span>
-                </button>
-                <button className="trow" title="Trash" aria-label="Trash" onClick={() => onStatus('Trash lands later in this build')}>
-                  <span className="gtr" aria-hidden="true" />
-                  <Trash2 className="icon sm" />
-                  <span className="flex-name">Trash</span>
-                </button>
               </>
             )}
           </>
@@ -1424,9 +1454,6 @@ function SidebarView({
           onClick={() => onRequestCreate('folder')}
         >
           <FolderPlus className="icon" />
-        </button>
-        <button className="tbtn" title="Tags" aria-label="Tags" onClick={() => onStatus('Tags land later in this build')}>
-          <Tag className="icon" />
         </button>
         <span className="gap" />
         {version && (

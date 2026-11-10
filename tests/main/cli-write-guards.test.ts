@@ -146,7 +146,7 @@ test('a document that is itself a link is never written through, read for copyin
 })
 
 // An operation that loses the owner lock partway stops and writes nothing more, putting back included:
-// tests/main/cli-rollback-lost-lock.test.ts.
+// tests/main/cli-rollback-guards.test.ts.
 
 test('every write asks the shared Collection write gate', async () => {
   expect((await fx.cli(['scrap', 'notes.md', '--text', 'before the pause'])).code).toBe(0)
@@ -180,7 +180,7 @@ test('a Collection whose .writeflex is a link is not changed by the command line
     const result = await fx.cli(argv)
     expect(result.code, argv.join(' ')).toBe(1)
     expect(result.json.error).toMatchObject({ code: 'write-not-permitted' })
-    expect(result.json.error!.message).toContain('cannot be marked as in use')
+    expect(result.json.error!.message).toContain('.writeflex is not an ordinary folder')
   }
   expect(await readdir(target)).toEqual([])
   expect(await readdir(fx.root)).toEqual(before)

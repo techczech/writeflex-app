@@ -286,7 +286,7 @@ export function PlanUnlistedList({ parts, selected = null, onSelect = () => {}, 
           {onToggle && <button type="button" className="unlisted-toggle" data-plan-unlisted-toggle="true" aria-expanded={!closed} aria-label={closed ? `Show the ${parts.length} files not in the outline` : 'Close the list of files not in the outline'} onClick={onToggle}><ChevronDown aria-hidden="true" /></button>}
           <h2>Not in the outline · {parts.length}</h2>
         </div>
-        {!closed && <p className="unlisted-note">Markdown files in this Folio that are not in the running order. Putting one back never changes the file.</p>}
+        {!closed && <p className="unlisted-note">Markdown files in this Folio that are not in the outline. Putting one back never changes the file.</p>}
         {!closed && <div className="parts">
         {parts.map((part, index) => (
           <div className={`part unlisted-part${selected === index ? ' sel' : ''}`} key={`${part.path}-${index}`}>

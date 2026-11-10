@@ -2,12 +2,13 @@
 // (tests/main/secrets-store.test.ts fails if another one does). Everything else goes through the
 // store this opens. The logic, the slots and what the module defends are in secrets-store.ts.
 import { safeStorage } from 'electron'
-import { createSecretsStore, gateCipherForSmoke, type SecretsStore } from './secrets-store'
+import { createSecretsStore, gateCipherForSmoke, type SecretsStore, type SecretsFiles } from './secrets-store'
 
 /** The store over the operating system's encryption, for the given user-data folder. */
-export function openSecretsStore(userDataDir: string, smoke = false): SecretsStore {
+export function openSecretsStore(userDataDir: string, smoke = false, files?: SecretsFiles): SecretsStore {
   return createSecretsStore({
     dir: userDataDir,
+    files,
     platform: process.platform,
     cipher: gateCipherForSmoke(() => safeStorage, smoke),
     // Linux only: which keyring holds the key. `basic_text` (a fixed password) and `unknown` are

@@ -4,7 +4,7 @@
  * per pin, in pin order. Folders and documents share the one order. Pure; the sidebar draws it and the
  * preload pin operations change the file.
  */
-import type { VaultPinKind } from '../../shared/vault'
+import type { VaultPinKind, VaultWriteResult } from '../../shared/vault'
 import type { VaultIndex } from '../../shared/vault-index'
 
 export type PinRow = {
@@ -18,7 +18,7 @@ export type PinRow = {
   /** A tooltip in the tree rows' way (the other of title / file name; `mono` for a file name), or null for
    *  the row's plain native title (its path, or `not found`). */
   tip: { text: string; mono: boolean } | null
-  /** `58 works`, `Folio · 11 parts`; empty for a document, when missing, or while the index is not loaded. */
+  /** `58 pieces`, `Folio · 11 parts`; empty for a document, when missing, or while the index is not loaded. */
   countText: string
   /** Nothing pinnable stands at the path: drawn greyed with `not found` and a Remove button. */
   missing: boolean
@@ -77,7 +77,7 @@ export function pinnedRows(input: {
       else {
         const prefix = `${path}/`
         const n = index.works.filter((work) => work.path === path || work.path.startsWith(prefix)).length
-        countText = plural(n, 'work', 'works')
+        countText = plural(n, 'piece', 'pieces')
       }
     }
     const title = titles && !missing && own && own.kind !== 'file' ? index?.labels[path] : undefined
@@ -97,4 +97,38 @@ export function movePin(pins: readonly string[], path: string, beforeIndex: numb
   const at = Math.max(0, Math.min(rest.length, beforeIndex > from ? beforeIndex - 1 : beforeIndex))
   const next = [...rest.slice(0, at), path, ...rest.slice(at)]
   return next.every((pin, i) => pin === pins[i]) ? null : next
+}
+
+/**
+ * Favourites merged into Pinned (in a vault, Sol S3): an old favourite stops being a favourite only once its pin
+ * exists, already there or just made. A favourite that cannot be pinned yet (no such document, or the pin was
+ * refused or failed) stays a favourite for a later try. Running it again moves nothing twice: a favourite that is
+ * already pinned is only removed. In order, one at a time, so the vault's pin writes do not race.
+ */
+export async function migrateFavouritesToPins(input: {
+  favourites: readonly string[]
+  isPinned: (path: string) => boolean
+  canPin: (path: string) => boolean
+  addPin: (path: string) => Promise<VaultWriteResult>
+  removeFavourite: (path: string) => void
+}): Promise<{ moved: string[]; kept: string[]; message: string | null }> {
+  const moved: string[] = []
+  const kept: string[] = []
+  let message: string | null = null
+  for (const path of input.favourites) {
+    if (!input.isPinned(path)) {
+      if (!input.canPin(path)) { kept.push(path); continue }
+      try {
+        const result = await input.addPin(path)
+        if (!result.ok) { kept.push(path); message ??= result.message; continue }
+      } catch {
+        kept.push(path)
+        message ??= 'A favourite could not be pinned; it stays a favourite for now.'
+        continue
+      }
+    }
+    input.removeFavourite(path)
+    moved.push(path)
+  }
+  return { moved, kept, message }
 }

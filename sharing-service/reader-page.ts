@@ -207,7 +207,7 @@ function documentShell(lang: string, title: string, inner: string, styles = STYL
 function root(body: PublishBody, folio: boolean): string {
   const kind = folio ? ' folio' : ''
   const layout = folio ? ' data-layout="folio"' : ''
-  if (!body.comments) return `<div class="rp readonly${kind}"${layout}>`
+  if (!body.comments) return `<div class="rp readonly${kind}"${layout} data-revision="${body.revision}">`
   const author = body.sharedBy ? ` data-author="${escapeHtml(body.sharedBy)}"` : ''
   return `<div class="rp notes${kind}"${layout} data-view="margin" data-comments="on" data-revision="${body.revision}"${author}>`
 }
@@ -229,6 +229,11 @@ export function renderReaderPage(body: PublishBody): string {
   return documentShell(body.lang, body.title,
     `${root(body, false)}${readerBar(body)}<div class="rbody">`
     + `<article class="content">${masthead(body)}${body.parts[0].html ?? ''}${madeWith()}</article>${notes}</div></div>`, styles)
+}
+
+/** A private share GET reveals no publication metadata, prose, or note data. */
+export function renderReaderShell(): string {
+  return documentShell('en', 'Shared text', '<div class="rp" data-person-shell="true"><header class="rbar">Shared with WriteFlex</header><div class="rbody"><article class="content"></article></div></div>', `${STYLES}\n${NOTES_STYLES}\n${LAYOUT_STYLES}`)
 }
 
 /**

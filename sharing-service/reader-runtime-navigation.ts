@@ -8,11 +8,15 @@ export const READER_RUNTIME_NAVIGATION = `
   var button = bar.querySelector('.contents-button'), current = bar.querySelector('.current-section');
   if (!button || !current) return; // Older stored pages keep their original contents links.
   var close = sidebar.querySelector('.close-contents'), scrim = rp.querySelector(':scope > .contents-scrim');
-  var parts = [].slice.call(sidebar.querySelectorAll('.nav-part'));
-  var nodes = [].slice.call(sidebar.querySelectorAll('a.nav-link')).map(function (a) {
+  var parts, nodes;
+  function scan() {
+  parts = [].slice.call(sidebar.querySelectorAll('.nav-part'));
+  nodes = [].slice.call(sidebar.querySelectorAll('a.nav-link')).map(function (a) {
     var el = document.getElementById(a.hash.slice(1));
     return el ? { a: a, el: el, part: a.closest('.nav-part'), section: a.closest('.nav-section') } : null;
   }).filter(Boolean);
+  }
+  scan();
   var lastPart = parts[0] || null, active = null;
   function closeDrawer(restore) {
     rp.classList.remove('nav-open');
@@ -23,9 +27,10 @@ export const READER_RUNTIME_NAVIGATION = `
   if (button) button.addEventListener('click', function () {
     if (rp.classList.contains('nav-open')) return closeDrawer(true);
     rp.classList.add('nav-open'); button.setAttribute('aria-expanded', 'true');
+    close = sidebar.querySelector('.close-contents');
     if (close) close.focus();
   });
-  if (close) close.addEventListener('click', function () { closeDrawer(true); });
+  sidebar.addEventListener('click', function (e) { if (e.target.closest('.close-contents')) closeDrawer(true); });
   if (scrim) scrim.addEventListener('click', function () { closeDrawer(true); });
   document.addEventListener('keydown', function (e) {
     if (!rp.classList.contains('nav-open')) return;
@@ -77,6 +82,7 @@ export const READER_RUNTIME_NAVIGATION = `
   window.addEventListener('scroll', schedule, { passive: true });
   window.addEventListener('resize', schedule);
   window.addEventListener('load', schedule);
+  document.addEventListener('writeflex-content-updated', function () { scan(); active = null; lastPart = null; follow(); });
   follow();
 })();
 `

@@ -12,7 +12,7 @@ The piece about the walk is spread over the files of this folder. This file is t
 - The plan for the magazine is in [[07 Collect and plan]].
 - The second stile needs a file of its own: [[The notch for the dog]].
 
-> **Files and quick open.** <kbd>⇧⌘K</kbd> opens Quick Open: type a few letters of a file's name, in any order, and press <kbd>↵</kbd>. <kbd>⌥⌘]</kbd> and <kbd>⌥⌘[</kbd> open the next and the previous file in the folder. <kbd>⇧⌘E</kbd> opens the Files pane on the left, and **Filter files…** narrows its list as you type. **Clear document…** empties the file you have open, after asking. **Pin this workspace** keeps this folder on the start screen, and **Unpin this workspace** takes it off.
+> **Files and quick open.** <kbd>⇧⌘K</kbd> opens Quick Open: type a few letters of a file's name, in any order, and press <kbd>↵</kbd>. <kbd>⌥⌘]</kbd> and <kbd>⌥⌘[</kbd> open the next and the previous file in the folder. <kbd>⇧⌘E</kbd> opens the Files pane on the left, and **Filter files…** narrows its list as you type. **Clear document…** empties the file you have open, after asking. **Pin this vault** keeps this folder on the start screen, and **Unpin this vault** takes it off.
 
 > **A file's row.** These work in the Files pane, with a file's row selected. <kbd>↵</kbd> opens the file, <kbd>F2</kbd> renames it, <kbd>M</kbd> moves it to another folder, <kbd>⌘D</kbd> makes a copy and <kbd>⌘⌫</kbd> moves it to the Bin. <kbd>⌘K</kbd> on the row lists these with **Pin favourite**, which keeps the file under Favourites in the pane, **Reveal in Finder** and **Copy file path**. Try them on the copy you made, not on a lesson.
 
@@ -23,5 +23,7 @@ The piece about the walk is spread over the files of this folder. This file is t
 ## To link
 
 The part about the weather belongs with
+
+> **Sync and backup.** **Open Sync** shows documents waiting to send, incoming changes and items that need review. **Show sync status** shows what is saved here, what has been backed up and when remote changes were last checked, even with the sidebar closed. When available for this vault, **Sync now** sends changes and checks for incoming ones, **Check for remote changes** only checks, and **Open backup history** opens previous backups. Unavailable actions stay disabled.
 
 > **Search.** <kbd>⇧⌘F</kbd> searches every file in this folder: try **stile**, which is in several of them. <kbd>⌃⌘F</kbd> searches the archive, a separate store of your earlier writing and highlights, if one is set up on this Mac.

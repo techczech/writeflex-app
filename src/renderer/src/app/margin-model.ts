@@ -1,5 +1,7 @@
 import type { Change } from '../../../preload'
 import { isPartTitleProposal } from '../../../shared/part-title-proposal'
+import { folioTakeOf } from '../../../shared/folio-version-take'
+import { folioRevisionOf } from '../../../shared/folio-version-stage'
 import { reviewBuckets } from './review-buckets'
 import { resolveChangeRange } from '../editor/change-marks'
 import { uniqueRange } from '../editor/suggestion-anchor'
@@ -115,6 +117,8 @@ export type MarginItem = {
   change: Change
   kind: MarginKind
   source: MarginSource
+  /** A reader reply draws inside this shown parent card; it remains a separate review item. */
+  threadParentId?: string
   /** `closed`: a reader's proposed edit that could not be applied, drawn beside its words (0.24 ticket 07,
    *  frame `review-cannot-apply`): never accepted, never reopened; Copy their wording or Dismiss. */
   status: 'pending' | 'held' | 'closed'
@@ -301,6 +305,12 @@ export function marginSource(change: Change): MarginSource {
     const label = sourceLabel(change.outsideSource)
     return { key: `outside:${label}`, type: 'outside', label }
   }
+  // One part's text taken from a saved Folio version (ticket 09): its source is that version, and nobody answers a reply.
+  const take = folioTakeOf(change)
+  if (take) return { key: `version:${take.versionId}`, type: 'outside', label: take.versionName }
+  // A co-author's change from her Word revision (ticket 15): the card names her, never whoever brought the file in.
+  const revision = folioRevisionOf(change)
+  if (revision) return { key: `revision:${revision.revisionId}`, type: 'outside', label: revision.reviewer }
   if (change.provenance === 'reviewer') {
     const label = change.reviewerLabel?.trim() || 'Outside agent'
     return { key: `outside:${label}`, type: 'outside', label }
@@ -482,6 +492,15 @@ export function buildMarginModel(input: MarginInput): MarginModel {
     if (status === 'waiting' && item.status !== 'pending') return false
     return true
   })
+
+  // Thread only into a parent that survives the current filters, on the same link.
+  const parents = new Map(kept.filter(({ item }) => item.change.readerNote && !item.change.readerNote.replyTo)
+    .map(({ item }) => [JSON.stringify([item.change.readerNote!.shareId, item.change.readerNote!.key]), item.id]))
+  for (const { item } of kept) {
+    const reader = item.change.readerNote
+    const parent = reader?.replyTo ? parents.get(JSON.stringify([reader.shareId, reader.replyTo.key])) : undefined
+    if (parent) item.threadParentId = parent
+  }
 
   const allItems = resolved.map(({ item }) => item)
   const requestMap = new Map<string, RequestFacet>()

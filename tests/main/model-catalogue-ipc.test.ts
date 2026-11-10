@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test'
 // Isolate Electron/Core mocks from the rest of Bun's suite, as in plan-main-ipc-wiring.
 const probe = String.raw`
   import { expect, mock } from 'bun:test'
+  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdtemp, rm } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -29,6 +30,7 @@ const probe = String.raw`
     createBridle: async opts => { forwarded = opts; throw new Error('captured options') },
   }))
   mock.module('electron', () => ({
+    ...electronMainStandIn,
     app: { getPath: () => root, getVersion: () => 'test', isPackaged: false },
     clipboard: {}, dialog: {}, shell: {},
     ipcMain: { handle: (key, fn) => handlers.set(key, fn), removeHandler: key => handlers.delete(key) },

@@ -22,12 +22,10 @@ Upstream source and releases: https://github.com/techczech/app-patterns.
 
 ## Bridle contract
 
-`@bridle/contract` 0.3.1 is MIT licensed. The public release archive at `vendor/bridle/bridle-contract-0.3.1.tgz` includes the compiled module, type declarations and full MIT licence in `package/LICENSE`. The application root installs this exact tested archive; the matching source package also ships at `packages/bridle/contract` so the bundled Bridle source packages can build against it.
+The Bridle packages are installed from their exact immutable release archives under `vendor/bridle/`. The contract 0.3.1 archive contains its compiled module, declarations and manifest, and does not contain a LICENSE member. All Bridle releases share the separate upstream MIT notice at `vendor/bridle/LICENSE`; its exact 1,071 bytes have SHA-256 `e03b2f3461d86a2d8b396eb5b049d4cc8cbe8bc8b024f4cb56ccbe48164f1c99`. Application packaging copies that notice to `third-party-notices/bridle/LICENSE`. The app-owned contract provenance records its origin in the retired licensed app archive; that archive is retained as private preservation evidence. Published releases use the official archive unchanged.
 
-## Pi coding agent (undici derivative)
+Pi 1.4.0 is consumed through Bridle's pinned dependencies. The obsolete app-owned Pi 0.83.0 derivative is no longer part of the active dependency or packaging closure. The exact root undici 8.12.2 override applies to the installed graph.
 
-`@earendil-works/pi-coding-agent` 0.83.0 is MIT licensed. The archive at `vendor/earendil-works/earendil-works-pi-coding-agent-0.83.0-undici-8.12.2.tgz` is a local derivative of the npm release: its only changes are raising the package's own undici dependency pin from 8.5.0 to 8.12.2 and adding the upstream MIT licence text as `package/LICENSE`, which the npm archive omits. The recipe that produces and verifies these exact bytes ships in source at `scripts/lib/pi-undici-derivative.ts`. The npm registry integrity identifies the upstream original only, not this derivative.
+## Vault backup helper
 
-## Dependencies
-
-Installed dependencies retain their own licences. Their notices ship with the dependencies in the packaged app.
+`@app-patterns/vault-sync` 0.5.1 is MIT licensed, copyright 2026 Dominik Lukeš. Its exact 53-member archive is a development-only build input for the separate backup helper. The full upstream MIT notice is shipped at `vendor/app-patterns/LICENSE` and packaged at `third-party-notices/vault-sync/LICENSE`. Upstream: https://github.com/techczech/app-patterns.

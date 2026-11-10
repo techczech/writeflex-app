@@ -5,7 +5,9 @@
  *   .writeflex/inbox/<id>.json    written by the command line, removed by the app after it replies
  *   .writeflex/outbox/<id>.json   written by the app, removed by the command line after reading
  *
- * A request is `{ version, id, operation, args }` and nothing else. The inbox is UNTRUSTED: any
+ * A request is `{ version, id, operation, args, to }` and nothing else. `to` names the computer the
+ * request is for (request-address.ts): the inbox syncs, and with no Collection lock the same
+ * Collection may be open in WriteFlex on another Mac, which must leave this computer's requests alone. The inbox is UNTRUSTED: any
  * program running as the user, and on a synced folder any other machine, can put a file there. So a
  * request is validated against a closed schema before anything acts on it: unknown fields, unknown
  * operations, unknown arguments and wrong types are refused. The operations are a closed list, the
@@ -29,6 +31,7 @@
  * Electron-free; shared by both sides.
  */
 import { randomBytes } from 'node:crypto'
+import { MAX_REQUEST_ADDRESSES, isRequestAddress } from '../request-address'
 import type { Operation, ParsedArgs } from './operation'
 import { quoted } from './terminal-text'
 import { isErrorCode, type ErrorCode } from './outcome'
@@ -51,7 +54,7 @@ export const REPLY_WAIT_MS = 10_000
  * requestable export would let that machine make this app write a file anywhere the user can. The
  * command line exports by itself instead (export-operation.ts).
  */
-export const REQUEST_OPERATIONS = ['create', 'create-folder', 'duplicate', 'note', 'scrap', 'create-manifest', 'capture', 'move', 'move-folder', 'trash', 'undo', 'save-version', 'follow-history', 'undo-history'] as const
+export const REQUEST_OPERATIONS = ['create', 'create-folder', 'duplicate', 'note', 'scrap', 'create-manifest', 'capture', 'move', 'move-folder', 'trash', 'undo', 'save-version', 'save-folio-version', 'import-revision', 'withdraw-revision', 'scratchpad-send-version-text', 'follow-history', 'undo-history'] as const
 // Placement liveness belongs to the running main process. This single read uses the same signed
 // request/reply route; it grants no document write access. Other reads remain local.
 export const READ_REQUEST_OPERATIONS = ['scraps', 'scratchpad'] as const
@@ -95,7 +98,7 @@ export function requestTime(id: string): number | null {
   return Number.isNaN(at) ? null : at
 }
 
-export type WriteRequest = { version: 1; id: string; operation: RequestOperation | ShownFirstOperation; args: ParsedArgs }
+export type WriteRequest = { version: 1; id: string; operation: RequestOperation | ShownFirstOperation; args: ParsedArgs; to?: string[] }
 
 /** Every operation a request file may name: the direct writes, and the shown-first ones (review-format.ts). */
 export const isRequestable = (operation: string): boolean => (REQUEST_OPERATIONS as readonly string[]).includes(operation) || (READ_REQUEST_OPERATIONS as readonly string[]).includes(operation) || isShownFirst(operation)
@@ -136,7 +139,7 @@ export function parseRequest(text: string, id: string, table: Operation[]): { ok
   try { raw = JSON.parse(text) } catch { return no('it is not readable as a request (not JSON)') }
   if (!isRecord(raw)) return no('it is not readable as a request (not an object)')
   if (raw.version !== REQUEST_VERSION) return no(`its format version (${Number.isSafeInteger(raw.version) ? String(raw.version) : 'not a number'}) is not one this WriteFlex knows; it knows version ${REQUEST_VERSION}`)
-  const extra = onlyKeys(raw, ['version', 'id', 'operation', 'args'])
+  const extra = onlyKeys(raw, ['version', 'id', 'operation', 'args', 'to'])
   if (extra !== null) return no(`it has a field this format does not have: ${quoted(extra, 40)}`)
   if (raw.id !== id) return no('the identifier inside it is not the one in its file name')
   if (typeof raw.operation !== 'string' || !isRequestable(raw.operation)) return no(`it asks for an operation that cannot be requested: ${quoted(raw.operation, 40)}`)
@@ -158,7 +161,12 @@ export function parseRequest(text: string, id: string, table: Operation[]): { ok
     if (typeof value === 'string' && !TEXT_ARGS.has(spec.name) && (value.length > MAX_NAME_LENGTH || value.includes('\0'))) return no(`${spec.name} is not a usable name or path`)
     args[spec.name] = value as string | number | boolean
   }
-  return { ok: true, request: { version: 1, id, operation: operation.name as WriteRequest['operation'], args } }
+  // Last, so that a request wrong in any other way is refused for that.
+  if (!Array.isArray(raw.to) || raw.to.length === 0 || raw.to.length > MAX_REQUEST_ADDRESSES || !raw.to.every(isRequestAddress)) {
+    return no('it does not say which computer it is for (made by an older writeflex command?); run the command again')
+  }
+  const to = raw.to as string[]
+  return { ok: true, request: { version: 1, id, operation: operation.name as WriteRequest['operation'], args, to } }
 }
 
 /**

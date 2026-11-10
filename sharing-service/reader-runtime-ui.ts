@@ -5,7 +5,7 @@
 // the author's limits refuse is kept in the composer with Copy your note. Margin and Inline
 // views (V), crowding rules, phone width. Hearing back: each
 // note shows the author's outcome (Accepted, Declined, Done, Could not be applied) and the author's
-// replies, from /notes/mine, the next time the page loads.
+// replies through live visible-notes polling (reader-runtime-live.ts).
 //
 // The reader's identity is a secret made here (32 random bytes) and kept in localStorage for this
 // share only; the service stores a digest of it and answers "my notes" for that digest only
@@ -19,15 +19,18 @@ export const READER_RUNTIME_HARDENING = String.raw`
 /* ---------- links out of the page never carry this address ---------- */
 // The author's text is not sanitised: a <meta name="referrer"> in it would loosen the page's
 // no-referrer policy, so any such element outside <head> is removed, and every link says so too.
+function hardenReaderLinks() {
 [].slice.call(document.querySelectorAll('meta[name="referrer" i]')).forEach(function (m) { if (m.parentNode !== document.head) m.remove(); });
 [].slice.call(rp.querySelectorAll('a[href]')).forEach(function (a) {
   a.setAttribute('rel', ((a.getAttribute('rel') || '') + ' noopener noreferrer').trim());
   a.setAttribute('referrerpolicy', 'no-referrer');
 });
+}
+hardenReaderLinks();
 `
 
 export const READER_RUNTIME_UI = String.raw`
-if (rp.getAttribute('data-comments') !== 'on') return;
+var commentsEnabled = rp.getAttribute('data-comments') === 'on';
 
 function kid(parent, tag, cls) {
   if (!parent) return null;
@@ -37,18 +40,21 @@ function kid(parent, tag, cls) {
 var rbar = kid(rp, 'HEADER', 'rbar'), rbody = kid(rp, 'DIV', 'rbody');
 var content = kid(rbody, 'ARTICLE', 'content'), col = kid(rbody, 'ASIDE', 'notes-col');
 var addr = /^\/s\/([A-Za-z0-9]{22})\/?$/.exec(location.pathname);
-if (!rbar || !content || !col || !addr) return;
+if (!rbar || !content || !addr) return;
+if (!col) { col = document.createElement('aside'); col.className = 'notes-col'; if (commentsEnabled) rbody.appendChild(col); }
 var shareId = addr[1];
 var author = rp.getAttribute('data-author') || '';
+var openComments = false, olderComments = false;
 var revision = parseInt(rp.getAttribute('data-revision') || '', 10) || null;
 
 /* ---------- this browser's storage ---------- */
 var memory = {};
 function load(key, fallback) {
+  if (personalLink) return Object.prototype.hasOwnProperty.call(memory, key) ? memory[key] : fallback;
   try { var v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); }
   catch (e) { return Object.prototype.hasOwnProperty.call(memory, key) ? memory[key] : fallback; }
 }
-function save(key, value) { memory[key] = value; try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* kept for this visit */ } }
+function save(key, value) { memory[key] = value; if (personalLink) return; try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* kept for this visit */ } }
 function randomId(bytes) {
   var a = new Uint8Array(bytes), s = '';
   crypto.getRandomValues(a);
@@ -59,7 +65,8 @@ var KEY = 'writeflex-share:' + shareId + ':';
 var NAME_KEY = 'writeflex-share:name', VIEW_KEY = 'writeflex-reader-notes-view';
 var secret = load(KEY + 'reader', null);
 if (typeof secret !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(secret)) { secret = randomId(32); save(KEY + 'reader', secret); }
-var readerName = load(NAME_KEY, '');
+var readerName = personalLink ? personalName : load(NAME_KEY, '');
+if (personalLink) { var readingAs = document.createElement('span'); readingAs.className = 'it reading-as'; readingAs.appendChild(document.createTextNode('Reading as ')); var personLabel = document.createElement('b'); personLabel.textContent = personalName; readingAs.appendChild(personLabel); rbar.appendChild(readingAs); }
 if (typeof readerName !== 'string') readerName = '';
 
 function isNote(n) {
@@ -87,7 +94,7 @@ function replyList(value) {
 function noteList(value, fallbackState) {
   return (Array.isArray(value) ? value : []).filter(isNote).map(function (n) {
     var st = stateOf(n, fallbackState);
-    return { id: n.id, kind: n.kind, name: n.name, text: n.text, anchor: cleanAnchor(n.anchor),
+    return { id: n.id, kind: n.kind, mine: n.mine !== false, threadId: n.threadId || null, replyTo: n.replyTo || null, visibility: n.visibility === 'open' ? 'open' : 'private', name: n.name, text: n.text, anchor: cleanAnchor(n.anchor),
       writtenAt: typeof n.writtenAt === 'number' ? n.writtenAt : null, receivedAt: typeof n.receivedAt === 'number' ? n.receivedAt : null,
       state: st, reason: typeof n.reason === 'string' ? n.reason : null,
       outcomeAt: OUTCOME[st] === true && typeof n.outcomeAt === 'number' ? n.outcomeAt : null,
@@ -95,9 +102,9 @@ function noteList(value, fallbackState) {
   });
 }
 /** Notes the service holds (as it last said), and notes written here that it does not hold yet. */
-var sent = noteList(load(KEY + 'notes', []), 'open');
+var sent = noteList(load(KEY + 'notes', []), 'open').filter(function (n) { return n.mine !== false; });
 var outbox = noteList(load(KEY + 'outbox', []), 'unsent');
-function keepSent() { save(KEY + 'notes', sent); }
+function keepSent() { save(KEY + 'notes', sent.filter(function (n) { return n.mine !== false; })); }
 function keepOutbox() { save(KEY + 'outbox', outbox); }
 
 var state = { view: 'margin', composer: null, offline: navigator.onLine === false, linkOff: false, fold: {}, flushing: false };
@@ -199,6 +206,7 @@ function bodyOf(n, cls) {
 }
 function refusalText(reason) {
   if (reason === 'comments_off') return 'Comments are off for this link. Your comment has not been sent.';
+  if (reason === 'reply_unavailable') return 'This thread is no longer available for replies. Your reply has not been sent.';
   if (reason === 'invalid') return 'This comment could not be sent.';
   return authorName + ' is not receiving more comments on this link for now. Your comment has not been sent.';
 }
@@ -208,6 +216,13 @@ function noticeOf(n) {
   if (n.state === 'accepted' && n.kind === 'edit') return h('p', 'notice', icon('info', 14), h('span', '', 'The text now has your words.'));
   if (n.state === 'failed') return h('p', 'notice', icon('info', 14), h('span', '', 'The text changed before this could be applied. Your wording is kept here.'));
   return null;
+}
+
+function readerReplyAction(n) {
+  if (!openComments || !n.threadId || n.visibility !== 'open' || state.linkOff) return null;
+  var b = button('', 'reader-reply', [icon('reply', 14), 'Reply']);
+  b.setAttribute('data-thread', n.threadId);
+  return h('div', 'c-actions', b);
 }
 
 function cardFor(group) {
@@ -253,7 +268,7 @@ function cardFor(group) {
   foldBtn.setAttribute('aria-label', 'Fold');
   foldBtn.title = 'Fold';
   var full = h('div', 'card-full',
-    h('header', 'c-head', h('span', 'num', String(group.num)), h('span', 'who', main.name), h('span', 'role', 'you'), kindOf(main), foldBtn),
+    h('header', 'c-head', h('span', 'num', String(group.num)), h('span', 'who', main.name), main.mine !== false ? h('span', 'role', 'you') : null, kindOf(main), foldBtn),
     h('p', 'c-status', status(main.state), h('span', 'when', whenLine(main)), group.changed ? h('span', 'st st-changed', icon('changed', 14), 'Passage changed') : null),
     group.changed || main.state === 'failed' ? h('div', 'written', h('span', 'lab', 'Written on these words'), h('q', '', main.anchor.quote)) : null,
     bodyOf(main, 'c-body'),
@@ -264,9 +279,9 @@ function cardFor(group) {
     var entries = [];
     group.notes.forEach(function (n, i) {
       if (i > 0) entries.push({ at: n.receivedAt || n.writtenAt || 0, el: h('li', 't-entry',
-        h('div', 't-head', icon(n.kind === 'edit' ? 'pencil' : 'note', 13), h('span', 'who', n.name), h('span', 'kind', n.kind === 'edit' ? 'Proposed edit' : 'Comment'), h('span', 'when', whenLine(n)), status(n.state)),
+        h('div', 't-head', icon(n.kind === 'edit' ? 'pencil' : 'note', 13), h('span', 'who', n.name), h('span', 'kind', n.replyTo ? 'Reply' : n.kind === 'edit' ? 'Proposed edit' : 'Comment'), h('span', 'when', whenLine(n)), status(n.state)),
         bodyOf(n, 't-body'),
-        noticeOf(n)) });
+        noticeOf(n), readerReplyAction(n)) });
       (n.replies || []).forEach(function (r) { entries.push({ at: r.at, el: replyEntry(r) }); });
     });
     entries.sort(function (a, b) { return a.at - b.at; });
@@ -280,6 +295,8 @@ function cardFor(group) {
     acts.setAttribute('data-id', refused[0].id);
     full.appendChild(acts);
   }
+  var replyAction = readerReplyAction(main);
+  if (replyAction) full.appendChild(replyAction);
   art.appendChild(line);
   art.appendChild(full);
   return art;
@@ -301,7 +318,7 @@ function composerFor(c) {
     input.maxLength = 60;
     input.autocomplete = 'name';
     input.value = readerName;
-    var label = h('label', 'lab', authorName + ' sees this name beside each comment');
+    var label = h('label', 'lab', openComments ? 'Every reader of this link sees this name beside each open comment' : authorName + ' sees this name beside each comment');
     label.htmlFor = input.id;
     el = h('section', 'nitem comp', h('header', 'ch', icon('user', 16), h('b', '', 'Your name')), label, input,
       h('p', 'esc', 'Asked once in this browser. You can change it later.'),
@@ -313,11 +330,12 @@ function composerFor(c) {
     area.rows = c.kind === 'note' ? 4 : 3;
     area.maxLength = 4000;
     area.value = c.text;
-    var lab = h('label', 'lab', c.kind === 'note' ? 'Your comment' : 'Edit selected text here');
+    var lab = h('label', 'lab', c.replyTo ? 'Your reply' : c.kind === 'note' ? 'Your comment' : 'Edit selected text here');
     lab.htmlFor = area.id;
     var sendBtn = button('primary', 'send', [icon('send', 14), 'Send'], '\u2318\u21b5');
-    var parts = [h('header', 'ch', icon(c.kind === 'note' ? 'note' : 'pencil', 16), h('b', '', c.kind === 'note' ? 'Comment' : 'Propose edit'))];
+    var parts = [h('header', 'ch', icon(c.kind === 'note' ? 'note' : 'pencil', 16), h('b', '', c.replyTo ? 'Reply to ' + c.replyName : c.kind === 'note' ? 'Comment' : 'Propose edit'))];
     if (c.kind === 'note') parts.push(h('p', 'cq', h('span', 'lab', 'On these words'), h('q', '', q)));
+    if (personalLink) parts.push(h('p', 'esc', 'Commenting as ', h('b', '', readerName)));
     parts.push(lab, area);
     if (c.kind === 'edit') parts.push(h('span', 'lab dif-lab', 'Preview of changes'), h('div', 'difbox'));
     parts.push(h('div', 'acts', sendBtn, button('ghost', 'cancel', ['Cancel'], 'Esc')));
@@ -359,7 +377,7 @@ function refreshComposer() {
   if (dif && field) { dif.textContent = ''; dif.appendChild(wordDiff(c.cap.anchor.quote, field.value)); }
 }
 function openComposer(kind, cap, extra) {
-  if ((kind === 'note' || kind === 'edit') && !readerName) return openComposer('name', cap, { next: kind });
+  if ((kind === 'note' || kind === 'edit') && !readerName) return openComposer('name', cap, { next: kind, nextExtra: extra });
   var c = { kind: kind, cap: cap, text: kind === 'edit' && cap ? cap.anchor.quote : '', next: null, reason: null, noteKind: null };
   Object.keys(extra || {}).forEach(function (k) { c[k] = extra[k]; });
   c.el = composerFor(c);
@@ -378,6 +396,7 @@ function closeComposer() {
   state.composer = null;
   if (back) return resumeComposer(back);
   render();
+  applyReadyContent(false);
 }
 function resumeComposer(c) {
   state.composer = c;
@@ -390,6 +409,8 @@ function busyComposer() { var c = state.composer; return c && (c.kind === 'name'
 
 /* ---------- the service ---------- */
 function post(path, body) {
+  if (!personalOpeningRecorded) body.loadId = loadId;
+  if (personalLink) { delete body.reader; body.person = personCredential; }
   return fetch('/s/' + shareId + path, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', redirect: 'error'
@@ -398,20 +419,21 @@ function post(path, body) {
 function asSent(view) { var list = noteList([view], 'open'); return list[0] || null; }
 /** Send one note: 'ok', 'refused', 'comments_off', 'invalid', 'off' or 'network'. */
 function sendNote(n) {
-  var payload = { id: n.id, kind: n.kind, name: n.name, text: n.text, anchor: n.anchor, writtenAt: n.writtenAt, revision: revision };
+  var payload = { id: n.id, kind: n.kind, name: n.name, text: n.text, anchor: n.anchor, writtenAt: n.writtenAt, revision: revision, visibility: n.visibility === 'open' ? 'open' : 'private' };
+  if (n.replyTo) payload.replyTo = n.replyTo;
   return post('/notes', { reader: secret, note: payload }).then(function (res) {
     if (res.status === 200 || res.status === 201) {
       return res.json().then(function (body) {
         var view = body && asSent(body.note);
         outbox = outbox.filter(function (o) { return o.id !== n.id; });
         keepOutbox();
-        if (view) { sent = sent.filter(function (s) { return s.id !== view.id; }); sent.push(view); keepSent(); }
+        if (view) { sent = sent.filter(function (s) { return s.mine === false || s.id !== view.id; }); sent.push(view); keepSent(); }
         return 'ok';
       });
     }
     if (res.body) res.body.cancel();
     if (res.status === 429) return 'refused';
-    if (res.status === 403) return 'comments_off';
+    if (res.status === 403) return n.replyTo ? 'reply_unavailable' : 'comments_off';
     if (res.status === 400) return 'invalid';
     if (res.status === 404) return 'off';
     return 'network';
@@ -422,7 +444,7 @@ function markOutbox(id, reason) {
   keepOutbox();
 }
 function flush() {
-  if (state.flushing || state.linkOff) return Promise.resolve();
+  if (document.hidden || state.flushing || state.linkOff) return Promise.resolve();
   var next = outbox.filter(function (o) { return o.state === 'unsent'; })[0];
   if (!next) return Promise.resolve();
   if (navigator.onLine === false) { setOffline(true); return Promise.resolve(); }
@@ -437,24 +459,29 @@ function flush() {
     return flush();
   });
 }
-function fetchMine() {
-  return post('/notes/mine', { reader: secret }).then(function (res) {
+function fetchMine(legacy) {
+  if (document.hidden) return Promise.resolve();
+  return post(legacy ? '/notes/mine' : '/notes/visible', { reader: secret }).then(function (res) {
+    if (res.status === 404 && !legacy && !personalLink) { if (res.body) res.body.cancel(); return fetchMine(true); }
     if (res.status === 404) { if (res.body) res.body.cancel(); state.linkOff = true; renderBar(); return; }
-    if (res.status !== 200) { if (res.body) res.body.cancel(); return; }
+    if (res.status !== 200) { if (res.body) res.body.cancel(); var refused = new Error('notes unavailable'); refused.serviceAnswered = true; throw refused; }
     return res.json().then(function (body) {
+      if (personalLink) personalOpeningRecorded = true;
+      openComments = !legacy && body.mode === 'open';
+      olderComments = !legacy && body.more === true;
       sent = noteList(body && body.notes, 'open');
       keepSent();
       var held = {};
-      sent.forEach(function (s) { held[s.id] = true; });
-      // A note the service already holds was sent: its answer was lost on the way back.
+      sent.forEach(function (s) { if (s.mine !== false) held[s.id] = true; });
       outbox = outbox.filter(function (o) { return !held[o.id]; });
       keepOutbox();
       setOffline(false);
-      render();
+      renderLiveNotes();
+      return refreshPublication(body && body.revision);
     });
-  }, function () { setOffline(true); });
+  });
 }
-function setOffline(value) { if (state.offline !== value) { state.offline = value; renderBar(); } }
+function setOffline(value) { if (state.offline !== value) { state.offline = value; preserveReading(renderBar); } }
 
 /* ---------- sending from the composer ---------- */
 function sendComposer() {
@@ -465,7 +492,7 @@ function sendComposer() {
   refreshComposer();
   var send = c.el.querySelector('[data-act="send"]');
   if (send.disabled) return;
-  var n = { id: randomId(16), kind: c.kind, name: readerName, text: c.text.trim(), anchor: c.cap.anchor, writtenAt: Date.now(), receivedAt: null, state: 'unsent', reason: null };
+  var n = { id: randomId(16), kind: c.kind, name: readerName, text: c.text.trim(), anchor: c.cap.anchor, writtenAt: Date.now(), receivedAt: null, state: 'unsent', reason: null, replyTo: c.replyTo || null, mine: true, visibility: openComments ? 'open' : 'private' };
   outbox.push(n);
   keepOutbox();
   if (navigator.onLine === false || state.flushing) { setOffline(navigator.onLine === false || state.offline); closeComposer(); return; }
@@ -473,7 +500,7 @@ function sendComposer() {
   refreshComposer();
   sendNote(n).then(function (result) {
     c.sending = false;
-    if (result === 'refused' || result === 'comments_off') {
+    if (result === 'refused' || result === 'comments_off' || result === 'reply_unavailable') {
       outbox = outbox.filter(function (o) { return o.id !== n.id; });
       keepOutbox();
       if (state.composer === c) return openComposer('refused', c.cap, { text: n.text, reason: result, noteKind: n.kind });
@@ -486,6 +513,7 @@ function sendComposer() {
     if (state.composer === c) state.composer = null;
     render();
     if (result === 'ok') flush();
+    applyReadyContent(false);
   });
 }
 
@@ -496,7 +524,9 @@ function renderBar() {
   barExtra = [];
   if (state.linkOff) barExtra.push(h('span', 'offline', icon('ban', 14), 'This link has been turned off. Comments cannot be sent.'));
   else if (state.offline) barExtra.push(h('span', 'offline', icon('wifioff', 14), 'Offline. Comments are sent when the connection returns.'));
+  renderUpdateNotice();
   barExtra.push(h('span', 'spacer'));
+  if (!commentsEnabled) { barExtra.forEach(function (el) { el.classList.add('wf-bar'); rbar.appendChild(el); }); return; }
   var seg = h('span', 'seg');
   [['margin', 'margin', 'Margin'], ['under', 'rows', 'Inline']].forEach(function (v) {
     var b = h('button', '', icon(v[1], 14), v[2]);
@@ -516,16 +546,16 @@ function renderBar() {
 }
 function notesHead(count) {
   var rows = [h('div', 'nh-t', h('b', '', 'Comments'), h('span', 'count', String(count)))];
-  if (readerName) {
+  if (readerName && !personalLink) {
     var change = h('a', '', 'Change name');
     change.setAttribute('data-act', 'rename');
     change.setAttribute('role', 'button');
     change.tabIndex = 0;
     rows.push(h('div', 'nh-r nh-name', icon('user', 14), h('span', '', 'Reading as ', h('b', '', readerName), change)));
   }
-  rows.push(h('div', 'nh-r', icon('lock', 14), h('span', '', 'Private comments: only you and ' + (author || 'the author') + ' see your comments.')));
+  rows.push(h('div', 'nh-r', icon(openComments ? 'note' : 'lock', 14), h('span', '', openComments ? 'Open comments: every reader of this link sees open comments with their names and can reply. Comments already made privately stay private.' : 'Private comments: only you and ' + (author || 'the author') + ' see your comments.')));
   if (!count) rows.push(h('div', 'nh-r nh-empty', icon('select', 14), h('span', '', 'No comments yet. Select words in the text to leave a comment or propose an edit.')));
-  rows.push(h('div', 'nh-r', icon('info', 14), h('span', '', 'Comments are kept in this browser. Open the link here again to see replies.')));
+  rows.push(h('div', 'nh-r', icon('info', 14), h('span', '', personalLink ? 'Open your personal link on any device to see your comments and replies.' : 'Comments are kept in this browser. Open the link here again to see replies.')));
   var head = h('section', 'notes-head');
   rows.forEach(function (r) { head.appendChild(r); });
   head.setAttribute('aria-label', 'Comments');
@@ -553,6 +583,7 @@ function groupsNow() {
 
 var items = [], head = null, leaders = null;
 function render() {
+  if (!commentsEnabled) return;
   unmarkAll(content);
   col.textContent = '';
   if (leaders) leaders.remove();
@@ -560,13 +591,16 @@ function render() {
   items = [];
   var count = sent.length + outbox.length;
   head = notesHead(count);
+  if (olderComments) head.appendChild(h('p', 'hint', 'Older comments are not shown'));
   groups.forEach(function (g) {
     var el = cardFor(g), anchorEl = g.block;
     if (!g.changed) {
       var marks = markRange(g.block, g.start, g.end, g.notes[0].kind === 'edit' ? 'hl-edit' : 'hl-note', g.key);
       if (marks.length) {
         anchorEl = marks[0];
-        var sup = h('sup', 'wf-ui mn', String(g.num));
+        var sup = h('sup', 'wf-ui mn');
+        sup.setAttribute('data-number', String(g.num));
+        sup.setAttribute('aria-hidden', 'true');
         var last = marks[marks.length - 1];
         last.parentNode.insertBefore(sup, last.nextSibling);
       }
@@ -576,7 +610,7 @@ function render() {
   var c = state.composer;
   if (c) {
     var a = head, b = null;
-    if (c.cap && c.cap.block.isConnected) {
+    if (c.cap && c.cap.block && c.cap.block.isConnected) {
       var sel = markRange(c.cap.block, c.cap.start, c.cap.end, 'hl-sel', '');
       a = sel[0] || c.cap.block;
       b = c.cap.block;
@@ -709,6 +743,7 @@ function setView(v) {
 
 /* ---------- reading the selection ---------- */
 function takeSelection() {
+  if (!commentsEnabled) return;
   if (busyComposer()) return;
   var sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
@@ -732,6 +767,16 @@ document.addEventListener('selectionchange', function () {
 /* ---------- clicks and keys ---------- */
 function act(name, el) {
   var c = state.composer;
+  if (name === 'update-now') return applyReadyContent(true);
+  if (name === 'reader-reply') {
+    if (busyComposer()) return;
+    var id = el.getAttribute('data-thread');
+    var target = sent.filter(function (n) { return n.threadId === id; })[0];
+    if (!openComments || !target) return;
+    var place = resolveAnchor(content, target.anchor);
+    if (!place.block) return;
+    return openComposer('note', { anchor: target.anchor, block: place.block, start: place.start, end: place.end }, { replyTo: id, replyName: target.name });
+  }
   if (name === 'view') return setView(el.getAttribute('data-view'));
   if (name === 'fold' || name === 'unfold') {
     var card = el.closest('.card');
@@ -741,6 +786,7 @@ function act(name, el) {
   if (name === 'note' || name === 'edit') return openComposer(name, c && c.cap);
   if (name === 'cancel') return closeComposer();
   if (name === 'rename') {
+    if (personalLink) return;
     // A note on its way finishes first; any other composer is given back after the name.
     if (c && c.sending) return;
     // The name already being asked: asking again changes nothing, so the draft under it still comes back.
@@ -753,7 +799,7 @@ function act(name, el) {
     if (!value) { field.focus(); return; }
     readerName = value;
     save(NAME_KEY, readerName);
-    if (c.next && c.cap) return openComposer(c.next, c.cap);
+    if (c.next && c.cap) return openComposer(c.next, c.cap, c.nextExtra);
     return closeComposer();
   }
   if (name === 'send') return sendComposer();
@@ -812,9 +858,9 @@ document.addEventListener('mouseover', function (e) {
 });
 
 /* ---------- connection ---------- */
-window.addEventListener('online', function () { setOffline(false); flush(); });
+window.addEventListener('online', function () { if (!document.hidden) { pollNotes(); flush(); } });
 window.addEventListener('offline', function () { setOffline(true); });
-setInterval(function () { if (outbox.some(function (o) { return o.state === 'unsent'; })) flush(); }, 20000);
+setInterval(function () { if (!document.hidden && outbox.some(function (o) { return o.state === 'unsent'; })) flush(); }, 20000);
 
 /* ---------- start ---------- */
 var resizeTimer = 0;
@@ -832,5 +878,5 @@ if (document.fonts && document.fonts.ready) document.fonts.ready.then(relayout);
 chooseView();
 renderBar();
 render();
-fetchMine().then(flush);
+startLiveReader();
 `

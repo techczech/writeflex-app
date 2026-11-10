@@ -13,9 +13,9 @@
 // request. The service keeps only a digest of it bound to the share (`readerKey`), and every note
 // is stored under that digest. `/notes/mine` returns the notes stored under the digest of the
 // secret sent, so a reader can obtain only notes made with their own secret. The typed name is
-// never an identity: two readers may type the same name, and a name is shown only with the notes
-// of the reader who typed it. No reader route returns another reader's note, name or digest, and
-// every refusal reads the same whoever else has written.
+// never an identity: two readers may type the same name. On a private link only that secret's
+// comments are served. On an open link /notes/visible also serves open-era comments, without
+// reader digests. Every refusal reads the same whoever else has written.
 //
 // The text. Names, notes and proposed edits are plain text, limited in size, and the page shows
 // them as text (textContent), never as markup. Names are one line. Control characters other than
@@ -114,6 +114,10 @@ export interface PostedNote {
   writtenAt: number | null
   /** The published revision the reader was reading; null when not given. */
   revision: number | null
+  /** Opaque id of the open comment this answers; absent for a new passage comment. */
+  replyTo?: string
+  /** The visibility shown when this comment was queued; missing legacy consent is private. */
+  visibility?: 'open' | 'private'
 }
 
 /** What a reader gets back about one of their own notes. */
@@ -131,6 +135,10 @@ export interface ReaderNoteView {
   outcomeAt: number | null
   /** The author's replies, oldest first. */
   replies: ReplyView[]
+  threadId?: string | null
+  replyTo?: string | null
+  mine?: boolean
+  visibility?: 'private' | 'open'
 }
 
 export class NoteProtocolError extends Error {
@@ -234,11 +242,12 @@ export function parsePostedNote(value: unknown): PostedNote {
     if (!Number.isSafeInteger(n.revision) || (n.revision as number) < 1) fail('revision must be a whole number from 1.')
     revision = n.revision as number
   }
-  return { id: n.id, kind, name, text: body, anchor, writtenAt, revision }
+  if (n.replyTo !== undefined && (typeof n.replyTo !== 'string' || !/^[0-9a-f]{32}$/.test(n.replyTo) || kind !== 'note')) fail('replyTo must name an open comment.')
+  return { id: n.id, kind, name, text: body, anchor, writtenAt, revision, visibility: n.visibility === 'open' ? 'open' : 'private', ...(n.replyTo !== undefined ? { replyTo: n.replyTo as string } : {}) }
 }
 
 /** A reader request's body: the secret, and the note when one is sent. */
-export function parseReaderRequest(bytes: Uint8Array, withNote: boolean): { secret: string; note: PostedNote | null } {
+export function parseReaderRequest(bytes: Uint8Array, withNote: boolean): { secret: string; person?: unknown; loadId?: unknown; note: PostedNote | null } {
   let value: unknown
   try {
     value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
@@ -246,8 +255,11 @@ export function parseReaderRequest(bytes: Uint8Array, withNote: boolean): { secr
     fail('The body is not JSON.')
   }
   const body = record(value, 'The body')
-  const secret = parseReaderSecret(body.reader)
-  return { secret, note: withNote ? parsePostedNote(body.note) : null }
+  const personal = Object.hasOwn(body, 'person')
+  const secret = personal ? '' : parseReaderSecret(body.reader)
+  // Personal notes are parsed in the share after credential verification. Invalid credentials
+  // always get the same link-off answer, including when the accompanying note is malformed.
+  return { secret, ...(personal ? { person: body.person } : {}), loadId: body.loadId, note: withNote ? (personal ? body.note as PostedNote : parsePostedNote(body.note)) : null }
 }
 
 /**

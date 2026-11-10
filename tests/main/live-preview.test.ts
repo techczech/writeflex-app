@@ -16,7 +16,28 @@ import {
   rendersBlockWithPendingChange,
   shouldProtectBackspaceAfterBlock,
   widgetKindForFenceLanguage,
+  widgetFor,
 } from '../../src/renderer/src/editor/live-preview'
+
+import { ImageWidget } from '../../src/renderer/src/editor/live-preview-widgets'
+
+test('images resolve from the document folder and retain the workspace path as a legacy fallback', () => {
+  const source = '![Workflow](research/workflow.svg)'
+  const block = { kind: 'image' as const, from: 0, to: source.length, source, url: 'research/workflow.svg', alt: 'Workflow' }
+  const widget = widgetFor(block, 'wf-asset://token', false, false, 'papers/unitybc/section.md') as ImageWidget
+  expect(widget.url).toBe('wf-asset://token/papers/unitybc/research/workflow.svg')
+  expect(widget.fallbackUrl).toBe('wf-asset://token/research/workflow.svg')
+  expect(widget.source).toBe(source)
+})
+
+test('image paths retain parent traversal inside the workspace and remote images stay unchanged', () => {
+  const block = { kind: 'image' as const, from: 0, to: 1, source: '', url: '../assets/figure.png', alt: '' }
+  const widget = widgetFor(block, 'wf-asset://token', false, false, 'papers/chapter/section.md') as ImageWidget
+  expect(widget.url).toBe('wf-asset://token/papers/chapter/../assets/figure.png')
+  const remote = widgetFor({ ...block, url: 'https://example.com/image.webp' }, 'wf-asset://token', false, false, 'papers/chapter/section.md') as ImageWidget
+  expect(remote.url).toBe('https://example.com/image.webp')
+  expect(remote.fallbackUrl).toBeUndefined()
+})
 
 const fixture = `# River
 

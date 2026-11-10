@@ -94,7 +94,7 @@ describe('renamed or moved outside WriteFlex: the link follows the same file', (
     move(PATH, to)
     await batch(PATH, to)
     expect(record()).toMatchObject({ path: to, on: true, problem: null, ended: null, lost: null, generation: 1 })
-    expect(pages()).toHaveLength(2)
+    expect(pages()).toHaveLength(1)
     expect(w.publisher.view(w.root, to).links[0]).toMatchObject({ shareId, address })
     await settle()
     expect(told).toEqual({ moved: [`${PATH} > ${to}`], notFound: [], offered: [] })
@@ -259,7 +259,7 @@ describe('gone or unreadable outside WriteFlex: "Piece not found", nothing remov
     expect(followed?.ok).toBe(true)
     await w.publisher.idle()
     expect(record()).toMatchObject({ path: to, on: true, lost: null })
-    expect(pages()).toHaveLength(2)
+    expect(pages()).toHaveLength(1)
   })
 
   test('"Follow to" a place that holds another file now: refused, the link stays not found', async () => {
@@ -342,7 +342,7 @@ describe('a freed inode is not the piece (Sol round 2 P1-1: device, inode and bi
     expect(followed?.ok).toBe(true)
     await w.publisher.idle()
     expect(record()).toMatchObject({ path: to, on: true, lost: null })
-    expect(pages()).toHaveLength(2)
+    expect(pages()).toHaveLength(1)
   })
 
   test('a rename on a volume that keeps birth times is still followed by itself', async () => {

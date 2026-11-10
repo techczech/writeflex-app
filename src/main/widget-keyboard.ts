@@ -61,6 +61,8 @@ export type KeyboardGateHost = {
   onDropped?(count: number): void
   /** The app shell's own origin ('file://' in a build): its frames (the Reading Room's) are not gated. */
   shellOrigin(): string
+  /** Main's live reader registry checks the exact owner, frame and generation. */
+  readerFrame?(): boolean
   now(): number
   /** The window's widget frame (a child of the top frame, opaque origin) with tthe account holder's name, or null. */
   findWidgetFrame(name: string): FrameRef | null
@@ -69,6 +71,10 @@ export type KeyboardGateHost = {
   /** What main does itself with a held key, or null (every key but ⌘Q). Such a key is never sent again:
    *  main acts on it in its turn, after the keys held before it have gone to the document. */
   actsOn?(input: HeldKey): (() => void) | null
+  /** Keys of main's own that main also takes from a widget the writer has clicked into (⌘Q): that widget
+   *  is given keys, and a page that calls `preventDefault` on one keeps it from the menu. Held and acted
+   *  on as any other key of main's own, without taking the keyboard back. Must also be a key `actsOn` acts on. */
+  actsOnInEngaged?(input: HeldKey): boolean
   /** Start listening in the top frame for the marker key (`DELIVERY_MARKER`). Resolves, once the
    *  listener is in place, to a wait that is true when the top frame has had the marker. Without this
    *  port main acts on its own keys without waiting for the keys sent before them. */
@@ -120,6 +126,25 @@ function modifiersOf(input: HeldKey): KeyModifier[] {
  */
 export function isQuitKey(input: HeldKey, platform: string): boolean {
   return platform === 'darwin' && input.type === 'keyDown' && input.meta && !input.control && !input.alt && !input.shift && input.key.toLowerCase() === 'q'
+}
+
+/** ⌘W (Ctrl+W elsewhere), the File menu's Close Tab: the menu's accelerator, which a held key never reaches. */
+export function isCloseTabKey(input: HeldKey, platform: string): boolean {
+  const modifier = platform === 'darwin' ? input.meta && !input.control : input.control && !input.meta
+  return input.type === 'keyDown' && modifier && !input.alt && !input.shift && input.key.toLowerCase() === 'w'
+}
+
+/**
+ * The keys main acts on itself when a widget's frame has the focus, and what it does: ⌘Q quits, ⌘W sends
+ * the window the menu's own 'close-tab' action. Both are menu accelerators, and a held key (or one sent
+ * again) never reaches the menu. ⌘Q is also taken from a widget the writer has clicked into, so that
+ * widget cannot swallow it; ⌘W is left to such a widget's own handling.
+ */
+export function mainOwnKeyHooks(platform: string, actions: { quit(): void; closeTab(): void }): Pick<KeyboardGateHost, 'actsOn' | 'actsOnInEngaged'> {
+  return {
+    actsOn: (input) => (isQuitKey(input, platform) ? actions.quit : isCloseTabKey(input, platform) ? actions.closeTab : null),
+    actsOnInEngaged: (input) => isQuitKey(input, platform),
+  }
 }
 
 /** A key that makes text when typed without control, alt or meta. */
@@ -175,10 +200,21 @@ export function createKeyboardGate(host: KeyboardGateHost, options: { attempts?:
     if (!focused) return false
     if (focused === 'unreadable') return true
     if (isTop(focused)) return false
+    if (host.readerFrame?.() === true) return false
     const shell = host.shellOrigin()
     if (focused.origin !== 'null' && shell && focused.origin === shell) return false // the app's own frames
     if (!engaged || !ownerFrame) return true
     return !sameFrame(focused, ownerFrame)
+  }
+
+  /** A widget the writer engaged has the focus (the focus is in a frame that is neither the top frame nor
+   *  the app's own, and `intoWidget` has already found nothing to hold from it). */
+  function inEngagedWidget(): boolean {
+    const focused = host.focusedFrame()
+    if (!focused || focused === 'unreadable' || isTop(focused)) return false
+    if (host.readerFrame?.() === true) return false
+    const shell = host.shellOrigin()
+    return !(focused.origin !== 'null' && shell && focused.origin === shell)
   }
 
   const same = (a: HeldKey, b: HeldKey): boolean => a.type === b.type && a.key === b.key && a.shift === b.shift && a.control === b.control && a.alt === b.alt && a.meta === b.meta
@@ -337,6 +373,8 @@ export function createKeyboardGate(host: KeyboardGateHost, options: { attempts?:
         if (queue.length > 0 || reclaiming) return hold(input, false)
       }
       if (intoWidget()) return hold(input, isReplay)
+      // A key of main's own that an engaged widget must not be able to swallow (⌘Q): never delivered to it.
+      if (!isReplay && inEngagedWidget() && host.actsOnInEngaged?.(input) === true) return hold(input, false)
       return false
     },
   }
@@ -404,7 +442,7 @@ const MARKER_LISTEN_SCRIPT = `(() => {
 const MARKER_SEEN_SCRIPT = `Promise.resolve(window[${JSON.stringify(MARKER_SLOT)}]).then((value) => value === true)`
 
 /** Put the gate on a window's web contents. */
-export function attachKeyboardGate(contents: WindowContentsLike, shellURL: string, onDropped?: (count: number) => void, hooks: Pick<KeyboardGateHost, 'onHeld' | 'actsOn'> = {}): KeyboardGate {
+export function attachKeyboardGate(contents: WindowContentsLike, shellURL: string, onDropped?: (count: number) => void, hooks: Pick<KeyboardGateHost, 'onHeld' | 'actsOn' | 'actsOnInEngaged' | 'readerFrame'> = {}): KeyboardGate {
   let shellOrigin = ''
   try { const url = new URL(shellURL); shellOrigin = url.protocol === 'file:' ? 'file://' : url.origin } catch { shellOrigin = '' }
   // The name the top frame gave each widget frame, as it stood when the frame was created (before any
@@ -438,6 +476,8 @@ export function attachKeyboardGate(contents: WindowContentsLike, shellURL: strin
     onDropped,
     onHeld: hooks.onHeld,
     actsOn: hooks.actsOn,
+    actsOnInEngaged: hooks.actsOnInEngaged,
+    readerFrame: hooks.readerFrame,
     shellOrigin: () => shellOrigin,
     now: () => Date.now(),
     findWidgetFrame: (name) => {

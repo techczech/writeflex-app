@@ -49,7 +49,7 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 /* When pins plus the active tab overflow the strip, only the active unpinned tab gives up width: its name
    ellipsises down to a floor (icon, a few name characters, close) so the New-file (+) button stays in view.
    Pins and every other tab keep their natural width (.tab is flex: 0 0 auto). */
-.tabstrip > .tab[aria-selected="true"]:not(.pinned){flex:0 1 auto;min-width:96px}
+.tabstrip > .tab[aria-selected="true"]:not(.pinned){flex:0 1 auto;min-width:244px;max-width:340px}
 .tabstrip > .tab .icon,.tabstrip > .tab .close,.tabstrip > .newtab{flex:none}
 .tab:hover{background:var(--hover)}
 .tab[aria-selected="true"]{background:var(--bg-pane);border-color:var(--line);color:var(--ink)}
@@ -83,7 +83,7 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .tb-right{display:flex;align-items:center;gap:6px}
 .chord{position:absolute;bottom:1px;right:1px;font-family:var(--mono);font-size:7.5px;color:var(--ink-4);letter-spacing:-.2px;pointer-events:none}
 .tbsep{width:1px;height:30px;background:var(--line);flex:none;margin:0 1px}
-.modebtn{display:flex;align-items:center;gap:6px;height:30px;padding:0 9px;border:1px solid var(--line);border-radius:8px 8px 0 0;background:var(--bg-elev);color:var(--ink);font-size:12px;font-weight:600;flex:none;position:relative;width:110px}
+.modebtn{display:flex;align-items:center;gap:6px;height:30px;padding:0 9px;border:1px solid var(--line);border-radius:8px 8px 0 0;background:var(--bg-elev);color:var(--ink);font-size:12px;font-weight:600;flex:none;position:relative;width:150px}
 .modebtn:hover{background:var(--hover)}
 .modebtn.reviewing{border-color:color-mix(in srgb,var(--review) 40%,transparent);background:var(--review-bg);color:var(--review)}
 .modebtn .mn{flex:1;white-space:nowrap}.modebtn .cv{color:var(--ink-3);width:12px;height:12px}.modebtn[aria-expanded="true"]{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
@@ -1423,7 +1423,7 @@ button.bsrc-ico:hover,button.bsrc-ico:focus-visible{color:var(--accent);border-c
 .sb-disclosure-button{position:relative;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;border-radius:5px;color:var(--ink-3);flex:none}
 .sb-disclosure-button:hover{background:var(--hover);color:var(--ink)}
 .sb-disclosure-button>svg{width:13px;height:13px}
-.sb-disclosure-badge{position:absolute;top:-5px;right:-5px;padding:0 3.5px;border:1px solid var(--line);border-radius:8px;background:var(--pill);color:var(--ink-2);font:600 8px/1.5 var(--mono);font-variant-numeric:tabular-nums}
+.sb-disclosure-badge{position:absolute;top:-5px;right:-5px;padding:0 3.5px;border:1px solid var(--line);border-radius:8px;background:var(--pill);color:var(--ink-2);font:600 9.5px/1.5 var(--mono);font-variant-numeric:tabular-nums}
 .sb-disclosure-popover{position:absolute;right:-8px;bottom:calc(100% + 9px);z-index:18;width:236px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg-elev);box-shadow:0 12px 34px rgba(20,25,40,.16);white-space:normal}
 .sb-disclosure-popover::after{content:"";position:absolute;right:14px;bottom:-6px;width:10px;height:10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg-elev);transform:rotate(45deg)}
 .sb-disclosure-row{display:flex;width:100%;align-items:baseline;gap:10px;padding:3.5px 0;border:0;border-bottom:1px solid var(--line-soft);background:transparent;color:var(--ink);text-align:left;font:10.5px var(--mono);font-variant-numeric:tabular-nums}
@@ -1498,6 +1498,7 @@ button.bsrc-ico:hover,button.bsrc-ico:focus-visible{color:var(--accent);border-c
 .mg-filterline{display:flex;align-items:center;gap:6px;min-width:0;font-size:12px;color:var(--ink-2)}.mg-filterline b{color:var(--ink);font-weight:650}.mg-filterline .mg-btn{margin-left:auto;flex:none}
 .mg-filterline .icon{color:var(--accent);flex:none}
 .sb-agent-affordance.icon-only{width:20px;height:20px;justify-content:center;gap:0}
+.reading-chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;background:#efe9fb;color:#4b3590;font-size:11px;flex:none;white-space:nowrap}.reading-chip .icon{width:12px;height:12px}
 .reviewing-chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;background:var(--review-bg);color:var(--review);font-size:11px;flex:none}.reviewing-chip .icon{width:12px;height:12px}
 .sb-measure{position:absolute!important;left:0;top:0;display:flex!important;visibility:hidden!important;pointer-events:none!important;width:max-content!important}.sb-measure>*{flex:none!important}
 .sb-measure-event{display:inline-flex;max-width:220px;padding:1.5px 7px;font-size:10.5px;font-weight:600;white-space:nowrap}
@@ -1516,6 +1517,8 @@ button.bsrc-ico:hover,button.bsrc-ico:focus-visible{color:var(--accent);border-c
 .lp-block.lp-selected{outline:1.5px solid var(--accent);outline-offset:-4px}
 .lp-enter-hint{display:none;position:absolute;z-index:2;right:7px;top:5px;font-family:var(--ui);font-size:9.5px;line-height:17px;color:var(--accent);background:var(--accent-soft);border-radius:4px;padding:0 6px}
 .lp-block.lp-selected .lp-enter-hint{display:inline-block}
+/* The metadata bar gives the "edit" hint its own room at the right, so the summary never runs under it. */
+.lp-block.lp-selected .metadata-panel .metadata-head,.lp-frontmatter.lp-selected .metadata-panel.is-collapsed .metadata-head{padding-right:64px}
 .cm-line.lp-editing-line{border-left:2.5px solid var(--accent);padding-left:calc(var(--cm-line-padding, 0px) + 10px)}
 .lp-editbar{display:flex;align-items:center;gap:8px;margin-top:8px;padding:7px 0 2px;border-top:1px dashed var(--line);font-family:var(--ui)}
 .lp-editbar .grow{flex:1;font-size:10.5px;color:var(--ink-3)}
@@ -3137,6 +3140,8 @@ button.psrc-title:hover,button.psrc-title:focus-visible{color:var(--accent)}
 .planbtn:hover{background:color-mix(in srgb,var(--bg-elev) 100%,transparent);box-shadow:inset 0 0 0 30px var(--hover)}
 @media (max-width:1199px){.planbtn{max-width:132px}}
 @media (max-width:1039px){.planbtn .pb-name{display:none}}
+/* R3 collapse order, step 2: title-bar labels become icons (chord labels are gone from the bar already). */
+@media (max-width:1099px){.planbtn .pb-plan,.planbtn .pb-name{display:none}.planbtn{padding:0 8px;min-width:0}.modebtn .mn,.modebtn .cv{display:none}.modebtn{padding:0 8px}}
 .folio-line-host{position:absolute;top:0;left:0;right:0;height:0;z-index:1;pointer-events:none}
 .folio-line{--fl-inset:calc(max(0px,(100% - (var(--prose-measure,660px) + 2 * 72px)) / 2) + 72px);pointer-events:auto;position:absolute;left:var(--fl-inset);right:var(--fl-inset);top:15px;height:26px;display:flex;align-items:center;gap:6px;font:12px/1 var(--ui);color:var(--ink-2);-webkit-user-select:none;user-select:none;cursor:default}
 .folio-line button{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 7px;border-radius:6px;color:var(--ink-2);font:inherit;min-width:0;max-width:100%}
@@ -3256,6 +3261,13 @@ button.psrc-title:hover,button.psrc-title:focus-visible{color:var(--accent)}
 .focus-picker .pr.faded .overlay-pills,.focus-picker .pr.faded .styles{opacity:.45;transition:opacity .12s}
 .focus-picker .pr.faded:hover .overlay-pills,.focus-picker .pr.faded:focus-within .overlay-pills,.focus-picker .pr.faded:hover .styles,.focus-picker .pr.faded:focus-within .styles{opacity:1}
 /* Replying to a reader on a card (0.24 ticket 08; frame review-reply). */
+.mg-reader-thread{display:grid;gap:8px;margin:9px 0 0 16px}
+.mg-reader-reply{position:relative;border-left:2px solid var(--line);border-top:1px solid var(--line);outline:none}
+.mg-reader-reply.is-focus{border-color:var(--accent)}
+.mg-reader-reply > .mg-card-full{padding:7px 0 0 9px}
+.mg-reader-reply.is-focus > .mg-card-full > .mg-actions[data-margin-actions]{display:flex}
+.mg-reader-reply.is-focus .mg-thread{display:grid}
+.mg-reader-reply.is-focus .clamp{display:block;-webkit-line-clamp:unset;overflow:visible}
 .mg-thread{list-style:none;margin:9px 0 0 26px;padding:0;display:grid;gap:7px}
 .mg-thread .t-entry{padding:6px 0 0 9px;border-left:2px solid var(--line-strong, var(--line));border-top:1px solid var(--line)}
 .mg-thread .t-entry.by-author{border-left:3px solid var(--ink)}
@@ -3846,7 +3858,7 @@ button.folio-agent-pill[data-state=none],button.folio-agent-pill[data-state=part
 .metadata-add{margin-top:14px;max-width:100%}.metadata-system{margin-top:16px;border-top:1px solid var(--line);padding-top:10px}.metadata-system>button{border:0;background:none;padding:2px 0;color:var(--ink-3);font:11px var(--ui)}
 .metadata-system-row{display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid var(--line);font-size:11px}.metadata-system-row span:last-child{overflow:hidden;text-overflow:ellipsis;max-width:65%;white-space:nowrap;color:var(--ink-3)}
 .metadata-value{margin-top:4px;font-size:12px}.metadata-structured{margin:5px 0 0;color:var(--ink-3);font-size:11px}.metadata-message:not(:empty){padding:8px 0;color:var(--danger);font-size:11px}
-.metadata-panel .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.sr-only,.metadata-panel .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .oe:has(.metadata-panel) .oe-surface{padding:0}.oe:has(.metadata-panel) .metadata-panel{border:0;border-radius:0}.lp-frontmatter .metadata-body>button{margin-top:12px}
 @media(max-width:520px){.metadata-grid{grid-template-columns:minmax(0,1fr)}.metadata-summary{max-width:55%}.metadata-head{padding:9px}.metadata-body{padding:12px}}
 
@@ -3899,3 +3911,119 @@ button.folio-agent-pill[data-state=none],button.folio-agent-pill[data-state=part
 .status-flash.status-flash-inline{position:static;flex:0 1 560px;min-width:0;display:flex;align-items:center;max-width:560px;height:24px;box-sizing:border-box;padding:1px 6px;margin-left:auto;box-shadow:none;white-space:nowrap;overflow:hidden;line-height:20px}
 .status-flash-inline .status-flash-message{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .status-flash-inline .status-flash-undo{flex:none;margin-left:6px}
+/* The later agent-skill offer (design element 19): one quiet mark in the status bar, opening a small notice above it. */
+.sb-agent-skill{position:relative;flex:0 1 auto;min-width:0;display:inline-flex}
+.sb-agent-skill-mark{font:inherit;color:var(--accent);background:transparent;border:none;padding:0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px}
+.sb-agent-skill-mark:hover{text-decoration:underline}
+.sb-agent-skill-popover{position:absolute;bottom:calc(100% + 8px);left:0;width:340px;background:var(--bg-elev);color:var(--ink);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 36px rgba(15,20,35,.25);padding:14px;z-index:90;white-space:normal;font-size:12.5px}
+.sb-agent-skill-popover p{margin:4px 0 10px;color:var(--ink-3)}
+.sb-agent-skill-popover small{display:block;margin-top:8px;color:var(--ink-3);font-size:11.5px}
+.sb-agent-skill-actions{display:flex;gap:8px}
+.confirm details{margin:6px 0 0;font-size:12.5px}.confirm summary{cursor:pointer}
+.confirm .cf-row input[type=checkbox]{accent-color:var(--accent)}
+
+.diary-glance{padding:13px 14px 12px}
+.dg-num{font-family:var(--ui);font-size:34px;font-weight:700;letter-spacing:-.8px;line-height:1;font-variant-numeric:tabular-nums}
+.dg-unit{font-size:11px;color:var(--ink-3);margin:3px 0 10px}
+.dg-day{font:600 10.5px var(--mono);color:var(--ink-2);margin-bottom:6px}
+.dg-dots{display:flex;gap:5px;margin-bottom:11px}
+.dg-dots span{width:7px;height:7px;border-radius:50%;background:var(--ink-3)}
+.dg-dots span.off{background:transparent;box-shadow:inset 0 0 0 1px var(--line)}
+.dg-dots span.today{background:var(--ink)}
+.dg-now{font:10px var(--mono);color:var(--ink-3);display:flex;align-items:center;gap:6px;border-top:1px solid var(--line-soft);padding-top:9px}
+.diary-invitation{display:block;text-align:left;font-size:11px;color:var(--ink-3);padding:4px 4px 12px}
+/* ---------- the one search field (R12) ---------- */
+.wf-search{display:flex;align-items:center;gap:6px;background:var(--bg-elev);border:1px solid var(--line);border-radius:7px;height:26px;padding:0 6px 0 8px;flex:1;min-width:0}
+.wf-search:focus-within{border-color:var(--accent)}
+.wf-search .icon{width:12px;height:12px;flex:none;color:var(--ink-3)}
+.wf-search input{flex:1;border:none;outline:none;font-size:11.5px;font-family:var(--ui);background:none;min-width:0;color:var(--ink)}
+.wf-search-clear{display:flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:5px;color:var(--ink-3);flex:none}
+.wf-search-clear:hover{background:var(--hover);color:var(--ink)}
+/* ---------- the left pane's one header row (R1/R2): vault switcher, filter, View ---------- */
+.lv-head{display:flex;align-items:center;gap:6px;padding:8px 8px 6px 10px;position:relative}
+.lv-head .wsname{display:inline-flex;align-items:center;gap:4px;flex:0 1 auto;min-width:48px;max-width:42%;overflow:hidden;border:0;background:transparent;border-radius:6px;padding:2px 5px;color:inherit;font:600 13px var(--sans);cursor:pointer;text-align:left}
+.lv-head .wsname span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lv-head .wsname .icon{flex:none;width:12px;height:12px;color:var(--ink-3)}
+.lv-head .wsname:hover,.lv-head .wsname[aria-expanded="true"]{background:var(--pill)}
+.lv-head .wf-search{flex:1 1 60px}
+.lv-viewbtn{position:relative;display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;border:1px solid var(--line);background:var(--bg-elev);color:var(--ink-2);flex:none}
+.lv-viewbtn:hover,.lv-viewbtn[aria-expanded="true"]{background:var(--pill)}
+.lv-viewbtn .icon{width:13px;height:13px}
+.lv-viewbtn .lv-mark{position:absolute;top:-2px;right:-2px;width:8px;height:8px;border-radius:50%;background:var(--accent);border:1.5px solid var(--bg-side)}
+.lv-viewpop{position:absolute;z-index:60;top:calc(100% - 2px);right:8px;width:236px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg-elev);box-shadow:0 10px 28px rgba(0,0,0,.16);display:flex;flex-direction:column;gap:9px;font:11.5px var(--ui);color:var(--ink-2)}
+.lv-viewpop .vp-row{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.lv-viewpop .vp-row .lbl{color:var(--ink-3);font-size:11px}
+.lv-viewpop .vp-hidden{display:flex;align-items:center;gap:6px;color:var(--ink-3)}
+.lv-viewpop .vp-hidden .lv-link{margin-left:auto;padding:0;border:0;background:none;font:inherit;color:var(--accent);cursor:pointer}
+.lv-viewpop .fdash{display:inline-flex;margin-left:0}
+.lv-viewpop .lv-seg{margin-left:0}
+.file-hidden-tag{flex:none;margin-left:6px;padding:0 5px;border:1px solid var(--line);border-radius:8px;font:500 9.5px/14px var(--ui);color:var(--ink-3);background:var(--bg-elev)}
+/* The Folio part line lives in the status bar (R1): list icon, "1 of 11", previous and next as chevrons. */
+.sb-folio-slot,.sb-scratchpad-slot{display:inline-flex;align-items:center;flex:none;min-width:0}
+.statusbar .folio-line{position:static;height:24px;gap:2px;pointer-events:auto;font-size:11.5px;--fl-inset:0px}
+.statusbar .folio-line .fl-folio span,.statusbar .folio-line .fl-nav span{display:none}
+.statusbar .folio-line .fl-folio{margin-left:0;padding:0 4px}
+.statusbar .folio-line .fl-grow{display:none}
+.statusbar .folio-line .fl-slot{flex:none;min-width:0}
+.statusbar .folio-line .fl-slot.next{margin-right:0}
+.statusbar .folio-line button{padding:0 3px}
+/* The Digest is one summary line with a disclosure (R5). */
+.digest{max-height:none;padding:5px 10px}
+.d-toggle{width:100%;border:0;background:none;padding:2px 0;text-align:left;cursor:pointer;min-width:0}
+.d-toggle .d-sum{flex:1;min-width:0;margin:0;font-size:12px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.d-toggle>.icon:last-child{color:var(--ink-3);flex:none}
+#digest-details{max-height:240px;overflow-y:auto;margin-top:6px}
+/* ---------- the one back control (R10) ---------- */
+.back-control{display:inline-flex;align-items:center;gap:6px;height:26px;max-width:260px;min-width:0;padding:0 9px 0 7px;border:1px solid var(--line);border-radius:7px;background:var(--bg-elev);color:var(--ink-2);font:500 12px var(--ui);flex:0 1 auto;cursor:pointer}
+.back-control:hover{background:var(--hover);color:var(--ink)}
+.back-control .icon{width:13px;height:13px;flex:none}
+.back-control-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.back-control kbd{flex:none;font:9.5px var(--mono);color:var(--ink-4);border:0;background:none;padding:0}
+/* ---------- the one confirm card (R11) ---------- */
+.confirm-scrim{position:fixed;inset:0;z-index:20000;display:flex;align-items:flex-start;justify-content:center;padding-top:18vh;background:rgba(0,0,0,.28)}
+.confirm-card{width:min(440px,calc(100vw - 32px));padding:18px 20px 16px;border:1px solid var(--line);border-radius:12px;background:var(--bg-elev);color:var(--ink);box-shadow:0 18px 48px rgba(0,0,0,.28)}
+.confirm-card h2{margin:0 0 8px;font:650 15px/1.3 var(--ui)}
+.confirm-detail{margin:0 0 6px;font-size:12.5px;line-height:1.5;color:var(--ink-2);white-space:pre-line}
+.confirm-recover{margin:0 0 16px;font-size:12px;line-height:1.5;color:var(--ink-3)}
+.confirm-actions{display:flex;justify-content:space-between;gap:10px}
+.confirm-go.danger{background:var(--danger,#c0392b);border-color:var(--danger,#c0392b);color:#fff}
+.confirm-go.neutral{background:var(--accent);border-color:var(--accent);color:#fff}
+.version-restore-btn{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg-elev);color:var(--ink-2);font:500 11px var(--ui);flex:none;cursor:pointer}
+.version-restore-btn:hover{background:var(--hover);color:var(--ink)}
+.version-restore-btn .icon{width:12px;height:12px}
+
+.wf-search.search-panel-field{height:30px;padding:0 6px 0 8px}.wf-search.search-panel-field input{font-size:12.5px}
+/* The status bar never spills into a neighbouring pane: its items give way (R3), the notice slot truncates. */
+
+/* Manage Folio's one bar scrolls sideways when the room is narrower than its controls, instead of overlapping them. */
+.fr-bar{overflow:visible}
+.fr-bar>*{flex-shrink:0}
+.fr-bar .fr-crumb{flex:1 0 40px}
+
+/* R3: a left sidebar narrowed to 220 px keeps its tab row on one line: only the active tab keeps its word. */
+.left-pane.narrow .pane-tab:not(.on) .pt-label{display:none}
+.sb-folio-slot,.statusbar .folio-line,.statusbar .folio-line *{white-space:nowrap}
+/* The collapsed metadata card is one line (R1). It stays an ordinary block in the text, so clicks and the caret map exactly; an absolutely placed pill broke hit-testing in CodeMirror. */
+.lp-frontmatter:has(.metadata-panel.is-collapsed){margin-top:0;margin-bottom:6px;border-width:0;padding:0!important}
+.lp-frontmatter .metadata-panel.is-collapsed .metadata-head{padding:2px 12px}
+
+.statusbar .folio-line{height:20px}
+.statusbar .folio-line button{height:20px}
+@media (max-width:1300px){
+  .fr-bar .back-control-label,.fr-bar .fr-crumb,.fr-bar .folio-open-caret{display:none}
+  .fr-bar .fr-views button{padding:0 5px}
+  .fr-bar .fr-otools-inline .fr-heading-filter{width:84px}
+  .fr-bar .fr-open .folio-open-main{padding:0 7px;border-right:1px solid var(--line);border-radius:7px}
+}
+.mm-h kbd{font-size:9.5px}
+.modemenu kbd{font-size:9.5px}
+/* Track my changes is a toggle: an empty box when off, a ticked box when on (R18). */
+.mm-i[role=menuitemcheckbox] .tick{opacity:1;box-sizing:border-box;width:15px;height:15px;padding:1px;border:1px solid var(--line);border-radius:4px;color:transparent}.mm-i[role=menuitemcheckbox].on .tick{color:var(--accent);border-color:var(--accent)}
+.sync-coverage{margin:6px 12px;font-size:11.5px;color:var(--ink-3)}
+.sync-coverage summary{cursor:pointer}
+.sync-coverage p{margin:6px 0 0;line-height:1.45}
+
+/* A plain folder's Dashboard button sits in the one header row as an icon, so the filter field keeps its room. */
+.lv-head>.fdash{flex:none;width:26px;height:26px;padding:0;margin:0;justify-content:center}
+.lv-head>.fdash .rb-lbl{display:none}
+.lv-head>.fdash .rb-ico{display:block;width:13px;height:13px}

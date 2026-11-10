@@ -23,7 +23,7 @@ export function StateChip({ link, limit = false }: { link: ShareLinkView; limit?
 }
 
 const fileName = (path: string): string => path.split('/').at(-1) ?? path
-const folderName = (path: string): string => (path === '' ? 'the Workspace' : path.split('/').at(-1) ?? path)
+const folderName = (path: string): string => (path === '' ? 'the vault' : path.split('/').at(-1) ?? path)
 
 export function OtherLinksPanel({ group, busy, onCopy, onTurnOff }: {
   group: OtherLinks

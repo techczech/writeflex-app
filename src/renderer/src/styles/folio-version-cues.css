@@ -1,0 +1,44 @@
+/* Change cues (ADR-0052 § Decision 1, Folio versions ticket 06): the Binder's dot, the status-bar chip, the margin heading,
+   the working-draft row and the right rail's Folio panel. Colours come from the tokens; the dot also has words (aria-label). */
+.fo-changed{flex:none;width:7px;height:7px;margin:0 2px 0 4px;border-radius:50%;background:var(--amber)}
+
+/* The chip drops whole when the bar is short of room: a zero-width spacer shares its line, the chip wraps below it and the clipped box hides it. It is never cut mid-word. */
+.sb-cue-fit{display:flex;flex-wrap:wrap;align-content:flex-start;flex:0 1 auto;min-width:0;height:22px;overflow:hidden}.sb-cue-spacer{width:0;height:22px;flex:none}
+.sb-cue{display:inline-flex;align-items:center;gap:6px;flex:none;max-width:52ch;height:22px;margin-left:4px;padding:0 9px;border:1px solid color-mix(in srgb,var(--amber) 35%,transparent);border-radius:999px;background:var(--amber-soft);color:var(--ink);font:500 12px var(--ui);white-space:nowrap}
+.sb-cue .sb-cue-text{overflow:hidden;text-overflow:ellipsis}
+.sb-cue:hover{border-color:color-mix(in srgb,var(--amber) 60%,transparent)}
+.sb-cue:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.sb-cue.clean{border-color:color-mix(in srgb,var(--green) 35%,transparent);background:color-mix(in srgb,var(--green) 12%,transparent)}
+.sb-cue.clean:hover{border-color:color-mix(in srgb,var(--green) 60%,transparent)}
+
+.mg-since{position:absolute;top:8px;left:0;right:0;z-index:1;pointer-events:none;font:500 12px var(--ui);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.fv-draft{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-left:3px solid transparent;cursor:default}
+.fv-draft .fv-row-icon{color:var(--amber)}
+.fv-draft:hover{background:var(--hover)}
+.fv-draft:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fv-chip.draft{background:var(--amber-soft);border-color:transparent;color:#8a5a00}
+
+/* The right rail's Folio panel: this part, the table or widget under the cursor, and the Folio. */
+.fcp{margin:0 0 10px;border-bottom:1px solid var(--line-soft);padding-bottom:8px;color:var(--ink-2);font:12.5px/1.45 var(--ui)}
+.fcp-h{display:flex;align-items:center;gap:6px;margin:0;padding:6px 12px;background:var(--bg-sunk);font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.fcp-h svg{width:13px;height:13px;flex:none}
+.fcp-b{padding:8px 12px;display:grid;gap:6px}
+.fcp-b p{margin:0}
+.fcp-b .dim{color:var(--ink-3)}
+.fcp-row{display:flex;flex-wrap:wrap;gap:6px}
+.fcp-btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg-elev);font:12px var(--ui);color:var(--ink-2);white-space:nowrap}
+.fcp-btn svg{width:13px;height:13px;flex:none}
+.fcp-btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.fcp-btn[aria-disabled="true"],.fcp-btn:disabled{opacity:.5;cursor:default}
+.fcp-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fcp-name{display:flex;gap:6px}
+.fcp-name input{flex:1;min-width:0;height:28px;padding:0 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg-elev);color:var(--ink);font:12.5px var(--ui)}
+.fcp-name input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.fcp-err{color:var(--danger)}
+
+/* The Folio workspace stops above the status bar, and the status bar sits at the bottom of the pane, so the chip and the resident status
+   line stay visible while the workspace is on screen (the editor is lifted into the workspace's text pane, which left the bar at the top of
+   the pane, under the workspace). Other Collection pages keep covering the whole pane. */
+.cv-overlay:has(.cv-folio-page){bottom:var(--editor-statusbar-height,34px)}
+.editor-wrap:has(> .cv-overlay .cv-folio-page) > .statusbar{position:absolute;left:0;right:0;bottom:0;z-index:10}

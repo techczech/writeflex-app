@@ -1,0 +1,107 @@
+/* Import a co-author's Word revision, steps 1 and 2 (Folio versions ticket 14). After the locked mockup
+   docs/design/2026-11-02-folio-versions/mockup/locked/ (scenes import-start, import-match, error): a workspace view in the
+   Versions tab's main column, a stepper, bounded cards, a match table. Colours are the app's tokens, so dark mode follows. */
+.fvi{min-width:0;padding:16px 22px 100px}
+.fvi-stepper{display:flex;margin:0 0 12px;padding:0;list-style:none;width:max-content;max-width:100%;border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:12.5px}
+.fvi-stepper li{padding:6px 14px;background:var(--bg-elev);color:var(--ink-3);border-left:1px solid var(--line)}
+.fvi-stepper li:first-child{border-left:0}
+.fvi-stepper li.on{background:var(--ink);color:var(--bg-pane);font-weight:600}
+.fvi-stepper li.done{background:var(--accent-soft);color:var(--accent)}
+.fvi-card{min-width:0;border:1px solid var(--line);border-radius:9px;background:var(--bg-elev);overflow:hidden;max-width:980px}
+.fvi-card .fvs-card-head{border-radius:0;white-space:normal;overflow-wrap:anywhere}
+.fvi-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:12px 16px;align-items:center;padding:14px 16px;font-size:13px}
+.fvi-k{color:var(--ink-3)}
+.fvi-v{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
+.fvi-ico{width:14px;height:14px;vertical-align:-2px;flex:none}
+.fvi-muted{color:var(--ink-3)}
+.fvi-input{min-width:0;max-width:100%;height:32px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg-elev);color:var(--ink);font:inherit;font-size:13px}
+input.fvi-input{width:min(420px,100%)}
+.fvi-input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.fvi-input:disabled{opacity:.6}
+.fvi-note{flex-basis:100%;font-size:11.5px;color:var(--ink-3);line-height:1.45}
+.fvi-foot{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--line)}
+.fvi-need{margin-right:auto;font-size:12px;color:var(--ink-3)}
+.fvi-banner{margin:0 0 12px;max-width:980px}
+.fvi-banner-inline{margin:0 16px 12px}
+.fvi-banner-actions{display:flex;gap:8px;margin-top:8px}
+.fvi-banner:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fvi-sum{margin:0;padding:8px 16px;font-size:12.5px;color:var(--ink-2);border-bottom:1px solid var(--line-soft)}
+.fvi-scroll{overflow:auto;max-height:min(60vh,640px)}
+.fvi-table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px}
+.fvi-table th:nth-child(1),.fvi-table th:nth-child(3){width:27%}
+.fvi-table th:nth-child(2){width:26px}
+.fvi-table th{position:sticky;top:0;z-index:1;padding:7px 14px;text-align:left;font:600 10.5px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);background:var(--bg-sunk);border-bottom:1px solid var(--line)}
+.fvi-table td{overflow-wrap:anywhere;padding:9px 14px;vertical-align:top;border-bottom:1px solid var(--line-soft);font-family:var(--prose);font-size:13.5px}
+.fvi-table td:nth-child(3) select.fvi-input{width:100%}
+.fvi-table td:nth-child(2){width:28px;padding-left:0;padding-right:0;color:var(--ink-3)}
+.fvi-table td:nth-child(4){font-family:var(--ui);font-size:12.5px}
+.fvi-why{margin-top:4px;font-size:11.5px;color:var(--ink-3);line-height:1.4}
+.fvi-why.bad{color:var(--danger)}
+.fvi-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.fvi-actions .fv-btn,.fvi-actions .fvi-input{height:28px}
+.fvi-done{display:flex;gap:10px;align-items:flex-start;padding:14px 16px;font-size:13px}
+.fvi-done .icon{flex:none;width:17px;height:17px;margin-top:2px;color:var(--accent)}
+.fvi-done p{margin:0;line-height:1.5}
+.fvi-card:focus-visible,.fvi-card [tabindex="-1"]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:720px){.fvi-kv{grid-template-columns:1fr}}
+
+/* The decide step (Folio versions ticket 16): one row per part with its suggestions, the structure rows, the finishing offer. */
+.fvd .fvd-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;justify-content:space-between}
+.fvd-status{min-height:0;padding:0 16px;font-size:12.5px;color:var(--ink-2)}
+.fvd-status:not(:empty){padding:8px 16px;border-bottom:1px solid var(--line-soft)}
+.fvd-status[data-tone="bad"]{color:var(--danger)}
+.fvd-status:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fvd-offer{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;margin:0;padding:12px 16px;background:var(--accent-soft);border-bottom:1px solid var(--line-soft);font-size:13px}
+.fvd-offer .icon{flex:none;width:17px;height:17px;color:var(--accent)}
+.fvd-offer > div{flex:1;min-width:200px}
+.fvd-note{display:flex;gap:8px;align-items:flex-start;margin:0;padding:10px 16px;background:#fdf3e1;color:#6f4a00;font-size:12.5px;border-bottom:1px solid var(--line-soft)}
+.fvd-note svg{flex:none;width:15px;height:15px;margin-top:1px}
+.fvd-sub{margin:0;padding:10px 16px 6px;font:600 10.5px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);background:var(--bg-sunk);border-top:1px solid var(--line-soft)}
+.fvd-count{margin-left:8px;font:400 11.5px var(--ui);letter-spacing:0;text-transform:none;color:var(--ink-3)}
+.fvd-parts,.fvd-rows,.fvd-suggestions{margin:0;padding:0;list-style:none}
+.fvd-part{padding:10px 16px;border-top:1px solid var(--line-soft)}
+.fvd-part-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.fvd-part-title{flex:1;min-width:160px;font:600 13.5px var(--prose);color:var(--ink)}
+.fvd-num{display:inline-block;min-width:1.6em;margin-right:6px;color:var(--ink-3);font:600 12px var(--mono)}
+.fvd-suggestions{margin-top:6px}
+.fvd-suggestions li{display:flex;gap:8px;align-items:flex-start;padding:4px 0;font-size:12.5px;color:var(--ink-2)}
+.fvd-kind{flex:none;width:13px;height:13px;margin-top:3px;color:var(--ink-3)}
+.fvd-text{flex:1;min-width:0;overflow-wrap:anywhere;font-family:var(--prose);font-size:13px}
+.fvd-row{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:10px 16px;border-top:1px solid var(--line-soft);font-size:13px}
+.fvd-row-text{flex:1;min-width:220px;overflow-wrap:anywhere;font-family:var(--prose)}
+.fvd-choices{display:flex;flex-wrap:wrap;gap:6px}
+.fv-btn.plain{background:transparent}
+.fv-btn[aria-disabled="true"]{pointer-events:auto}
+/* The timeline folds to a thin rail while deciding, so the decision list has the room (mockup scene import-decide). */
+.fv.fv-folded .fv-list{flex:0 0 52px;min-width:52px;max-width:52px;overflow:hidden}
+.fv.fv-folded .fv-listhead,.fv.fv-folded .fv-row-body,.fv.fv-folded .fv-draft .fv-row-body{display:none}
+.fv.fv-folded .fv-row,.fv.fv-folded .fv-draft{justify-content:center;padding-left:0;padding-right:0}
+.fvd-lead{margin:0;padding:8px 16px;font-size:12.5px;color:var(--ink-2)}
+
+/* Ticket 17: the three texts of a part both of you changed. Columns are sent, theirs, yours; one row per stretch of paragraphs; unchanged stretches fold to one line. */
+.fvt-top{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:10px 16px;border-bottom:1px solid var(--line-soft)}
+.fvt-title{flex:1;min-width:200px;margin:0;padding:0;border:0;font:600 15px var(--prose);letter-spacing:0;text-transform:none;color:var(--ink)}
+.fvt-title:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fvt-count{margin-left:auto}
+.fvt-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.fvt-grid{display:flex;flex-direction:column;padding:8px 16px 12px;min-width:0}
+.fvt-heads,.fvt-trio{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 12px}
+.fvt-heads{position:sticky;top:0;z-index:1;padding:6px 0;background:var(--bg);border-bottom:1px solid var(--line-soft)}
+.fvt-colhd{display:flex;align-items:center;gap:6px;font:600 10.5px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}
+.fvt-colhd svg{width:12px;height:12px}
+.fvt-row{margin:10px 0 0;border:1px solid var(--line-soft);border-radius:8px;background:var(--bg);content-visibility:auto;contain-intrinsic-size:auto 140px}
+.fvt-row:focus-within{border-color:var(--accent)}
+.fvt-row[data-state="open"],.fvt-row[data-state="waiting"],.fvt-row[data-state="closed"]{border-color:var(--warn-line, #e5c46f)}
+.fvt-cell{padding:10px 12px;min-width:0;font:13px/1.5 var(--prose);color:var(--ink);overflow-wrap:anywhere}
+.fvt-cell.gone .fvt-para{text-decoration:line-through;color:var(--ink-3)}
+.fvt-cell.new{background:var(--accent-soft)}
+.fvt-none{color:var(--ink-3);font:12px var(--ui);font-style:italic}
+.fvt-para{margin:0}
+.fvt-para + .fvt-para{margin-top:.6em}
+.fvt-dec{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 12px;border-top:1px solid var(--line-soft);background:var(--bg-sunk);border-radius:0 0 8px 8px}
+.fvt-why{flex:1;min-width:200px;display:flex;align-items:flex-start;gap:6px;font-size:12.5px;color:var(--ink-2)}
+.fvt-ic{flex:none;width:13px;height:13px;margin-top:2px}
+.fvt-same{margin:8px 0 0}
+.fvt-same .fvt-trio{margin-top:4px;opacity:.75}
+.fvt-fold{font-size:12px}
+@media (max-width: 900px){.fvt-heads,.fvt-trio{grid-template-columns:1fr}.fvt-heads{display:none}.fvt-cell{border-top:1px solid var(--line-soft)}}

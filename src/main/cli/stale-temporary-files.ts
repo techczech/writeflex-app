@@ -24,7 +24,7 @@
  * that goes at a later run, the folder being shorter by then. The folders of documents are the
  * writer's own and are walked whole, as the sidebar walks them.
  *
- * Run by the next command-line write to the Collection, under the owner lock, and by the app when it
+ * Run by the next command-line write to the Collection and by the app when it
  * binds the Collection. It asks the Collection write gate first and gives up quietly on any failure:
  * tidying must never stop the write it runs before.
  */

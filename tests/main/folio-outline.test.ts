@@ -82,7 +82,7 @@ test('a leading level-1 heading is the piece name, not a heading row; Levels and
 })
 
 test('the group line and the Folder part foot say what the spec words', () => {
-  expect(alsoLine('Example guide', 3)).toBe('In Example guide, not in the running order.')
+  expect(alsoLine('Example guide', 3)).toBe('In Example guide, not in the outline.')
   expect(alsoLine('Example guide', 0)).toBe('Every piece in Example guide is in the running order.')
   expect(folderFootLine('Example guide', 12, 'Welcome')).toBe('Example guide is a folder of 12 files, shown in file-name order.')
   expect(folderFootLine(null, 12, 'Welcome')).toBe('Welcome is not in a folder, so this lists the whole collection. A Folio is made from the pieces of one folder.')

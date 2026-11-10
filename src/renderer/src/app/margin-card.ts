@@ -2,6 +2,8 @@ import type { Change } from '../../../preload'
 import type { ReviewActions } from './review-actions'
 import { marginKind, marginSource, type MarginItem, type MarginSettledRow } from './margin-model'
 import { isAddHeadingProposal } from '../../../shared/part-title-proposal'
+import { folioTakeOf } from '../../../shared/folio-version-take'
+import { folioRevisionOf } from '../../../shared/folio-version-stage'
 import { tagTitle } from '../components/outside-dock-model'
 import { metadataFieldsOf, metadataSegments } from './metadata-proposal'
 import { frontmatterFieldChanges } from '../../../shared/markdown/frontmatter-proposal'
@@ -97,6 +99,7 @@ export type MarginCardDescriptor = {
   /** A reader's note or proposed edit (0.24 ticket 07): the link it came through, a note's text, and the
    *  words it was written on when the passage has changed since. All of it the reader's text: drawn as text. */
   reader: {
+    replyTo?: { key: string; name: string; text: string }
     link: string; note: string | null; written: string | null; changed: boolean; gone: boolean
     /** The words stand in more than one place equally well: shown beside the best match, flagged. */
     ambiguous: boolean
@@ -305,7 +308,10 @@ function kindLabelOf(card: MarginItem): MarginCardDescriptor['kindLabel'] {
 /** Who, where it came through, when: the line a focused card carries under its change. Text only. */
 function roleLineOf(card: MarginItem, reader: Change['readerNote'] | null, now: number): string {
   const change = card.change
-  if (reader) return `Reader ${reader.name}, through the link “${reader.link}”, ${whenLabel(reader.at, now)}.`
+  if (reader) return `Reader ${reader.name}${reader.person?.email ? ` (${reader.person.email})` : ''}, through the link “${reader.link}”, ${whenLabel(reader.at, now)}.`
+  if (folioTakeOf(change)) return `Taken from the Folio version “${card.source.label}”, ${whenLabel(change.ts, now)}. Accept puts that text in the part; the text it replaces is kept first.`
+  const revision = folioRevisionOf(change)
+  if (revision) return `${revision.reviewer}’s change in her Word revision, ${whenLabel(change.ts, now)}${revision.heading !== '' ? `, section “${revision.heading}”` : ''}. Accept puts her words in the part; the text it replaces is kept first. No reply goes back.`
   if (card.source.type === 'outside') {
     const request = change.outsideRequest
     if (!request) return `${card.source.label}, ${whenLabel(change.ts, now)}. No reply goes back.`
@@ -375,7 +381,7 @@ export function describeMarginCard(card: MarginItem, marker: number, now: number
     name: fromReader ? fromReader.name : card.source.label,
     roleTag: card.source.type,
     roleTagText: fromReader ? 'reader' : outside && change.outsideRequest && change.outsideRequest.count > 1 ? `outside │ ${change.outsideRequest.index}/${change.outsideRequest.count}` : card.source.key === 'writeflex' ? card.source.label : card.source.type,
-    title: fromReader ? `From ${fromReader.name}, through the link ${fromReader.link}` : outside ? tagTitle(card.source.label, change.outsideRequest?.at, change.outsideRequest?.index ?? 1, change.outsideRequest?.count ?? 1, now) : null,
+    title: fromReader ? `From ${fromReader.name}${fromReader.person?.email ? ` (${fromReader.person.email})` : ''}, through the link ${fromReader.link}` : outside ? tagTitle(card.source.label, change.outsideRequest?.at, change.outsideRequest?.index ?? 1, change.outsideRequest?.count ?? 1, now) : null,
     kindLabel,
     statusLabel: card.status === 'held' ? 'Held both' : 'Open',
     when: whenLabel(fromReader ? fromReader.at : change.ts, now),
@@ -399,7 +405,7 @@ export function describeMarginCard(card: MarginItem, marker: number, now: number
     primary: keyed(primary),
     more: keyed(more),
     reader: fromReader ? {
-      link: fromReader.link,
+      link: fromReader.link, replyTo: fromReader.replyTo,
       note: fromReader.kind === 'note' ? fromReader.text : null,
       written: fromReader.anchored === 'unchanged' ? null : fromReader.quote,
       changed: fromReader.anchored === 'changed',
@@ -431,7 +437,7 @@ function describeClosedReaderCard(card: MarginItem, marker: number, reader: NonN
     name: reader.name,
     roleTag: card.source.type,
     roleTagText: 'reader',
-    title: `From ${reader.name}, through the link ${reader.link}`,
+    title: `From ${reader.name}${reader.person?.email ? ` (${reader.person.email})` : ''}, through the link ${reader.link}`,
     kindLabel,
     statusLabel: 'Could not be applied',
     when: whenLabel(reader.at, now),
@@ -449,7 +455,7 @@ function describeClosedReaderCard(card: MarginItem, marker: number, reader: NonN
     primary: keyed([{ id: 'copy-wording', label: copyWordingLabel(reader.name) }, { id: 'reply', label: 'Reply' }, { id: 'dismiss', label: 'Dismiss' }]),
     more: [],
     reader: {
-      link: reader.link, note: null, written: reader.quote, changed: false, gone: false, ambiguous: false,
+      link: reader.link, replyTo: reader.replyTo, note: null, written: reader.quote, changed: false, gone: false, ambiguous: false,
       closed: { reason: change.closedReason ?? '', wording },
       replies: readerRepliesOf(change, now),
       noteGone: readerNoteGone(change),
@@ -607,7 +613,7 @@ export function describeSettledModeCard(row: MarginSettledRow, marker: number, n
   const primary: MarginActionItem[] = [{ id: 'reopen', label: declined ? 'Reopen' : 'Return to review' }]
   const more: MarginActionItem[] = [{ id: 'show', label: 'Show in text' }]
   if (!note && !change.newFile) more.push({ id: 'to-scratchpad', label: 'Send original to Scratchpad' })
-  const roleLine = reader ? `Reader ${reader.name}, through the link “${reader.link}”, ${whenLabel(reader.at, now)}.`
+  const roleLine = reader ? `Reader ${reader.name}${reader.person?.email ? ` (${reader.person.email})` : ''}, through the link “${reader.link}”, ${whenLabel(reader.at, now)}.`
     : row.source.type === 'you' ? `Your recorded edit, ${whenLabel(change.ts, now)}.`
       : `${row.source.label}, ${whenLabel(change.ts, now)}.`
   return {

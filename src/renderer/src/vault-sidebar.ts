@@ -46,8 +46,8 @@ function defaultStorage(): PrefStorage | null {
   try { return typeof localStorage === 'undefined' ? null : localStorage } catch { return null }
 }
 
-/** `142 works · 12 in progress`: in progress = works whose mapped step is Notes, Drafting, In review or Final. */
+/** `142 pieces · 12 in progress`: in progress = works whose mapped step is Notes, Drafting, In review or Final. */
 export function vaultCountText(works: VaultIndex['works'], statusMap: Readonly<Record<string, VaultStep>>): string {
   const inProgress = inProgressCount(works, statusMap)
-  return `${works.length} ${works.length === 1 ? 'work' : 'works'} · ${inProgress} in progress`
+  return `${works.length} ${works.length === 1 ? 'piece' : 'pieces'} · ${inProgress} in progress`
 }

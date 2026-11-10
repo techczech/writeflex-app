@@ -43,7 +43,7 @@ const COMMAND_BACKED_SHEET_ROWS = new Map([
   ['Next file in folder', 'navigation.nextFolderFile'],
   ['Previous file in folder', 'navigation.previousFolderFile'],
   ['Show/hide left sidebar', 'view.toggleLeftPane'],
-  ['Show/hide right pane', 'view.toggleRightPane'],
+  ['Show/hide right sidebar', 'view.toggleRightPane'],
   ['Open Files pane', 'view.files'],
   ['Open tabs', 'view.openTabs'],
   ['Open Outline tab', 'view.outline'],
@@ -303,6 +303,11 @@ test('sheet claims move with an override (the collision seam) and log copy names
   expect(chordDisplayForLog(null, 'Shortcut: Fade other paragraphs')).toBe('Not assigned')
   expect(chordDisplayForLog(null, 'Shortcut: Toggle Typewriter Mode')).toBe('⌘T')
   expect(chordDisplayForLog(JSON.stringify({ 'view.typewriter': '' }), 'Shortcut: Toggle Typewriter Mode')).toBe('Not assigned')
+  // Entries written before the batch-2 renames still resolve by their historical label.
+  expect(chordDisplayForLog(null, 'Shortcut: Show/hide right pane')).toBe('⌘]')
+  expect(chordDisplayForLog(JSON.stringify({ 'app.search': '⌃⌥⌘F' }), 'Shortcut: Search Workspace…')).toBe('⌃⌥⌘F')
+  expect(chordDisplayForLog(null, 'Shortcut: Pin this workspace')).not.toBe('Defaults')
+  expect(chordDisplayForLog(null, 'Shortcut: Folio workspace: Outline')).toBe('⌥1')
 })
 
 // Review margin ticket 04: ⇧⌘⌫ (Decline all) reaches the app table through backspaceChord; eventToChord still gives no ⌫ chord.

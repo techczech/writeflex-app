@@ -13,7 +13,9 @@ const finish = (): void => {
   try { finishTestTempRoot(run) }
   finally { console.info(`[test-temp] run-root cleanup: ${Math.round(performance.now() - start)} ms`) }
 }
-afterAll(finish)
+// The full suite measured 5,848 ms removing thousands of fixtures (r50). Give only this
+// final housekeeping hook 30s; cleanup stays synchronous and removal errors still fail the run.
+afterAll(finish, 30_000)
 process.on('exit', finish)
 
 // Bun.spawn / Bun.spawnSync without `env` hand the child the environment bun started with, not the

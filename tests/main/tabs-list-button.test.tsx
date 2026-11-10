@@ -47,7 +47,7 @@ test('the toolbar reads: sidebar toggle, book, Tabs button, tabs', () => {
   expect([...at].sort((a, b) => a - b)).toEqual(at)
   expect(html).toContain('title="Tabs (⌘2)"')
   expect(html).toContain('title="Toggle sidebar (⌘[)"')
-  expect(html).toContain('title="Toggle right pane (⌘])"')
+  expect(html).toContain('title="Toggle right sidebar (⌘])"')
   expect(html).not.toContain('⌘0')
   expect(html).not.toContain('tabs-popover')
 })

@@ -15,15 +15,15 @@ import type { FolioBinItem } from './folio-bin'
 
 /**
  * The tabs of the Folio workspace (ADR-0049, layout 1A), in the drawn order; ⌥1 … ⌥7 follow this order
- * (`WORKSPACE_TAB_CHORDS`). Outline is the default tab; the last one is remembered per Folio.
+ * (`WORKSPACE_TAB_CHORDS`). Outline is the default tab; the last one is remembered per Folio. Versions is the eighth (ADR-0052).
  */
-export const ROOM_VIEWS = ['outline', 'text', 'cards', 'map', 'flags', 'evidence', 'files'] as const
+export const ROOM_VIEWS = ['outline', 'text', 'cards', 'map', 'flags', 'evidence', 'files', 'versions'] as const
 export type RoomView = (typeof ROOM_VIEWS)[number]
-export const ROOM_VIEW_LABELS: Record<RoomView, string> = { outline: 'Outline', text: 'Text', cards: 'Cards', map: 'Map', flags: 'Flags', evidence: 'Evidence', files: 'Files' }
+export const ROOM_VIEW_LABELS: Record<RoomView, string> = { outline: 'Table', text: 'Text', cards: 'Cards', map: 'Map', flags: 'Flags', evidence: 'Evidence', files: 'Files', versions: 'Versions' }
 /** Every tab works. */
 export const ROOM_AVAILABLE_VIEWS: readonly RoomView[] = ROOM_VIEWS
-/** The chord of each tab, by position: ⌥1 Outline … ⌥7 Files. The command registry holds the same table (`folio.room.<tab>`). */
-export const WORKSPACE_TAB_CHORDS: Readonly<Record<RoomView, string>> = { outline: '⌥1', text: '⌥2', cards: '⌥3', map: '⌥4', flags: '⌥5', evidence: '⌥6', files: '⌥7' }
+/** The chord of each tab, by position: ⌥1 Outline … ⌥8 Versions. The command registry holds the same table (`folio.room.<tab>`). */
+export const WORKSPACE_TAB_CHORDS: Readonly<Record<RoomView, string>> = { outline: '⌥1', text: '⌥2', cards: '⌥3', map: '⌥4', flags: '⌥5', evidence: '⌥6', files: '⌥7', versions: '⌥8' }
 
 /** The fixed palette size (D-LBL-2): label colours are `--folio-label-1` … `--folio-label-8` by list position. */
 export const LABEL_PALETTE_SIZE = 8

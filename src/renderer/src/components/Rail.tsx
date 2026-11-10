@@ -1,5 +1,6 @@
+import { DiaryGlance } from './DiaryGlance'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Bot, Folder, Link as LinkIcon, ListPlus, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import { AlertTriangle, Sparkles, Folder, Link as LinkIcon, ListPlus, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import type { CollectionLink, QueryRow, UnresolvedFolderPiece } from '../../../preload'
 import { projectionQuerySource } from '../../../shared/query-source'
 import { humanReadableError } from '../error-text'
@@ -12,6 +13,7 @@ export type RailProps = {
   name: string
   activePath: string | null
   activeContent: string | null
+  onDiarySettings: () => void
   onClose: () => void
   onOpenPiece: (path: string) => void
   onQueryContext: (context: QueryInsertionContext) => void
@@ -43,7 +45,7 @@ function liveLinks(links: CollectionLink[], activePath: string | null, queryRows
 }
 
 /** The summonable Projection: current Collection truth over the editor, never part of its layout. */
-export function Rail({ dir, name, activePath, activeContent, onClose, onOpenPiece, onQueryContext, onInsertQuery, insertChord, focusRequest }: RailProps): JSX.Element {
+export function Rail({ dir, name, activePath, activeContent, onClose, onOpenPiece, onQueryContext, onInsertQuery, insertChord, focusRequest, onDiarySettings }: RailProps): JSX.Element {
   const [rows, setRows] = useState<QueryRow[]>([])
   const [links, setLinks] = useState<CollectionLink[]>([])
   const [unresolvedFolders, setUnresolvedFolders] = useState<UnresolvedFolderPiece[]>([])
@@ -132,6 +134,7 @@ export function Rail({ dir, name, activePath, activeContent, onClose, onOpenPiec
         <div className="rail-projection">one query · <span className="on">rail</span> · <span>board</span> · <span>in-doc query</span></div>
       </header>
       <div className="rail-scroll">
+        <DiaryGlance dir={dir} onSettings={onDiarySettings} />
         {error ? <div className="rail-error" role="alert"><AlertTriangle aria-hidden="true" />{error}</div> : (
           <>
             <section aria-labelledby="rail-pipeline-label">
@@ -175,7 +178,7 @@ export function Rail({ dir, name, activePath, activeContent, onClose, onOpenPiec
                             key={row.path}
                             onClick={() => onOpenPiece(row.path)}
                           >
-                            <span>{row.title}{row.agentAuthored && <Bot aria-label="Agent-authored Piece" />}{row.folderPath && <Folder aria-label="Folder Piece" />}</span>
+                            <span>{row.title}{row.agentAuthored && <Sparkles aria-label="Agent-authored Piece" />}{row.folderPath && <Folder aria-label="Folder Piece" />}</span>
                             <time className={age.stalled ? 'stalled' : ''}>{age.label}</time>
                           </button>
                         )

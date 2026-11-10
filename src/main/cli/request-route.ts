@@ -1,9 +1,9 @@
 /**
  * The command line's half of "the app carries out the write" (specification sections 4 and 5): when
- * the app owns the Collection, a write operation becomes ONE request file in `.writeflex/inbox/`,
+ * WriteFlex on this computer has the Collection open, a write operation becomes ONE request file in `.writeflex/inbox/`,
  * created whole, and the command line waits for the app's reply in `.writeflex/outbox/`. It writes
  * nothing else: no document, no journal entry (the app, which makes the change, records it in the
- * journal so that undo has the content before), no lock.
+ * journal so that undo has the content before).
  *
  * THE REPLY IS UNTRUSTED: any program that can write the outbox can place one, and it is printed to a
  * terminal and read by the calling agent. So:
@@ -21,23 +21,20 @@
  *  - what is printed of an accepted reply goes through the one output place (run.ts), where hidden
  *    characters are shown, not sent to the terminal.
  *
- * THE OWNER LOCK IS THE ROUTING DECISION ONLY. It says who should carry out the write (the app, by
- * request; or the command line, under the lock). It is a file inside the Collection and proves
- * nothing about a reply; it is not looked at when a reply is read. A lock that names a live app when
- * there is no key (a lock forged or synced in, or an app on another computer) gets a refusal that
- * says so and how to proceed. Nothing is sent, and the command line does not write directly while a
- * lock claims a live owner: a forged lock can delay a write and nothing more.
+ * THE ROUTE IS DECIDED ON THIS COMPUTER ONLY (write-access.ts `chooseWriteRoute`): by the reply key
+ * and presence record the app keeps in its own application-data folder. Nothing in the Collection
+ * and nothing synced from another computer can send a write here, delay it, or refuse it. There is
+ * no Collection lock (docs/plans/2026-11-03-sync-replicas-and-duplicate-reconciliation.md).
  *
  * With no acceptable reply inside the wait, the request is left for the app.
  */
-import { hostname } from 'node:os'
-import { inspectOwnerLock, type OwnerLockEnv } from '../owner-lock'
 import { readReplyKeys, replyIsSigned } from '../reply-key'
 import { CliError, type Operation, type OperationResult, type ParsedArgs } from './operation'
 import { quoted } from './terminal-text'
 import { coarseOf } from './outcome'
 import { isShownFirst } from './review-format'
 import { FolderNotUsableError, holdFolder, type HeldFolder } from './request-files'
+import { thisComputerAddresses } from '../request-address'
 import {
   INBOX_DIR, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, OUTBOX_DIR, REPLY_WAIT_MS, isRequestable,
   newRequestId, parseReply, requestArgSpecs, requestFileName, type Reply,
@@ -45,9 +42,12 @@ import {
 
 export type RequestSurroundings = {
   stdin: () => Promise<string>
-  lockEnv?: OwnerLockEnv
   /** The folders that may hold this Collection's reply key (reply-key.ts): the release app's and the beta's. */
   keyFolders: string[]
+  /** This computer's application-data folders (collection-records.ts): `own` is this command line's
+   *  variant, the rest are read. Every request is addressed to the WriteFlex apps on this computer
+   *  through them (request-address.ts), so an app on another Mac never acts on it. */
+  appData: { own: string; others: string[] }
   now?: () => Date
   waitMs?: number
   pollMs?: number
@@ -70,37 +70,24 @@ async function requestArgs(operation: Operation, args: ParsedArgs, surroundings:
   return sent
 }
 
-/**
- * The refusal when the owner lock says an app has the Collection and there is no reply key for it.
- * Nothing is sent, and nothing is written directly either: a lock that claims a live owner is never
- * overridden, whoever wrote it. A forged lock can therefore delay a write (until it goes stale, or
- * the user removes it) and can do nothing else.
- */
-async function unverifiedOwner(root: string, lockEnv: OwnerLockEnv = {}): Promise<string> {
-  const status = await inspectOwnerLock(root, lockEnv).catch(() => null)
-  const owner = status && status.state === 'held' ? status.owner : null
-  const elsewhere = owner !== null && owner.host.toLowerCase() !== (lockEnv.host ?? hostname()).toLowerCase()
-  const start = 'WriteFlex appears to have this Collection open, but that could not be verified, so nothing was sent and nothing was changed. '
-  if (elsewhere) {
-    return `${start}The Collection's lock names WriteFlex on another computer (${quoted(owner.host, 80)}), which this command line cannot ask. `
-      + 'Run the command on that computer, or close the Collection there and run it again here once the lock has cleared (within two minutes).'
-  }
-  return `${start}The Collection's lock names a running WriteFlex${owner ? ` (process ${owner.pid})` : ''}, but WriteFlex has left no key for this Collection in its own application-data folder, as it does for every Collection it opens. `
-    + 'If WriteFlex does have this Collection open, close the Collection there and open it again (or update WriteFlex), then run the command again. '
-    + 'If it does not, the lock was left or put there by something else: it clears by itself within two minutes if nothing keeps renewing it, after which the command will write directly; '
-    + `if it does not clear, check what is writing ${root}/.writeflex/owner.lock before removing it.`
-}
+/** The refusal when the app's reply key went between choosing the route and sending: it closed the Collection meanwhile. */
+const KEY_GONE = 'WriteFlex closed this Collection (or quit) just as the command was sent, so nothing was sent and nothing was changed. Run the command again: it will write directly.'
 
 /**
  * Write ONE request file for `operation` into the inbox, whole, and return its id. Nothing else is
  * written. Used for a request the app will answer (`sendToApp`) and for a shown-first request left to
  * wait while no app has the Collection open (review-route.ts).
  */
-export async function fileRequest(root: string, operation: Operation, args: ParsedArgs, surroundings: Pick<RequestSurroundings, 'stdin' | 'now'>): Promise<string> {
+export async function fileRequest(root: string, operation: Operation, args: ParsedArgs, surroundings: Pick<RequestSurroundings, 'stdin' | 'now' | 'appData'>): Promise<string> {
   const id = newRequestId(surroundings.now?.())
-  const body = `${JSON.stringify({ version: 1, id, operation: operation.name, args: await requestArgs(operation, args, { keyFolders: [], ...surroundings }) })}\n`
+  const sent = await requestArgs(operation, args, { keyFolders: [], ...surroundings })
+  let to: string[]
+  try { to = await thisComputerAddresses(surroundings.appData.own, surroundings.appData.others, root) } catch (error) {
+    throw new CliError(`Nothing was sent: this computer's request address could not be kept in ${surroundings.appData.own} (${error instanceof Error ? error.message : String(error)}). Without it WriteFlex on another computer sharing this Collection could not tell the request is not for it.`, 'refused', 'app-data-not-writable')
+  }
+  const body = `${JSON.stringify({ version: 1, id, operation: operation.name, args: sent, to })}\n`
   if (Buffer.byteLength(body) > MAX_REQUEST_BYTES) {
-    throw new CliError(`This is too large to pass to WriteFlex as one request (the limit is ${MAX_REQUEST_BYTES / (1024 * 1024)} MB). Nothing was sent. A direct change of this size can be made with the Collection closed in WriteFlex.`, 'refused', 'request-too-large')
+    throw new CliError(`This is too large to pass to WriteFlex as one request (the limit is ${MAX_REQUEST_BYTES / (1024 * 1024)} MB). Nothing was sent. A direct change of this size can be made with the Collection closed in WriteFlex on this computer.`, 'refused', 'request-too-large')
   }
   try {
     const inbox = (await holdFolder(root, INBOX_DIR, true))!
@@ -125,10 +112,9 @@ export async function sendToApp(root: string, operation: Operation, args: Parsed
   if (!isRequestable(operation.name)) {
     throw new CliError(`WriteFlex has this Collection open, and ${operation.name} cannot be passed to it. Close the Collection in WriteFlex and run the command again.`, 'refused', 'not-passable-to-app')
   }
-  // No key, no request: without the key no reply could ever be verified, and the owner lock that sent
-  // us here is a file inside the Collection that anything able to write the Collection could have put there.
+  // No key, no request: without the key no reply could ever be verified.
   const keys = await readReplyKeys(surroundings.keyFolders, root)
-  if (keys.length === 0) throw new CliError(await unverifiedOwner(root, surroundings.lockEnv), 'refused', 'owner-not-verified', false)
+  if (keys.length === 0) throw new CliError(KEY_GONE, 'refused', 'owner-not-verified', false)
   const id = await fileRequest(root, operation, args, surroundings)
 
   const waitMs = surroundings.waitMs ?? REPLY_WAIT_MS

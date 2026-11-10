@@ -23,6 +23,7 @@ import { GuardedMoveRefused, moveDocumentGuarded } from './guarded-document-move
 import { recordMainProcessDiagnostic } from './shutdown'
 import { GuardedWriteRefused, carryLeftover, documentSaveSeams, standsAsPinnedFolder, writeDocumentGuarded, type CommitTarget, type FolderIdentity } from './guarded-document-write'
 import { CollectionWriteTurn } from './collection-write-turn'
+import { HeldForBackup, NonAtomicWriteRefused, nonAtomicWritePolicy, type NonAtomicDecision, type SaveReceiptHandle } from './save-receipt-gate'
 
 export { WritesPausedError } from './collection-write-gate'
 
@@ -118,6 +119,9 @@ export type SaveFileOptions = {
   beforeCommit?: (target?: CommitTarget) => void
   /** Main-process only: create the file, never replace one (link(2) of the staged file; EEXIST → NameTaken). */
   exclusive?: boolean
+  /** Main-process only (file:save): this save's editor receipt. It decides an exclusive create's non-atomic
+   *  copy fallback (save-receipt-gate.ts); without it the folder's policy decides. Atomic writes ignore it. */
+  receipt?: SaveReceiptHandle
   /** Refuse (`NotADocumentPathError`) unless `classifyPath` calls the path a `document`, and write by
    *  the guarded write (guarded-document-write.ts): staged beside the file through a handle that
    *  follows no link and whose real location is checked, then renamed; a document that is itself a
@@ -273,10 +277,25 @@ const SOURCE_DIRS = ['research']
 /** Codes link(2) gives where the filesystem cannot make hard links (as against a taken name). */
 const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'])
 
-/** @internal Test seams of the atomic (not `documentOnly`) save, never in production: `afterStage`
- *  runs once the new bytes are staged in their temporary file, before the commit (the atomic save's
- *  counterpart of the guarded write's `afterStage`); `afterCommit` runs after the rename that commits. */
-export const atomicWriteSeams: { afterStage?: (absolute: string) => Promise<void>; afterCommit?: (absolute: string) => Promise<void> } = {}
+/** @internal Test seams of the atomic (not `documentOnly`) save, never set in production: `afterCommit` runs after the
+ *  rename that commits; `link` and `copy` stand in for the exclusive create's linkSync and its copy fallback (a disk
+ *  without hard links, a copy that fails). */
+export const atomicWriteSeams: {
+  afterStage?: (absolute: string) => Promise<void>
+  afterCommit?: (absolute: string) => Promise<void>
+  link?: (from: string, to: string) => void
+  copy?: (from: string, to: string) => void
+} = {}
+
+/** Best effort: sync the folder a rename landed in, so the new name survives a power loss. Some file
+ *  systems refuse fsync on a folder; the save has committed either way, and a receipt that needs proof of
+ *  durability makes its own barrier (backup-helper/durable-file.ts). */
+async function syncFolderBestEffort(dir: string): Promise<void> {
+  try {
+    const handle = await open(dir, fsConstants.O_RDONLY)
+    try { await handle.sync() } finally { await handle.close().catch(() => {}) }
+  } catch { /* not every file system syncs a folder */ }
+}
 
 /** Whether anything is at `absolute` (a file, a folder, a link, even a dangling one), without reading it. */
 function nameIsTaken(absolute: string): boolean {
@@ -629,8 +648,8 @@ export class Workspace {
   }
 
   /**
-   * Throws `WritesPausedError` while this Collection may not be written (collection-write-gate.ts:
-   * another owner holds its lock). Every write this Workspace makes asks first (documents, folders,
+   * Throws `WritesPausedError` while this Collection's write gate is closed (collection-write-gate.ts;
+   * nothing in production closes it since the Collection lock was removed). Every write this Workspace makes asks first (documents, folders,
    * pasted images, renames), and so must any caller that changes the Collection by another route
    * (moving a file to the Trash). Reads are unaffected.
    */
@@ -732,7 +751,13 @@ export class Workspace {
         continue
       }
       if (!entry.isFile() || !MARKDOWN_EXTENSION.test(entry.name)) continue
-      const info = await stat(absolute)
+      const info = await stat(absolute).catch(async (error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT' || error.syscall !== 'stat' || error.path !== absolute) throw error
+        // A listed chapter may move to the Folio bin before stat. A lost workspace still fails.
+        if (!(await stat(this.root)).isDirectory()) throw error
+        return null
+      })
+      if (!info) continue
       const rel = this.relative(absolute)
       files.push({
         path: rel, name: entry.name,
@@ -795,7 +820,7 @@ export class Workspace {
    *  writeFile truncates BEFORE it writes, so an app quit (or kill) racing a save could leave the
    *  document 0 bytes on disk — which is exactly how walk-sample.md was wiped on 2026-07-11. Rename
    *  is atomic on one filesystem: the file is always either the old text or the new, never empty. */
-  async #writeAtomic(absolute: string, content: string | Uint8Array, beforeCommit?: () => void, exclusive = false, folioOptions = this.#folioWriteOptions()): Promise<{ seq: number }> {
+  async #writeAtomic(absolute: string, content: string | Uint8Array, beforeCommit?: () => void, exclusive = false, saveReceipt?: SaveReceiptHandle, folioOptions = this.#folioWriteOptions()): Promise<{ seq: number }> {
     this.assertWritable()
     const folioCommit = await guardFolioWrite(this, this.relative(absolute), content, folioOptions)
     const tmp = `${absolute}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`
@@ -805,6 +830,9 @@ export class Workspace {
     const handle = await open(tmp, 'w')
     try {
       await handle.writeFile(content, typeof content === 'string' ? 'utf8' : undefined)
+      // Synced before it takes the name (editor receipts A1): a power loss after the rename cannot leave the
+      // name holding bytes that never reached the disk. A disk that refuses the sync saves as before.
+      await handle.sync().catch(() => {})
       staged = fileIdentityOf(await handle.stat({ bigint: true }))
     } finally {
       await handle.close()
@@ -819,28 +847,47 @@ export class Workspace {
       // Create, never replace: link(2) fails with EEXIST when the name is taken by anything (a file, a
       // folder), and the new name appears with all of its content at once.
       let before: string | null | undefined
+      // Set only once a receipt authorised the copy fallback: from then on its end is reported to it.
+      const fallback: { copy: Extract<NonAtomicDecision, { kind: 'copy' }> | null } = { copy: null }
       try {
         beforeCommit?.()
         before = this.#textBeforeOperationWrite(absolute, true)
         // A hard link keeps the inode; the copy below makes a new one, so its event is delivered.
         this.recordOwnWrite(this.relative(absolute), staged)
         try {
-          linkSync(tmp, absolute)
+          ;(atomicWriteSeams.link ?? linkSync)(tmp, absolute)
         } catch (linkError) {
           // A filesystem without hard links (exFAT, some network shares): an exclusive copy instead
-          // (O_EXCL; EEXIST when the name is taken). The copy's content may be seen while it is copied,
-          // which is acceptable for a new file that nothing else knows of.
+          // (O_EXCL; EEXIST when the name is taken). The copy's content may be seen while it is copied, so
+          // in a folder the backup helper watches it runs only with an exact durable write start for this
+          // save (save-receipt-gate.ts); otherwise the bytes are held and nothing is copied.
           if (!LINK_UNSUPPORTED.has((linkError as NodeJS.ErrnoException).code ?? '')) throw linkError
-          copyFileSync(tmp, absolute, fsConstants.COPYFILE_EXCL)
+          fallback.copy = await this.#mayCopy(absolute, content, saveReceipt)
+          // Awaited since the check above: asked again in the tick of the copy (as the guarded write does).
+          beforeCommit?.()
+          // The receipt's own authority, in the same tick as the copy: nothing is awaited from here to it.
+          // Refused: no copy; the bytes are held and the granted start owes its abandon (never `copyFailed`).
+          if (fallback.copy && !fallback.copy.admit()) {
+            const refused = fallback.copy
+            fallback.copy = null
+            await refused.refused()
+            throw new HeldForBackup(this.relative(absolute))
+          }
+          if (atomicWriteSeams.copy) atomicWriteSeams.copy(tmp, absolute)
+          else copyFileSync(tmp, absolute, fsConstants.COPYFILE_EXCL)
         }
       } catch (error) {
         try { unlinkSync(tmp) } catch { /* a stray temp file is not a changed document */ }
+        // copyFileSync has closed its descriptors when it throws (or never opened one): the write is over.
+        if (fallback.copy) await fallback.copy.copyFailed().catch(() => {})
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new NameTaken(this.relative(absolute))
         throw error
       }
       const receipt = this.#committed(absolute, content)
       this.#recordOperationWrite(absolute, before, content)
       try { unlinkSync(tmp) } catch { /* the copy is made; a stray temp name is harmless */ }
+      await syncFolderBestEffort(dirname(absolute))
+      if (fallback.copy) await fallback.copy.copied(absolute).catch(() => {})
       await finishFolioWrite(this, this.relative(absolute), content, folioOptions, folioCommit)
       return receipt
     }
@@ -855,16 +902,34 @@ export class Workspace {
       renameSync(tmp, absolute)
       if (atomicWriteSeams.afterCommit) await atomicWriteSeams.afterCommit(absolute)
       this.#recordOperationWrite(absolute, before, content)
+      const receipt = this.#committed(absolute, content)
+      // After the write's own records, so nothing is awaited between the commit and them.
+      await syncFolderBestEffort(dirname(absolute))
       await finishFolioWrite(this, this.relative(absolute), content, folioOptions, folioCommit)
-      return this.#committed(absolute, content)
+      return receipt
     }
     const before = this.#textBeforeOperationWrite(absolute, false)
     this.recordOwnWrite(this.relative(absolute), staged)
     await rename(tmp, absolute)
     if (atomicWriteSeams.afterCommit) await atomicWriteSeams.afterCommit(absolute)
     this.#recordOperationWrite(absolute, before, content)
+    const receipt = this.#committed(absolute, content)
+    await syncFolderBestEffort(dirname(absolute))
     await finishFolioWrite(this, this.relative(absolute), content, folioOptions, folioCommit)
-    return this.#committed(absolute, content)
+    return receipt
+  }
+
+  /** The copy fallback of an exclusive create (no hard links on this disk): the save's receipt decides; without
+   *  one, the folder's policy. Held bytes and a refused policy throw; nothing is copied then. */
+  async #mayCopy(absolute: string, content: string | Uint8Array, saveReceipt: SaveReceiptHandle | undefined): Promise<Extract<NonAtomicDecision, { kind: 'copy' }> | null> {
+    if (saveReceipt) {
+      const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : content
+      const decision = await saveReceipt.nonAtomicCreate(bytes)
+      if (decision.kind === 'held') throw new HeldForBackup(this.relative(absolute))
+      return decision
+    }
+    if (nonAtomicWritePolicy(this.root) === 'refuse') throw new NonAtomicWriteRefused(this.relative(absolute))
+    return null
   }
 
   /** With `documentOnly` the picture is written by the guarded write, as a new file that replaces nothing. */
@@ -1092,7 +1157,7 @@ export class Workspace {
       const standing = options.exclusive ? null : await lstat(absolute).catch(() => null)
       ;({ seq } = await this.#writeDocument(path, content, standing ? 'replace' : 'create', options.expect, beforeCommit, options.exclusive === true, options.inFolder, folioOptions))
     } else {
-      ;({ seq } = await this.#writeAtomic(absolute, content, beforeCommit, options.exclusive, folioOptions))
+      ;({ seq } = await this.#writeAtomic(absolute, content, beforeCommit, options.exclusive, options.receipt, folioOptions))
     }
     finishLineage?.(content)
     restoringOperation.getStore()?.set(path, content)

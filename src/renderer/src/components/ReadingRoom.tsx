@@ -1,4 +1,5 @@
-import { EVIDENCE_DRAG_MIME, type EvidenceTransfer } from '../../../shared/folio-evidence-transfer'
+import { flushSync } from 'react-dom'
+import { bindReaderEvents } from '../reading-room-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronLeft,
@@ -7,10 +8,8 @@ import {
 } from 'lucide-react'
 import {
   createViewStatePersistence,
-  ReaderEmbed,
   type ReaderAnnotation,
   type ReaderHostChord,
-  type ReaderHostWindow,
   type ReaderLiveness,
   type ReaderSelectionAnnotation,
   type ViewStatePersistence,
@@ -30,11 +29,8 @@ import { ReadingRoomHighlights } from './ReadingRoomHighlights'
 import { ReadingRoomRefused } from './ReadingRoomRefused'
 import { ReadingRoomNotice } from './ReadingRoomNotice'
 import { ReadingRoomRail, type ReadingRoomRailView } from './ReadingRoomRail'
-import { normaliseReaderText } from '../editor/citation'
-import {
-  READING_ROOM_AREA_MIME,
-  readingRoomAreaTransferForAnnotation,
-} from '../editor/reading-room-area-drop'
+import { ReadingRoomClient } from '../reading-room-client'
+import { ReaderDisposals } from '../reading-room-disposals'
 import {
   beginReadingRoomResize,
   ceilingForReadingRoom,
@@ -59,89 +55,8 @@ import {
 import { restoreReadingBookmark } from '../reading-room-bookmarks'
 import { createHeldMarks } from '../reading-room-held-marks'
 
-export type ReadingRoomProps = {
-  onClose: () => void
-  onError: (message: string) => void
-  /** A modified chord the reader forwarded out of its own document (ReadFlex ADR-0028), for App's
-   *  chord table to run. The payload is a plain keystroke description — the Room, and WriteFlex
-   *  behind it, learn nothing about the reader's iframes. */
-  onHostChord: (chord: ReaderHostChord) => void
-  /** Bumped by the `Reading Room: Highlights view` command; each bump raises the harvest. */
-  highlightsRequest: number
-  /** The set of highlights Zotero has not taken may have changed, so the one quiet indicator can
-   *  refresh. Nothing else reacts to it — the mark itself must look identical whether or not it has
-   *  synced (ADR-0029). Called on a queue, on opening a document, and on raising the harvest, so the
-   *  count cannot sit stale just because the change came from somewhere other than this window. */
-  onOutboxChanged: () => void
-  /**
-   * What Zotero said about a write the Room just attempted — its own saves, and the drains it fires on
-   * opening. **ADR-0036: this used to be thrown away**, which is why a write refused because Zotero was
-   * open was completely silent. App keeps the last word, so the refusal reaches both the notice below
-   * the locator and the sync button in the status bar.
-   */
-  onWriteResult: (result: ReadingRoomWriteResult) => void
-  /** An explicit sync requested from the Room's notice. Never throttled or coalesced away. */
-  onSyncHighlights: () => void
-  /** A bounded background sync used when the Room or one of its documents opens. */
-  onSyncHighlightsAutomatically: () => void
-  /**
-   * The refusal sentence to show while something is still owed to Zotero, or null when nothing is —
-   * *"Zotero is not open. Your highlights are saved here and are sent when Zotero is open."*, in the main process's own
-   * words rather than any the renderer invents. Shown as a quiet notice, never a modal: highlighting is
-   * a flow, and interrupting it to explain a delay would be worse than the silence it replaces.
-   */
-  outboxRefusal: string | null
-  /** Which refusal `outboxRefusal` is: a wait (Zotero closed or busy), a missing plugin, or a failure. */
-  outboxRefusalCode: string | null
-  /** Highlights, edits and deletions still owed to Zotero — the notice's count. */
-  outboxWaiting: number
-  /** Text just copied or dragged OUT of the reader, so a paste into the draft can arrive as a quote
-   *  with its reference. Null clears it. */
-  onReaderSelection: (selection: ReaderSelection | null) => void
-  /** Bumped by `Insert reference…`; raises the Shelf as a reference PICKER rather than an opener. */
-  citeRequest: number
-  /** Called with the item the writer chose while citing. The Room does not know what a citation looks
-   *  like — App owns the Markdown — so this just reports the choice. */
-  onCite: (row: ShelfRow) => void
-  /**
-   * The draft the Room is beside — the absolute path of the active Markdown file, or null when none
-   * is on screen. **Which paper is open is scoped to this** (ReadFlex ADR-0032): changing it swaps the
-   * reading, and a draft with no remembered paper shows the Shelf rather than the last draft's paper.
-   */
-  draftPath: string | null
-  /** Bumped by the `Search the Shelf` command; each bump raises the Shelf and takes the keyboard. */
-  shelfRequest: number
-  /** The Shelf command's EFFECTIVE chord, or '' when the writer unassigned it (the T6 honesty rule). */
-  shelfShortcut: string
-  side: ReadingRoomSide
-}
-
-/** What the reader handed out on a copy or a drag: the words, and where they came from. */
-export type ReaderSelection = {
-  annotation: ReaderSelectionAnnotation | null
-  attachmentKey: string
-  text: string
-  pageLabel: string | null
-  pageIndex: number | null
-  authorYear: string
-  libraryId: number
-  pageLink: string
-  shortTitle: string
-  /** Paint the retained outbox annotation in the reader that supplied this selection (ADR-0029). */
-  paint: (annotation: ReaderAnnotation) => void
-}
-
-/** Which view the Room is in. The Shelf is the entry state (ADR-0027). */
-type RoomView = ReadingRoomRailView
-
-type FrameSlot = { html: string; token: number } | null
-type PendingLoad = {
-  citationBaseLink: string
-  document: ReadingRoomDocument
-  index: number
-  token: number
-  viewState: Record<string, unknown> | null
-}
+import type { ReadingRoomProps, ReaderSelection, RoomView, FrameSlot, PendingLoad } from './ReadingRoom.types'
+export type { ReadingRoomProps, ReaderSelection } from './ReadingRoom.types'
 
 function readingRoomError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -153,6 +68,7 @@ export function ReadingRoom({
   highlightsRequest,
   onCite,
   onClose,
+  registerLifetime,
   onOutboxChanged,
   onReaderSelection,
   onError,
@@ -168,7 +84,8 @@ export function ReadingRoom({
   side,
 }: ReadingRoomProps): JSX.Element {
   const frameRefs = useRef<Array<HTMLIFrameElement | null>>([null, null])
-  const embeds = useRef<Array<ReaderEmbed | null>>([null, null])
+  const embeds = useRef<Array<ReadingRoomClient | null>>([null, null])
+  const disposals = useRef(new ReaderDisposals())
   const persistence = useRef<Array<ViewStatePersistence | null>>([null, null])
   const pending = useRef<PendingLoad | null>(null)
   const activeIndexRef = useRef(-1)
@@ -240,9 +157,11 @@ export function ReadingRoom({
   const closeDocument = useCallback((width: number): void => {
     updateRoomWidth(clampReadingRoomWidth(width, measureSpan()))
     pending.current = null
-    for (const writer of persistence.current) writer?.cancel()
-    persistence.current = [null, null]
-    embeds.current = [null, null]
+    const closing = [...embeds.current]
+    for (const [index, embed] of closing.entries()) if (embed) void disposals.current.dispose(embed).then(() => {
+      if (embeds.current[index] === embed) { embeds.current[index] = null; persistence.current[index] = null }
+      setFrames(current => current.map((slot, i) => i === index && slot?.src === embed.src ? null : slot) as [FrameSlot, FrameSlot])
+    }).catch(error => onError(readingRoomError(error)))
     activeIndexRef.current = -1
     documentRef.current = null
     pendingJump.current = null
@@ -252,18 +171,17 @@ export function ReadingRoom({
     setBookmarks([])
     setBookmarkIndexOpen(false)
     setColourPopoverOpen(false)
-    setFrames([null, null])
     setRoomView('shelf')
   }, [measureSpan, updateRoomWidth])
 
   const readLiveness = useCallback(async (
-    embed: ReaderEmbed,
+    embed: ReadingRoomClient,
     index: number,
   ): Promise<void> => {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if (!mounted.current || activeIndexRef.current !== index) return
       try {
-        const next = embed.getLiveness()
+        const next = await embed.getLiveness()
         setLiveness(next)
         if (next.canvas) return
       } catch {
@@ -291,21 +209,40 @@ export function ReadingRoom({
       token,
       viewState: state.viewState,
     }
-    setFrames((current) => {
-      const next: [FrameSlot, FrameSlot] = [...current]
-      next[index] = { html: state.readerHtml, token }
-      return next
-    })
-  }, [measureSpan, updateRoomWidth])
+    void (async () => {
+      const closing = embeds.current[index]
+      if (closing) await disposals.current.dispose(closing)
+      if (!mounted.current || pending.current?.token !== token) return
+      const lease = await window.writeflex.readingRoom.createReaderLease({ selection: state.selection, slot: index as 0 | 1 })
+      if (!mounted.current || pending.current?.token !== token) { await window.writeflex.readingRoom.releaseReaderLease(lease.id); return }
+      const client = new ReadingRoomClient(lease, () => frameRefs.current[index], () => {
+        flushSync(() => setFrames(current => current.map((slot, i) => i === index && slot?.src === client.src ? null : slot) as [FrameSlot, FrameSlot]))
+      })
+      embeds.current[index] = client
+      setFrames((current) => {
+        const next: [FrameSlot, FrameSlot] = [...current]
+        next[index] = { src: client.src, token }
+        return next
+      })
+    })().catch(error => onError(readingRoomError(error)))
+  }, [measureSpan, onError, updateRoomWidth])
 
   useEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
       activeResizeRef.current?.dispose()
-      for (const writer of persistence.current) writer?.cancel()
+      void disposals.current.close(embeds.current).catch(error => onError(readingRoomError(error)))
     }
-  }, [])
+  }, [onError])
+
+  useEffect(() => {
+    registerLifetime(async () => {
+      pending.current = null
+      await disposals.current.close(embeds.current)
+    })
+    return () => registerLifetime(null)
+  }, [registerLifetime])
 
   /**
    * The paper for the draft in hand. This runs on mount AND on every draft switch, because they are
@@ -384,7 +321,7 @@ export function ReadingRoom({
     const embed = embeds.current[activeIndexRef.current]
     if (!embed) return
     try {
-      embed.setTool(readingRoomTool(next))
+      void embed.setTool(readingRoomTool(next)).catch(error => onError(readingRoomError(error)))
       markStateRef.current = next
       setMarkState(next)
       if (next.mode !== 'highlight') setColourPopoverOpen(false)
@@ -399,15 +336,16 @@ export function ReadingRoom({
   }, [activateMarkState])
 
   const dropBookmark = useCallback((): void => {
+    void (async () => {
     const embed = embeds.current[activeIndexRef.current]
-    const viewState = embed?.saveViewState()
+    const viewState = await embed?.saveViewState()
     if (!embed || !viewState) {
       onError('The current reading position is not ready to bookmark yet.')
       return
     }
     const label = liveness?.page ? `p. ${liveness.page}` : 'Current reading position'
     void window.writeflex.readingRoom
-      .addBookmark({ label, position: viewState })
+      .addBookmark({ lease: embed.lease.id, label, position: viewState })
       .then((bookmark) => {
         setBookmarks((current) => current.some((row) => row.id === bookmark.id)
           ? current
@@ -415,6 +353,7 @@ export function ReadingRoom({
         setBookmarkIndexOpen(true)
       })
       .catch((error: unknown) => onError(readingRoomError(error)))
+    })().catch(error => onError(readingRoomError(error)))
   }, [liveness?.page, onError])
 
   const goToBookmark = useCallback((bookmark: ReadingBookmarkRow): void => {
@@ -472,179 +411,25 @@ export function ReadingRoom({
   }, [beginDocument, draftPath, jumpToHighlight, onError])
 
   useEffect(() => {
-    for (const frame of frameRefs.current) {
-      if (frame?.contentDocument) {
-        frame.contentDocument.documentElement.dataset.roomSide = side
-      }
-    }
-  }, [side])
+    for (const client of embeds.current) void client?.request('side', side).catch(error => onError(readingRoomError(error)))
+  }, [side, onError])
 
   const frameLoaded = useCallback(async (index: number, token: number): Promise<void> => {
     const load = pending.current
-    const frame = frameRefs.current[index]
-    if (!load || load.index !== index || load.token !== token || !frame?.contentWindow) return
-    frame.contentDocument?.documentElement.setAttribute('data-room-side', side)
-    const hostWindow = frame.contentWindow as unknown as ReaderHostWindow
-    // The host document load can complete before its defer script publishes createReader.
-    // Keep the replacement off-screen while that real readiness seam catches up.
-    for (let attempt = 0; attempt < 100 && !hostWindow.createReader; attempt += 1) {
-      if (!mounted.current || pending.current?.token !== token) return
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
-
+    const embed = embeds.current[index]
+    if (!load || load.index !== index || load.token !== token || !embed) return
+    await embed.ready
+    if (!mounted.current || pending.current?.token !== token) { await disposals.current.dispose(embed); return }
     const writer = createViewStatePersistence(async (viewState) => {
-      await window.writeflex.readingRoom.saveViewState({
+      const saved = await window.writeflex.readingRoom.saveViewState({
+        lease: embed.lease.id,
         attachmentKey: load.document.attachmentKey,
         libraryId: load.document.libraryId,
         viewState,
       })
+      if (!saved) throw new Error('The reader view state was not saved.')
     })
-    // What THIS reader shows for each mark: the before-state its edits and deletions carry (ADR-0031).
-    // A list refresh never changes it; only what this reader was given and what it did itself.
-    const held = createHeldMarks()
-    const embed = new ReaderEmbed({
-      readFile: (path) => window.writeflex.readingRoom.readDocument(path),
-      hostCallbacks: {
-        onError: (error) => onError(error.message),
-        // Copy or drag out of the reader passes through here (the same callback serves both), which is
-        // how a pasted quote can arrive in the draft already carrying its reference.
-        // Copy AND drag out of the reader both arrive here, which is why one mechanism serves both:
-        // whichever way the words leave the page, the draft can receive them with their reference.
-        onSetDataTransferAnnotations: (dataTransfer, items, _fromText) => {
-          const rawArea = items.length === 1 ? items[0] as { id?: unknown; type?: unknown } : null
-          if (rawArea?.type === 'image') {
-            const transfer = dataTransfer as { setData?: (type: string, value: string) => void }
-            const annotation = typeof rawArea.id === 'string' ? embed.annotationForKey(rawArea.id) : null
-            const payload = annotation
-              ? readingRoomAreaTransferForAnnotation(annotation, load.document, load.citationBaseLink)
-              : null
-            if (!payload || typeof transfer.setData !== 'function') {
-              onReaderSelection(null)
-              onError('The Area capture could not be prepared for dragging.')
-              return
-            }
-            // The nested reader already owns text/plain for drops outside WriteFlex. Add only the
-            // private typed payload; replacing its text would break ordinary inter-application drag.
-            transfer.setData(READING_ROOM_AREA_MIME, JSON.stringify(payload))
-            onReaderSelection(null)
-            return
-          }
-          const transfer = dataTransfer as { setData?: (type: string, value: string) => void }
-          const itemTarget = load.citationBaseLink.replace('zotero://open-pdf/', 'zotero://select/').replace(/\/items\/[^/?]+(?:\?.*)?$/, `/items/${load.document.itemKey}`)
-          const candidate = typeof rawArea?.id === 'string' && /^[A-Z\d]{8}$/.test(rawArea.id) ? rawArea.id : null
-          const source: EvidenceTransfer = { kind: 'zotero', itemTarget, label: load.document.authorYear, pending: true,
-            ...(candidate ? { annotation: { target: `${load.citationBaseLink}?annotation=${candidate}`, label: load.document.authorYear } } : {}) }
-          transfer.setData?.(EVIDENCE_DRAG_MIME, JSON.stringify(source))
-          let selection: ReaderSelectionAnnotation | null = null
-          try {
-            selection = embed.getSelectionAnnotation()
-          } catch (error) {
-            onError(readingRoomError(error))
-          }
-          const first = items[0] as {
-            pageLabel?: unknown
-            position?: unknown
-            text?: unknown
-          } | undefined
-          const text = typeof first?.text === 'string' ? first.text : ''
-          if (!text.trim()) {
-            onReaderSelection(null)
-            return
-          }
-          const selectionAgrees = !!selection
-            && typeof selection.text === 'string'
-            && normaliseReaderText(selection.text) === normaliseReaderText(text)
-          const matchedSelection = selectionAgrees ? selection : null
-          const position = matchedSelection
-            ? matchedSelection.position
-            : JSON.stringify(first?.position ?? {})
-          let pageIndex: number | null = null
-          try {
-            const parsed = JSON.parse(position) as { pageIndex?: unknown }
-            if (typeof parsed.pageIndex === 'number') pageIndex = parsed.pageIndex
-          } catch {
-            pageIndex = null
-          }
-          const oneBasedPage = pageIndex === null ? null : Math.max(1, Math.round(pageIndex) + 1)
-          const pageLink = oneBasedPage === null
-            ? load.citationBaseLink
-            : `${load.citationBaseLink}?page=${oneBasedPage}`
-          onReaderSelection({
-            annotation: matchedSelection,
-            attachmentKey: load.document.attachmentKey,
-            authorYear: load.document.authorYear,
-            libraryId: load.document.libraryId,
-            pageLink,
-            pageIndex,
-            pageLabel: matchedSelection
-              ? matchedSelection.pageLabel
-              : typeof first?.pageLabel === 'string' ? first.pageLabel : null,
-            paint: (annotation) => {
-              held.hold(annotation)
-              embed.upsertAnnotations([annotation])
-            },
-            shortTitle: load.document.shortTitle,
-            text,
-          })
-        },
-      },
-    })
-    if (load.viewState) embed.restoreViewState(load.viewState)
-    embed.attachWindow(hostWindow)
-    // Application chords pressed while the reader has focus arrive here as a seam event instead of
-    // dying inside the reader (ReadFlex ADR-0028); the seam re-attaches per window, so this
-    // subscription is per embed like the view-state one below.
-    embed.on('host-chord', (chord) => onHostChord(chord))
-    embed.on('mark-mode-cancelled', () => {
-      const next = leaveReadingRoomMarkMode(markStateRef.current)
-      embed.setTool(readingRoomTool(next))
-      markStateRef.current = next
-      setMarkState(next)
-      setColourPopoverOpen(false)
-    })
-    // A highlight made in the reader is queued for Zotero, and the reader is told "saved" only once
-    // that queue write has returned — the embed awaits these listeners, so returning the promise IS the
-    // durability contract (ADR-0014, consequence 1). Nothing waits on the network.
-    //
-    // The RESULT is read, not discarded (ADR-0036): it carries `notWritten` — the sentence for a person
-    // when Zotero would not take the write — and throwing it away is what made a refused write silent.
-    embed.on('annotation-created', (annotation) => {
-      if (annotation.type === 'image') {
-        const next = completeAreaCapture(markStateRef.current)
-        markStateRef.current = next
-        setMarkState(next)
-        setColourPopoverOpen(false)
-      }
-      held.created(annotation)
-      return window.writeflex.readingRoom
-        .saveAnnotations({ annotations: [annotation], operation: 'create', readerSession: held.session })
-        .then((result) => { onWriteResult(result) })
-        .catch((error: unknown) => onError(readingRoomError(error)))
-    })
-    embed.on('annotation-updated', (annotation) =>
-      window.writeflex.readingRoom
-        .saveAnnotations({ annotations: [annotation], before: [held.edit(annotation)], operation: 'update', readerSession: held.session })
-        .then((result) => { onWriteResult(result) })
-        .catch((error: unknown) => onError(readingRoomError(error))))
-    // A deletion takes the same path as an edit: queued (or cancelling a mark Zotero never got), drawn
-    // as gone, and written into Zotero when it is closed.
-    embed.on('annotation-deleted', (annotation) =>
-      window.writeflex.readingRoom
-        .saveAnnotations({ annotations: [annotation], before: [held.remove(annotation)], operation: 'delete', readerSession: held.session })
-        .then((result) => { onWriteResult(result) })
-        .catch((error: unknown) => onError(readingRoomError(error))))
-    embed.on('view-state-changed', (viewState) => {
-      writer.schedule(viewState)
-      window.setTimeout(() => {
-        if (activeIndexRef.current === index) {
-          try {
-            setLiveness(embed.getLiveness())
-          } catch {
-            // The next settled view-state event will refresh the locator.
-          }
-        }
-      }, 0)
-    })
+    const held = bindReaderEvents({ embed, writer, document: load.document, index, markStateRef, activeIndexRef, setMarkState, setColourPopoverOpen, setLiveness, onError, onReaderSelection, onHostChord, onWriteResult })
     embeds.current[index] = embed
     persistence.current[index] = writer
 
@@ -652,22 +437,26 @@ export function ReadingRoom({
     // reader that shows a clean page cannot tell you what you already marked. Read-only: the reader emits
     // create/update events but persists nothing, so nothing here writes to Zotero.
     const painted = await window.writeflex.readingRoom
-      .readHighlights()
+      .readHighlights(embed.lease.id)
       .then((result) => (result.error ? [] : result.forReader))
       .catch(() => [])
     held.load(painted)
     onOutboxChanged()
-    if (!mounted.current || pending.current?.token !== token) return
+    if (!mounted.current || pending.current?.token !== token) { await disposals.current.dispose(embed); return }
 
+    const bytes = await window.writeflex.readingRoom.readDocument({ lease: embed.lease.id })
+    if (!mounted.current || pending.current?.token !== token) { await disposals.current.dispose(embed); return }
     void embed
       .openDocument({
+        bytes, side, viewState: load.viewState, citationBaseLink: load.citationBaseLink,
+        document: { attachmentKey: load.document.attachmentKey, authorYear: load.document.authorYear,
+          itemKey: load.document.itemKey, libraryId: load.document.libraryId, shortTitle: load.document.shortTitle },
         annotations: painted,
         kind: load.document.kind,
-        path: load.document.path,
       })
       .then(() => {
-        if (!mounted.current || pending.current?.token !== token) return
-        embed.setTool(readingRoomTool(markStateRef.current))
+        if (!mounted.current || pending.current?.token !== token) { void disposals.current.dispose(embed).catch(error => onError(readingRoomError(error))); return }
+        void embed.setTool(readingRoomTool(markStateRef.current)).catch(error => onError(readingRoomError(error)))
         const previous = activeIndexRef.current
         pending.current = null
         activeIndexRef.current = index
@@ -692,28 +481,30 @@ export function ReadingRoom({
         }
         if (previous >= 0 && previous !== index) {
           window.requestAnimationFrame(() => {
-            persistence.current[previous]?.cancel()
-            persistence.current[previous] = null
-            embeds.current[previous] = null
-            setFrames((current) => {
-              const next: [FrameSlot, FrameSlot] = [...current]
-              next[previous] = null
-              return next
-            })
+            const closing = embeds.current[previous]
+            if (!closing) return
+            void disposals.current.dispose(closing).then(() => {
+              if (embeds.current[previous] === closing) { embeds.current[previous] = null; persistence.current[previous] = null }
+              setFrames((current) => {
+                const next: [FrameSlot, FrameSlot] = [...current]
+                if (next[previous]?.src === closing.src) next[previous] = null
+                return next
+              })
+            }).catch(error => onError(readingRoomError(error)))
           })
         }
       })
       .catch((error: unknown) => {
         if (!mounted.current || pending.current?.token !== token) return
         pending.current = null
-        persistence.current[index]?.cancel()
-        persistence.current[index] = null
-        embeds.current[index] = null
-        setFrames((current) => {
-          const next: [FrameSlot, FrameSlot] = [...current]
-          next[index] = null
-          return next
-        })
+        void disposals.current.dispose(embed).then(() => {
+          if (embeds.current[index] === embed) { embeds.current[index] = null; persistence.current[index] = null }
+          setFrames((current) => {
+            const next: [FrameSlot, FrameSlot] = [...current]
+            if (next[index]?.src === embed.src) next[index] = null
+            return next
+          })
+        }).catch(error => onError(readingRoomError(error)))
         const message = readingRoomError(error)
         onError(message)
       })
@@ -738,7 +529,7 @@ export function ReadingRoom({
     void embed.navigateTo({ page: target }).then(() => {
       window.setTimeout(() => {
         try {
-          setLiveness(embed.getLiveness())
+          void embed.getLiveness().then(setLiveness).catch(error => onError(readingRoomError(error)))
         } catch {
           // A later view-state callback will refresh the locator.
         }
@@ -960,10 +751,23 @@ export function ReadingRoom({
                 key={frame.token}
                 ref={(element) => { frameRefs.current[index] = element }}
                 className={index === activeIndex ? 'active' : 'replacement'}
-                srcDoc={frame.html}
+                src={frame.src}
                 sandbox="allow-scripts allow-same-origin"
                 title={index === activeIndex ? 'Reading Room document' : 'Reading Room replacement document'}
-                onLoad={() => { void frameLoaded(index, frame.token) }}
+                onLoad={() => {
+                  const failing = embeds.current[index]
+                  void frameLoaded(index, frame.token).catch(async error => {
+                    if (!failing) return
+                    const current = (): boolean => mounted.current && embeds.current[index] === failing && pending.current?.token === frame.token
+                    if (current()) onError(readingRoomError(error))
+                    try { await disposals.current.dispose(failing) }
+                    catch (failure) { onError(readingRoomError(failure)); return }
+                    if (!current()) return
+                    pending.current = null
+                    persistence.current[index] = null
+                    embeds.current[index] = null
+                  })
+                }}
               />
             ))}
             {!document && roomView === 'document' && <div className="reading-room-empty">No document open</div>}

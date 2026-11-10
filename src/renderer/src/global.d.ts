@@ -4,6 +4,7 @@ declare global {
     writeflex: WriteFlexApi
     /** Present only under WRITEFLEX_E2E=1. */
     __writeflexE2E?: {
+      setSyncAdapter?(adapter: import('./sync/sync-status').SyncAdapter | undefined): void
       throwRendererError(): void
       /** Writes made from the page's record of unsaved text (unsaved-text.ts) fail until set back. */
       setRecoveryWrites?(behaviour: 'normal' | 'fail'): void

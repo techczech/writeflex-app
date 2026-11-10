@@ -7,6 +7,7 @@ import { SCRATCH_KIND_LABELS, canPutBack, highlightSegments, linkBaseOf, originL
 import { referenceActionOffered } from '../../../../shared/scratchpad-reference-actions'
 import { ScratchpadWidgetPreview } from '../../scratchpad/ScratchpadWidgetPreview'
 import { fragmentHtml } from '../../scratchpad/fragment-html'
+import { OPEN_VERSION_REQUEST_EVENT } from '../../plan/folio-reading'
 
 /** A path inside the folder the item's relative pictures resolve from (its origin's, unless it moved apart). */
 const linkPathOf = (item: Parameters<typeof linkBaseOf>[0]): string => { const base = linkBaseOf(item); return base === '' ? '_' : `${base}/_` }
@@ -163,6 +164,7 @@ export function ItemActions({ item, handlers, canInsert }: { item: ScratchItem; 
       {!rejected && putBack ? <button type="button" className="primary" disabled={!canInsert || insertBlocked} onClick={() => handlers.insert(item, 'put-back')}>Put back</button> : null}
       {!rejected ? <button type="button" className={putBack ? '' : 'primary'} disabled={!canInsert || insertBlocked} onClick={() => handlers.insert(item, 'copy')}>Insert a copy</button> : null}
       {item.uses.some(use => use.mode === 'put-back' && !use.unverified) ? <button type="button" onClick={() => handlers.show?.(item)}>Show in document</button> : null}
+      {item.fromVersion ? <button type="button" data-testid="open-in-version" onClick={() => openInVersion(item.fromVersion!)}>Open in that version</button> : null}
       <button type="button" onClick={() => handlers.toggleDone(item)}>{item.done ? 'Mark not done' : 'Mark done'}</button>
       <button type="button" onClick={() => handlers.openMove([item.id])}>Move to group…</button>
       {rejected ? <button type="button" onClick={() => handlers.moveBack([item.id])}>Move back</button> : <button type="button" onClick={() => handlers.reject([item.id])}>Reject</button>}
@@ -174,6 +176,12 @@ export function ItemActions({ item, handlers, canInsert }: { item: ScratchItem; 
       </span>
     </div>
   )
+}
+
+/** Ask the window to open the saved Folio version a card came from, read-only, on the part it came from (Folio versions ticket 10). */
+function openInVersion(from: NonNullable<ScratchItem['fromVersion']>): void {
+  const slash = from.folio.lastIndexOf('/')
+  window.dispatchEvent(new CustomEvent(OPEN_VERSION_REQUEST_EVENT, { detail: { dir: slash < 0 ? '' : from.folio.slice(0, slash), versionId: from.versionId, path: from.part.path } }))
 }
 
 export type Placement = { part: string; after: string | null } | null
@@ -289,7 +297,7 @@ export function ScratchpadPreview({
           {item.external.incompatible
             ? <p>{item.external.incompatible} It cannot be inserted; its source stays readable.</p>
             : item.external.importedPath
-              ? <p>Copied into <b>{item.external.importedPath}</b> in this workspace. The document no longer depends on the source, and where it came from stays on this item.</p>
+              ? <p>Copied into <b>{item.external.importedPath}</b> in this vault. The document no longer depends on the source, and where it came from stays on this item.</p>
               : <p>Collecting kept a pointer and a small preview. The file is copied into this document’s <b>assets/</b> folder only when you insert it, and the source stays on the item.</p>}
         </div>
       ) : null}

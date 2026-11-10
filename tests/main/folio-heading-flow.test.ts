@@ -118,11 +118,12 @@ test('the counts line: parts and chapters in the contents (translation and Pangr
     part('k1.md', 'Kapitola 1', [[2, 'Kapitola 1']]), part('k2.md', 'Kapitola 2', [[2, 'Kapitola 2']]), part('b.md', 'Berlin a Kay', [[3, 'Berlin a Kay']]),
     part('k3.md', 'Kapitola 3', [[2, 'Kapitola 3']]), part('d.md', 'Doslov', [[2, 'Doslov']]),
   ])
-  const sum = (parts: number, frontMatter?: number) => ({ parts, written: parts, unwritten: 0, words: 0, ...(frontMatter ? { frontMatter } : {}) })
-  expect(pluralisedSummary(sum(5), translation.chapters)).toBe('5 parts \u00b7 4 chapters in the contents')
+  const sum = (parts: number, frontMatter?: number, unwritten = 0) => ({ parts, written: parts - unwritten, unwritten, words: 0, ...(frontMatter ? { frontMatter } : {}) })
+  expect(pluralisedSummary(sum(5), translation.chapters)).toBe('5 parts')
+  expect(pluralisedSummary(sum(13, undefined, 2))).toBe('13 parts, 2 not written yet')
   const pangram = folioHeadingFlow([
     part('t.md', 'Pangram evaluation', [], { frontMatter: true }), part('s.md', 'Summary', [[1, 'Summary']]), part('d.md', 'Details', [[1, 'Details']]),
     part('r.md', 'Full reference list', [[2, 'Full reference list']]),
   ])
-  expect(pluralisedSummary(sum(3, 1), pangram.chapters)).toBe('1 front matter \u00b7 3 parts \u00b7 2 chapters in the contents')
+  expect(pluralisedSummary(sum(3, 1), pangram.chapters)).toBe('1 front matter \u00b7 3 parts')
 })

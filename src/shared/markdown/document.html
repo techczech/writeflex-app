@@ -10,10 +10,12 @@
 <div class="shell">
 <aside class="sidebar" aria-label="Document contents">
 <h2 class="sidebar-title">{{sidebar-title}}</h2>
-<p class="toc-label">Contents</p>
+<details class="toc-disclosure" open>
+<summary class="toc-label">Contents</summary>
 <nav id="toc">
 {{sidebar}}
 </nav>
+</details>
 </aside>
 <main class="main">
 {{document-header}}
@@ -22,5 +24,24 @@
 </article>
 </main>
 </div>{{reader-notes}}
+<script>
+(() => {
+  const contents = document.querySelector('.toc-disclosure');
+  if (!contents) return;
+  const mobile = window.matchMedia('(max-width: 900px)');
+  const syncContents = () => { contents.open = !mobile.matches; };
+  syncContents();
+  mobile.addEventListener('change', syncContents);
+  contents.addEventListener('click', (event) => {
+    if (mobile.matches && event.target.closest('a[href]')) contents.open = false;
+  });
+  contents.addEventListener('keydown', (event) => {
+    if (mobile.matches && event.key === 'Escape' && contents.open) {
+      contents.open = false;
+      contents.querySelector('summary').focus();
+    }
+  });
+})();
+</script>
 </body>
 </html>

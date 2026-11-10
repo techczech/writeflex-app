@@ -590,3 +590,14 @@ describe('ticket 11: review follow-ups', () => {
     expect(new Set(keys).size).toBe(keys.length)
   }, 60_000)
 })
+
+test('a reader reply keeps its original thread reference through validation and into the review ledger', () => {
+  const parent = { key: 'abcdef0123456789abcdef01.rootnote', name: 'Marta', text: 'Start with a question?' }
+  const checked = checkedNote({ key: 'abcdef0123456789abcdef02.replynote', id: 'replynote', kind: 'note', name: 'Jonas', text: 'I agree.',
+    anchor: { quote: 'reading lists', before: 'Most', after: 'are written', block: 'n:0', start: 5, end: 18 }, receivedAt: Date.now(), replyTo: parent })
+  expect(checked).not.toBeNull()
+  const change = readerChangeFor(checked!, { shareId: 's'.repeat(22), label: 'Workshop', paths: [PIECE] }, [{ path: PIECE, content: DOC }], Date.now())
+  expect((change as any).readerNote.replyTo).toEqual(parent)
+  expect(change.oldText).toBe(change.newText)
+  expect(checkedNote({ ...checked, replyTo: { key: '../bad', name: 'X', text: 'Y' } })?.replyTo).toBeUndefined()
+})

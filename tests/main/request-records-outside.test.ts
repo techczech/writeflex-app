@@ -8,7 +8,8 @@ import { HANDLED_KIND, recordsDir } from '../../src/main/collection-records'
 import { newRequestId, type Reply } from '../../src/main/cli/request-format'
 import { readReplyKey, replyIsSigned, replyMac } from '../../src/main/reply-key'
 import { NOTES, writeFixture, type WriteFixture } from '../helpers/cli-write-fixture'
-import { content, inboxNames, openAsApp, outboxNames, plantRequest, replyTo, type AppSide } from '../helpers/request-app'
+import { content, inboxNames, openAsApp, outboxNames, plantRequest, replyTo, type AppSide, fixtureAddress } from '../helpers/request-app'
+import { REQUEST_ADDRESS_FILE } from '../../src/main/request-address'
 
 // What says "the app has done this" is kept in the app's application data, never in the Collection
 // (collection-records.ts): a record planted in the Collection is not answered from and not signed, and
@@ -90,6 +91,13 @@ test('a request whose record is in application data is never carried out again, 
   const beta = app.restarted({ appData: fx.otherAppData })
   await rm(join(fx.root, '.writeflex/outbox', `${id}.json`))
   await plantRequest(fx, 'create', { path: 'once.md', content: 'Once.\n' }, { id })
+  // A replay still names one responder: beta leaves a request addressed to release untouched.
+  expect((await beta.drain()).handled).toEqual([])
+  expect(await inboxNames(fx)).toEqual([`${id}.json`])
+  await plantRequest(fx, 'create', {}, { id, body: {
+    version: 1, id, operation: 'create', args: { path: 'once.md', content: 'Once.\n' },
+    to: [await fixtureAddress({ ...fx, appData: fx.otherAppData })],
+  } })
   expect((await beta.drain()).handled).toEqual([{ id, outcome: 'applied', repeat: true }])
   expect(existsSync(join(fx.root, 'once.md'))).toBe(false)
   // It writes its own folder, never the release app's.
@@ -123,6 +131,8 @@ test('with the app open, a change and its undo go through the app and the comman
   const sealed = join(outside, 'writeflex-desktop')
   await mkdir(join(sealed, 'command-line-undo'), { recursive: true, mode: 0o700 })
   await chmod(join(sealed, 'command-line-undo'), 0o500)
+  // The app has run on this computer, so its request address is there to be read (request-address.ts).
+  await writeFile(join(sealed, REQUEST_ADDRESS_FILE), `${await fixtureAddress(fx)}\n`, { mode: 0o600 })
   await chmod(sealed, 0o500)
   const asSandboxed = { write: { appDataFolders: [sealed] } }
   const before = await content(fx)
@@ -141,7 +151,7 @@ test('with the app open, a change and its undo go through the app and the comman
     // Listing is read by the command line itself; from its own sealed folder there is nothing, and that is not an error.
     expect((await fx.cli(['undo', '--list'], asSandboxed)).json.result).toMatchObject({ changes: [] })
     expect(await readdir(join(sealed, 'command-line-undo'))).toEqual([])
-    expect(await readdir(sealed)).toEqual(['command-line-undo'])
+    expect(await readdir(sealed)).toEqual(['command-line-undo', REQUEST_ADDRESS_FILE])
   } finally {
     await stop()
     await chmod(sealed, 0o700)

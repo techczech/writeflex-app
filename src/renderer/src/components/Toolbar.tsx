@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { BookOpen, Check, ChevronDown, CloudOff, Code2, Command, Compass, Eye, Files, Glasses, Highlighter, Link, ListOrdered, PanelLeft, PanelRight, PanelTop, Search, SquarePen, TriangleAlert, X } from 'lucide-react'
+import { BookOpen, Check, ChevronDown, CloudOff, Code2, Command, Compass, Eye, PanelsTopLeft, Glasses, Highlighter, Link, ListOrdered, PanelLeft, PanelRight, PanelTop, Search, TriangleAlert, X } from 'lucide-react'
 import { missingPartsLabel, type ShareMark } from '../../../shared/sharing-links'
 import type { EditorViewMode } from '../editor/view-mode'
+import { SearchField } from './SearchField'
 import type { WriterReviewMode } from '../editor/writer-review'
 
 export type ToolbarProps = {
@@ -51,6 +52,8 @@ export type ToolbarProps = {
   shareMark?: ShareMark | null
   shareOpen?: boolean
   onOpenSharing?: () => void
+  /** Vault protection status in the approved title-bar position. */
+  syncStatus?: ReactNode
   /** Tab-strip slot — the horizontal document tabs and new-file button. */
   children?: ReactNode
 }
@@ -107,8 +110,11 @@ export function Toolbar({
   shareOpen = false,
   onOpenSharing,
   children,
+  syncStatus,
 }: ToolbarProps): JSX.Element {
-  const modeLabel = writerMode === 'drafting' ? 'Drafting' : 'Reviewing'
+  // One on/off mode (house rule R18): on is the stored value 'reviewing', off is 'drafting'. Only the labels changed.
+  const tracking = writerMode === 'reviewing'
+  const modeLabel = 'Track my changes'
   const menuRef = useRef<HTMLDivElement | null>(null)
   const modeButtonRef = useRef<HTMLButtonElement | null>(null)
   const tabsButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -140,7 +146,7 @@ export function Toolbar({
   const [highlighted, setHighlighted] = useState(0)
   useEffect(() => {
     if (!modeDrawerOpen) return
-    setHighlighted(writerMode === 'drafting' ? 0 : 1)
+    setHighlighted(0)
     requestAnimationFrame(() => menuRef.current?.focus())
     const outside = (event: PointerEvent): void => {
       if (!menuRef.current?.contains(event.target as Node) && !modeButtonRef.current?.contains(event.target as Node)) onModeDrawerOpenChange(false)
@@ -150,8 +156,8 @@ export function Toolbar({
   }, [modeDrawerOpen, onModeDrawerOpenChange, writerMode])
 
   const pick = (index: number): void => {
-    if (index < 2) onSelectWriterMode(index === 0 ? 'drafting' : 'reviewing')
-    else onSelectViewMode((['clean', 'markup', 'raw'] as const)[index - 2])
+    if (index < 1) onSelectWriterMode(tracking ? 'drafting' : 'reviewing')
+    else onSelectViewMode((['clean', 'markup', 'raw'] as const)[index - 1])
     onModeDrawerOpenChange(false)
   }
 
@@ -166,7 +172,6 @@ export function Toolbar({
         onClick={onToggleSidebar}
       >
         <PanelLeft className="icon" />
-        <span className="chord" aria-hidden="true">{sidebarShortcut}</span>
       </button>
       <button
         className="tbtn"
@@ -176,7 +181,6 @@ export function Toolbar({
         onClick={onToggleReadingRoom}
       >
         <BookOpen className="icon" />
-        <span className="chord" aria-hidden="true">{readingRoomShortcut}</span>
       </button>
       {onToggleTabsList && (
         <span className="tabs-list-anchor" ref={tabsAnchorRef}>
@@ -190,13 +194,13 @@ export function Toolbar({
             aria-label="Tabs"
             onClick={onToggleTabsList}
           >
-            <Files className="icon" />
-            <span className="chord" aria-hidden="true">{tabsShortcut}</span>
+            <PanelsTopLeft className="icon" />
           </button>
           {tabsListOpen && tabsPopover && <div className="tabs-popover" role="dialog" aria-label="Open tabs">{tabsPopover}</div>}
         </span>
       )}
       <div className="tabstrip" role="tablist" aria-label="Open tabs">{children}</div>
+      {syncStatus}
       {folioName && onOpenFolioPlan && (
         <button type="button" className="planbtn" aria-label={`Manage Folio ${folioName}`} title={`Manage Folio ${folioName}`} onClick={onOpenFolioPlan}>
           <ListOrdered className="icon sm" /><span className="pb-plan">Manage Folio</span><span className="pb-name">{folioName}</span>
@@ -204,24 +208,19 @@ export function Toolbar({
       )}
 
       <span className="tbsep" aria-hidden="true" />
-        <button ref={modeButtonRef} className={`modebtn${writerMode === 'reviewing' ? ' reviewing' : ''}`} title={`Mode — ${modeLabel} (⌥⌘R)`} aria-label={`Mode: ${modeLabel}`} aria-haspopup="menu" aria-expanded={modeDrawerOpen} onClick={() => onModeDrawerOpenChange(!modeDrawerOpen)}>
-          <SquarePen className="icon sm" /><span className="mn">{modeLabel}</span><ChevronDown className="icon cv" /><span className="chord" aria-hidden="true">⌥⌘R</span>
+        <button ref={modeButtonRef} className={`modebtn${writerMode === 'reviewing' ? ' reviewing' : ''}`} title={`${modeLabel}: ${tracking ? 'on' : 'off'} (⌥⌘M)`} aria-label={`${modeLabel}: ${tracking ? 'on' : 'off'}`} aria-haspopup="menu" aria-expanded={modeDrawerOpen} onClick={() => onModeDrawerOpenChange(!modeDrawerOpen)}>
+          <Glasses className="icon sm" /><span className="mn">{modeLabel}</span><ChevronDown className="icon cv" />
         </button>
         {modeDrawerOpen && (
           <div className="modemenu" role="menu" aria-label="Writing and showing modes" ref={menuRef} tabIndex={-1} onKeyDown={(event) => {
             if (event.key === 'Escape') { event.preventDefault(); onModeDrawerOpenChange(false) }
-            else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setHighlighted((current) => (current + (event.key === 'ArrowDown' ? 1 : 4)) % 5) }
+            else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setHighlighted((current) => (current + (event.key === 'ArrowDown' ? 1 : 3)) % 4) }
             else if (event.key === 'Enter') { event.preventDefault(); pick(highlighted) }
           }}>
             <div className="mm-h"><span>Writing</span><span className="ln" /><kbd>⌥⌘M</kbd></div>
-            {([
-              ['Drafting', 'Text is text. Your edits are recorded quietly.', SquarePen],
-              ['Reviewing', 'Reveals this session — old struck, new highlighted.', Glasses],
-            ] as const).map(([label, detail, Icon], index) => (
-              <button type="button" role="menuitemradio" aria-checked={(writerMode === 'drafting') === (index === 0)} className={`mm-i${(writerMode === 'drafting') === (index === 0) ? ' on' : ''}${highlighted === index ? ' hi' : ''}`} onMouseEnter={() => setHighlighted(index)} onClick={() => pick(index)} key={label}>
-                <Check className="tick" /><Icon className="icon sm" /><span className="mt"><b>{label}</b><small>{detail}</small></span>
-              </button>
-            ))}
+            <button type="button" role="menuitemcheckbox" aria-checked={tracking} title="Shows this session’s changes, old struck and new highlighted." className={`mm-i${tracking ? ' on' : ''}${highlighted === 0 ? ' hi' : ''}`} onMouseEnter={() => setHighlighted(0)} onClick={() => pick(0)}>
+              <Check className="tick" /><Glasses className="icon sm" /><span className="mt"><b>{modeLabel}</b></span>
+            </button>
             <hr />
             <div className="mm-h"><span>Showing</span><span className="ln" /><kbd>⌥⌘R</kbd></div>
             {([
@@ -229,34 +228,25 @@ export function Toolbar({
               ['Markup', Highlighter, 'markup'],
               ['Raw', Code2, 'raw'],
             ] as const).map(([label, Icon, mode], offset) => {
-              const index = offset + 2
+              const index = offset + 1
               return <button type="button" role="menuitemradio" aria-checked={viewMode === mode} className={`mm-i${viewMode === mode ? ' on' : ''}${highlighted === index ? ' hi' : ''}`} onMouseEnter={() => setHighlighted(index)} onClick={() => pick(index)} key={label}><Check className="tick" /><Icon className="icon sm" /><span className="mt">{label}</span></button>
             })}
-            <div className="mm-foot"><span className="fk"><kbd>↑↓</kbd>move</span><span className="fk"><kbd>↵</kbd>pick</span><span className="fk"><kbd>Esc</kbd></span></div>
           </div>
         )}
       <span className="tbsep" aria-hidden="true" />
 
       <div className="tb-right">
         {boardFilter ? (
-          <div className="board-filter">
-            <Search className="icon sm" aria-hidden="true" />
-            <input
-              type="search"
-              role="searchbox"
-              value={boardFilter.value}
-              onChange={(event) => boardFilter.onChange(event.target.value)}
-              onKeyDown={(event) => { if (event.key === 'Escape') boardFilter.onChange('') }}
-              placeholder="Filter cards"
-              aria-label="Filter cards"
-              spellCheck={false}
-            />
-            {boardFilter.value && (
-              <button type="button" className="board-filter-clear" aria-label="Clear card filter" onClick={() => boardFilter.onChange('')}>
-                <X className="icon sm" />
-              </button>
-            )}
-          </div>
+          <SearchField
+            wrapClassName="board-filter"
+            value={boardFilter.value}
+            onValueChange={(value) => boardFilter.onChange(value)}
+            onKeyDown={(event) => { if (event.key === 'Escape') boardFilter.onChange('') }}
+            placeholder="Filter cards"
+            aria-label="Filter cards"
+            role="searchbox"
+            clearLabel="Clear card filter"
+          />
         ) : null}
         {shareMark && onOpenSharing && (
           <button
@@ -271,12 +261,10 @@ export function Toolbar({
           >
             {shareMark.kind === 'not-published' ? <CloudOff className="icon sm" aria-hidden="true" /> : shareMark.kind === 'shared' && shareMark.missing ? <TriangleAlert className="icon sm" aria-hidden="true" /> : <Link className="icon sm" aria-hidden="true" />}
             <span className="sm-word">{shareMarkWords(shareMark)}</span>
-            <span className="chord" aria-hidden="true">⌥⌘S</span>
           </button>
         )}
         <button className="tbtn" title="Command palette (⇧⌘P)" aria-label="Command palette" onClick={onOpenPalette}>
           <Command className="icon" />
-          <span className="chord" aria-hidden="true">⇧⌘P</span>
         </button>
         {onToggleGuide && (
           <button className="tbtn" aria-pressed={guideOpen} title="Guide" aria-label="Guide" data-action="guide" onClick={onToggleGuide}>
@@ -291,17 +279,15 @@ export function Toolbar({
           onClick={onToggleActionBar}
         >
           <PanelTop className="icon" />
-          {actionBarShortcut && <span className="chord" aria-hidden="true">{actionBarShortcut}</span>}
         </button>
         <button
           className="tbtn"
           aria-pressed={panelsOpen}
-          title={`Toggle right pane (${panelsShortcut})`}
+          title={`Toggle right sidebar (${panelsShortcut})`}
           aria-label="Toggle panels"
           onClick={onTogglePanels}
         >
           <PanelRight className="icon" />
-          <span className="chord" aria-hidden="true">{panelsShortcut}</span>
         </button>
       </div>
     </div>

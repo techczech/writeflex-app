@@ -29,8 +29,8 @@ test('count line: in progress is Notes, Drafting, In review or Final through the
   const work = (status: string | null) => ({ status }) as never
   const map = { draft: 'Drafting', review: 'In review', idea: 'Idea', fin: 'Final', done: 'Done', n: 'Notes' } as const
   const works = [work('draft'), work('review'), work('idea'), work('fin'), work('done'), work('n'), work('mystery'), work(null)]
-  expect(vaultCountText(works, map)).toBe('8 works · 4 in progress')
-  expect(vaultCountText([work('draft')], map)).toBe('1 work · 1 in progress')
+  expect(vaultCountText(works, map)).toBe('8 pieces · 4 in progress')
+  expect(vaultCountText([work('draft')], map)).toBe('1 piece · 1 in progress')
 })
 
 test('hidden count text: folders only, files only, both, none', () => {

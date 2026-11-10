@@ -91,16 +91,16 @@ const SWITCH_PROPS = {
   onStatus: () => {},
 }
 
-test('the switch reads Document outline | Folio outline for a Folio file, Document outline | Folder otherwise, and Folder is disabled with no file open', () => {
+test('there is one tree and no Document / Folio / Folder switch, in a Folio, outside one, and with no file open (R13)', () => {
   const inFolio = renderToStaticMarkup(<OutlinePane {...SWITCH_PROPS} activePath="paper/a.md" folioPlace={{ dir: 'paper', name: 'paper', kind: 'piece', position: 1, total: 1, previous: null, next: null }} />)
-  expect(inFolio).toMatch(/data-scope="file"[^>]*>\s*Document/)
-  expect(inFolio).toMatch(/data-scope="folio"[^>]*>Folio outline</)
+  expect(inFolio).not.toContain('scope-seg')
+  expect(inFolio).not.toContain('data-scope=')
   expect(inFolio).not.toContain('Make a Folio')
   const plain = renderToStaticMarkup(<OutlinePane {...SWITCH_PROPS} activePath="notes/a.md" folioPlace={null} />)
-  expect(plain).toMatch(/data-scope="folder"[^>]*>Folder</)
-  expect(plain).not.toContain('data-scope="folio"')
+  expect(plain).not.toContain('scope-seg')
+  expect(plain).toContain('aria-label="Document outline"')
   const none = renderToStaticMarkup(<OutlinePane {...SWITCH_PROPS} activePath={null} folioPlace={null} />)
-  expect(none).toMatch(/data-scope="folder"[^>]*disabled/)
+  expect(none).not.toContain('scope-seg')
   expect(none).toContain('No piece is open. Open one to see its outline.')
   expect(inFolio).not.toContain('class="pane-head"')
 })

@@ -112,11 +112,11 @@ test('the Welcome file and files that are no lesson show the list; a lesson show
   expect(own).not.toContain('data-guide="this-chapter"')
 })
 
-test('three tabs, Learn the commands first; the other two are enabled since ticket 08; no removal control', () => {
+test('three tabs, Commands first; the other two are enabled since ticket 08; no removal control', () => {
   const html = render(emptyGuideProgress())
-  expect(html).toMatch(/<button[^>]*aria-selected="true"[^>]*>Learn the commands<\/button>/)
+  expect(html).toMatch(/<button[^>]*aria-selected="true"[^>]*>Commands<\/button>/)
   expect(html).toMatch(/<button[^>]*aria-selected="false"[^>]*>How it works<\/button>/)
-  expect(html).toMatch(/<button[^>]*aria-selected="false"[^>]*>Features to delight you<\/button>/)
+  expect(html).toMatch(/<button[^>]*aria-selected="false"[^>]*>Features<\/button>/)
   expect(html).not.toContain('disabled=""')
   expect(html).not.toContain('Remove the example')
 })

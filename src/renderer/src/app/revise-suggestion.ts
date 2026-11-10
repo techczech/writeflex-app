@@ -15,6 +15,6 @@ export async function reviseSuggestionWithWarning(input: {
   }
   input.prompt(`Revise your suggestion: ${input.note}`)
   input.flash(warning
-    ? `Change rejected, but its Agent note failed: ${warning}`
+    ? `Change declined, but its Agent note failed: ${warning}`
     : 'Sent back to the agent with your note')
 }

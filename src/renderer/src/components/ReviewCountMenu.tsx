@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import {
-  ArrowRightToLine, Bot, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, Clock, Eye, Link2, ListFilter, PanelRight, PanelRightClose,
-  Pencil, RotateCcw, GitCommitHorizontal, Rows3, Send, Terminal, User, Users, X, Hand,
-} from 'lucide-react'
+import { ArrowRightToLine, Sparkles, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, Clock, Eye, Link2, ListFilter, PanelRight, PanelRightClose, Pencil, RotateCcw, GitCommitHorizontal, Rows3, Send, Terminal, User, Users, X, Hand } from 'lucide-react'
 import type { CountMenuAction, CountMenuIcon, CountMenuRow } from '../app/margin-count-menu'
 
 const ICONS: Record<CountMenuIcon, typeof Check> = {
   next: ChevronDown, previous: ChevronUp, 'next-piece': ArrowRightToLine, accept: Check, done: CheckCheck, decline: X, 'send-back': Send,
-  everyone: Users, agent: Bot, readers: User, link: Link2, outside: Terminal, request: Clock, kind: ListFilter, held: Hand,
+  everyone: Users, agent: Sparkles, readers: User, link: Link2, outside: Terminal, request: Clock, kind: ListFilter, held: Hand,
   settled: RotateCcw, mine: Pencil, quiet: Eye, margin: PanelRight, under: Rows3, hide: PanelRightClose, version: GitCommitHorizontal,
 }
 

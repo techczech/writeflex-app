@@ -12,7 +12,7 @@ export type HistoryMapApproval = { map: string; hash: string; plan: string }
 export type HistoryResult = HistoryFollowResult | { restored: number }
 
 /** Shared CLI, agent and IPC map-import/Undo route, including preview verification.
- * The caller holds the Collection write turn/owner lock; approvals are app-owned. */
+ * The caller holds the Collection write turn (in-process); approvals are app-owned. */
 export async function reattachVersionHistory(ws: Workspace, request: HistoryRequest, confirmOwner: () => Promise<void>, approval?: HistoryMapApproval): Promise<HistoryResult> {
   if ('undo' in request) {
     await confirmOwner()

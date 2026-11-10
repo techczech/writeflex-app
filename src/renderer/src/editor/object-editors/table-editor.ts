@@ -1,4 +1,5 @@
 import { normaliseTableMarkup, parseTable, serialiseTable, type TableModel } from '../../../../shared/object-markup'
+import { askConfirm } from '../../components/confirm-bus'
 import { TABLE_COMMAND_LABELS } from '../../commands/table-command-labels'
 export { normaliseTableMarkup, parseTable, repairTable, serialiseTable, type TableAlignment, type TableModel } from '../../../../shared/object-markup'
 
@@ -92,7 +93,11 @@ export function mountTableEditor(source: string): import('./shell').MountedEdito
   const columnAction = (column: number, action: string): void => {
     if (action === 'left' || action === 'center' || action === 'right') model.alignments[column] = action
     else if (action === 'insert-left' || action === 'insert-right') { const at = column + (action === 'insert-right' ? 1 : 0); model.alignments.splice(at, 0, 'left'); model.cells.forEach((row) => row.splice(at, 0, '')) }
-    else if (action === 'delete' && model.alignments.length > 1 && confirm('Delete this column?')) { model.alignments.splice(column, 1); model.cells.forEach((row) => row.splice(column, 1)) }
+    else if (action === 'delete' && model.alignments.length > 1) { void askConfirm({ title: 'Delete this column?', detail: 'The column and its cells are removed from the table.', recover: 'Undo (⌘Z) puts it back.', confirmLabel: 'Delete column' }).then((ok) => {
+      // Re-check after the card: the editor may have closed, or the table lost that column, while it was open.
+      if (!ok || controller.signal.aborted || column >= model.alignments.length || model.alignments.length < 2) return
+      model.alignments.splice(column, 1); model.cells.forEach((row) => row.splice(column, 1)); render()
+    }); return }
     render()
   }
   const onCellKey = (event: KeyboardEvent, row: number, column: number): void => {

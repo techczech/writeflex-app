@@ -298,6 +298,7 @@ test('an empty save over a changed file is refused as a disk change before the e
 // renderer turns into its banner (an Error's class does not cross IPC).
 const ipcProbe = String.raw`
   import { mock } from 'bun:test'
+  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -305,16 +306,18 @@ const ipcProbe = String.raw`
   const handlers = new Map()
   const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: (channel) => handlers.delete(channel) }
   void mock.module('electron', () => ({
+    ...electronMainStandIn,
     app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
     clipboard: { write: () => {} }, ipcMain,
     // Clear document's confirmation: another program writes while it is up, then the writer confirms.
-    dialog: { showMessageBox: async () => { await writeFile(join(root, 'clear.md'), 'Written during the dialog.\n'); return { response: 1 } } },
+    dialog: {},
     shell: { openExternal: async () => {}, showItemInFolder: () => {}, trashItem: async () => {} },
   }))
   const [{ registerIpc }, { registerWindow }, { Workspace }] = await Promise.all([
     import('./src/main/ipc.ts'), import('./src/main/state.ts'), import('./src/main/workspace.ts'),
   ])
-  const state = registerWindow({ webContents: { id: 23, send: () => {} }, on: () => {}, isDestroyed: () => false })
+  // The confirm card is the renderer's now: main asks on confirm:ask, and the writer's yes comes back on confirm:answer.
+  const state = registerWindow({ webContents: { id: 23, send: (channel, ask) => { if (channel === 'confirm:ask') void (async () => { await writeFile(join(root, 'clear.md'), 'Written during the dialog.\n'); handlers.get('confirm:answer')(null, ask.id, true) })() } }, on: () => {}, once: () => {}, isDestroyed: () => false })
   state.workspace = new Workspace(root)
   registerIpc(
     { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
@@ -491,6 +494,7 @@ test('an empty write over a file with no text commits only over that text: text 
 
 const clearProbe = String.raw`
   import { mock } from 'bun:test'
+  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
   import { writeFileSync } from 'node:fs'
   import { tmpdir } from 'node:os'
@@ -500,15 +504,17 @@ const clearProbe = String.raw`
   const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: (channel) => handlers.delete(channel) }
   let asked = 0
   void mock.module('electron', () => ({
+    ...electronMainStandIn,
     app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
     clipboard: { write: () => {} }, ipcMain,
-    dialog: { showMessageBox: async () => { asked++; return { response: 0 } } },
+    dialog: {},
     shell: { openExternal: async () => {}, showItemInFolder: () => {}, trashItem: async () => {} },
   }))
   const [{ registerIpc }, { registerWindow }, { Workspace }] = await Promise.all([
     import('./src/main/ipc.ts'), import('./src/main/state.ts'), import('./src/main/workspace.ts'),
   ])
-  const state = registerWindow({ webContents: { id: 24, send: () => {} }, on: () => {}, isDestroyed: () => false })
+  // The confirm card is drawn by the renderer: main asks on confirm:ask; here the writer keeps the text (answers no).
+  const state = registerWindow({ webContents: { id: 24, send: (channel, ask) => { if (channel === 'confirm:ask') { asked++; void Promise.resolve().then(() => handlers.get('confirm:answer')(null, ask.id, false)) } } }, on: () => {}, once: () => {}, isDestroyed: () => false })
   const workspace = new Workspace(root)
   // Another program writes the file while Clear's first (already empty) write is staged.
   const saveFile = workspace.saveFile.bind(workspace)

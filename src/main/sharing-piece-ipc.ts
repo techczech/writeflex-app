@@ -1,3 +1,5 @@
+import { invitationDraft } from './sharing-invitation'
+import type { PeopleChange, PeopleResult } from '../shared/sharing-people'
 // The Sharing page's IPC (sharing ticket 03). The decisions are the publisher's (sharing-publisher.ts);
 // this file routes and checks what a window sends.
 //
@@ -20,7 +22,7 @@
 //   - one piece (or Folio) per window per page: main keeps, per window, the piece its Sharing page has open
 //     (`sharing:open`, cleared by `sharing:close` or when the window's Workspace changes); making a
 //     link needs that piece, and every link action must name a link of that piece;
-//   - no answer carries a token or a key (every answer is a PieceSharingView, or a link's address);
+//   - no answer carries an owner/admin token or key; Copy's personal address includes only its reader credential;
 //   - a link's address is decided when it is asked for (`sharing:copy-address`, `sharing:open-link`):
 //     the publisher's view at that moment, which takes it from linksAddressNow (sharing-own-address.ts
 //     THE RULE). Copy link copies that answer, never the window's last view (review round 3).
@@ -54,10 +56,27 @@ import { LIMITS_NOT_HERE, LIMITS_OFFLINE, LIMITS_OLD_SERVICE, RAISE_AT_MOST, cle
 import { checkedLimits, limitReachedOf } from './sharing-reader-notes'
 import { limitsFor, readerLinksChanged, refusedFor, setLimitsFor } from './sharing-reader-notes-run'
 
+/** Exact operation shapes only; keep untrusted IPC values out of the service client. */
+function validPeopleChange(value: unknown): value is PeopleChange {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const v = value as Record<string, unknown>
+  const keys = Object.keys(v)
+  const exact = (...fields: string[]) => keys.length === fields.length && fields.every(field => Object.hasOwn(v, field))
+  const bounded = (text: unknown, max: number): text is string => typeof text === 'string' && text.length > 0 && text.length <= max
+  if (exact('name', 'email')) return bounded(v.name, 80) && bounded(v.email, 254)
+  if (exact('plainLink')) return typeof v.plainLink === 'boolean'
+  if (!bounded(v.id, 128)) return false
+  return (exact('id', 'status') && (v.status === 'on' || v.status === 'off'))
+    || (exact('id', 'remove') && v.remove === true)
+    || (exact('id', 'reissue') && v.reissue === true)
+}
+
 type Registrar = { handle: (channel: string, listener: (event: { sender: { id: number } }, input?: unknown) => unknown) => void }
 
 export const SHARING_PIECE_CHANNELS = [
-  'sharing:piece', 'sharing:open', 'sharing:folio', 'sharing:open-folio', 'sharing:close', 'sharing:make', 'sharing:rename', 'sharing:set-comments', 'sharing:turn-off', 'sharing:follow-to', 'sharing:turn-on', 'sharing:retry', 'sharing:open-link', 'sharing:copy-address',
+  'sharing:choose-original',
+  'sharing:piece', 'sharing:open', 'sharing:folio', 'sharing:open-folio', 'sharing:close', 'sharing:make', 'sharing:rename', 'sharing:set-notes', 'sharing:set-comments', 'sharing:turn-off', 'sharing:follow-to', 'sharing:turn-on', 'sharing:retry', 'sharing:open-link', 'sharing:copy-address',
+  'sharing:people', 'sharing:person-address', 'sharing:person-invitation',
   'sharing:open-list', 'sharing:opened', 'sharing:notes', 'sharing:clear-handled', 'sharing:raise-limit',
 ] as const
 
@@ -115,6 +134,11 @@ export function registerSharingPieceIpc(ipc: Registrar, publisher: SharingPublis
       return listener(event.sender.id, input)
     })
   }
+  handle('sharing:choose-original', async (senderId, input) => {
+    const root = options.rootFor(senderId)
+    const chosen = (input as { root?: unknown } | null)?.root
+    return !!root && typeof chosen === 'string' && await publisher.chooseSharedOriginal(root, chosen)
+  })
   /** The records of the piece or Folio at `path` in `root`. */
   const recordsOf = (root: string, path: string, kind: ShareKind) => publisher.records()
     .filter((record) => record.kind === kind && record.root === root && resolve(record.root, record.path) === resolve(root, path))
@@ -244,7 +268,7 @@ export function registerSharingPieceIpc(ipc: Registrar, publisher: SharingPublis
   handle('sharing:close', (senderId) => { open.delete(senderId); pendingOpen.delete(senderId); return true })
   handle('sharing:make', async (senderId, input) => {
     const piece = openPiece(senderId)
-    const request = input as { path?: unknown; folio?: unknown; name?: unknown; comments?: unknown } | null
+    const request = input as { path?: unknown; folio?: unknown; name?: unknown; comments?: unknown; notes?: unknown } | null
     // The piece (or Folio) is main's; what the window sends must name that same one.
     const named = piece?.kind === 'folio' ? (request?.path === undefined ? folioDirPath(request?.folio) : null) : (request?.folio === undefined ? piecePath(request?.path) : null)
     // A folder that is no longer a Folio, a file no longer a piece: its links can be turned off, never added to.
@@ -258,11 +282,15 @@ export function registerSharingPieceIpc(ipc: Registrar, publisher: SharingPublis
       // The binding may have changed while the source was read.
       if (openPiece(senderId) !== piece) return { ok: false, view: EMPTY, problem: NO_PIECE } satisfies SharingLinkResult
     }
-    return publisher.make(piece.root, piece.path, { name: request?.name, comments: request?.comments }, piece.kind)
+    return publisher.make(piece.root, piece.path, { name: request?.name, comments: request?.comments, notes: request?.notes }, piece.kind)
   })
   handle('sharing:rename', async (senderId, input) => {
     const link = await actionLink(senderId, input)
     return link ? orUnknown(publisher.rename(link.shareId, (input as { name?: unknown }).name)) : unknownLink()
+  })
+  handle('sharing:set-notes', async (senderId, input) => {
+    const link = await actionLink(senderId, input)
+    return link ? orUnknown(publisher.setNotes(link.shareId, (input as { notes?: unknown }).notes)) : unknownLink()
   })
   handle('sharing:set-comments', async (senderId, input) => {
     const link = await actionLink(senderId, input)
@@ -307,6 +335,40 @@ export function registerSharingPieceIpc(ipc: Registrar, publisher: SharingPublis
   })
   // Copy link: the address to copy, decided now; the window copies this, never its last view.
   handle('sharing:copy-address', (senderId, input) => addressNow(senderId, input))
+
+  handle('sharing:people', async (senderId, input): Promise<PeopleResult> => {
+    const link = ownLink(senderId, input, true)
+    if (!link) return { ok: false, problem: 'Open this link’s Sharing page again.' }
+    const change = (input as { change?: unknown })?.change
+    if (change !== undefined && !validPeopleChange(change)) return { ok: false, problem: 'Choose a valid People change.' }
+    const answer = await publisher.people(link.shareId, change)
+    if (ownLink(senderId, input, true)?.shareId !== link.shareId) return { ok: false, problem: 'Open this link’s Sharing page again.' }
+    if (answer.kind !== 'ok') return { ok: false, problem: answer.kind === 'refused' && answer.code === 'older_service' ? 'Update the sharing service in Settings to use personal links.' : answer.kind === 'refused' && answer.code === 'people_full' ? 'This link has reached its limit of 100 people.' : answer.kind === 'refused' && answer.code === 'people_storage_full' ? 'This link has reached its limit of 500 retained people records.' : 'People could not be loaded or changed. Check the name, email and connection, then try again.' }
+    // Addition returns one person; reread the authoritative whole record after a mutation.
+    const listed = change ? await publisher.people(link.shareId) : answer
+    if (listed.kind !== 'ok' || !Array.isArray(listed.body.people) || ownLink(senderId, input, true)?.shareId !== link.shareId) return { ok: false, problem: 'People could not be loaded. Try again.' }
+    return { ok: true, state: { plainLink: listed.body.plainLink, people: listed.body.people.map(({ token: _token, ...person }) => person) } }
+  })
+  const personAddress = async (senderId: number, input: unknown) => {
+    const link = ownLink(senderId, input, true)
+    const id = (input as { personId?: unknown } | null)?.personId
+    if (!link || typeof id !== 'string') return null
+    const answer = await publisher.people(link.shareId)
+    const person = answer.kind === 'ok' ? answer.body.people?.find(p => p.id === id) : null
+    const address = addressNow(senderId, input)
+    if (!person || person.status !== 'on' || !/^[A-Za-z0-9_-]{43}$/.test(person.token) || !address) return null
+    const record = publisher.records().find(r => r.shareId === link.shareId)
+    return { person, address: `${address}#p=${person.token}`, title: answer.kind === 'ok' && answer.body.title || (record ? basename(record.path).replace(/\.(md|markdown)$/i, '') : 'shared text') }
+  }
+  handle('sharing:person-address', async (senderId, input) => (await personAddress(senderId, input))?.address ?? null)
+  handle('sharing:person-invitation', async (senderId, input) => {
+    const found = await personAddress(senderId, input)
+    if (!found) return false
+    const draft = invitationDraft(found.person, found.title, found.address)
+    if (!draft) return false
+    options.openExternal(draft)
+    return true
+  })
 
   // ── The Shares list (ticket 10) ───────────────────────────────────────────────────────────────
   /** The Shares list of the window's Workspace: main's own records for that root, nothing the window names. */

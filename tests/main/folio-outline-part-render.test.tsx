@@ -138,14 +138,14 @@ test('the pieces carry a box for the drop maths, the last Add is tinted, and the
   expect(html).not.toContain('data-fo-dropline')
 })
 
-test('a Folio the Outline cannot change shows no grip, no Add, no Add all and no drag hint; one line sends the owner to the Folio outline', () => {
+test('a Folio the Outline cannot change shows no grip, no Add, no Add all and no drag hint; and no explainer row (R13)', () => {
   const able = render('')
   expect(able).toContain('drag to reorder')
   expect(able).not.toContain('data-fo-plan-only')
   const html = render('', { outline: { ...outline, orderInPlanOnly: true } })
-  expect(html).toContain('data-fo-plan-only="true"')
-  expect(html).toContain('Change this Folio’s order in the Folio outline.')
-  expect(html).toContain('data-fo-open-plan="true"')
+  expect(html).not.toContain('data-fo-plan-only')
+  expect(html).not.toContain('Change this Folio’s order in the Folio outline.')
+  expect(html).not.toContain('data-fo-open-plan')
   expect(html).not.toContain('data-fo-add=')
   expect(html).not.toContain('data-fo-addall')
   expect(html).not.toContain('drag to reorder')

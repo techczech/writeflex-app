@@ -2,7 +2,7 @@
 //
 // Copied from TalkWeaver's worker/auth.ts (owner token for a shared talk): `<base64url JSON>.<HMAC>`,
 // HMAC-SHA-256 under the service's own signing key (signing-key.ts), which no computer ever holds.
-// The service hands a token out once, when the share is made (`POST /shares`, admin key), and the
+// The service hands a token out when the share is made, or for a per-Mac admin-authorised mint, and the
 // app keeps it in the system keychain. The token is bound to one share id and carries a role of its
 // own, so a token for share A never works on share B, and nothing else this service signs can stand
 // in for it. No expiry: a share lives as long as the piece.
@@ -15,6 +15,8 @@ export interface OwnerTokenPayload {
   role: typeof OWNER_ROLE
   shareId: string
   iat: number
+  computerId?: string
+  nonce?: string
 }
 
 const encoder = new TextEncoder()
@@ -32,7 +34,7 @@ function base64UrlDecode(value: string): string {
   return atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='))
 }
 
-async function hmac(value: string, secret: string): Promise<string> {
+export async function hmac(value: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
   const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(value))
   return base64UrlEncode(String.fromCharCode(...new Uint8Array(signature)))

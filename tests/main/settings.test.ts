@@ -64,7 +64,7 @@ test('model defaults resolve from Settings and then the app built-in only', () =
     sources: { model: 'settings', thinking: 'settings' },
   })
   expect(resolveModelDefaults({})).toEqual({
-    model: { provider: 'openai-codex', id: 'gpt-5.5' },
+    model: { provider: 'openai-codex', id: 'gpt-5.6-sol' },
     thinking: 'medium',
     sources: { model: 'built-in', thinking: 'built-in' },
   })

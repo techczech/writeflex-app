@@ -61,6 +61,8 @@ export type VersionsPaneProps = {
   onRenameVersion: (id: string, name: string) => void
   onReturnToCurrent: () => void
   onSaveVersion: () => void
+  /** In a Folio the one Save version button asks "whole Folio or this part?" first, so its label ends in …. */
+  saveAsksScope?: boolean
 }
 
 function SessionRow({
@@ -111,6 +113,7 @@ export function VersionsPane({
   onRenameVersion,
   onReturnToCurrent,
   onSaveVersion,
+  saveAsksScope = false,
 }: VersionsPaneProps): JSX.Element {
   const [renamingVersionId, setRenamingVersionId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -246,7 +249,7 @@ export function VersionsPane({
                 </button>
                 <button
                   type="button"
-                  className="version-rename version-restore"
+                  className="version-restore-btn version-restore"
                   onClick={(e) => {
                     e.stopPropagation()
                     onRestoreVersion(version)
@@ -254,7 +257,7 @@ export function VersionsPane({
                   title={`Restore ${version.name} as the current document`}
                   aria-label={`Restore ${version.name}`}
                 >
-                  <RotateCcw className="icon" aria-hidden="true" />
+                  <RotateCcw className="icon" aria-hidden="true" />Restore…
                 </button>
               </div>
               {sessions.map((session) => (
@@ -268,7 +271,7 @@ export function VersionsPane({
       )}
       <button className="btn primary save-version-wide" type="button" onClick={onSaveVersion}>
         <Save className="icon" aria-hidden="true" />
-        Save version <kbd>⇧⌘S</kbd>
+        {saveAsksScope ? 'Save version…' : 'Save version'} <kbd>⇧⌘S</kbd>
       </button>
     </section>
   )

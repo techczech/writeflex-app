@@ -14,7 +14,7 @@ const anchor = { quote: 'stop guessing', before: 'a child', after: 'at words', b
 describe('what a reader may send', () => {
   test('a note: id, kind, a one-line name, plain text, the anchor', () => {
     expect(parsePostedNote({ id: 'abcdefgh', kind: 'note', name: '  Marta ', text: ' Why? ', anchor })).toEqual({
-      id: 'abcdefgh', kind: 'note', name: 'Marta', text: 'Why?', anchor, writtenAt: null, revision: null,
+      id: 'abcdefgh', kind: 'note', name: 'Marta', text: 'Why?', anchor, writtenAt: null, revision: null, visibility: 'private',
     })
   })
 
@@ -79,7 +79,7 @@ describe('the reader page with comments', () => {
 
   test('off by default: text only, and the reader bar says so', () => {
     const html = renderReaderPage(publish({}))
-    expect(html).toContain('<div class="rp readonly">')
+    expect(html).toMatch(/<div class="rp readonly" data-revision="\d+">/)
     expect(html).toContain('<span>Comments are off for this link.</span>')
     expect(html.slice(html.indexOf('<body>'))).not.toContain('notes-col')
     expect(() => publish({ comments: 'yes' })).toThrow('comments must be true or false')

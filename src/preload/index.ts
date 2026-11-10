@@ -1,3 +1,9 @@
+import type { PeopleChange, PeopleResult } from '../shared/sharing-people'
+import type { DiaryGlance } from '../shared/diary-glance'
+import type { ReaderLease } from '../shared/reading-room-channel'
+import type { ReaderNotice } from '../main/reading-room-resources'
+import { BACKUP_GITHUB_CHANNELS, type BackupGitHubPort } from '../shared/backup-github'
+import { updateNoticesApi } from './update-notices'
 import type { FolioSectionExportField } from '../shared/folio-sections'
 import type { MapOp } from '../shared/folio-map'
 import type { MapWriteResult } from '../main/folio-map'
@@ -5,6 +11,8 @@ import type { AssistantTurnsState, AssistantTurnUndo } from '../shared/assistant
 import type { TurnActivity } from '@bridle/core'
 import type { MetadataValues } from '../shared/metadata-registry'
 import type { AmbientSnapshot } from '../main/ambient'
+import type { FolioSaveChangedAnswer, FolioSheetFacts } from '../main/folio-version-sheet'
+import type { SavedFolioVersion } from '../main/folio-version-save'
 import type { ModelDiscoveryReason, ModelRefreshResult, ModelsChecked } from '../shared/model-refresh'
 export type { AmbientSnapshot } from '../main/ambient'
 import { clipboard, contextBridge, ipcRenderer, webUtils } from 'electron'
@@ -32,9 +40,27 @@ export type { FolioPlace } from '../shared/folio-place'
 import type { FolioOutline } from '../shared/folio-outline'
 import type { RoomAuthoringRequest, RoomAuthoringResult } from '../shared/folio-room-authoring'
 import type { FolioRoomModel, RoomState } from '../shared/folio-room'
+import type { FolioVersionContents, FolioVersionReading, FolioVersionsListing } from '../shared/folio-versions-view'
+import type { FolioComparePart, FolioCompareResult } from '../shared/folio-version-compare'
+import type { VersionSendInput, VersionSendReply } from '../shared/folio-version-scratchpad'
+import type { FolioVersionExportAnswer, FolioVersionExportRequest, FolioVersionMarkAnswer } from '../shared/folio-version-export'
+import type { ImportBases, ImportChooseAnswer, ImportCommitAnswer, ImportCommitRequest, ImportPrepareAnswer, ImportRefused, ImportRequest } from '../shared/folio-version-import'
+import type { FolioTakeInput, FolioTakeResult, FolioUndoTakeInput, FolioUndoTakeResult } from '../shared/folio-version-take'
+import type { RevisionStatus } from '../shared/folio-version-stage'
+import type { DecideAnswer, DecideList, DecideRequest } from '../shared/folio-version-decide'
+import type { TextAnswer, TextDecideRequest, ThreeTextRead } from '../shared/folio-version-text'
+import type { FolioCues, FolioCursorFacts } from '../shared/folio-version-changes'
+import type { FileCompare, FileVersionAnswer, FileVersionsListing, FolioInsertedFile, RestoreFileVersionInput, RestoreFileVersionResult, SaveFileCopyInput, SaveFileCopyResult, SaveFileVersionInput, SaveFileVersionResult } from '../shared/file-versions'
 import type { RoomCardResult, RoomOrderResult } from '../shared/folio-room-order'
 import type { FolioDetailAnswer, FolioDetailField, FolioDetailUndoAnswer, FolioDetailValuesAnswer, FolioDetailsRead } from '../shared/folio-details'
 import type { VaultIndex } from '../shared/vault-index'
+import {
+  BACKUP_HELPER_CHANNELS, BACKUP_RECEIPT_CHANNELS, type BackupHelperStatusAnswer, type BackupHelperSyncAnswer,
+  type BackupReceiptCallMeta, type BackupReceiptDocInput, type BackupReceiptEditAnswer, type BackupReceiptEditInput,
+  type BackupReceiptLifetimeAnswer, type BackupReceiptSaveInput, type BackupReceiptStatusAnswer,
+} from '../shared/backup-helper'
+export type { BackupHelperStatusAnswer, BackupHelperSyncAnswer, BackupReceiptEditAnswer, BackupReceiptLifetimeAnswer, BackupReceiptStatusAnswer } from '../shared/backup-helper'
+import { BACKUP_ENROLMENT_CHANNELS, type BackupEnrolmentPreview, type BackupEnrolmentResult, type BackupEnrolmentStatus } from '../shared/backup-enrolment'
 import type { VaultPreview } from '../shared/vault-preview'
 export type { VaultPreview } from '../shared/vault-preview'
 import type { RootSwitchResult, RootSwitchTarget, SwitcherList } from '../shared/vault-switcher'
@@ -233,50 +259,10 @@ export type CollectionSignals = {
 }
 export type CollectionStatus = { collection: boolean; signals: CollectionSignals; pieceCount: number }
 export type CollectionPattern = { keys: string[]; statuses: string[] }
-export type QueryFilterField = 'title' | 'date' | 'status' | 'description' | 'purpose' | 'related' | 'tags' | 'goal' | 'due' | 'project' | 'words'
-export type QuerySortField = 'date' | 'title' | 'status' | 'description' | 'purpose' | 'goal' | 'due' | 'project' | 'words'
-export type QuerySortDirection = 'asc' | 'desc'
-export type Query = Partial<Record<QueryFilterField, string[]>> & {
-  folder?: string
-  sort?: { field: QuerySortField; direction: QuerySortDirection }
-  limit?: number
-}
-export type QueryError = { line: number; message: string; humanReadable: string }
-export type QueryRow = {
-  path: string
-  title: string
-  status: string | null
-  description: string | null
-  date: string | null
-  words: number
-  goal?: number | null
-  due?: string | null
-  project?: string | null
-  purpose?: string | null
-  agentAuthored: boolean
-  provenance: { title: 'written' | 'derived'; status: 'written' | 'derived'; date: 'written' | 'derived' }
-  folderPath?: string
-  /** Scraps whose origin is this piece, and its sources (frontmatter `sources:` + wikilinked research notes). */
-  scrapCount: number
-  sourceCount: number
-  /** The piece's open and ticked boxes (the Board card's "n / m to do" chip); both 0 when it has none. */
-  taskOpen: number
-  taskDone: number
-  /** The Board card's drawer listing; present only when either count is above zero. */
-  drawer?: PieceDrawer
-  /** A scraps file or a research note: a piece's material, never a Board card. */
-  material?: 'scraps' | 'research'
-  /** On a scraps file: its scraps, as the Board's Offcuts column lists them. */
-  offcuts?: Offcut[]
-  /** On a piece: the floating Scratchpad's items cut from it and still waiting. */
-  looseOffcuts?: Offcut[]
-  /** On a research note: the pieces that use it, as the Board's Sources rail names them. */
-  usedBy?: SourceUser[]
-}
+export type { QueryFilterField, QuerySortField, QuerySortDirection, Query, QueryError, QueryRow, QueryResult } from '../main/query-engine'
+import type { QueryResult } from '../main/query-engine'
 export type { DrawerScrap, DrawerSource, Offcut, PieceDrawer, SourceUser }
-export type QueryResult =
-  | { ok: true; source: string; query: Query; rows: QueryRow[] }
-  | { ok: false; source: string; error: QueryError }
+
 export type CollectionQueryInvalidation = { paths: string[] }
 export type CollectionLink = { from: string; to: string | null; target: string; display: string; ambiguous?: string[] }
 export type UnresolvedFolderPiece = { folderPath: string; title: string }
@@ -513,7 +499,7 @@ export type RecentDocumentRow = {
 export type ReadingRoomState = {
   citationBaseLink: string
   document: ReadingRoomDocument | null
-  readerHtml: string
+  selection: string
   roomWidth: number
   viewState: Record<string, unknown> | null
 }
@@ -665,7 +651,7 @@ export type SkillMeta = {
 // replaced by @bridle/electron's AuthTransport on the bridle.auth:* channels —
 // the renderer consumes it via useIpcAuthFlow + @bridle/react's AuthFlow.
 
-export type MenuAction = `collection-page:${import('../shared/collection-page-commands').CollectionPageCommand}` | 'save' | 'name-version' | 'new-file' | 'new-folder' | 'capture-idea' | 'follow-wikilink' | 'materialise-stub' | 'close-tab' | 'quick-open' | 'command-palette' | 'open-files' | 'open-tabs' | 'open-board' | 'next-tab' | 'previous-tab' | 'next-folder-file' | 'previous-folder-file' | 'search' | 'archive-search' | 'toggle-outline' | 'focus-review-margin' | 'switch-margin-view' | 'toggle-margin' | 'open-versions' | 'toggle-typewriter' | 'toggle-left-pane' | 'toggle-right-pane' | 'open-dialog' | 'undo' | 'redo' | 'prose-zoom-in' | 'prose-zoom-out' | 'prose-zoom-reset' | 'column-width-in' | 'column-width-out' | 'open-scratchpad' | 'scratchpad-send-copy' | 'scratchpad-cut' | 'scratchpad-insert-copy' | 'scratchpad-compare' | 'scratchpad-search'
+export type MenuAction = 'check-for-updates' | 'whats-new' | `collection-page:${import('../shared/collection-page-commands').CollectionPageCommand}` | 'save' | 'name-version' | 'save-folio-version' | 'import-folio-revision' | 'export-folio-version' | 'mark-folio-version-sent' | 'save-file-version' | 'compare-file-version' | 'restore-file-version' | 'save-file-version-copy' | 'new-file' | 'new-folder' | 'capture-idea' | 'follow-wikilink' | 'materialise-stub' | 'close-tab' | 'quick-open' | 'command-palette' | 'open-files' | 'open-tabs' | 'open-board' | 'next-tab' | 'previous-tab' | 'next-folder-file' | 'previous-folder-file' | 'search' | 'archive-search' | 'toggle-outline' | 'focus-review-margin' | 'switch-margin-view' | 'toggle-margin' | 'open-versions' | 'open-folio-versions' | 'open-folio-version-read-only' | 'compare-folio-versions' | 'back-to-working-draft' | 'toggle-typewriter' | 'toggle-left-pane' | 'toggle-right-pane' | 'open-dialog' | 'undo' | 'redo' | 'prose-zoom-in' | 'prose-zoom-out' | 'prose-zoom-reset' | 'column-width-in' | 'column-width-out' | 'open-scratchpad' | 'scratchpad-send-copy' | 'scratchpad-cut' | 'scratchpad-insert-copy' | 'scratchpad-compare' | 'scratchpad-search' | 'open-settings' | 'export-document' | 'share-document' | 'theme-light' | 'theme-dark'
 
 export type RuntimeInfo = { electron: string; chrome: string; node: string; macOS: string }
 
@@ -676,8 +662,49 @@ export type WriteFlexApi = {
   reloadRenderer: () => Promise<void>
   /** Settings: install the `writeflex` command-line shim; resolves with a readable result either way. */
   installCommandLineTool: () => Promise<{ ok: boolean; message: string }>
+  /** The built-in agent skill (agent-skill-host.ts). Agent ids only; main holds every folder and writes only the skill's own. */
+  agentSkill: {
+    status: () => Promise<import('../shared/agent-skill/types').StatusReport>
+    offer: () => Promise<import('../shared/agent-skill/types').Offer>
+    install: (ids: string[]) => Promise<import('../shared/agent-skill/types').ActionReport>
+    remove: (ids: string[]) => Promise<import('../shared/agent-skill/types').ActionReport>
+    replace: (ids: string[]) => Promise<import('../shared/agent-skill/types').ActionReport>
+    decline: (ids: string[]) => Promise<import('../shared/agent-skill/types').ActionReport>
+    answerOffer: (answer: { install: string[]; decline: string[] }) => Promise<import('../shared/agent-skill/types').ActionReport>
+    offerShown: (ids: string[]) => Promise<void>
+  }
+  /** Backup helper trial (disabled by default): this window's own vault only. Neither call takes an
+   *  argument, and no answer is a protection claim (src/shared/backup-helper.ts). */
+  backupHelper: {
+    status: () => Promise<BackupHelperStatusAnswer>
+    syncNow: () => Promise<BackupHelperSyncAnswer>
+    /** Editor receipts (helper protocol 2; renderer app/backup-helper-receipts.ts). A document is named by its
+     *  own path, epoch and generation; main stamps the owner. Every call names the lifetime token main issued
+     *  for the folder the renderer shows (`lifetime`). No answer is a protection claim. */
+    receipts: {
+      lifetime: (root: string) => Promise<BackupReceiptLifetimeAnswer>
+      reportEdit: (doc: BackupReceiptEditInput) => Promise<BackupReceiptEditAnswer>
+      status: (docs: BackupReceiptDocInput[], lifetime: string) => Promise<BackupReceiptStatusAnswer>
+    }
+  }
+  /** Automatic backup for this window's own folder (Settings › Backup; main backup-helper/enrolment.ts).
+   *  Off by default. Only `enable` takes an argument: the opaque id of the preview this window showed, used
+   *  once, and the public confirmation given for it. No answer carries a credential or a vault id. */
+  backupGitHub: BackupGitHubPort
+  backupEnrolment: {
+    status: () => Promise<BackupEnrolmentStatus>
+    preview: () => Promise<BackupEnrolmentPreview>
+    enable: (input: { previewId: string; confirmPublic: boolean }) => Promise<BackupEnrolmentResult>
+    confirmEarlier: (input: { previewId: string; confirmEarlier: boolean }) => Promise<BackupEnrolmentResult>
+    disable: () => Promise<BackupEnrolmentResult>
+    /** Enrolment changed in some window: re-read status; receipts ask for a new lifetime. */
+    onChanged: (fn: () => void) => () => void
+  }
   /** Sharing's set-up (ticket 02). The token goes in once, on checkToken; no answer ever holds it. */
   sharing: {
+    people: (shareId: string, change?: PeopleChange) => Promise<PeopleResult>
+    personAddress: (shareId: string, personId: string) => Promise<string | null>
+    personInvitation: (shareId: string, personId: string) => Promise<boolean>
     status: (options?: { askService?: boolean }) => Promise<SharingSetupStatus>
     checkToken: (token: string) => Promise<SharingResult>
     checkSavedToken: () => Promise<SharingResult>
@@ -704,8 +731,10 @@ export type WriteFlexApi = {
     openFolio: (dir: string, part?: string) => Promise<PieceSharingView>
     /** The Sharing page closed: this window can act on no link until it opens a piece again. */
     close: () => Promise<boolean>
+    chooseSharedOriginal: (root: string) => Promise<boolean>
     make: (request: MakeLinkRequest) => Promise<SharingLinkResult>
     rename: (shareId: string, name: string) => Promise<SharingLinkResult>
+    setNotes: (shareId: string, notes: 'private' | 'open') => Promise<SharingLinkResult>
     setComments: (shareId: string, comments: boolean) => Promise<SharingLinkResult>
     turnOff: (shareId: string) => Promise<SharingLinkResult>
     turnOn: (shareId: string) => Promise<SharingLinkResult>
@@ -732,6 +761,8 @@ export type WriteFlexApi = {
   setWindowTitle: (title: string) => Promise<void>
   /** Static preload-time fence used only to install the renderer's forced-crash e2e hook. */
   e2eEnabled: boolean
+  /** A test run that wants the real first open (right sidebar closed, Versions first); otherwise a test run keeps the earlier shell (open, Agent first), as before house rule R6. */
+  e2eFreshSidebars: boolean
   /** The e2e write hooks (held, failed or interleaved writes): true only when main passed the argument,
    *  which it does only in an unpackaged e2e run (shared/e2e-write-hooks.ts). */
   e2eWriteHooks: boolean
@@ -897,7 +928,7 @@ export type WriteFlexApi = {
    *  — history is made by checkpoint() and agent turns. */
   /** The editor's save. `basis` is the version of the file the buffer was based on: main writes only if the
    *  disk holds it when the write commits (shared/save-basis.ts), and otherwise answers `disk-changed`. */
-  saveFile: (path: string, content: string, basis: SaveBasis) => Promise<FileSaveResult>
+  saveFile: (path: string, content: string, basis: SaveBasis, receipt?: BackupReceiptSaveInput) => Promise<FileSaveResult>
   /** Deliberate emptying path for ADR-0031: main asks for confirmation before bypassing the guard.
    *  A non-empty document is rescued before the question is shown; null means the writer cancelled. */
   clearDocument: (path: string) => Promise<ClearDocumentResult | null>
@@ -938,6 +969,7 @@ export type WriteFlexApi = {
   updateWriterChange: (id: string, input: NewChange) => Promise<Change>
   setChangeStatus: (id: string, status: ChangeStatus) => Promise<Change>
   /** A reply on a reader's note or proposed edit (0.24 ticket 08): kept as plain text on the record and sent to the link it came through. Decides nothing. */
+  releaseReaderClaim: (id: string) => Promise<boolean>
   replyToReader: (id: string, text: string) => Promise<Change>
   classifyChange: (id: string, editClass: EditClass) => Promise<Change>
   /** Accept/Reject a change from the dock — routed through the live suggestion (disk write) when one
@@ -1014,6 +1046,7 @@ export type WriteFlexApi = {
   createCollectionPiece: (dir: string) => Promise<string>
   /** Diary instrumentation (0.18): designation is global; Counted marks remain in Index Notes. */
   diary: {
+    glance: (dir: string) => Promise<DiaryGlance>
     chooseFolder: () => Promise<string | null>
     countedCollections: () => Promise<CountedCollection[]>
     isCounted: (dir: string) => Promise<boolean>
@@ -1051,6 +1084,75 @@ export type WriteFlexApi = {
     getState: (dir: string) => Promise<RoomState>
     /** Lay a patch (`{ view }`, `{ selected }` or `{ surface }`) over the stored state. */
     setState: (dir: string, patch: Partial<RoomState>) => Promise<boolean>
+  }
+  /** Save Folio version (ticket 04): what the sheet shows (read only), the save the writer approved, and the remembered ⇧⌘S answer. */
+  folioVersionSave: {
+    /** What a save of the Folio at `dir` would hold, settle and leave out. Writes nothing. */
+    sheet: (dir: string) => Promise<FolioSheetFacts>
+    /** Save it. Accepts the writer's own waiting changes into their files first, as the sheet said; refused with a sentence otherwise, nothing written. */
+    save: (input: { dir: string; name: string; note?: string; includeUnlisted: boolean; /** The fingerprint of the facts the sheet showed for this choice: if the Folio has moved on, nothing is written and the answer is `{ changed: true, facts }`. */ expect?: string }) => Promise<SavedFolioVersion | FolioSaveChangedAnswer>
+    /** The last answer to "Whole Folio or this part only?" (app state; 'folio' until one is given). */
+    choice: () => Promise<'folio' | 'part'>
+    setChoice: (choice: 'folio' | 'part') => Promise<boolean>
+  }
+  /** Versions of an inserted file: a table, widget page, image or other file that is not Markdown (Folio versions ticket 19). Every answer is `{ ok: false, code, message }` with a sentence when it did nothing. `list` and `compare` write nothing. */
+  fileVersions: {
+    list: (path: string) => Promise<FileVersionAnswer<{ listing: FileVersionsListing }>>
+    /** The tables, widgets and images a Folio's text inserts, with how many versions hold a copy of each. */
+    inserted: (dir: string) => Promise<FileVersionAnswer<{ files: FolioInsertedFile[]; unavailable?: string }>>
+    /** `from` and `to` are file version ids, or `working` for the file on disk now. */
+    compare: (path: string, from: string, to: string) => Promise<FileVersionAnswer<{ compare: FileCompare }>>
+    save: (input: SaveFileVersionInput) => Promise<FileVersionAnswer<SaveFileVersionResult>>
+    /** Bound to the saved copy and the working copy the writer saw (their SHA-256); appends a new version, deletes nothing. */
+    restore: (input: RestoreFileVersionInput) => Promise<FileVersionAnswer<RestoreFileVersionResult>>
+    /** One new ordinary file beside the original, by exclusive create; never overwrites. */
+    copy: (input: SaveFileCopyInput) => Promise<FileVersionAnswer<SaveFileCopyResult>>
+  }
+  /** The Folio's saved versions (ADR-0052), read only: the timeline with what the backup leaves out, and what one version holds. Null when `dir` is not a Folio. */
+  folioVersions: {
+    list: (dir: string) => Promise<FolioVersionsListing | null>
+    contents: (dir: string, id: string) => Promise<FolioVersionContents | null>
+    /** The change cues of the Folio (ticket 06): what changed since its last Folio version. `state: 'none'` when there is no Folio version to compare with. */
+    cues: (dir: string) => Promise<FolioCues>
+    /** The part at `path` and the file its text inserts at the cursor (`embed`, as written), against the Folio's versions. Null when there is no Folio version. */
+    cursor: (dir: string, path: string | null, embed: string | null) => Promise<FolioCursorFacts | null>
+    /** A version opened for reading: its contents and the exact saved text of the Index Note, every part and every file not in the outline (ticket 07). Read only. */
+    read: (dir: string, id: string) => Promise<FolioVersionReading | null>
+    /** One member's exact saved text, by the label the version recorded for it; null when it is not one of the version's members. */
+    memberText: (dir: string, id: string, path: string) => Promise<{ path: string; text: string } | null>
+    /** Two Folio versions, or a version and the working draft (`working`), compared part by part (ticket 08). Read only; `{ refused }` is a sentence. */
+    compare: (dir: string, from: string, to: string) => Promise<FolioCompareResult | { refused: string } | null>
+    /** One line of that comparison opened: the two texts of a part, changed stretches marked. Null when the line is not text or not in the pair. */
+    comparePart: (dir: string, from: string, to: string, key: string) => Promise<FolioComparePart | null>
+    /** Export a saved version as Word or HTML from its saved text, never the working files (ticket 11). Main asks the save dialog for the file; the request names no path. With `markSentTo` the version is marked as sent once the file is written. */
+    export: (request: FolioVersionExportRequest) => Promise<FolioVersionExportAnswer>
+    /** Mark a saved version as sent to someone, on its own (ticket 11). */
+    markSent: (dir: string, id: string, to: string) => Promise<FolioVersionMarkAnswer>
+    /** Import a co-author's Word revision, steps 1 and 2 (ticket 14). The window never names a file: main asks the system dialog and keeps the choice. */
+    importChoose: (dir: string) => Promise<ImportChooseAnswer>
+    /** Who it is from, the versions she could have started from and the one offered. Reads only. */
+    importBases: (request: Pick<ImportRequest, 'dir' | 'from' | 'base'>) => Promise<ImportBases | ImportRefused>
+    /** Read her file and match it to the version she started from. Reads only; the writer's decisions go in `resolutions`. */
+    importPrepare: (request: ImportRequest) => Promise<ImportPrepareAnswer>
+    /** "Bring changes into the Folio": the one write (the safety version, her objects, the incoming version). */
+    importCommit: (request: ImportCommitRequest) => Promise<ImportCommitAnswer>
+    /** Leave the import: main forgets the file. Writes nothing. */
+    importForget: () => Promise<boolean>
+    /** The Folio's incoming revisions and how many of their staged suggestions are decided (ticket 15). Read only. */
+    revisions: (dir: string) => Promise<RevisionStatus[]>
+    /** The decide step's list for one incoming revision (ticket 16). Read only; null when there is no such revision. */
+    decideList: (dir: string, revision: string) => Promise<DecideList | null>
+    /** One structure decision (add her new section as a part, her order or mine, take a part out of the running order), made on the writer's click only. */
+    decide: (request: DecideRequest) => Promise<DecideAnswer>
+    /** Ticket 17: the three texts (sent, theirs, yours) of one part, row by row. Read only; null when there is no such revision. */
+    textRead: (dir: string, revision: string, part: string) => Promise<ThreeTextRead | null>
+    /** Ticket 17: one row of the three texts (use theirs, keep mine, edit by hand), made on the writer's click only, over the hashes of the texts the view showed. */
+    textDecide: (request: TextDecideRequest) => Promise<TextAnswer>
+    /** Take one part's text from the version compared with the working draft (ticket 09): files it as a proposal in the part's margin and writes no part. A refusal is `{ ok: false, message }` in words. */
+    takePart: (input: FolioTakeInput) => Promise<FolioTakeResult>
+    undoTake: (input: FolioUndoTakeInput) => Promise<FolioUndoTakeResult>
+    /** Ticket 10: send a copy of paragraphs of a saved version's part to the Scratchpad. The window names the paragraphs by number; main reads the saved text and fills in where it came from. */
+    sendText: (input: VersionSendInput & { root: string }) => Promise<VersionSendReply>
   }
   /** The Folio outline's Details card (0.26 ticket 4). The Folio is named by its folder; main derives its Index Note. */
   folioDetails: {
@@ -1221,6 +1323,9 @@ export type WriteFlexApi = {
    *  null when the key was unset. First consumer: ADR-0040's globally shared action bar. */
   onSettingChanged: (fn: (change: { key: string; value: SettingValue | null }) => void) => () => void
   readingRoom: {
+    createReaderLease: (input: { selection: string; slot: 0 | 1 }) => Promise<ReaderLease>
+    releaseReaderLease: (id: string) => Promise<void>
+    getReaderNotices: () => Promise<ReaderNotice[]>
     /**
      * The Room's state for the draft it is beside — `draftPath` is the absolute path of the active
      * Markdown file, or null when no draft is on screen. Which paper is open is scoped per draft
@@ -1243,7 +1348,7 @@ export type WriteFlexApi = {
       draftPath: string | null
     }) => Promise<ReadingRoomState>
     /** The remembered document's annotations, read from Zotero with no reader required. */
-    readHighlights: () => Promise<HighlightsResult>
+    readHighlights: (lease?: string) => Promise<HighlightsResult>
     /**
      * Create or exactly reuse the highlight for words arriving in a draft. The returned link names
      * the annotation only after Zotero has taken it; a refusal returns the honest page link.
@@ -1278,6 +1383,7 @@ export type WriteFlexApi = {
      * `notWritten` carries the plain reason when Zotero would not take it ("Zotero is not open…").
      */
     saveAnnotations: (input: {
+      lease: string
       operation: 'create' | 'update' | 'delete'
       annotations: unknown[]
       /** For an edit or deletion, each mark as THIS reader showed it before the change (aligned by
@@ -1306,13 +1412,15 @@ export type WriteFlexApi = {
     retryRefused: (id: number) => Promise<ReadingRoomWriteResult>
     /** Stop counting a refused row. The highlight is kept here and stays drawn; nothing is deleted. */
     dismissRefused: (id: number) => Promise<ReadingRoomOutboxCounts>
-    readDocument: (path: string) => Promise<Uint8Array>
+    readDocument: (input: { lease: string }) => Promise<Uint8Array>
     addBookmark: (input: {
+      lease: string
       label: string
       position: Record<string, unknown>
     }) => Promise<ReadingBookmarkRow>
     listBookmarks: () => Promise<ReadingBookmarkRow[]>
     saveViewState: (input: {
+      lease: string
       attachmentKey: string
       libraryId: number
       viewState: Record<string, unknown>
@@ -1357,6 +1465,7 @@ export type WriteFlexApi = {
   /** Open a `writeflex://open?path=…&line=N` link clicked in a draft (same parser as browser links). */
   openWriteflexLink: (url: string) => Promise<OpenLinkResult>
   /** The app version (package.json), for the status-bar corner. Static — fetch once. */
+  updates: typeof updateNoticesApi.updates
   getAppVersion: () => Promise<string>
   /** Narrow read-only runtime details for support copy in Settings → About. */
   getRuntimeInfo: () => Promise<RuntimeInfo>
@@ -1391,6 +1500,9 @@ export type WriteFlexApi = {
   reportRendererReady: (root: string | null) => Promise<void>
   /** A one-line status from main for the status bar ("Switching to Notes…"). */
   onStatus: (fn: (message: string) => void) => () => void
+  /** Main wants the writer's word (R11): draw a confirm card, then answer with `answerConfirm`. */
+  onConfirmAsk: (fn: (ask: { id: number; spec: import('../shared/confirm-card').ConfirmSpec }) => void) => () => void
+  answerConfirm: (id: number, ok: boolean) => Promise<void>
   onTrace: (fn: (e: TraceEvent) => void) => () => void
   onApproval: (fn: (req: ApprovalRequest) => void) => () => void
   onSuggestions: (fn: (s: Suggestion[]) => void) => () => void
@@ -1531,11 +1643,66 @@ function validateFileRenameResult(value: unknown): RenameFileResult {
   }
 }
 
+/** Only the known receipt call metadata fields (shared BackupReceiptCallMeta). The token is copied as given:
+ *  main, not this copy, decides whether it names the window's current lifetime; a missing one stays missing. */
+const receiptMeta = (m: BackupReceiptCallMeta): BackupReceiptCallMeta => ({
+  lifetime: m.lifetime,
+  ...(m.at !== undefined ? { at: m.at } : {}),
+})
+
 const api: WriteFlexApi = {
+  ...updateNoticesApi,
   reportRendererError: (error) => ipcRenderer.invoke('diagnostics:renderer-error', error),
   reloadRenderer: () => ipcRenderer.invoke('diagnostics:reload-renderer'),
   installCommandLineTool: () => ipcRenderer.invoke('cli:install'),
+  agentSkill: {
+    status: () => ipcRenderer.invoke('agent-skill:status'),
+    offer: () => ipcRenderer.invoke('agent-skill:offer'),
+    install: (ids) => ipcRenderer.invoke('agent-skill:install', ids),
+    remove: (ids) => ipcRenderer.invoke('agent-skill:remove', ids),
+    replace: (ids) => ipcRenderer.invoke('agent-skill:replace', ids),
+    decline: (ids) => ipcRenderer.invoke('agent-skill:decline', ids),
+    answerOffer: (answer) => ipcRenderer.invoke('agent-skill:answer-offer', answer),
+    offerShown: (ids) => ipcRenderer.invoke('agent-skill:offer-shown', ids),
+  },
+  backupHelper: {
+    status: () => ipcRenderer.invoke(BACKUP_HELPER_CHANNELS.status),
+    syncNow: () => ipcRenderer.invoke(BACKUP_HELPER_CHANNELS.syncNow),
+    receipts: {
+      lifetime: (root) => ipcRenderer.invoke(BACKUP_RECEIPT_CHANNELS.lifetime, { root }),
+      reportEdit: (doc) => ipcRenderer.invoke(BACKUP_RECEIPT_CHANNELS.reportEdit, { path: doc.path, docEpoch: doc.docEpoch, gen: doc.gen, ...receiptMeta(doc) }),
+      status: (docs, lifetime) => ipcRenderer.invoke(BACKUP_RECEIPT_CHANNELS.status, { docs: docs.map((d) => ({ path: d.path, docEpoch: d.docEpoch, gen: d.gen })), lifetime }),
+    },
+  },
+  backupGitHub: {
+    status: () => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.status),
+    connect: () => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.connect),
+    cancel: (input) => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.cancel, { attemptId: input.attemptId }),
+    openBrowser: (input) => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.openBrowser, { attemptId: input.attemptId }),
+    repository: () => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.repository),
+    useRepository: (input) => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.useRepository, { candidateId: input.candidateId }),
+    openRepositoryAccess: () => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.openRepositoryAccess),
+    disconnect: () => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.disconnect),
+    openAuthorisations: () => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.openAuthorisations),
+    recover: () => ipcRenderer.invoke(BACKUP_GITHUB_CHANNELS.recover),
+    onChanged: (fn) => { const listener = () => fn(); ipcRenderer.on(BACKUP_GITHUB_CHANNELS.changed, listener); return () => { ipcRenderer.removeListener(BACKUP_GITHUB_CHANNELS.changed, listener) } },
+  },
+  backupEnrolment: {
+    status: () => ipcRenderer.invoke(BACKUP_ENROLMENT_CHANNELS.status),
+    preview: () => ipcRenderer.invoke(BACKUP_ENROLMENT_CHANNELS.preview),
+    enable: (input) => ipcRenderer.invoke(BACKUP_ENROLMENT_CHANNELS.enable, { previewId: String(input.previewId), confirmPublic: input.confirmPublic === true }),
+    confirmEarlier: (input) => ipcRenderer.invoke(BACKUP_ENROLMENT_CHANNELS.confirmEarlier, { previewId: String(input.previewId), confirmEarlier: input.confirmEarlier === true }),
+    disable: () => ipcRenderer.invoke(BACKUP_ENROLMENT_CHANNELS.disable),
+    onChanged: (fn) => {
+      const listener = (): void => fn()
+      ipcRenderer.on(BACKUP_ENROLMENT_CHANNELS.changed, listener)
+      return () => { ipcRenderer.removeListener(BACKUP_ENROLMENT_CHANNELS.changed, listener) }
+    },
+  },
   sharing: {
+    people: (shareId, change) => ipcRenderer.invoke('sharing:people', { shareId, change }),
+    personAddress: (shareId, personId) => ipcRenderer.invoke('sharing:person-address', { shareId, personId }),
+    personInvitation: (shareId, personId) => ipcRenderer.invoke('sharing:person-invitation', { shareId, personId }),
     status: (options) => ipcRenderer.invoke('sharing:status', { askService: options?.askService === true }),
     checkToken: (token) => ipcRenderer.invoke('sharing:check-token', token),
     checkSavedToken: () => ipcRenderer.invoke('sharing:check-saved-token'),
@@ -1552,10 +1719,12 @@ const api: WriteFlexApi = {
     folio: (dir, part) => ipcRenderer.invoke('sharing:folio', part === undefined ? dir : { dir, part }),
     openFolio: (dir, part) => ipcRenderer.invoke('sharing:open-folio', part === undefined ? dir : { dir, part }),
     close: () => ipcRenderer.invoke('sharing:close'),
+    chooseSharedOriginal: (root) => ipcRenderer.invoke('sharing:choose-original', { root }),
     make: (request) => ipcRenderer.invoke('sharing:make', request.folio !== undefined
-      ? { folio: request.folio, name: request.name, comments: request.comments }
-      : { path: request.path, name: request.name, comments: request.comments }),
+      ? { folio: request.folio, name: request.name, comments: request.comments, notes: request.notes }
+      : { path: request.path, name: request.name, comments: request.comments, notes: request.notes }),
     rename: (shareId, name) => ipcRenderer.invoke('sharing:rename', { shareId, name }),
+    setNotes: (shareId, notes) => ipcRenderer.invoke('sharing:set-notes', { shareId, notes }),
     setComments: (shareId, comments) => ipcRenderer.invoke('sharing:set-comments', { shareId, comments }),
     turnOff: (shareId) => ipcRenderer.invoke('sharing:turn-off', { shareId }),
     turnOn: (shareId) => ipcRenderer.invoke('sharing:turn-on', { shareId }),
@@ -1576,6 +1745,7 @@ const api: WriteFlexApi = {
   },
   setWindowTitle: (title) => ipcRenderer.invoke('window:set-title', title),
   e2eEnabled: process.env.WRITEFLEX_E2E === '1',
+  e2eFreshSidebars: process.env.WRITEFLEX_E2E === '1' && process.env.WRITEFLEX_E2E_FRESH_SIDEBARS === '1',
   e2eWriteHooks: e2eWriteHooksFromProcess(process.argv, process.env),
   e2eCollectionQueryCount: () => collectionQueryCount,
   resetE2eCollectionQueryCount: () => { collectionQueryCount = 0 },
@@ -1653,7 +1823,11 @@ const api: WriteFlexApi = {
   pickStandardWidgetSource: (documentPath) => ipcRenderer.invoke('standard-widget:pick-source', { documentPath }),
   readFrontmatter: (path) => ipcRenderer.invoke('frontmatter:read', path),
   setGoal: (path, target, due, basis) => ipcRenderer.invoke('goal:set', { path, target, due, basis }),
-  saveFile: (path, content, basis) => ipcRenderer.invoke('file:save', { path, content, basis }),
+  // `receipt`: the epoch and gen the document owner captured with these bytes (editor receipts); absent, the
+  // save is exactly as before.
+  saveFile: (path, content, basis, receipt) => ipcRenderer.invoke('file:save', receipt
+    ? { path, content, basis, receipt: { docEpoch: receipt.docEpoch, gen: receipt.gen, ...receiptMeta(receipt) } }
+    : { path, content, basis }),
   clearDocument: (path) => ipcRenderer.invoke('file:clear', { path }),
   checkpoint: (path, opts) => ipcRenderer.invoke('snapshot:checkpoint', { path, ...(opts?.auto ? { auto: true } : {}) }),
   preserveVersion: (path, text) => ipcRenderer.invoke('snapshot:preserve', { path, text }),
@@ -1713,6 +1887,7 @@ const api: WriteFlexApi = {
   addChange: (input) => ipcRenderer.invoke('changes:add', input),
   updateWriterChange: (id, input) => ipcRenderer.invoke('changes:update-writer', { id, input }),
   setChangeStatus: (id, status) => ipcRenderer.invoke('changes:set-status', { id, status }),
+  releaseReaderClaim: (id) => ipcRenderer.invoke('changes:release-reader-claim', id),
   replyToReader: (id, text) => ipcRenderer.invoke('changes:reader-reply', { id, text }),
   classifyChange: (id, editClass) => ipcRenderer.invoke('changes:classify', { id, editClass }),
   resolveChange: (id, action, options) => ipcRenderer.invoke('changes:resolve', { id, action, ...(options?.sweep === false ? { sweep: false } : {}) }),
@@ -1758,6 +1933,7 @@ const api: WriteFlexApi = {
   createCollectionIndex: (dir) => ipcRenderer.invoke('collection:create-index', { dir }),
   createCollectionPiece: (dir) => ipcRenderer.invoke('collection:new-piece', { dir }),
   diary: {
+    glance: (dir) => ipcRenderer.invoke('diary:glance', dir),
     chooseFolder: () => ipcRenderer.invoke('diary:choose-folder'),
     countedCollections: () => ipcRenderer.invoke('diary:counted-collections'),
     isCounted: (dir) => ipcRenderer.invoke('diary:is-counted', dir),
@@ -1786,6 +1962,45 @@ const api: WriteFlexApi = {
     read: (dir, essential) => ipcRenderer.invoke('folio-room:read', { dir, essential }),
     getState: (dir) => ipcRenderer.invoke('folio-room:get-state', { dir }),
     setState: (dir, state) => ipcRenderer.invoke('folio-room:set-state', { dir, state }),
+  },
+  folioVersionSave: {
+    sheet: (dir) => ipcRenderer.invoke('folio-version-save:sheet', { dir }),
+    save: (input) => ipcRenderer.invoke('folio-version-save:save', input),
+    choice: () => ipcRenderer.invoke('folio-version-save:choice', {}),
+    setChoice: (choice) => ipcRenderer.invoke('folio-version-save:set-choice', { choice }),
+  },
+  fileVersions: {
+    list: (path) => ipcRenderer.invoke('file-versions:list', { path }),
+    inserted: (dir) => ipcRenderer.invoke('file-versions:inserted', { dir }),
+    compare: (path, from, to) => ipcRenderer.invoke('file-versions:compare', { path, from, to }),
+    save: (input) => ipcRenderer.invoke('file-versions:save', input),
+    restore: (input) => ipcRenderer.invoke('file-versions:restore', input),
+    copy: (input) => ipcRenderer.invoke('file-versions:copy', input),
+  },
+  folioVersions: {
+    list: (dir) => ipcRenderer.invoke('folio-versions:list', { dir }),
+    contents: (dir, id) => ipcRenderer.invoke('folio-versions:contents', { dir, id }),
+    cues: (dir) => ipcRenderer.invoke('folio-versions:cues', { dir }),
+    cursor: (dir, path, embed) => ipcRenderer.invoke('folio-versions:cursor', { dir, path, embed }),
+    read: (dir, id) => ipcRenderer.invoke('folio-versions:read', { dir, id }),
+    memberText: (dir, id, path) => ipcRenderer.invoke('folio-versions:member-text', { dir, id, path }),
+    compare: (dir, from, to) => ipcRenderer.invoke('folio-versions:compare', { dir, from, to }),
+    comparePart: (dir, from, to, key) => ipcRenderer.invoke('folio-versions:compare-part', { dir, from, to, key }),
+    export: (request) => ipcRenderer.invoke('folio-versions:export', request),
+    markSent: (dir, id, to) => ipcRenderer.invoke('folio-versions:mark-sent', { dir, id, to }),
+    importChoose: (dir) => ipcRenderer.invoke('folio-versions:import-choose', { dir }),
+    importBases: (request) => ipcRenderer.invoke('folio-versions:import-bases', request),
+    importPrepare: (request) => ipcRenderer.invoke('folio-versions:import-prepare', request),
+    importCommit: (request) => ipcRenderer.invoke('folio-versions:import-commit', request),
+    importForget: () => ipcRenderer.invoke('folio-versions:import-forget'),
+    revisions: (dir) => ipcRenderer.invoke('folio-versions:revisions', { dir }),
+    decideList: (dir, revision) => ipcRenderer.invoke('folio-versions:decide-list', { dir, revision }),
+    decide: (request) => ipcRenderer.invoke('folio-versions:decide', request),
+    textRead: (dir, revision, part) => ipcRenderer.invoke('folio-versions:text-read', { dir, revision, part }),
+    textDecide: (request) => ipcRenderer.invoke('folio-versions:text-decide', request),
+    takePart: (input) => ipcRenderer.invoke('folio-versions:take-part', input),
+    undoTake: (input) => ipcRenderer.invoke('folio-versions:undo-take', input),
+    sendText: (input) => ipcRenderer.invoke('folio-versions:send-text', input),
   },
   folioDetails: {
     read: (dir) => ipcRenderer.invoke('folio:read-details', { dir }),
@@ -1888,12 +2103,15 @@ const api: WriteFlexApi = {
   revertSetting: (index) => ipcRenderer.invoke('settings:revert', index),
   onSettingChanged: subscribeSettingChanged,
   readingRoom: {
+    createReaderLease: (input) => ipcRenderer.invoke('reading-room:create-reader-lease', input),
+    releaseReaderLease: (id) => ipcRenderer.invoke('reading-room:release-reader-lease', id),
+    getReaderNotices: () => ipcRenderer.invoke('reading-room:get-reader-notices'),
     getState: (draftPath) => ipcRenderer.invoke('reading-room:get-state', draftPath),
     recentDocuments: () => ipcRenderer.invoke('reading-room:recent-documents'),
     searchShelf: (query, collectionId) => ipcRenderer.invoke('reading-room:search-shelf', query, collectionId ?? null),
     shelfCollections: () => ipcRenderer.invoke('reading-room:shelf-collections'),
     openShelfItem: (input) => ipcRenderer.invoke('reading-room:open-shelf-item', input),
-    readHighlights: () => ipcRenderer.invoke('reading-room:read-highlights'),
+    readHighlights: (lease) => ipcRenderer.invoke('reading-room:read-highlights', lease),
     citeSelection: (input) => ipcRenderer.invoke('reading-room:cite-selection', input),
     beginAreaQuotation: (input) => ipcRenderer.invoke('reading-room:begin-area-quotation', input),
     recordAreaQuotation: (input) => ipcRenderer.invoke('reading-room:record-area-quotation', input),
@@ -1905,7 +2123,7 @@ const api: WriteFlexApi = {
     refusedHighlights: () => ipcRenderer.invoke('reading-room:refused-highlights'),
     retryRefused: (id) => ipcRenderer.invoke('reading-room:retry-refused', id),
     dismissRefused: (id) => ipcRenderer.invoke('reading-room:dismiss-refused', id),
-    readDocument: (path) => ipcRenderer.invoke('reading-room:read-document', path),
+    readDocument: (input) => ipcRenderer.invoke('reading-room:read-document', input),
     addBookmark: (input) => ipcRenderer.invoke('reading-room:add-bookmark', input),
     listBookmarks: () => ipcRenderer.invoke('reading-room:list-bookmarks'),
     saveViewState: (input) => ipcRenderer.invoke('reading-room:save-view-state', input),
@@ -1949,6 +2167,8 @@ const api: WriteFlexApi = {
   acknowledgeAbandonClose: () => ipcRenderer.invoke('window:abandon-close-ack'),
   reportRendererReady: (root) => ipcRenderer.invoke('renderer:ready', root),
   onStatus: on<string>('window:status'),
+  onConfirmAsk: on<{ id: number; spec: import('../shared/confirm-card').ConfirmSpec }>('confirm:ask'),
+  answerConfirm: (id, ok) => ipcRenderer.invoke('confirm:answer', id, ok),
   onCloseRequested: (fn) => {
     closeRequestListeners += 1
     if (!appStartReported) {

@@ -25,7 +25,8 @@ const button = (text: string, label: string, run: () => void): HTMLButtonElement
 
 /** The registry rendered, over a private draft of the live object editor's source; no filesystem writes. */
 export function mountFrontmatterEditor(source: string, options: MetadataPanelOptions = {}): MountedEditor {
-  let inner = source, collapsed = metadataCollapsed(options.workspace ?? ''), systemOpen = false, destroyed = false
+  // The card on the page starts collapsed (R1); the editor the writer opens to change fields is always open.
+  let inner = source, collapsed = options.readonly === true ? metadataCollapsed(options.workspace ?? '') : false, systemOpen = false, destroyed = false
   const initialKeys = new Set(metadataRows(source).map(row => row.key))
   // Each field as this edit session found it: its type and bytes, never re-read after a keystroke.
   const originals = metadataOriginals(source)
@@ -182,6 +183,6 @@ export function mountFrontmatterEditor(source: string, options: MetadataPanelOpt
       const input = root.querySelector<HTMLInputElement>(`input#${id}-${field.key}`)
       if (input) { root.querySelector(`#${id}-${field.key}-values`)?.remove(); addOptions(input, field) }
     }
-  }).catch(() => { if (!destroyed) message.textContent = 'Workspace suggestions could not be read. You can still type a value.' })
+  }).catch(() => { if (!destroyed) message.textContent = 'Vault suggestions could not be read. You can still type a value.' })
   return { element: root, serialise: () => { flushTags(); return inner }, focus: () => { if (collapsed) toggle.focus(); else (root.querySelector<HTMLInputElement>('[aria-label="Value for title"]') ?? toggle).focus() }, destroy: () => { destroyed = true; controller.abort() } }
 }

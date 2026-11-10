@@ -115,7 +115,12 @@
 .wf-fragment a{color:var(--accent)}
 .wf-fragment ul,.wf-fragment ol{padding-left:1.4em;margin:.3em 0 .6em}
 .sp-pill{position:fixed;z-index:20;right:20px;bottom:44px;border:1px solid var(--line);background:var(--bg-elev);color:var(--ink);border-radius:999px;padding:7px 14px;font-size:13px;font-weight:600;box-shadow:0 6px 18px rgba(0,0,0,.14);cursor:pointer}
-.sp-pill-expand{color:var(--accent);font-weight:500;margin-left:8px}
+/* The pill is a chip in the status bar now (house rules R2/R7): same look as the Focus chip, never fixed over the text. */
+.sb-scratchpad-slot .sp-pill{position:static;display:inline-flex;align-items:center;height:19px;padding:0 9px;border:0;border-radius:999px;background:var(--pill);color:var(--ink-2);font-size:11px;font-weight:500;box-shadow:none;white-space:nowrap}
+.sb-scratchpad-slot .sp-pill:hover{background:var(--hover)}
+.sb-scratchpad-slot .sp-pill[aria-pressed=true]{background:var(--accent-soft);color:var(--ink)}
+.sp-panel.beside{border-radius:0;border-width:0 0 0 1px;box-shadow:none}
+.sp-panel.beside .sp-head{cursor:default}
 .sp-resize{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,var(--ink-4) 50%,transparent 60%,transparent 70%,var(--ink-4) 70%,transparent 80%)}
 .sp-rail{display:flex;flex-direction:column;height:100%;min-height:0}
 .sp-rail-slot{flex:1;min-height:0;display:flex}

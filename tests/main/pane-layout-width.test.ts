@@ -29,7 +29,8 @@ window.paneWidthHarness = {
     if (root) flushSync(() => root.unmount())
     localStorage.clear()
     for (const [key, value] of Object.entries(saved)) localStorage.setItem(key, value)
-    deps = { viewportWidth: 1200, scratchpadDocked: false, guideShown: false, onLeftTabOpened() {}, onRightTabOpened() {} }
+    // At 1200px App's take-turns planner closes the left when the right is shown (R3).
+    deps = { initialCollapsed: { left: true, right: false }, viewportWidth: 1200, scratchpadDocked: false, guideShown: false, onLeftTabOpened() {}, onRightTabOpened() {} }
     root = createRoot(host)
     render()
     return snapshot()
@@ -37,7 +38,7 @@ window.paneWidthHarness = {
   mode(docked, viewportWidth = 1200) { deps = { ...deps, scratchpadDocked: docked, viewportWidth }; render(); return snapshot() },
   open(tab) { flushSync(() => pane.openRightTab(tab)); return snapshot() },
   collapse() { flushSync(() => pane.collapseRightPane()); return snapshot() },
-  cycle(direction) { flushSync(() => pane.cycleRightTab(direction, rightPaneTabsFor(deps.guideShown))); return snapshot() },
+  cycle(direction) { flushSync(() => pane.cycleRightTab(direction, rightPaneTabsFor(deps.guideShown, deps.scratchpadDocked))); return snapshot() },
   begin() { pane.startPaneResize('right')({ clientX: 600, preventDefault() {} }) },
   move(x) { flushSync(() => window.dispatchEvent(new PointerEvent('pointermove', { clientX: x }))); return snapshot() },
   end() { window.dispatchEvent(new PointerEvent('pointerup')); return snapshot() },
@@ -103,32 +104,33 @@ isolatedBrowserTest(import.meta.path, 'docked Scratchpad width has an independen
         const invalidSavedScratchpad = h.open('scratchpad')
         return { initial, floating, docked, resizing, resized, collapsedMode, redocked, agent, agentResized, capped, capNoDrag, expanded, cycled, cycledBack, switchedDuringDrag, movedAfterSwitch, finishedAfterSwitch, scratchpadAfterSwitch, minimum, maximum, tinyCap, restored, reloadedAgent, reloadedScratchpad, reloadedFloating, invalidSavedScratchpad }
       })
-      expect(receipts.initial).toMatchObject({ tab: 'agent', width: 340 })
-      expect(receipts.floating).toMatchObject({ tab: 'scratchpad', width: 340 })
-      expect(receipts.docked).toMatchObject({ width: 560 })
-      expect(receipts.resizing).toMatchObject({ width: 500, scratchpadStored: null, ordinaryStored: null })
-      expect(receipts.resized).toMatchObject({ width: 500, scratchpadStored: '500', ordinaryStored: null })
+      expect(receipts.initial).toMatchObject({ tab: 'versions', width: 340 })
+      expect(receipts.floating).toMatchObject({ tab: 'versions', width: 340 }) // the Scratchpad tab exists only while docked (R6)
+      // R3/R7: the editor keeps 55% (Dominik, 6 Nov; sidebars-take-turns.test.ts).
+      expect(receipts.docked).toMatchObject({ width: 540 })
+      expect(receipts.resizing).toMatchObject({ width: 480, scratchpadStored: null, ordinaryStored: null })
+      expect(receipts.resized).toMatchObject({ width: 480, scratchpadStored: '480', ordinaryStored: null })
       expect(receipts.collapsedMode.width).toBe(340)
-      expect(receipts.redocked.width).toBe(500)
+      expect(receipts.redocked.width).toBe(480)
       expect(receipts.agent.width).toBe(340)
-      expect(receipts.agentResized).toMatchObject({ width: 380, ordinaryStored: '380', scratchpadStored: '500' })
-      expect(receipts.capped).toMatchObject({ width: 420, scratchpadStored: '500' })
-      expect(receipts.capNoDrag).toMatchObject({ width: 420, scratchpadStored: '500' })
-      expect(receipts.expanded.width).toBe(500)
-      expect(receipts.cycled).toMatchObject({ tab: 'agent-notes', width: 380, collapsed: false })
-      expect(receipts.cycledBack).toMatchObject({ tab: 'scratchpad', width: 500 })
+      expect(receipts.agentResized).toMatchObject({ width: 380, ordinaryStored: '380', scratchpadStored: '480' })
+      expect(receipts.capped).toMatchObject({ width: 315, scratchpadStored: '480' })
+      expect(receipts.capNoDrag).toMatchObject({ width: 315, scratchpadStored: '480' })
+      expect(receipts.expanded.width).toBe(480)
+      expect(receipts.cycled).toMatchObject({ tab: 'versions', width: 380, collapsed: false })
+      expect(receipts.cycledBack).toMatchObject({ tab: 'scratchpad', width: 480 })
       expect(receipts.switchedDuringDrag.width).toBe(380)
       expect(receipts.movedAfterSwitch.width).toBe(380)
-      expect(receipts.finishedAfterSwitch).toMatchObject({ ordinaryStored: '380', scratchpadStored: '480' })
-      expect(receipts.scratchpadAfterSwitch.width).toBe(480)
+      expect(receipts.finishedAfterSwitch).toMatchObject({ ordinaryStored: '380', scratchpadStored: '460' })
+      expect(receipts.scratchpadAfterSwitch.width).toBe(460)
       expect(receipts.minimum).toMatchObject({ width: 200, scratchpadStored: '200' })
-      expect(receipts.maximum).toMatchObject({ width: 560, scratchpadStored: '560' })
-      expect(receipts.tinyCap).toMatchObject({ width: 120, scratchpadStored: '560' })
-      expect(receipts.restored.width).toBe(560)
+      expect(receipts.maximum).toMatchObject({ width: 540, scratchpadStored: '540' })
+      expect(receipts.tinyCap).toMatchObject({ width: 90, scratchpadStored: '540' })
+      expect(receipts.restored.width).toBe(540)
       expect(receipts.reloadedAgent.width).toBe(410)
       expect(receipts.reloadedScratchpad.width).toBe(465)
       expect(receipts.reloadedFloating.width).toBe(410)
-      expect(receipts.invalidSavedScratchpad.width).toBe(560)
+      expect(receipts.invalidSavedScratchpad.width).toBe(540)
     } finally { await page.close() }
   } finally { await browser.close() }
 }, 20_000)

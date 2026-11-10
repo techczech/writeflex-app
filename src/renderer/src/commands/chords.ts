@@ -179,9 +179,19 @@ export const shortcutCaptureActive = { current: false }
 
 /** Changelog copy for a `shortcuts.overrides` value: the chord the entry's command holds in `raw`
  *  (`null` = the stored map before this key ever existed → that command's default). */
+/** Labels that earlier builds wrote into the saved Settings history, by the command they named (consistency batch 2 renamed them). */
+export const HISTORICAL_COMMAND_LABELS: Readonly<Record<string, string>> = {
+  'Show/hide right pane': 'view.toggleRightPane',
+  'Search Workspace…': 'app.search',
+  'Pin this workspace': 'workspace.pin',
+  'Unpin this workspace': 'workspace.unpin',
+  'Folio workspace: Outline': 'folio.room.outline',
+}
+
 export function chordDisplayForLog(raw: unknown, entryLabel: string): string {
   const label = entryLabel.startsWith('Shortcut: ') ? entryLabel.slice('Shortcut: '.length) : entryLabel
-  const command = allBindableCommands().find((entry) => entry.label === label)
+  const aliased = HISTORICAL_COMMAND_LABELS[label]
+  const command = allBindableCommands().find((entry) => (aliased ? entry.id === aliased : entry.label === label))
   if (!command) return 'Defaults'
   const chord = raw === null || raw === undefined ? (defaultChords(command)[0] ?? null) : resolveChord(command.id, parseOverrides(raw))
   return chord ?? 'Not assigned'

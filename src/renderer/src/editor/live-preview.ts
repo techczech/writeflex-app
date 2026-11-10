@@ -173,7 +173,16 @@ export function widgetFor(block: LivePreviewBlock, assetBaseUrl: string, selecte
     view.dispatch({ selection: { anchor: block.from }, effects: setOpenLivePreviewBlock.of(block), scrollIntoView: true })
     view.focus()
   }, proposals)
-  if (block.kind === 'image') return new ImageWidget(block.source, localAssetUrl(assetBaseUrl, block.url ?? ''), block.alt ?? '', selected)
+  if (block.kind === 'image') {
+    const path = block.url ?? ''
+    const workspaceUrl = localAssetUrl(assetBaseUrl, path)
+    const folder = documentPath?.slice(0, documentPath.lastIndexOf('/') + 1) ?? ''
+    const url = /^https?:\/\//i.test(path) || path.startsWith('/') || !folder
+      ? workspaceUrl
+      : localAssetUrl(assetBaseUrl, `${folder}${path}`)
+    // Older paste/drop operations insert workspace-relative assets, including in nested documents.
+    return new ImageWidget(block.source, url, block.alt ?? '', selected, url === workspaceUrl ? undefined : workspaceUrl)
+  }
   if (block.kind === 'table') return new TableWidget(block.source, selected)
   if (block.kind === 'mermaid') return new MermaidWidget(block.source, selected)
   if (block.kind === 'markmap') return new MarkmapWidget(block.source, selected)

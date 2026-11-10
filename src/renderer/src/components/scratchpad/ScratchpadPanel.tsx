@@ -4,12 +4,13 @@
 // the item model is WriteFlex's formatted text. Content changes go through the handlers App supplies
 // (the controller and the bridge); this component only decides what is shown.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { GripVertical, Search } from 'lucide-react'
 import {
   daySections, defaultPartName, effectiveScope, inFolder, isPlaced, listCounts, parseQuery, sourceItemOf, toggleKindInQuery, visibleItems,
   type GroupFilter, type ScratchItem, type ScratchList, type ScratchReferenceAction, type ScratchScope, type ScratchSnapshot, type ScratchSource,
 } from '../../../../shared/scratchpad-items'
-import type { ScratchBox } from '../../../../shared/scratchpad-layout'
+import type { BesidePlace, ScratchBox } from '../../../../shared/scratchpad-layout'
 import type { ScratchpadLayoutApi } from '../../scratchpad/useScratchpadLayout'
 import { ItemActions, PlacementNote, ScratchpadCard, ScratchpadCompare, ScratchpadPreview, type ItemActionHandlers, type Placement, type ScratchPlace } from './ScratchpadParts'
 import { ScratchpadExternalBrowser } from './ScratchpadExternal'
@@ -50,7 +51,7 @@ const LISTS: ScratchList[] = ['candidates', 'document', 'rejected']
 const plural = (n: number): string => (n === 1 ? '1 item' : `${n} items`)
 
 export function ScratchpadPanel({
-  layout, snapshot, loadError, activePath, root = null, showingSource = false, inventory = [], sources = [], inventoryNotices = [], onDocumentScope, assetBaseUrl, partName = defaultPartName, placement, focusTick, handlers, docked, selectionRef, pillRight = 20, places = [], avoidTop = null, commandRef, externalSources = null, onOpenSettings,
+  layout, snapshot, loadError, activePath, root = null, showingSource = false, inventory = [], sources = [], inventoryNotices = [], onDocumentScope, assetBaseUrl, partName = defaultPartName, placement, focusTick, handlers, docked, selectionRef, chipSlot = null, onChip, beside = null, places = [], avoidTop = null, commandRef, externalSources = null, onOpenSettings,
 }: {
   showingSource?: boolean
   root?: string | null
@@ -74,8 +75,12 @@ export function ScratchpadPanel({
   docked: boolean
   /** Kept up to date with the item the panel has selected, for the Insert a copy command. */
   selectionRef?: MutableRefObject<string | null>
-  /** The collapsed pill's distance from the window's right edge (clear of the right rail). */
-  pillRight?: number
+  /** The status bar's Scratchpad slot: the collapsed pill is a chip there ("Scratchpad · N"), so it never covers text or controls. */
+  chipSlot?: HTMLElement | null
+  /** Where the expanded panel sits beside the text (it has room); null: it floats over the text as before. */
+  /** The chip's own click, where it is not the plain pill toggle (a docked Scratchpad whose sidebar is closed opens the sidebar). */
+  onChip?: () => void
+  beside?: BesidePlace | null
   /** The parts Change place can navigate to (the Folio's running order, or the open document). */
   places?: readonly ScratchPlace[]
   /** Keep the floating panel's top at or below this y (the saved-version banner's bottom), so its
@@ -88,7 +93,7 @@ export function ScratchpadPanel({
   externalSources?: { talkweaver: boolean; slidewell: boolean } | null
   /** Open Settings at its Scratchpad section (an unavailable source tab's way out). */
   onOpenSettings?: () => void
-}): JSX.Element {
+}): JSX.Element | null {
   const { items, groups, notices, folioDir } = snapshot
   // Uncollected canonical sources sit beside the collected candidates as pointer cards.
   const canonicalCards = useMemo(() => sources.filter((source) => !source.collectedId).map(sourceItemOf), [sources])
@@ -263,7 +268,8 @@ export function ScratchpadPanel({
     window.addEventListener('pointerup', onUp)
   }
 
-  const activeCount = counts.candidates + documentCount
+  // The badge counts what waits (Candidates), the number the list below it shows; "In this document" has its own count on its tab.
+  const activeCount = counts.candidates
   // A new arrival pulses the collapsed pill (design state 1): the count rose while it was a pill.
   const pillCount = useRef<number | null>(null)
   useEffect(() => {
@@ -276,17 +282,18 @@ export function ScratchpadPanel({
     }
     pillCount.current = activeCount
   }, [activeCount, layout.layout.mode])
-  if (layout.layout.mode === 'collapsed') {
-    return (
-      <button type="button" className={`sp-pill${pulse ? ' pulse' : ''}`} style={{ right: pillRight }} onClick={layout.expand} title="Show the Scratchpad (⇧⌘J)">
-        Scratchpad · {activeCount} <span className="sp-pill-expand">Expand</span>
-      </button>
-    )
-  }
+  // The chip in the status bar (R2/R7): the collapsed pill moved there; it stays while the panel is open and toggles it.
+  const chip = chipSlot ? createPortal(
+    <button type="button" className={`sp-pill sp-chip${pulse ? ' pulse' : ''}`} data-testid="scratchpad-chip" aria-pressed={layout.layout.mode !== 'collapsed'} onClick={onChip ?? layout.toggle} title="Scratchpad (⇧⌘J)">
+      Scratchpad · {activeCount}
+    </button>,
+    chipSlot,
+  ) : null
+  if (layout.layout.mode === 'collapsed') return chip
 
   const box = layout.layout.box
-  const scopeLabel = shownScope === 'workspace' ? 'Everything in this workspace'
-    : shownScope === 'folio' ? `Folio: ${folioDir === '' ? 'this workspace' : (folioDir ?? '').split('/').pop()}`
+  const scopeLabel = shownScope === 'workspace' ? 'Everything in this vault'
+    : shownScope === 'folio' ? `Folio: ${folioDir === '' ? 'this vault' : (folioDir ?? '').split('/').pop()}`
     : `Document: ${activePath ? activePath.split('/').pop() : 'none open'}`
   const preview = previewId ? byId.get(previewId) ?? null : null
   const compared = compareIds ? compareIds.flatMap((id) => { const item = byId.get(id); return item ? [item] : [] }) : null
@@ -303,25 +310,27 @@ export function ScratchpadPanel({
     return (
       <div className="sp-empty">
         <h3>Nothing set aside yet</h3>
-        <p>Select text in your document and send a copy here, or cut it to move it.{shownScope === 'document' && folioDir === null ? ' Scraps cut from other documents stay out of sight unless you choose Everything in this workspace.' : ''}</p>
+        <p>Select text in your document and send a copy here, or cut it to move it.{shownScope === 'document' && folioDir === null ? ' Scraps cut from other documents stay out of sight unless you choose Everything in this vault.' : ''}</p>
       </div>
     )
   }
 
   return (
+    <>
+    {chip}
     <section
       ref={panelRef}
-      className={`sp-panel ${docked ? 'docked' : 'floating'}${showingSource ? ' showing-source' : ''}`}
+      className={`sp-panel ${docked ? 'docked' : 'floating'}${beside && !docked ? ' beside' : ''}${showingSource ? ' showing-source' : ''}`}
       aria-label="Scratchpad"
-      style={docked ? undefined : { left: box.x, top: floatTop, width: box.w, height: floatHeight }}
+      style={docked ? undefined : beside ? { left: beside.left, top: beside.top, width: beside.width, height: beside.height } : { left: box.x, top: floatTop, width: box.w, height: floatHeight }}
       onKeyDown={(event) => {
         if (event.key !== 'Escape') return
         if (confirmItem) { event.stopPropagation(); setConfirmItem(null) }
         else if (menu) { event.stopPropagation(); setMenu(null) }
       }}
     >
-      <header className="sp-head" onPointerDown={drag('move')}>
-        {!docked ? <GripVertical size={14} className="sp-grip" aria-hidden="true" /> : null}
+      <header className="sp-head" onPointerDown={beside ? undefined : drag('move')}>
+        {!docked && !beside ? <GripVertical size={14} className="sp-grip" aria-hidden="true" /> : null}
         <h2>Scratchpad</h2>
         <span className="sp-count" aria-label={`${activeCount} items`}>{activeCount}</span>
         <div className="sp-scope">
@@ -331,7 +340,7 @@ export function ScratchpadPanel({
               <div className="sp-menu-head">Show scraps from</div>
               {folioDir !== null ? <button type="button" role="menuitemradio" aria-checked={shownScope === 'folio'} onClick={() => { setScope('folio'); setMenu(null) }}>This Folio</button> : null}
               <button type="button" role="menuitemradio" aria-checked={shownScope === 'document'} onClick={() => { setScope('document'); setMenu(null) }}>This document</button>
-              <button type="button" role="menuitemradio" aria-checked={shownScope === 'workspace'} onClick={() => { setScope('workspace'); setMenu(null) }}>Everything in this workspace</button>
+              <button type="button" role="menuitemradio" aria-checked={shownScope === 'workspace'} onClick={() => { setScope('workspace'); setMenu(null) }}>Everything in this vault</button>
             </div>
           ) : null}
         </div>
@@ -493,7 +502,8 @@ export function ScratchpadPanel({
           <button type="button" role="menuitem" onClick={() => setMenu(null)}>Cancel</button>
         </div>
       ) : null}
-      {!docked ? <span className="sp-resize" aria-hidden="true" onPointerDown={drag('resize')} /> : null}
+      {!docked && !beside ? <span className="sp-resize" aria-hidden="true" onPointerDown={drag('resize')} /> : null}
     </section>
+    </>
   )
 }

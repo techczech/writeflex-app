@@ -1,3 +1,4 @@
+import type { SharingWorkspaceRoots } from './sharing-local-roots'
 import { folioKey, normalisedFolioDir } from './folio-dir'
 import {
   accessSync, closeSync, constants, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync,
@@ -98,6 +99,7 @@ function readExampleState(raw: unknown): ExampleState {
 }
 
 type SettingsData = {
+  updateNotices?: unknown
   recents: RecentWorkspace[]
   /** Pinned Workspace roots in the user's order (start screen left column). No cap. */
   pinned: string[]
@@ -115,8 +117,11 @@ type SettingsData = {
   sharing?: unknown
   /** The links made on this Mac (sharing-publisher.ts ShareRecord[]): never a secret. */
   sharingLinks?: unknown
+  sharingWorkspaceRoots?: SharingWorkspaceRoots
   /** The Folio room's UI state per Folio (last view, selected part), keyed by the Folio's one spelling (folio-room-ipc.ts). App state, never in the Folio (spec I-8). */
   folioRoom?: unknown
+  /** The last answer to ⇧⌘S's "Whole Folio or this part only?" (Folio versions ticket 04). App state, not a setting: it has no row in Settings and no changelog entry. */
+  folioSaveChoice?: unknown
 }
 
 const MAX_RECENTS = 10
@@ -205,12 +210,15 @@ export class SettingsStore {
         : normaliseExportPresetSettings(parsed.exportPresets) ?? shippedExportPresetSettings()
       return {
         recents, pinned, modelDefaults, favourites, values, changelog, exportPresets,
+        ...('updateNotices' in parsed ? { updateNotices: parsed.updateNotices } : {}),
         // Kept exactly as found, whatever it is: present is present.
         ...('example' in parsed ? { example: parsed.example ?? null } : {}),
         ...('exampleFiles' in parsed ? { exampleFiles: parsed.exampleFiles } : {}),
         ...('sharing' in parsed ? { sharing: parsed.sharing } : {}),
         ...('sharingLinks' in parsed ? { sharingLinks: parsed.sharingLinks } : {}),
+        ...('sharingWorkspaceRoots' in parsed ? { sharingWorkspaceRoots: parsed.sharingWorkspaceRoots } : {}),
         ...('folioRoom' in parsed ? { folioRoom: parsed.folioRoom } : {}),
+        ...('folioSaveChoice' in parsed ? { folioSaveChoice: parsed.folioSaveChoice } : {}),
       }
     } catch {
       return {
@@ -339,6 +347,25 @@ export class SettingsStore {
     return structuredClone(this.#data.sharingLinks ?? [])
   }
 
+  /** Local app data only: never synced into a Collection or uploaded to the service. */
+  sharingWorkspaceRoots(): SharingWorkspaceRoots {
+    const raw = this.#data.sharingWorkspaceRoots
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    return structuredClone(Object.fromEntries(Object.entries(raw).filter(([id, value]) => {
+      if (!/^[A-Za-z0-9_-]{16,64}$/.test(id)) return false
+      if (typeof value === 'string') return value.startsWith('/')
+      return value && typeof value.root === 'string' && value.root.startsWith('/') && Number.isSafeInteger(value.dev) && Number.isSafeInteger(value.ino)
+    }).map(([id, value]) => [id, typeof value === 'string' ? value : { root: value.root, dev: value.dev, ino: value.ino }])))
+  }
+
+  setSharingWorkspaceRoots(roots: SharingWorkspaceRoots): boolean {
+    const before = this.#data.sharingWorkspaceRoots
+    this.#data.sharingWorkspaceRoots = structuredClone(roots)
+    if (this.#persist()) return true
+    this.#data.sharingWorkspaceRoots = before
+    return false
+  }
+
   /** Replace the links and save. False when the save failed; the store then keeps what it had. */
   setSharingLinks(links: unknown): boolean {
     const before = this.#data.sharingLinks
@@ -346,6 +373,23 @@ export class SettingsStore {
     if (this.#persist()) return true
     if (before === undefined) delete this.#data.sharingLinks
     else this.#data.sharingLinks = before
+    return false
+  }
+
+  // ---- The ⇧⌘S choice (Folio versions ticket 04) ------------------------------------------------
+
+  /** The last answer to "Whole Folio or this part only?": 'folio' when nothing valid was kept (the Folio is the common act, ADR-0052). */
+  folioSaveChoice(): 'folio' | 'part' {
+    return this.#data.folioSaveChoice === 'part' ? 'part' : 'folio'
+  }
+
+  /** Remember the answer and save. False when the save failed; the store then keeps what it had. */
+  setFolioSaveChoice(choice: 'folio' | 'part'): boolean {
+    const before = this.#data.folioSaveChoice
+    this.#data.folioSaveChoice = choice
+    if (this.#persist()) return true
+    if (before === undefined) delete this.#data.folioSaveChoice
+    else this.#data.folioSaveChoice = before
     return false
   }
 
@@ -598,6 +642,13 @@ export class SettingsStore {
    */
   actionBarVisible(): boolean {
     return actionBarVisibleFrom(this.get(ACTION_BAR_VISIBLE_KEY))
+  }
+
+  updateNotices(): unknown { return this.#data.updateNotices }
+
+  setUpdateNotices(state: import('@app-patterns/updates').UpdateState): void {
+    this.#data.updateNotices = state
+    this.#persist()
   }
 
   // ---- Generic values + changelog (Task 17: the Settings window's store) ----------------------

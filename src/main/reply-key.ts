@@ -1,17 +1,22 @@
 /**
  * What makes a reply the app's: a secret the app keeps OUTSIDE every Collection.
  *
- * The command line used to accept a reply because the owner lock said a live app held the Collection.
- * But the lock file is inside the Collection: anything that can write or sync the Collection can write
- * a lock as easily as a reply. The lock therefore decides only the ROUTE (ask the app, or write under
- * the lock); it proves nothing about who wrote a reply.
+ * Nothing inside a Collection can prove a reply is the app's: anything that can write or sync the
+ * Collection can write a file there. The proof is this key, kept on this computer only.
  *
- * The proof is this key. When the app takes ownership of a Collection it makes 32 random bytes and
+ * The key is also how the command line knows that WriteFlex ON THIS COMPUTER has the Collection open
+ * (`appHasCollectionOpen`), and so whether to pass a write to it as a request. Beside the key the app
+ * records its own process (`<hash>.app.json`: process id and start time), so a key left by an app
+ * that crashed is recognised and not routed to. Nothing synced decides the route: WriteFlex has no
+ * Collection lock, and another computer's copy of the app never stops this one from writing
+ * (docs/plans/2026-11-03-sync-replicas-and-duplicate-reconciliation.md).
+ *
+ * When the app opens a Collection it makes 32 random bytes and
  * keeps them in its own application-data folder (the folder that holds `settings.json`: on this
  * computer only, not synced, in no Collection), in `collection-keys/<SHA-256 of the canonical
  * root>.key`. The folder is 0700 and the file 0600, the file is created exclusively under a temporary
- * name, written whole and renamed in. The key is replaced each time the app takes ownership and
- * removed when it lets go. Every reply carries an HMAC-SHA-256, made with the key, over a canonical
+ * name, written whole and renamed in. The key is replaced each time the app opens the Collection and
+ * removed when it closes it. Every reply carries an HMAC-SHA-256, made with the key, over a canonical
  * serialisation of the whole reply. The command line reads the key, recomputes the HMAC over what it
  * parsed, and compares in constant time.
  *
@@ -30,8 +35,9 @@
  */
 import { createHmac, createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { constants } from 'node:fs'
-import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { localProcess, processStartedAt, type LocalProcessSeams } from './local-process'
 
 export const REPLY_KEY_FOLDER = 'collection-keys'
 export const REPLY_KEY_BYTES = 32
@@ -69,9 +75,56 @@ export async function createReplyKey(folder: string, root: string): Promise<Buff
   return key
 }
 
-/** Remove the key for `root`. The app's side, when it lets the Collection go. */
+/** Remove the key for `root` and the app's presence record beside it. The app's side, when it closes the Collection. */
 export async function removeReplyKey(folder: string, root: string): Promise<void> {
   await unlink(replyKeyPath(folder, root)).catch(() => {})
+  await unlink(presencePath(folder, root)).catch(() => {})
+}
+
+/** Where the app records which process of its holds the key for `root` (local application data, never synced). */
+export const presencePath = (folder: string, root: string): string => join(folder, keyFileName(root).replace(/\.key$/, '.app.json'))
+
+/**
+ * Record that this process holds the key for `root`: its process id and start time. Written whole and
+ * renamed in, beside the key. Best effort: without it the command line treats the key as live.
+ */
+export async function writeAppPresence(folder: string, root: string, pid = process.pid): Promise<void> {
+  const record = JSON.stringify({ version: 1, pid, processStartedAt: await processStartedAt(pid) })
+  const staged = join(folder, `.${keyFileName(root)}.${randomBytes(4).toString('hex')}.app.tmp`)
+  await writeFile(staged, record, { mode: 0o600, flag: 'wx' })
+  try { await rename(staged, presencePath(folder, root)) } catch (error) {
+    await unlink(staged).catch(() => {})
+    throw error
+  }
+}
+
+/**
+ * Whether the app that made the key for `root` in `folder` is still running on this computer: `gone`
+ * when its recorded process has exited (a crash left the key), `there` or `unknown` otherwise. A key
+ * without a presence record (made by an older WriteFlex) answers `unknown`.
+ */
+export async function appPresence(folder: string, root: string, seams: LocalProcessSeams = {}): Promise<'there' | 'gone' | 'unknown'> {
+  let text: string
+  try { text = await readFile(presencePath(folder, root), 'utf8') } catch { return 'unknown' }
+  try {
+    const value = JSON.parse(text) as { pid?: unknown; processStartedAt?: unknown }
+    if (!Number.isInteger(value.pid)) return 'unknown'
+    return await localProcess(value.pid as number, typeof value.processStartedAt === 'number' ? value.processStartedAt : null, seams)
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
+ * Whether WriteFlex on THIS computer has the Collection at `root` open: a usable reply key for it in
+ * one of `folders` whose app is not known to have exited. The command line's only routing question.
+ */
+export async function appHasCollectionOpen(folders: string[], root: string, seams: LocalProcessSeams = {}): Promise<boolean> {
+  for (const folder of folders) {
+    if (!(await readReplyKey(folder, root))) continue
+    if ((await appPresence(folder, root, seams)) !== 'gone') return true
+  }
+  return false
 }
 
 /** The key for `root` in `folder`, or null when there is none that may be used (see the top of this file). */

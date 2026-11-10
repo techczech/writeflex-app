@@ -13,7 +13,7 @@ import { GuidePicture } from './GuidePicture'
  * one Try it. Opening a topic marks it Read. Drawn from props: every action is a callback.
  */
 export const TOPIC_TEXT = {
-  tabName: { how: 'How it works', features: 'Features to delight you' } as const,
+  tabName: { how: 'How it works', features: 'Features' } as const,
   notOpened: 'Not opened',
   read: 'Read',
 } as const

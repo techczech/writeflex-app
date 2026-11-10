@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BackControl } from './BackControl'
 import { ArrowLeft, ArrowLeftRight } from 'lucide-react'
 import type { Version, VersionCompareEndpointId, VersionCompareResult } from '../../../preload'
 import {
@@ -206,10 +207,7 @@ export function ComparePane({
   return (
     <section className="compare-main" aria-label="Compare versions">
       <div className="compare-bar">
-        <button className="compare-back" type="button" onClick={onBack}>
-          <ArrowLeft className="icon" aria-hidden="true" />
-          Back to editing
-        </button>
+        <BackControl className="compare-back" onBack={onBack} />
         <h1>Compare</h1>
         <div className="compare-pickers">
           <label>

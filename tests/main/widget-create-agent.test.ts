@@ -254,7 +254,8 @@ class LookupMarkingStore extends ChangeStore {
   lookedUp = false
   override async get(id: string): ReturnType<ChangeStore['get']> {
     const found = await super.get(id)
-    if (this.accepting && (this.fetches += 1) === 4) this.lookedUp = true
+    // 5th fetch: the accept's own review lookup, after the sharing guard's one look at the change (guardReaderAcceptance).
+    if (this.accepting && (this.fetches += 1) === 5) this.lookedUp = true
     return found
   }
 }

@@ -1,6 +1,7 @@
+import { READER_CLAIM_RELEASE_MS } from '../../../../sharing-service/share-protocol'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { BlockType, type EditorView, type ViewUpdate } from '@codemirror/view'
-import { AlertTriangle, Ban, Bot, CircleDot, ListFilter, Check, CheckCheck, ChevronRight, ChevronUp, CircleX, CloudOff, Copy as CopyIcon, CornerUpLeft, FilePlus, Globe, History, Info, Layers, MessageSquare, MoreHorizontal, Pause, Pencil, Reply, RotateCcw, Send, Split, Terminal, User, X } from 'lucide-react'
+import { AlertTriangle, Ban, Sparkles, CircleDot, ListFilter, Check, CheckCheck, ChevronRight, ChevronUp, CircleX, CloudOff, Copy as CopyIcon, CornerUpLeft, FilePlus, Globe, History, Info, Layers, MessageSquare, MoreHorizontal, Pause, Pencil, Reply, RotateCcw, Send, Split, Terminal, User, X } from 'lucide-react'
 import type { Change } from '../../../preload'
 import { cardKeyAction, describeMarginCard, describeSettledModeCard, describeSettledRow, replyCountLabel, runMarginAction, type MarginActionContext, type MarginActionId, type MarginCardDescriptor, type SettledModeCardDescriptor, type SettledRowDescriptor } from '../app/margin-card'
 import { setPreferredView, setTextRoom, usePreferredView } from '../app/margin-view-store'
@@ -21,6 +22,7 @@ import { marginAllowanceVisible } from './outside-dock-model'
 import { filterLine } from '../app/margin-filter'
 import { modeLineOf, reviewModeOf } from '../app/margin-mode'
 import { EMPTY_HEAD_FILTER, type HeadControls, type HeadFilterState } from '../app/margin-head-state'
+import { useMarginSince } from '../plan/folio-cues-store'
 
 type CardActions = Pick<ReviewActions, 'acceptChange' | 'acceptAndNext' | 'rejectChange' | 'holdChange' | 'reviseChange'>
 
@@ -32,7 +34,7 @@ function kindWordOf(descriptor: Pick<MarginCardDescriptor, 'kindLabel'>, card: P
   return descriptor.kindLabel
 }
 
-const SOURCE_ICONS = { agent: Bot, outside: Terminal, reader: User, you: User } as const
+const SOURCE_ICONS = { agent: Sparkles, outside: Terminal, reader: User, you: User } as const
 function SourceIcon({ type }: { type: MarginItem['source']['type'] }): JSX.Element {
   const Icon = SOURCE_ICONS[type]
   return <Icon className="icon mg-src" aria-hidden="true" />
@@ -53,6 +55,7 @@ function DiffView({ segments }: { segments: MarginCardDescriptor['segments'] }):
 function ReaderBody({ reader }: { reader: NonNullable<MarginCardDescriptor['reader']> }): JSX.Element {
   return (
     <>
+      {reader.replyTo && <div className="mg-written" data-margin-reader-parent={reader.replyTo.key}><span className="lab">Reply to {reader.replyTo.name}</span><q>{reader.replyTo.text}</q></div>}
       {reader.written !== null && (
         <div className="mg-written" data-margin-written><span className="lab">Written on these words</span><q>{reader.written}</q></div>
       )}
@@ -165,8 +168,7 @@ function KindIcon({ kind }: { kind: MarginCardDescriptor['kindLabel'] }): JSX.El
   return kind === 'Comment' ? <MessageSquare className="icon" aria-hidden="true" /> : kind === 'New file' ? <FilePlus className="icon" aria-hidden="true" /> : <Pencil className="icon" aria-hidden="true" />
 }
 
-function FoldedLine({ card, descriptor, onOpen }: { card: MarginItem; descriptor: MarginCardDescriptor; onOpen: () => void }): JSX.Element {
-  const replies = descriptor.reader?.replies.length ?? 0
+function FoldedLine({ card, descriptor, onOpen, replies = descriptor.reader?.replies.length ?? 0 }: { card: MarginItem; descriptor: MarginCardDescriptor; onOpen: () => void; replies?: number }): JSX.Element {
   return (
     <button type="button" className="mg-fold-line" onClick={onOpen} aria-label={`Open card ${descriptor.marker}: ${descriptor.name}`}>
       <ChevronRight className="icon" aria-hidden="true" />
@@ -370,12 +372,12 @@ const SETTLING_ACTIONS: ReadonlySet<MarginActionId> = new Set<MarginActionId>(['
 
 /** The waiting cards of a margin, top to bottom as drawn (settled rows and settled cards are not waiting). */
 function waitingCardsOf(root: ParentNode | null): HTMLElement[] {
-  return [...(root?.querySelectorAll<HTMLElement>('[data-margin-card]') ?? [])].sort((a, b) => a.offsetTop - b.offsetTop)
+  return [...(root?.querySelectorAll<HTMLElement>('[data-margin-card]') ?? [])].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
 }
 
 /** ↑ ↓ on a card or a row: the one above or below. */
 function stepFocus(event: React.KeyboardEvent<HTMLElement>): void {
-  const all = [...(event.currentTarget.parentElement?.querySelectorAll<HTMLElement>(STEP_SELECTOR) ?? [])].sort((a, b) => a.offsetTop - b.offsetTop)
+  const all = [...(event.currentTarget.closest('.wf-margin')?.querySelectorAll<HTMLElement>(STEP_SELECTOR) ?? [])].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
   const next = all[all.indexOf(event.currentTarget) + (event.key === 'ArrowDown' ? 1 : -1)]
   if (next) { event.preventDefault(); next.focus() }
 }
@@ -394,13 +396,14 @@ function StaleStatus({ descriptor }: { descriptor: MarginCardDescriptor }): JSX.
   return null
 }
 
-function MarginCardView({ card, descriptor, placement, props }: { card: MarginItem; descriptor: MarginCardDescriptor; placement: Placement | null; props: MarginPanelProps }): JSX.Element {
+function MarginCardView({ card, descriptor, placement, props, now, thread = [] }: { now: number; card: MarginItem; descriptor: MarginCardDescriptor; placement: Placement | null; props: MarginPanelProps; thread?: MarginItem[] }): JSX.Element {
+  const nested = card.threadParentId !== undefined
   const selected = props.selectedId === card.id
   const focused = props.focusedId === card.id
   const picked = props.controls.picked.has(card.id)
   const folded = props.foldedIds.has(card.id)
   const unread = props.unreadIds?.has(card.id) === true
-  const style = placement ? { top: placement.top } : { top: 0, visibility: 'hidden' as const }
+  const style = nested ? undefined : placement ? { top: placement.top } : { top: 0, visibility: 'hidden' as const }
   const line = placement?.fold === 'stack' || placement?.fold === 'thread-line' || placement?.fold === 'line' || folded
   const sentBack = props.sentBackIds?.has(card.id) === true
   const stale = descriptor.stale !== null || descriptor.refused !== null
@@ -408,8 +411,8 @@ function MarginCardView({ card, descriptor, placement, props }: { card: MarginIt
   const speaks = descriptor.statusSpeaks || descriptor.reader?.changed === true || sentBack || stale || again
   const exception = speaks || descriptor.reader?.ambiguous === true || descriptor.reader?.noteGone === true || descriptor.reader?.gone === true || props.unanchoredIds?.has(card.id) === true
   // An item at the top of the margin has no passage to lead to.
-  const leader = placement !== null && !line && placement.paragraph !== TOP_PARAGRAPH
-  const replies = descriptor.reader?.replies.length ?? 0
+  const leader = !nested && placement !== null && !line && placement.paragraph !== TOP_PARAGRAPH
+  const replies = (descriptor.reader?.replies.length ?? 0) + thread.length
   const markDone = card.kind === 'note'
   const ref = useRef<HTMLElement | null>(null)
   // Accept, Decline and Dismiss take the card away: focus moves on to the next shown card first (ticket 09).
@@ -418,7 +421,7 @@ function MarginCardView({ card, descriptor, placement, props }: { card: MarginIt
   return (
     <article
       ref={ref}
-      className={`mg-card k-${card.kind}${card.source.type === 'outside' ? ' from-outside' : ''}${selected || focused ? ' is-focus' : ''}${selected ? ' is-selected' : ''}${picked ? ' is-picked' : ''}${unread ? ' is-new' : ''}${exception ? ' show-always' : ''}${line ? ' is-line' : ''}${placement?.fold === 'stack' ? ' in-stack' : ''}${stale ? ' is-stale' : ''}`}
+      className={`${nested ? 'mg-reader-reply' : 'mg-card'} k-${card.kind}${card.source.type === 'outside' ? ' from-outside' : ''}${selected || focused ? ' is-focus' : ''}${selected ? ' is-selected' : ''}${picked ? ' is-picked' : ''}${unread ? ' is-new' : ''}${exception ? ' show-always' : ''}${line ? ' is-line' : ''}${placement?.fold === 'stack' ? ' in-stack' : ''}${stale ? ' is-stale' : ''}`}
       style={style}
       data-margin-card={card.id}
       data-margin-stale={descriptor.stale?.kind ?? (descriptor.refused ? 'not-applied' : undefined)}
@@ -431,14 +434,16 @@ function MarginCardView({ card, descriptor, placement, props }: { card: MarginIt
       title={descriptor.title ?? undefined}
       onMouseEnter={() => props.onHover(card.id)}
       onMouseLeave={() => props.onHover(null)}
-      onFocus={() => props.onFocusCard?.(card.id)}
+      onFocus={(event) => { if ((event.target as HTMLElement).closest('[data-margin-card]') === event.currentTarget) props.onFocusCard?.(card.id) }}
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) props.onFocusCard?.(null) }}
       onClick={(event) => {
+        if ((event.target as HTMLElement).closest('[data-margin-card]') !== event.currentTarget) return
         if ((event.target as HTMLElement).closest('button')) return
         if (event.metaKey || event.ctrlKey) { props.onPick(card.id); return }
         props.onSelect(card.id)
       }}
       onKeyDown={(event) => {
+        if ((event.target as HTMLElement).closest('[data-margin-card]') !== event.currentTarget) return
         if (event.metaKey || event.ctrlKey || event.altKey || (event.target as HTMLElement).closest('textarea, input')) return
         const onCard = event.target === event.currentTarget
         // Enter and Backspace belong to a focused button inside the card; only the card itself answers them.
@@ -459,7 +464,7 @@ function MarginCardView({ card, descriptor, placement, props }: { card: MarginIt
       {leader && <Leader placement={placement} />}
       {unread && <span className="mg-unread" data-margin-unread aria-label="New" />}
       {line ? (
-        <FoldedLine card={card} descriptor={descriptor} onOpen={() => props.onOpen(card.id)} />
+        <FoldedLine card={card} descriptor={descriptor} replies={replies} onOpen={() => props.onOpen(card.id)} />
       ) : (
         <div className="mg-card-full">
           <div className="mg-c-head">
@@ -495,16 +500,25 @@ function MarginCardView({ card, descriptor, placement, props }: { card: MarginIt
             </div>
           )}
           {descriptor.stale?.written && <div className="mg-written" data-margin-written><span className="lab">Written on these words</span><q>{descriptor.stale.written}</q></div>}
-          {descriptor.reader && <ReaderBody reader={descriptor.reader} />}
+          {descriptor.reader && <ReaderBody reader={nested ? { ...descriptor.reader, replyTo: undefined } : descriptor.reader} />}
           {descriptor.segments.length > 0 && <div className="mg-c-change clamp" data-margin-change><DiffView segments={descriptor.segments} /></div>}
           {descriptor.body !== null && <p className="mg-c-note clamp" data-margin-note-text>{descriptor.body}</p>}
           {descriptor.reader?.changed && <p className="mg-c-notice"><Info className="icon" aria-hidden="true" /><span>Shown beside the nearest passage.</span></p>}
           {descriptor.reader && <ReaderNotices reader={descriptor.reader} />}
+          {card.change.readerClaim && !card.change.readerClaim.mine && <p className="mg-c-notice" data-margin-claim>
+            {now - card.change.readerClaim.at > READER_CLAIM_RELEASE_MS
+              ? <button type="button" className="mg-btn" onClick={() => { void window.writeflex.releaseReaderClaim(card.id) }}>Handled on another Mac — release</button>
+              : <span>This item is being handled on another Mac.</span>}
+          </p>}
+
           {descriptor.stale && <p className="mg-c-notice" data-margin-stale-notice><Info className="icon" aria-hidden="true" /><span>{descriptor.stale.notice}</span></p>}
           {descriptor.refused && <p className="mg-c-notice" data-margin-refused-reason><Info className="icon" aria-hidden="true" /><span>{descriptor.refused}</span></p>}
           {descriptor.replyException && <p className="mg-c-notice mg-rest-exception" data-margin-reply-exception><CloudOff className="icon" aria-hidden="true" /><span>Your reply: {descriptor.replyException}</span></p>}
           <p className="mg-role-line" data-margin-role>{descriptor.roleLine}</p>
           {descriptor.reader && <ReplyThread reader={descriptor.reader} />}
+          {thread.length > 0 && <div className="mg-reader-thread" data-margin-reader-thread={card.id}>
+            {thread.map((reply) => <MarginCardView now={now} key={reply.id} card={reply} descriptor={describeMarginCard(reply, props.model.markers.get(reply.id) ?? 0, now, props.document, { refused: props.refused?.get(reply.id) ?? null })} placement={null} props={props} />)}
+          </div>}
           {descriptor.newFilePath && (
             <details className="card-newfile mg-c-newfile" open data-newfile-path={descriptor.newFilePath}>
               <summary>
@@ -666,6 +680,8 @@ function placementsOf(props: MarginPanelProps): Map<string, Placement> {
 export function ReviewMarginPanel(props: MarginPanelProps): JSX.Element {
   const { model, layout } = props
   const now = props.now ?? Date.now()
+  // Folio versions ticket 06: in a Folio with a version, the cards waiting are "Changes since <version>" (words only: no bar is added).
+  const since = useMarginSince()
   const placements = placementsOf(props)
   // Cards at their words, then the ones that could not be placed (at their paragraph, or at the top of the margin), then the settled rows.
   const items: MarginItem[] = [...model.cards, ...model.unplaced]
@@ -677,6 +693,7 @@ export function ReviewMarginPanel(props: MarginPanelProps): JSX.Element {
   const groups = props.view === 'under' ? props.underLayout?.groups ?? [] : layout?.groups ?? []
   return (
     <div className={`wf-margin ${props.view}`} data-margin-view={props.view} data-margin-count={model.cards.length}>
+      {since !== null && props.view === 'margin' && model.cards.length > 0 && <div className="mg-since" data-testid="margin-since-heading">{since}</div>}
       <MarginTop model={model} controls={props.controls} outside={props.outside} />
       {(props.view === 'margin' || props.underLayout) && (
         <div className="mg-cards" data-margin-under-cards={props.view === 'under' ? '' : undefined}>
@@ -693,9 +710,10 @@ export function ReviewMarginPanel(props: MarginPanelProps): JSX.Element {
             </div>
           ) : null)}
           {items.map((card, index) => {
+            if (card.threadParentId) return null
             const placement = placements.get(card.id) ?? null
             if (placement?.hidden || (props.view === 'under' && !placement)) return null
-            return <MarginCardView key={card.id} card={card} descriptor={descriptors[index]} placement={placement} props={props} />
+            return <MarginCardView now={now} key={card.id} card={card} descriptor={descriptors[index]} placement={placement} props={props} thread={items.filter((item) => item.threadParentId === card.id)} />
           })}
           {rows.map(({ row, descriptor }) => {
             const placement = placements.get(row.id) ?? null
@@ -947,7 +965,7 @@ export function ReviewMargin({ view, subscribe, changes, bulk, controlRef, chord
       },
       focusFirst: () => {
         const root = rootRef.current
-        const first = [...(root?.querySelectorAll<HTMLElement>(STEP_SELECTOR) ?? [])].sort((a, b) => a.offsetTop - b.offsetTop)[0]
+        const first = [...(root?.querySelectorAll<HTMLElement>(STEP_SELECTOR) ?? [])].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0]
         const target = first ?? root?.querySelector<HTMLElement>('[data-margin-top] button')
         target?.focus()
       },
@@ -1101,9 +1119,11 @@ export function ReviewMargin({ view, subscribe, changes, bulk, controlRef, chord
       const placed = (effective === 'under' ? underRef.current?.placements : layoutRef.current?.placements)?.find((p) => p.id === id)
       return placed?.fold === 'open'
     }
-    const on = [selectedId, focusedId !== selectedId && focusedId !== null && drawnOpen(focusedId) ? focusedId : null].filter((id): id is string => id !== null && !openIds.has(id))
+    const threadRoot = (id: string | null): string | null => [...model.cards, ...model.unplaced].find((item) => item.id === id)?.threadParentId ?? id
+    const focusedRoot = threadRoot(focusedId)
+    const on = [threadRoot(selectedId), focusedId !== selectedId && focusedRoot !== null && drawnOpen(focusedRoot) ? focusedRoot : null].filter((id): id is string => id !== null && !openIds.has(id))
     return on.length === 0 ? openIds : new Set([...openIds, ...on])
-  }, [openIds, selectedId, focusedId, effective])
+  }, [openIds, selectedId, focusedId, effective, model.cards, model.unplaced])
   // Everything the margin draws: cards at their words, settled rows, and what could not be placed (ticket 06).
   // Under the passage an item with no known paragraph sits under the first one.
   const entries = useMemo<MarginEntry[]>(() => {
@@ -1300,7 +1320,8 @@ export function ReviewMargin({ view, subscribe, changes, bulk, controlRef, chord
         onFold={(id) => { setFolded((s) => new Set(s).add(id)); setOpen((s) => { const n = new Set(s); n.delete(id); return n }) }}
         onOpen={(id) => {
           setFolded((s) => { const n = new Set(s); n.delete(id); return n })
-          setOpen((s) => new Set(s).add(id))
+          const parent = [...model.cards, ...model.unplaced].find((item) => item.id === id)?.threadParentId
+          setOpen((s) => { const next = new Set(s).add(id); if (parent) next.add(parent); return next })
         }}
         actions={actions}
         context={marginContext}

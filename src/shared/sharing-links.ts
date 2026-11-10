@@ -31,8 +31,9 @@ export type ShareLinkView = {
   cloudflareAddress?: string
   /** Readers may leave notes and propose edits. */
   comments: boolean
-  /** Private notes only in 0.24 (open notes ship later). */
-  notes: 'private'
+  /** Missing in older records: private. */
+  notes: 'private' | 'open'
+  hasPrivateComments?: boolean
   on: boolean
   madeAt: number
   /** When publishing last worked for this link; null when nothing has been published yet. */
@@ -64,7 +65,7 @@ export type ShareLinkView = {
 export type SharePublishProblem = {
   /** `offline`: the service could not be reached; `token`: this Mac's key or the link's token was refused;
    *  `too-big`: the piece is over a limit of the service; `refused`: anything else the service said. */
-  kind: 'offline' | 'auth' | 'too-big' | 'refused' | 'unreadable' | 'not-set-up' | 'not-saved'
+  kind: 'offline' | 'auth' | 'too-big' | 'refused' | 'unreadable' | 'not-set-up' | 'not-saved' | 'not-uploadable' | 'workspace-copy' | 'service-update' | 'newer-source' | 'partial-publish'
   /** One or two plain sentences: what happened. */
   reason: string
   at: number
@@ -77,6 +78,7 @@ export type ShareMark =
   | { kind: 'not-published' }
 
 export type PieceSharingView = {
+  workspaceConflict?: { roots: string[]; currentRoot?: string } | null
   /** Sharing is set up on this Mac (ticket 02). */
   ready: boolean
   /** The address new and copied links read, once set up: your own address only while linksAddressNow allows (ticket 05),
@@ -108,7 +110,7 @@ export type PieceSharingView = {
 export type OtherLinks = { kind: ShareKind; path: string; links: ShareLinkView[] }
 
 /** Make a link for the piece at `path`, or for the Folio whose folder is `folio` ('' the Workspace itself). */
-export type MakeLinkRequest = { path?: string; folio?: string; name: string | null; comments: boolean }
+export type MakeLinkRequest = { path?: string; folio?: string; name: string | null; comments: boolean; notes?: 'private' | 'open' }
 
 /** The title-bar mark's words: "Shared · 1 part missing" (frame `folio`). */
 export function missingPartsLabel(count: number): string {
@@ -130,15 +132,15 @@ export function cleanLinkName(value: unknown): string | null {
 }
 
 /** How a link without a name is listed: its settings and the date it was made ("Private notes · 13 Oct"). */
-export function linkLabel(link: Pick<ShareLinkView, 'name' | 'comments' | 'madeAt'>): string {
+export function linkLabel(link: Pick<ShareLinkView, 'name' | 'comments' | 'madeAt'> & Partial<Pick<ShareLinkView, 'notes'>>): string {
   if (link.name) return link.name
   const made = new Date(link.madeAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
-  return `${link.comments ? 'Private comments' : 'No comments'} · ${made}`
+  return `${link.comments ? link.notes === 'open' ? 'Open comments' : 'Private comments' : 'No comments'} · ${made}`
 }
 
 /** The settings column: "Comments on, private" / "Comments off". */
-export function linkSettingsLabel(link: Pick<ShareLinkView, 'comments'>): string {
-  return link.comments ? 'Comments on, private' : 'Comments off'
+export function linkSettingsLabel(link: Pick<ShareLinkView, 'comments'> & Partial<Pick<ShareLinkView, 'notes'>>): string {
+  return link.comments ? `Comments on, ${link.notes === 'open' ? 'open' : 'private'}` : 'Comments off'
 }
 
 // ── The fixed sentences ─────────────────────────────────────────────────────────────────────────
@@ -205,3 +207,5 @@ export function pieceNotFoundText(lost: { why: 'gone' | 'unreadable'; candidate:
   const found = lost.candidate ? ` The same file is now at ${lost.candidate}.` : ''
   return `${what}${found} Nothing is published to this link and nothing has been removed until you decide. ${readers}`
 }
+
+export const SHARE_NEWER_SOURCE = 'Not published: another Mac has newer text for this link. It will publish once this Mac has the newer file.'

@@ -3,9 +3,8 @@
  * system's own `/usr/bin/trash` (macOS 15 and later), else Finder through `osascript`, with the path
  * passed as an argument, never spliced into a script. There is no fallback that deletes.
  *
- * THE WAIT IS BOUNDED. The command line holds the Collection's owner lock while the system moves the
- * item, and a mover that never answers (Finder waiting on a permission prompt) would hold it for
- * ever. After the limit the child is killed and no longer listened to (bounded-child.ts).
+ * THE WAIT IS BOUNDED. The command is mid-write while the system moves the item, and a mover that
+ * never answers (Finder waiting on a permission prompt) would hold it for ever. After the limit the child is killed and no longer listened to (bounded-child.ts).
  *
  * WHAT IS KNOWN THEN, and so what is said. A move to the Trash is one step for the system: the item
  * is in place or it is gone, never half moved. So the place is looked at once the wait is over. Gone:

@@ -48,7 +48,7 @@ describe('a shared piece', () => {
   })
 
   test('is the read-only layout: masthead with chips, the text, no notes column or notes switch', () => {
-    expect(html).toContain('<div class="rp readonly">')
+    expect(html).toContain('<div class="rp readonly" data-revision="1">')
     expect(html).toContain('<header class="hero wf-masthead"><h1>What a reading list is for</h1><div class="meta-row"><span class="chip"><strong>Date</strong> · 12 October 2026</span>')
     expect(html).toContain('Most reading lists are written as if the reader will finish them.')
     expect(html.slice(html.indexOf('<body>'))).not.toMatch(/notes-col|viewswitch|Under the passage|class="sidebar"/)
@@ -90,7 +90,7 @@ describe('a shared Folio', () => {
   const html = renderReaderPage(folio())
 
   test('has a contents list with the parts in running order and their headings', () => {
-    expect(html).toContain('<div class="rp readonly folio" data-layout="folio">')
+    expect(html).toContain('<div class="rp readonly folio" data-layout="folio" data-revision="1">')
     const contents = between(html, '<aside class="sidebar" aria-label="Contents" id="folio-contents">', '</aside>')
     expect(contents).toContain('<h2 class="sidebar-title">Teaching notes, autumn term</h2>')
     const links = [...contents.matchAll(/<a class="nav-link ([a-z0-9- ]+)" href="#([^"]+)">([^<]+)<\/a>/g)].map((m) => [m[1], m[2], m[3]])

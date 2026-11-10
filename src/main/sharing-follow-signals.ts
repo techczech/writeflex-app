@@ -12,8 +12,9 @@
 //      undo and Turn on), and the move or the Trash. Never a token, never document text. Its file is
 //      `<shareId>.<generation, 10 digits>.<nonce>.json`, written whole under a temporary name and renamed
 //      in, so the app never reads half of one.
-//   S2 the command line runs one at a time per Collection (its owner lock, cli/write-access.ts
-//      `withOwnerLock`) and leaves a signal only after its move or undo is committed, or its Trash is
+//   S2 the command line (since 2026-11-03 no longer serialised per Collection by a lock: two commands
+//      at once on one Mac can leave signals of one generation; S3 takes the first and calls the second
+//      stale) leaves a signal only after its move or undo is committed, or its Trash is
 //      seen gone. It lists the signals still waiting BEFORE it reads the settings file, and takes the
 //      links as those signals leave them, each link's signals in generation order, chaining only
 //      consecutive generations: so a move made after another with the app closed names where the first
@@ -31,8 +32,8 @@
 //   S4 at start, after the first take and the start's look at every share (R-D): a signal still held is
 //      removed and reported; its link stands on what the look found.
 //
-// Residual (ruling): the command line's owner lock taken over while it was suspended after its rename and
-// before its signal. Its late signal moves the link to a place the file has since left; the look (R-D)
+// Residual (ruling): another writer moving the piece while the command line was suspended after its
+// rename and before its signal. Its late signal moves the link to a place the file has since left; the look (R-D)
 // then says "Piece not found", with Follow to when the file is found. Never a removal.
 //
 // Trust: a signal file is trusted only as far as the user's own account, as settings.json beside it is.
@@ -176,7 +177,7 @@ function project(settingsFile: string, change: FollowChange, waiting: readonly F
 }
 
 /**
- * The command line, after a move or a Trash it made itself, holding the Collection's owner lock (S1, S2).
+ * The command line, after a move or a Trash it made itself, writing directly (S1, S2).
  * Never throws: a signal that cannot be left is said in the returned line, and the move or the Trash stands.
  */
 export async function leaveFollowSignal(settingsFiles: readonly string[], change: FollowChange): Promise<string | null> {

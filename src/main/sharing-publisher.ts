@@ -1,3 +1,5 @@
+import type { PeopleChange } from '../shared/sharing-people'
+import { canonicalSharingRoot } from './sharing-local-roots'
 // The publisher (sharing ticket 03; spec sections 4.2, 5 rules 2 and 4, 6.1, 8). The one module that
 // makes links for a piece, turns them off and on, and publishes the piece to every link that is on
 // each time it is saved. The IPC (sharing-piece-ipc.ts) is a thin caller.
@@ -86,6 +88,8 @@
 //      token, which goes nowhere else). Neither changes a record or publishes anything.
 //
 // No Electron import.
+import { createShareSync } from './sharing-share-sync'
+import type { WorkspaceRootsStore } from './sharing-local-roots'
 import { basename, resolve, sep } from 'node:path'
 import type { SecretsStore } from './secrets-store'
 import type { ServiceAccess, ServiceClient } from './sharing-client'
@@ -98,7 +102,7 @@ import { createPublishOnce, PublishStop } from './sharing-publish-once'
 import { isEligiblePiece } from './sharing-source-eligibility'
 import { ownerTokens } from './sharing-owner-tokens'
 import { normaliseRoot } from './root-resolution'
-import { readRecords, readerLinkLabel, type PublishedPartRecord, type ShareRecord } from './sharing-share-record'
+import { rememberSeen, readRecords, readerLinkLabel, type PublishedPartRecord, type ShareRecord } from './sharing-share-record'
 import {
   FOLLOW_NOT_SAVED, FOLLOW_NOT_THERE, TURN_ON_NOT_SAVED, LINK_NOT_SAVED, LINK_STATE_NOT_SAVED, LINK_UNKNOWN, MAKE_FAILED, NOT_SET_UP_PROBLEM, RECORD_NOT_SAVED, SHARE_AUTH,
   SHARE_REFUSED, SHARE_UNREADABLE, TOKENS_NOT_SAVED, TURN_OFF_FAILED, TURN_ON_FAILED, cleanLinkName,
@@ -108,6 +112,8 @@ import {
 export { readRecords, readerLinkLabel, type PublishedPartRecord, type ShareRecord } from './sharing-share-record'
 
 export interface SharingPublisherPorts {
+  workspaceRoots?: WorkspaceRootsStore
+  openRoots?(): string[]
   /** settings.json `sharingLinks`. */
   records: { read(): unknown; write(value: ShareRecord[]): boolean }
   secrets: SecretsStore
@@ -155,10 +161,12 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
   const timeZone = (): string | null => {
     try { return ports.timeZone ? ports.timeZone() : Intl.DateTimeFormat().resolvedOptions().timeZone ?? null } catch { return null }
   }
-  let records = readRecords(ports.records.read())
+  let records = readRecords(ports.records.read()).map((r) => ({ ...r, root: canonicalSharingRoot(r.root) }))
   const chains = new Map<string, Promise<void>>()
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const publishing = new Set<string>()
+  /** Service settings observed by the read-only Opened query; never written to local records. */
+  const serviceSettings = new Map<string, { notes: 'private' | 'open'; hasPrivateComments: boolean }>()
   /** Links with a save waiting to be published once the publish running now is done. */
   const pending = new Set<string>()
   /** R15: links whose waiting publish is a start's look, sent only when the copy changed. */
@@ -171,7 +179,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
 
   const changed = (): void => { try { ports.changed?.() } catch { /* a window that went away */ } }
   const save = (next: ShareRecord[]): boolean => {
-    if (!ports.records.write(next.map((record) => ({ ...record, ended: record.ended ? { ...record.ended } : null, lost: record.lost ? { ...record.lost } : null, images: [...record.images], partKeys: { ...record.partKeys }, parts: record.parts.map((part) => ({ ...part })), ...(record.refusedSeen ? { refusedSeen: { ...record.refusedSeen } } : {}) })))) return false
+    if (!ports.records.write(next.map((record) => ({ ...record, ended: record.ended ? { ...record.ended } : null, lost: record.lost ? { ...record.lost } : null, images: [...record.images], ...(record.seenPartKeys ? { seenPartKeys: [...record.seenPartKeys] } : {}), partKeys: { ...record.partKeys }, parts: record.parts.map((part) => ({ ...part })), ...(record.refusedSeen ? { refusedSeen: { ...record.refusedSeen } } : {}) })))) return false
     records = next
     return true
   }
@@ -209,11 +217,11 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
     return there.state === 'there' && there.kind === fileKind(record.kind) ? there.id : null
   }
   const find = (shareId: unknown): ShareRecord | null => records.find((record) => record.shareId === shareId) ?? null
-  const samePiece = (record: ShareRecord, root: string, path: string, kind: ShareKind = 'piece'): boolean => record.kind === kind && resolve(record.root, record.path) === resolve(root, path)
+  const samePiece = (record: ShareRecord, root: string, path: string, kind: ShareKind = 'piece'): boolean => record.kind === kind && resolve(record.root, record.path) === resolve(canonicalSharingRoot(root), path)
   /** R9: a saved path is inside a Folio link's folder (or is the folder). */
   const insideFolio = (record: ShareRecord, root: string, path: string): boolean => {
     const folder = resolve(record.root, record.path)
-    const saved = resolve(root, path)
+    const saved = resolve(canonicalSharingRoot(root), path)
     return saved === folder || saved.startsWith(folder.endsWith(sep) ? folder : `${folder}${sep}`)
   }
   const missingOf = (record: ShareRecord): number => (record.kind === 'folio' && record.on && !record.problem ? record.parts.filter((part) => part.missing).length : 0)
@@ -221,18 +229,37 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
   // ── Owner tokens (Keychain) ───────────────────────────────────────────────────────────────────
   const { tokenFor, heldTokenIds, forgetToken, keepToken } = ownerTokens(ports.secrets)
 
+  const sync = createShareSync({
+    access: ports.access, client: ports.client, records: () => records, tokenFor, keepToken,
+    workspaceRoots: ports.workspaceRoots, openRoots: ports.openRoots, now,
+    changed,
+    problem: (shareId, reason, kind = 'refused') => { update(shareId, { problem: reason ? { kind, reason, at: now() } : null }); changed() },
+    replace: (next) => {
+      // Discovery can finish after a local render persisted more seen keys.
+      next = next.map(record => record.kind === 'folio'
+        ? { ...record, seenPartKeys: rememberSeen(record, find(record.shareId)?.seenPartKeys ?? []) } : record)
+      for (const record of next) serviceSettings.delete(record.shareId)
+      if (JSON.stringify(next) === JSON.stringify(records)) return true
+      const kept = save(next)
+      if (kept) changed()
+      return kept
+    },
+  })
+
   // ── Views ─────────────────────────────────────────────────────────────────────────────────────
   /** Ticket 05: new and copied links read `access.linkAddress`, which serviceAccess takes from linksAddressNow (sharing-own-address.ts THE RULE). */
   function addressOf(record: ShareRecord, access: ServiceAccess | null): string {
     return linkAddress(access?.linkAddress ?? access?.address ?? '', record.shareId)
   }
   function linkView(record: ShareRecord, access: ServiceAccess | null): ShareLinkView {
+    void sync.touch(record.root).catch(() => {})
+    const unreadable = sync.unreadable(record.root), conflict = sync.conflict(record.root), copied = sync.copied(record)
     return {
       shareId: record.shareId, name: record.name, address: addressOf(record, access), cloudflareAddress: linkAddress(access?.address ?? '', record.shareId),
-      comments: record.comments, notes: 'private',
+      comments: record.comments, notes: serviceSettings.get(record.shareId)?.notes ?? record.notes ?? 'private', hasPrivateComments: serviceSettings.get(record.shareId)?.hasPrivateComments ?? record.hasPrivateComments,
       on: record.on, madeAt: record.madeAt, publishedAt: record.publishedAt, publishedSavedAt: record.publishedSavedAt,
       // R16 (Sol round 3 P3): a change not saved is said whether the link is on or off.
-      problem: notSaved.get(record.shareId) ?? (record.on ? record.problem : null), note: record.on ? record.note : null, publishing: publishing.has(record.shareId) || pending.has(record.shareId),
+      problem: notSaved.get(record.shareId) ?? ((unreadable || conflict || copied) ? { kind: unreadable ? 'unreadable' : 'workspace-copy', reason: unreadable ? "Cannot read this folder's sharing identity" : conflict ? 'Choose the shared original on the Sharing page before publishing or collecting.' : 'This folder was marked as a copy on another Mac. Its links stay with the original.', at: now() } : record.on ? record.problem : null), note: record.on ? record.note : null, publishing: publishing.has(record.shareId) || pending.has(record.shareId),
       missingParts: missingOf(record),
       queued: record.queuedAt !== null && record.on && !record.ended,
       ended: record.ended ? { removed: record.ended.removed, back: ports.exists?.(record.root, record.path) === true } : null,
@@ -242,7 +269,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
   function markOf(links: readonly ShareRecord[]): ShareMark {
     const on = links.filter((record) => record.on)
     if (on.length === 0) return { kind: 'share' }
-    if (on.some((record) => record.problem || record.lost || notSaved.has(record.shareId))) return { kind: 'not-published' }
+    if (on.some((record) => record.problem && !['partial-publish', 'service-update'].includes(record.problem.kind) || record.lost || notSaved.has(record.shareId))) return { kind: 'not-published' }
     const missing = Math.max(0, ...on.map(missingOf))
     return missing > 0 ? { kind: 'shared', missing } : { kind: 'shared' }
   }
@@ -253,12 +280,14 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
     return (latest?.parts ?? []).map((part) => ({ title: part.title, missing: part.missing, fileName: basename(part.path), path: part.path }))
   }
   function view(root: string, path: string, kind: ShareKind = 'piece'): PieceSharingView {
+    root = canonicalSharingRoot(root)
     const access = ports.access()
     const links = records.filter((record) => samePiece(record, root, path, kind))
     return {
       ...(kind === 'folio' ? { folio: { parts: folioParts(links) } } : {}),
       ready: access !== null, address: access ? access.linkAddress ?? access.address : null, cloudflareAddress: access?.address ?? null, ownAddress: access?.ownAddress ?? null,
       addressUntil: access?.linkAddressUntil ?? null,
+      workspaceConflict: sync.conflict(root) ? { ...sync.conflict(root)!, currentRoot: root } : null,
       links: links.map((record) => linkView(record, access)), mark: markOf(links),
     }
   }
@@ -274,10 +303,17 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
   }
 
   // ── Publishing ────────────────────────────────────────────────────────────────────────────────
+  function rememberRenderedParts(shareId: string, keys: string[]): void {
+    const record = find(shareId)
+    if (record?.kind !== 'folio') return
+    const seenPartKeys = rememberSeen(record, keys)
+    if (seenPartKeys.length !== (record.seenPartKeys?.length ?? 0)) update(shareId, { seenPartKeys })
+  }
+  // publishNow is the sole production entry to publishOnce and owns its start-of-operation copy check.
   const { publishOnce } = createPublishOnce({
     access: () => ports.access(), client: ports.client, render: ports.render,
     ...(ports.renderFolio ? { renderFolio: ports.renderFolio } : {}),
-    tokenFor, now, timeZone,
+    tokenFor, now, timeZone, rememberRenderedParts,
   })
 
   /**
@@ -286,13 +322,15 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
    * saved nothing is sent and the link shows it was not saved.
    */
   async function publishNow(shareId: string, onlyIfChanged = false, durable = false): Promise<void> {
+    const cached = find(shareId)
+    if (cached) await sync.refresh(cached.root, durable).catch(() => {})
     const record = find(shareId)
     // R-B: a link whose piece is not found publishes nothing until the writer decides.
-    if (!record || !record.on || record.ended || record.lost) return
+    if (!record || !record.on || record.ended || record.lost || !sync.allowed(record) || record.problem?.kind === 'not-uploadable') return
     publishing.add(shareId)
     changed()
     try {
-      // R8: the one update a publish that worked makes; publishOnce itself writes nothing.
+      // R8: publication state changes after success; local-render keys are kept immediately.
       const queue = durable
         ? (): boolean => { const latest = find(shareId); return !latest || latest.queuedAt !== null || commitPatch(shareId, { queuedAt: now() }) }
         : undefined
@@ -310,7 +348,9 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
         if (fileId && fileId !== record.fileId) update(shareId, identity)
       } else {
         // R12: the queue is clear unless a save came in while this one was on its way (it is waiting in `pending`).
-        update(shareId, { ...outcome, ...identity, problem: null, ...(pending.has(shareId) ? {} : { queuedAt: null }) })
+        update(shareId, { ...outcome, ...identity,
+          ...(record.kind === 'folio' ? { seenPartKeys: rememberSeen(find(shareId) ?? record, outcome.seenPartKeys ?? []) } : {}),
+          problem: outcome.problem ?? (record.problem?.kind === 'service-update' ? record.problem : null), ...(pending.has(shareId) || outcome.problem ? {} : { queuedAt: null }) })
       }
       misses.delete(shareId)
     } catch (error) {
@@ -385,6 +425,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
 
   /** R1: the post-save notification. Publishes the links that are on for the pieces in `paths`. */
   function saved(root: string, paths: readonly string[]): void {
+    root = canonicalSharingRoot(root)
     if (paths.length === 0 || records.length === 0) return
     for (const { shareId } of [...records]) {
       const record = find(shareId)
@@ -409,6 +450,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
 
   /** R11, R16: every link at or under `from` in `root` takes `to`; a new generation each. False when it could not be saved. */
   function move(root: string, from: string, to: string): boolean {
+    root = canonicalSharingRoot(root)
     const ids: string[] = []
     const next = records.map((record) => {
       const followed = followMove(record, root, from, to)
@@ -416,17 +458,21 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
       ids.push(record.shareId)
       const fileId = idOf(followed)
       // R13: the file at its new place; a piece found there is no longer "not found".
-      return { ...followed, generation: record.generation + 1, ...(fileId ? { fileId, lost: null } : {}) }
+      return { ...followed, registryPending: true as const, generation: record.generation + 1, ...(fileId ? { fileId, lost: null } : {}) }
     })
     if (ids.length === 0) return true
     const done = commit(next, ids)
+    if (done) for (const id of ids) void enqueue(id, async () => { const record = find(id); if (record) await sync.register(record) })
     changed()
     return done
   }
 
   /** R15 (see the header). Never removes; a removal the Trash owes is finished. */
   function reconcile(root: string | null): Promise<void> {
+    if (root !== null) root = canonicalSharingRoot(root)
     const run = reconciling.then(async () => {
+      const roots = root === null ? [...new Set(records.map((r) => r.root))] : [root]
+      for (const workspace of roots) await sync.refresh(workspace, true).catch(() => {})
       // P3: one walk per Workspace this pass, however many of its shares are missing.
       const walks = new Map<string, Promise<WorkspaceIds | null>>()
       const walkOf = (workspace: string): Promise<WorkspaceIds | null> => {
@@ -473,6 +519,18 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
   const failFor = (record: ShareRecord, problem: { reason: string; fix: string }): SharingLinkResult => ({ ok: false, view: view(record.root, record.path, record.kind), problem })
 
   return {
+    async people(shareId: string, change?: PeopleChange) {
+      const record = find(shareId), access = ports.access(), owner = record ? tokenFor(record.shareId) : null
+      if (!record || !access || !owner) return { kind: 'unreachable' as const }
+      return ports.client.people(access.base, record.shareId, owner, change)
+    },
+    refresh: (root: string) => sync.refresh(root),
+    invalidateSharingIdentity: (root: string) => { sync.invalidate(root); void sync.touch(root).catch(() => {}); changed() },
+    async chooseSharedOriginal(root: string, chosen: string): Promise<boolean> {
+      const ok = await sync.chooseOriginal(root, chosen)
+      if (ok) { await sync.refresh(chosen, true); changed() }
+      return ok
+    },
     view,
     mark: (root: string, path: string, kind: ShareKind = 'piece'): ShareMark => markOf(records.filter((record) => samePiece(record, root, path, kind))),
 
@@ -484,6 +542,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
 
     /** R11: `paths` (files or folders) in `root` went to the Trash: every share on them ends and its copy is removed. False: not saved (R16), nothing ended. */
     trashed(root: string, paths: readonly string[]): Promise<boolean> {
+    root = canonicalSharingRoot(root)
       const ending = records.filter((record) => !record.ended && endedByTrash(record, root, paths))
       if (ending.length === 0) return Promise.resolve(true)
       const ids = ending.map((record) => record.shareId)
@@ -503,6 +562,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
 
     /** R14: the piece (or Folio folder) at `path` in `root` is not there, or cannot be read: its links stop publishing. Nothing is removed. */
     notFound(root: string, path: string, why: 'gone' | 'unreadable'): void {
+    root = canonicalSharingRoot(root)
       const hit = records.filter((record) => !record.ended && record.root === root && record.path === path)
       for (const record of hit) {
         cancelTimers(record.shareId)
@@ -513,6 +573,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
 
     /** R13, R-C: the file at `path` is there (the same one, or another file put at that path: an edit). Links not found there are found again. */
     found(root: string, path: string, id: string): void {
+    root = canonicalSharingRoot(root)
       let any = false
       for (const record of records.filter((entry) => !entry.ended && entry.root === root && entry.path === path)) {
         if (record.fileId === id && !record.lost) continue
@@ -524,6 +585,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
 
     /** R14: the one place holding a not-found piece's file is `to`: offered to the writer as "Follow to". */
     offer(root: string, path: string, to: string): void {
+    root = canonicalSharingRoot(root)
       let any = false
       for (const record of records.filter((entry) => !entry.ended && entry.lost && entry.root === root && entry.path === path)) {
         if (record.lost!.candidate === to) continue
@@ -584,9 +646,10 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
       const followed = followMove(record, record.root, signal.move.from, signal.move.to)
       if (!followed) return 'stale'
       const fileId = idOf(followed)
-      const next = { ...followed, generation: record.generation + 1, ...(fileId ? { fileId, lost: null } : {}) }
+      const next = { ...followed, registryPending: true as const, generation: record.generation + 1, ...(fileId ? { fileId, lost: null } : {}) }
       if (!commit(records.map((entry) => (entry === record ? next : entry)), [record.shareId])) return 'failed'
       changed()
+      void enqueue(record.shareId, async () => { const latest = find(record.shareId); if (latest) await sync.register(latest) })
       saved(record.root, [next.path])
       return 'applied'
     },
@@ -602,10 +665,13 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
     },
 
     /** Make a link for the piece at `path`, or (kind 'folio') for the Folio whose folder is `path`. */
-    async make(root: string, path: string, input: { name: unknown; comments: unknown }, kind: ShareKind = 'piece'): Promise<SharingLinkResult> {
+    async make(root: string, path: string, input: { name: unknown; comments: unknown; notes?: unknown }, kind: ShareKind = 'piece'): Promise<SharingLinkResult> {
+    root = canonicalSharingRoot(root)
       const fail = (where: string, at: string, problem: { reason: string; fix: string }): SharingLinkResult => ({ ok: false, view: view(where, at, kind), problem })
       const access = ports.access()
       if (!access) return fail(root, path, NOT_SET_UP_PROBLEM)
+      await sync.refresh(root)
+      if (sync.conflict(root)) return fail(root, path, { reason: 'Two folders share an identity.', fix: 'Choose the shared original on the Sharing page.' })
       const created = await ports.client.createShare(access)
       if (created.kind !== 'ok') return fail(root, path, MAKE_FAILED)
       const { shareId, ownerToken } = created.body
@@ -614,8 +680,17 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
         await ports.client.turnOff(access.base, shareId, ownerToken).catch(() => null)
         return fail(root, path, TOKENS_NOT_SAVED)
       }
+      const notes = input.comments === true && input.notes === 'open' ? 'open' : 'private'
+      if (notes === 'open') {
+        const setting = await ports.client.setNotes(access.base, shareId, ownerToken, 'open')
+        if (setting.kind !== 'ok' || setting.body.notes !== 'open') {
+          await ports.client.turnOff(access.base, shareId, ownerToken).catch(() => null)
+          forgetToken(shareId)
+          return fail(root, path, { reason: 'The open-comments link could not be made.', fix: 'Update the sharing service in Settings › Sharing, check the connection, then try again.' })
+        }
+      }
       const record: ShareRecord = {
-        shareId, kind, root, path, name: cleanLinkName(input.name), comments: input.comments === true, on: true, madeAt: now(),
+        shareId, kind, root, path, name: cleanLinkName(input.name), comments: input.comments === true, notes, on: true, madeAt: now(),
         revision: 0, publishedAt: null, publishedSavedAt: null, images: [], problem: null, note: null, partKeys: {}, parts: [], queuedAt: null, ended: null,
         // R13: the file the share is on, from the moment it is made.
         fileId: idOf({ root, path, kind }), generation: 0, publishedHash: null, lost: null,
@@ -632,6 +707,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
         return fail(root, path, LINK_NOT_SAVED)
       }
       changed()
+      await sync.register(record).catch(() => false)
       pending.add(shareId)
       await enqueue(shareId, async () => { if (pending.delete(shareId)) await publishNow(shareId) })
       return { ok: true, view: view(root, path, kind), shareId }
@@ -640,16 +716,49 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
     async rename(shareId: unknown, name: unknown): Promise<SharingLinkResult | null> {
       const record = find(shareId)
       if (!record) return null
-      update(record.shareId, { name: cleanLinkName(name) })
+      const nextName = cleanLinkName(name)
+      if (!await sync.rename(record, nextName).catch(() => false)) return failFor(record, { reason: 'The link name could not be saved on the sharing service.', fix: 'Check the connection, then try again.' })
+      update(record.shareId, { name: nextName })
       changed()
       return { ok: true, view: view(record.root, record.path, record.kind) }
     },
 
-    /** Readers can leave notes, or not: the next publish carries it (the service changes it on publish). */
+    /** Settings travel on the owner path independently of publishing the saved text. */
+    async setNotes(shareId: unknown, notes: unknown): Promise<SharingLinkResult | null> {
+      const record = find(shareId)
+      if (!record) return null
+      if (notes !== 'private' && notes !== 'open') return failFor(record, { reason: 'Comments must be private or open.', fix: 'Choose the setting again.' })
+      return enqueue(record.shareId, async (): Promise<SharingLinkResult> => {
+        const access = ports.access(), owner = tokenFor(record.shareId)
+        if (!access || !owner) return failFor(record, NOT_SET_UP_PROBLEM)
+        const answer = await ports.client.setNotes(access.base, record.shareId, owner, notes)
+        if (answer.kind !== 'ok' || answer.body.notes !== notes) return failFor(record, {
+          reason: 'WriteFlex could not confirm the comments setting on this link.',
+          fix: 'Check the connection and update the sharing service in Settings › Sharing, then try again.',
+        })
+        serviceSettings.set(record.shareId, { notes, hasPrivateComments: answer.body.hasPrivateComments === true })
+        update(record.shareId, { notes, hasPrivateComments: answer.body.hasPrivateComments === true })
+        changed()
+        return { ok: true, view: view(record.root, record.path, record.kind) }
+      })
+    },
+
+    /** Service-held comments setting; legacy links retain the earlier publish route until backfilled. */
     async setComments(shareId: unknown, comments: unknown): Promise<SharingLinkResult | null> {
       const record = find(shareId)
       if (!record) return null
-      update(record.shareId, { comments: comments === true })
+      const access = ports.access()
+      const build = access ? await ports.client.serviceBuild(access.base) : null
+      if (record.workspaceId && (build === null || build >= 15)) return enqueue(record.shareId, async (): Promise<SharingLinkResult> => {
+        const access = ports.access(), owner = tokenFor(record.shareId)
+        if (!access || !owner) return failFor(record, NOT_SET_UP_PROBLEM)
+        const answer = await ports.client.setComments(access.base, record.shareId, owner, comments === true)
+        if (answer.kind !== 'ok' || answer.body.comments !== (comments === true)) return failFor(record, { reason: 'The comments setting could not be changed.', fix: 'Check the connection, then try again.' })
+        update(record.shareId, { comments: comments === true })
+        changed()
+        return { ok: true, view: view(record.root, record.path, record.kind) }
+      })
+      update(record.shareId, { comments: comments === true, publishedHash: null })
       changed()
       if (record.on) {
         pending.add(record.shareId)
@@ -692,7 +801,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
         // A new generation, so a command-line signal made before it (before a restore) is stale (S3).
         // R16: made only when saved; not saved, the link stays off here, says why, and nothing is published.
         const latest = find(record.shareId) ?? record
-        if (!commitPatch(record.shareId, { on: true, images: [], problem: null, ended: null, lost: null, fileId: idOf(latest) ?? latest.fileId, generation: latest.generation + 1, revision: Math.max(latest.revision, answer.body.revision ?? 0) })) {
+        if (!commitPatch(record.shareId, { on: true, publishedAt: null, images: [], problem: null, ended: null, lost: null, fileId: idOf(latest) ?? latest.fileId, generation: latest.generation + 1, revision: Math.max(latest.revision, answer.body.revision ?? 0) })) {
           changed()
           return failFor(latest, TURN_ON_NOT_SAVED)
         }
@@ -718,6 +827,7 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
      * `parts`: a Folio link's parts as last published.
      */
     linksIn(root: string): Omit<PieceSharingView, 'links' | 'mark' | 'folio'> & { links: Array<{ kind: ShareKind; path: string; parts: readonly PublishedPartRecord[]; link: ShareLinkView }> } {
+    root = canonicalSharingRoot(root)
       const access = ports.access()
       return {
         ready: access !== null, address: access ? access.linkAddress ?? access.address : null, cloudflareAddress: access?.address ?? null, ownAddress: access?.ownAddress ?? null,
@@ -744,6 +854,14 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
           const owner = access ? tokenFor(shareId) : null
           if (!access || !owner) { counts[shareId] = null; continue }
           const answer = await ports.client.state(access.base, shareId, owner).catch(() => null)
+          if (answer?.kind === 'ok' && (answer.body.commentsMode === 'private' || answer.body.commentsMode === 'open')) {
+            const old = serviceSettings.get(shareId)
+            const next = { notes: answer.body.commentsMode, hasPrivateComments: answer.body.hasPrivateComments === true }
+            if (old?.notes !== next.notes || old.hasPrivateComments !== next.hasPrivateComments) {
+              serviceSettings.set(shareId, next)
+              changed()
+            }
+          }
           const value = answer?.kind === 'ok' ? answer.body.opened : undefined
           counts[shareId] = Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : null
         }
@@ -759,14 +877,16 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
      * Links that are off are asked too: notes wait on the service until collected (spec 6.1).
      */
     noteSources(root: string): Array<{ shareId: string; label: string; paths: string[]; partKeys?: Record<string, string>; base: string; owner: string }> {
+    root = canonicalSharingRoot(root)
       const access = ports.access()
       if (!access) return []
-      return records.filter((record) => record.root === root).flatMap((record) => {
+      void sync.touch(root).catch(() => {})
+      return records.filter((record) => record.root === root && sync.allowed(record)).flatMap((record) => {
         const owner = tokenFor(record.shareId)
         if (!owner) return []
         const paths = record.kind === 'folio' ? record.parts.filter((part) => !part.missing).map((part) => part.path) : [record.path]
         // A Folio's part keys route a note to the part its block hint names (sharing-reader-notes.ts place).
-        return [{ shareId: record.shareId, label: readerLinkLabel(record), paths, ...(record.kind === 'folio' ? { partKeys: { ...record.partKeys } } : {}), base: access.base, owner }]
+        return [{ shareId: record.shareId, label: readerLinkLabel({ ...record, notes: serviceSettings.get(record.shareId)?.notes ?? record.notes }), paths, ...(record.kind === 'folio' ? { partKeys: { ...record.partKeys } } : {}), base: access.base, owner }]
       })
     },
 
@@ -775,6 +895,13 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
      * Null when the tokens cannot be read just now (ticket 11, review 07 P3-B): a Keychain failure says
      * nothing about which links exist, so what is kept per link is not pruned on it.
      */
+    /** The comment mode this Mac shows for a link (the service's last answer, else the record): what an owner reply is stamped with. */
+    shownNotes(root: string, shareId: string): 'open' | 'private' {
+    root = canonicalSharingRoot(root)
+      const record = records.find((r) => r.root === root && r.shareId === shareId)
+      if (!record?.comments) return 'private'
+      return (serviceSettings.get(shareId)?.notes ?? record.notes ?? 'private') === 'open' ? 'open' : 'private'
+    },
     noteShareIds(): string[] | null {
       const held = heldTokenIds()
       if (held === null) return null

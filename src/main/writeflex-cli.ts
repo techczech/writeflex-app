@@ -7,7 +7,10 @@
  * Nothing it imports may reach Electron: it runs without the app's runtime.
  */
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { agentArguments, commandLineAgentParams, runWriteFlexAgent } from './agent-skill-host'
 import { resolveAppVariant } from './app-variant'
 import { runCli } from './cli/run'
 import { readCapped } from './cli/stdin'
@@ -26,7 +29,19 @@ function ownVariant(): ReturnType<typeof resolveAppVariant>['userDataDirectoryNa
   }
 }
 
-runCli(process.argv.slice(2), {
+/**
+ * `writeflex agent status|install|remove [--agent <id>] [--json]`: the agent's path to the built-in agent skill, the same
+ * module as the Settings card (agent-skill-host.ts). Not an operation on a Collection, so it needs no root and takes no lock.
+ */
+async function runAgentRoute(args: string[]): Promise<number> {
+  let packageJson: unknown
+  try { packageJson = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')) as unknown } catch { packageJson = undefined }
+  const params = commandLineAgentParams({ appRoot: dirname(dirname(dirname(fileURLToPath(import.meta.url)))), home: homedir(), packageJson })
+  return runWriteFlexAgent(args, params, { stdout: (text) => { process.stdout.write(text) }, stderr: (text) => { process.stderr.write(text) } })
+}
+
+const agentArgs = agentArguments(process.argv.slice(2))
+const run = agentArgs ? runAgentRoute(agentArgs) : runCli(process.argv.slice(2), {
   write: { variant: ownVariant() },
   cwd: process.cwd(),
   stdout: (text) => process.stdout.write(text),
@@ -35,7 +50,8 @@ runCli(process.argv.slice(2), {
   stdin: () => readCapped(process.stdin as AsyncIterable<Uint8Array>),
   // A document read to a terminal is shown with its control characters made visible; piped, it is exact.
   stdoutIsTerminal: process.stdout.isTTY === true,
-}).then(
+})
+run.then(
   (code) => { process.exitCode = code },
   (error) => { process.stderr.write(`writeflex: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1 },
 )

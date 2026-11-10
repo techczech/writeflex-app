@@ -11,7 +11,7 @@ export type FolioLineProps = {
 export function folioPositionText(place: Pick<FolioPlace, 'kind' | 'position' | 'total'>): string {
   if (place.kind === 'index') return 'Index Note'
   if (place.kind === 'instructions') return 'Agent instructions'
-  if (place.kind === 'unlisted') return 'Not in the running order'
+  if (place.kind === 'unlisted') return 'Not in the outline'
   return `${place.position} of ${place.total}`
 }
 

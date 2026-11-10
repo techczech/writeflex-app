@@ -12,7 +12,6 @@ import { MAX_STDIN_BYTES, readCapped } from '../../src/main/cli/stdin'
 import { buildOperationTable } from '../../src/main/cli/table'
 import { unshow } from '../../src/main/cli/terminal-text'
 import { parseFrontmatter } from '../../src/main/frontmatter'
-import { acquireOwnerLock, ownerLockPath, releaseOwnerLock } from '../../src/main/owner-lock'
 import { Workspace } from '../../src/main/workspace'
 import { createdBy, writeFixture, type WriteFixture } from '../helpers/cli-write-fixture'
 
@@ -118,10 +117,10 @@ test('an empty path is refused, for every kind of path argument', async () => {
 
 // --- Piped text (R3.9) -------------------------------------------------------------------------------
 
-test('--stdin is read before the owner lock is taken, once', async () => {
+test('--stdin is read once, and nothing leaves an owner lock behind', async () => {
   let reads = 0
   let lockedWhenRead: boolean | null = null
-  const created = await fx.cli(['create', 'piped.md', '--stdin'], { stdin: async () => { reads += 1; lockedWhenRead = existsSync(ownerLockPath(fx.root)); return 'piped\n' } })
+  const created = await fx.cli(['create', 'piped.md', '--stdin'], { stdin: async () => { reads += 1; lockedWhenRead = existsSync(join(fx.root, '.writeflex', 'owner.lock')); return 'piped\n' } })
   expect(created.json.ok).toBe(true)
   expect({ reads, lockedWhenRead }).toEqual({ reads: 1, lockedWhenRead: false })
   expect(await fx.read('piped.md')).toBe(createdBy('piped\n'))
@@ -130,21 +129,15 @@ test('--stdin is read before the owner lock is taken, once', async () => {
   expect(reads).toBe(1)
 })
 
-test('piped text over the limit is refused before the lock is taken, and nothing is changed', async () => {
+test('piped text over the limit is refused before anything is written, and nothing is changed', async () => {
   const before = await fx.snapshot()
   const huge = 'x'.repeat(MAX_STDIN_BYTES + 1)
-  // Another writeflex command holds the Collection: a command that reached the lock would wait and report it busy.
-  const held = await acquireOwnerLock(fx.root, { kind: 'command-line' })
-  try {
-    const refused = await fx.cli(['create', 'huge.md', '--stdin'], { stdin: async () => huge })
-    expect(refused.code).toBe(1)
-    expect(refused.json.error).toMatchObject({ code: 'refused' })
-    expect(refused.json.error!.message).toContain('larger than the command line takes (16 MiB')
-    const shown = await fx.cli(['insert', 'notes.md', '--stdin'], { stdin: async () => huge })
-    expect(shown.json.error!.message).toContain('larger than the command line takes')
-  } finally {
-    await releaseOwnerLock(held)
-  }
+  const refused = await fx.cli(['create', 'huge.md', '--stdin'], { stdin: async () => huge })
+  expect(refused.code).toBe(1)
+  expect(refused.json.error).toMatchObject({ code: 'refused' })
+  expect(refused.json.error!.message).toContain('larger than the command line takes (16 MiB')
+  const shown = await fx.cli(['insert', 'notes.md', '--stdin'], { stdin: async () => huge })
+  expect(shown.json.error!.message).toContain('larger than the command line takes')
   expect(await fx.snapshot()).toEqual(before)
   // Exactly the limit is taken.
   const exact = await fx.cli(['create', 'exact.md', '--stdin'], { stdin: async () => 'y'.repeat(64) })

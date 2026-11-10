@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  CloudBackup,
   AlignCenterVertical,
   Anchor,
   AudioLines,
@@ -8,7 +9,6 @@ import {
   CircleUser,
   Command,
   Cpu,
-  Terminal,
   FilePlus2,
   FileSearch,
   FolderSync,
@@ -116,7 +116,9 @@ import { ModelRefreshControl } from './ModelRefreshControl'
 import type { ModelsChecked } from '../../../shared/model-refresh'
 import { AboutPanel } from './settings/AboutPanel'
 import { SharingSettingsPanel } from './settings/SharingSettingsPanel'
+import { BackupSettingsPanel } from './settings/BackupSettingsPanel'
 import { ScratchpadSettingsPanel } from './settings/ScratchpadSettingsPanel'
+import AgentSkillSettings from './settings/AgentSkillSettings'
 import changelogSource from '../../../../CHANGELOG.md?raw'
 
 export type SettingsWindowProps = {
@@ -179,14 +181,15 @@ const SECTIONS: Array<{ id: string; title: string; icon: LucideIcon }> = [
   { id: 'sec-reading-room', title: 'Reading Room', icon: BookOpen },
   { id: 'sec-read-aloud', title: 'Read aloud', icon: AudioLines },
   { id: 'sec-sounds', title: 'Sounds', icon: Volume2 },
-  { id: 'sec-library', title: 'Library', icon: Library },
+  { id: 'sec-library', title: 'Vault', icon: Library },
   { id: 'sec-diary', title: 'Diary', icon: BookOpen },
   { id: 'sec-snapshots', title: 'Saving & history', icon: History },
   { id: 'sec-changelog', title: 'Changelog', icon: ScrollText },
   { id: 'sec-get-started', title: 'Get started', icon: Compass },
   { id: 'sec-shortcuts', title: 'Shortcuts', icon: Keyboard },
   { id: 'sec-sharing', title: 'Sharing', icon: Link2 },
-  { id: 'sec-about', title: 'About', icon: Info },
+  { id: 'sec-backup', title: 'Backup', icon: CloudBackup },
+  { id: 'sec-about', title: 'About and updates', icon: Info },
 ]
 
 /** Changelog row glyphs by entry label (the mockup's logIcons map). */
@@ -204,7 +207,7 @@ const LOG_ICONS: Record<string, LucideIcon> = {
   'Propose prose edits': PenLine,
   'Create files': FilePlus2,
   'Rename and move files': FolderSync,
-  'Search and read the Workspace': FileSearch,
+  'Search and read the vault': FileSearch,
   'View mode': Eye,
   'Open files from browser links': Link2,
   'Watch for external changes': FolderSync,
@@ -244,13 +247,14 @@ const DEFAULT_DISPLAY: Record<string, string> = {
   'sounds.ambient.enabled': 'Off',
   'sounds.ambient.loop': 'Warm noise',
   'sounds.ambient.volume': '35%',
+  'updates.checkForNewVersions': 'On',
   'readAloud.voiceURI': 'System default',
   'readAloud.rate': '1.0×',
   'readAloud.scrollMode': 'Typewriter',
   'readingRoom.side': 'Left',
   'appearance.theme': 'Light',
   'snapshots.frequency': 'On',
-  'snapshots.retention': '90 days',
+  'snapshots.retention': 'Forever',
   'permissions.proseEdits': 'On',
   'permissions.createFiles': 'On',
   'permissions.renameFiles': 'On',
@@ -551,6 +555,7 @@ export function SettingsWindow({
   const [counted, setCounted] = useState<import('../../../preload').CountedCollection[]>([])
   const [activeSection, setActiveSection] = useState(initialSection ?? 'sec-account')
   const dialogRef = useRef<HTMLDivElement | null>(null)
+  const [undoneLog, setUndoneLog] = useState<ReadonlySet<string>>(() => new Set())
   const paneRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const reloadCounted = useCallback(() => {
@@ -820,7 +825,7 @@ export function SettingsWindow({
         'reading scroll typewriter centred centre middle stable voice page turn top screen viewport',
       ],
       'sec-sounds': ['typing sounds a sound per keystroke while you write typewriter deep erika crisp smith corona electric soft keyboard scheme volume', 'ambient sound background loop warm white noise hush rain volume pauses in the background', 'sound credits attribution licence wikimedia commons work with sounds lonemonk'],
-      'sec-library': [`${workspaceName} not a library promote`, 'watch for external changes other agents apps workspace folder', 'install command-line tool writeflex terminal shell agents claude code codex'],
+      'sec-library': [`${workspaceName} not a vault promote`, 'watch for external changes other agents apps vault folder', 'give your agents skills to use writeflex install skill command-line tool terminal shell agents claude code codex gemini antigravity'],
       'sec-diary': ['diary folder designate choose change dormant counted collections un-count', ...counted.map((collection) => `${collection.name} ${collection.pieces} pieces`)],
       'sec-snapshots': ['checkpoint on close returnable point history', 'keep history for 30 90 days forever retention'],
       'sec-changelog': changelog.map((e) => `${e.label} reset`),
@@ -831,7 +836,7 @@ export function SettingsWindow({
       'sec-sharing': [SHARING_SEARCH],
       'sec-scratchpad': ['scratchpad browse talkweaver vaults search slidewell pictures connections vaults to browse check again'],
       'sec-about': [
-        'about WriteFlex version release notes',
+        'about WriteFlex version release notes reader legal notices copyright licences updates check for new versions download privacy daily',
         ...(changelogSource.match(/^##\s+\[[^\]]+\].*$/gm) ?? []),
       ],
     }
@@ -848,7 +853,7 @@ export function SettingsWindow({
 
   const goToSection = useCallback((id: string) => {
     setActiveSection(id)
-    paneRef.current?.querySelector(`#${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    paneRef.current?.querySelector(`#${id}`)?.scrollIntoView({ block: 'start' }) // at once, not animated: a section starts at the top of the page when it is chosen
   }, [])
 
   // The dialog root owns Esc and traps Tab within the sheet — the palette's modal focus loop.
@@ -1174,7 +1179,7 @@ export function SettingsWindow({
                     { key: 'permissions.proseEdits', label: 'Propose prose edits', small: 'Always staged as suggestions', icon: PenLine },
                     { key: 'permissions.createFiles', label: 'Create files', icon: FilePlus2 },
                     { key: 'permissions.renameFiles', label: 'Rename and move files', icon: FolderSync },
-                    { key: 'permissions.readWorkspace', label: 'Search and read the Workspace', icon: FileSearch },
+                    { key: 'permissions.readWorkspace', label: 'Search and read the vault', icon: FileSearch },
                   ] as Array<{ key: string; label: string; small?: string; icon: LucideIcon }>
                 ).map((row) => (
                   <div className="crow" key={row.key} hidden={!rowShown('sec-perms', row.label, row.small)}>
@@ -1693,25 +1698,25 @@ export function SettingsWindow({
             </div>
 
             <div className="set-sec" id="sec-library" hidden={!sectionHasRow['sec-library']}>
-              <h3>Library</h3>
-              <p className="sub">A Library is a promoted Workspace with an index: wiki links, backlinks, and the writing diary.</p>
+              <h3>Vault</h3>
+              <p className="sub">A vault is a folder of your writing. Promoting it adds an index: wiki links, backlinks, and the writing diary.</p>
               <div className="card">
-                <div className="crow" hidden={!rowShown('sec-library', workspaceName, 'not a library promote')}>
+                <div className="crow" hidden={!rowShown('sec-library', workspaceName, 'not a vault promote')}>
                   <Library className="icon" aria-hidden="true" />
                   <span className="grow">
                     <span className="lbl">{workspaceName}</span>
-                    <small>Not a Library</small>
+                    <small>Not indexed yet</small>
                   </span>
                   <button
                     className="ghost"
-                    title="Promote to a Library"
-                    aria-label="Promote to a Library"
-                    onClick={() => onFlash('Libraries land with the index milestone')}
+                    title="Promote to a vault"
+                    aria-label="Promote to a vault"
+                    onClick={() => onFlash('Vaults land with the index milestone')}
                   >
                     Promote…
                   </button>
                 </div>
-                <div className="crow" hidden={!rowShown('sec-library', 'watch for external changes other agents apps workspace folder')}>
+                <div className="crow" hidden={!rowShown('sec-library', 'watch for external changes other agents apps vault folder')}>
                   <FolderSync className="icon" aria-hidden="true" />
                   <span className="grow">
                     <span className="lbl">Watch for external changes</span>
@@ -1727,23 +1732,8 @@ export function SettingsWindow({
                     <span className="knob" />
                   </label>
                 </div>
-                <div className="crow" hidden={!rowShown('sec-library', 'install command-line tool writeflex terminal shell agents claude code codex')}>
-                  <Terminal className="icon" aria-hidden="true" />
-                  <span className="grow">
-                    <span className="lbl">Command-line tool</span>
-                    <small>Lets Claude Code, Codex and other agents search and read your Collection with “writeflex”</small>
-                  </span>
-                  <button
-                    className="ghost"
-                    type="button"
-                    title="Install command-line tool"
-                    aria-label="Install command-line tool"
-                    onClick={() => {
-                      void window.writeflex.installCommandLineTool().then((result) => onFlash(result.message)).catch(() => onFlash('Could not install the command-line tool.'))
-                    }}
-                  >
-                    Install command-line tool
-                  </button>
+                <div hidden={!rowShown('sec-library', 'give your agents skills to use writeflex install skill command-line tool terminal shell agents claude code codex gemini antigravity')}>
+                  <AgentSkillSettings onFlash={onFlash} />
                 </div>
               </div>
             </div>
@@ -1819,7 +1809,7 @@ export function SettingsWindow({
                   <select
                     aria-label="Keep history for"
                     title="Keep history for"
-                    value={String(values['snapshots.retention'] ?? '90')}
+                    value={String(values['snapshots.retention'] ?? 'forever')}
                     onChange={(e) => onSet('snapshots.retention', e.target.value, 'Keep history for')}
                   >
                     <option value="30">30 days</option>
@@ -1855,23 +1845,42 @@ export function SettingsWindow({
                           {entry.reverted ? ' · reset' : ''}
                         </small>
                       </span>
-                      <button
-                        className="ghost log-reset"
-                        title={`Reset ${entry.label} to ${displayValue(entry.key, entry.old, models, voices, entry.label)}`}
-                        aria-label={`Reset ${entry.label} to ${displayValue(entry.key, entry.old, models, voices, entry.label)}`}
-                        disabled={entry.reverted === true}
-                        onClick={() => {
-                          onRevert(index)
-                          // Reverting disables THIS button; a focused button that goes disabled
-                          // drops focus to <body>, killing the dialog's Esc/Tab handling. Move
-                          // focus to the dialog root (tabIndex=-1) before the re-render disables
-                          // us, so the container keeps keyboard ownership (the CheatSheet cure).
-                          dialogRef.current?.focus()
-                        }}
-                      >
-                        <Undo2 className="icon sm" aria-hidden="true" />
-                        Reset
-                      </button>
+                      {entry.reverted === true ? (
+                        undoneLog.has(`${entry.key}-${entry.at}`)
+                          ? null
+                          : (
+                            <button
+                              className="ghost log-reset"
+                              data-testid="log-undo-reset"
+                              title={`Put ${entry.label} back to ${displayValue(entry.key, entry.new, models, voices, entry.label)}`}
+                              aria-label={`Undo the reset of ${entry.label}`}
+                              onClick={() => {
+                                setUndoneLog((done) => new Set(done).add(`${entry.key}-${entry.at}`))
+                                if (entry.new !== null) onSet(entry.key, entry.new, entry.label)
+                              }}
+                            >
+                              <Undo2 className="icon sm" aria-hidden="true" />
+                              Undo
+                            </button>
+                          )
+                      ) : (
+                        <button
+                          className="ghost log-reset"
+                          title={`Reset ${entry.label} to ${displayValue(entry.key, entry.old, models, voices, entry.label)}`}
+                          aria-label={`Reset ${entry.label} to ${displayValue(entry.key, entry.old, models, voices, entry.label)}`}
+                          onClick={() => {
+                            onRevert(index)
+                            // Reverting turns this button into Undo; a focused button that goes away
+                            // drops focus to <body>, killing the dialog's Esc/Tab handling. Move
+                            // focus to the dialog root (tabIndex=-1) before the re-render, so the
+                            // container keeps keyboard ownership (the CheatSheet cure).
+                            dialogRef.current?.focus()
+                          }}
+                        >
+                          <Undo2 className="icon sm" aria-hidden="true" />
+                          Reset
+                        </button>
+                      )}
                     </div>
                   )
                 })}
@@ -2012,7 +2021,9 @@ export function SettingsWindow({
 
             {sectionHasRow['sec-sharing'] && <SharingSettingsPanel onFlash={onFlash} onOpenSetup={onOpenSharingSetup} />}
 
-            {sectionHasRow['sec-about'] && <AboutPanel onFlash={onFlash} />}
+            {sectionHasRow['sec-backup'] && <BackupSettingsPanel onFlash={onFlash} />}
+
+            {sectionHasRow['sec-about'] && <AboutPanel onFlash={onFlash} onSet={onSet} />}
           </div>
         </div>
       </div>

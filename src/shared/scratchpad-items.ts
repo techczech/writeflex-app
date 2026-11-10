@@ -183,6 +183,19 @@ export interface ScratchExternalResult {
   collectedId?: string
 }
 
+/** Where a text came from when it was sent from a saved Folio version (Folio versions ticket 10, ADR-0052). Filled in main from the
+ *  version's own record, never taken from the window or an agent. Additive: records written before it carry no `fromVersion` field and
+ *  read exactly as before. `folio` is the Index Note's path, `part.path` the label the version recorded for the part, `at` the version's time. */
+export interface ScratchFromVersion {
+  folio: string
+  versionId: string
+  versionName: string
+  part: { path: string; title: string; order?: number }
+  side: 'version' | 'sent' | 'theirs' | 'yours'
+  writtenBy: string
+  at: number
+}
+
 export interface ScratchItem {
   /** `p_…` for lossless items; `legacy:<origin>#<s_…>` for a scrap read from a SCRAPS.md file. */
   id: string
@@ -214,6 +227,8 @@ export interface ScratchItem {
   /** External-source pointer and provenance (ticket 05): a collected TalkWeaver/SlideWell
    *  candidate. Its payload is only a preview; insertion revalidates this pointer in main. */
   external?: ScratchExternalRef
+  /** The saved Folio version this text was sent from (ticket 10): the card names it and offers "Open in that version". */
+  fromVersion?: ScratchFromVersion
   /** A cited reference in the document inventory: how often its canonical citation id is cited and
    *  the exact source range of every citation. `document` is the first of these. */
   cited?: { count: number; positions: Array<{ from: number; to: number; line: number; markdown: string }> }
@@ -495,8 +510,9 @@ export function daySections(items: readonly ScratchItem[], now: Date = new Date(
 }
 
 /** Short origin wording for a card badge: “Cut from …”, “Copied from …” or “Saved scrap · …”. */
-export function originLabel(item: Pick<ScratchItem, 'how' | 'origin' | 'by'> & Partial<Pick<ScratchItem, 'kind' | 'ref' | 'source' | 'external'>>, partName: (path: string) => string = defaultPartName): string {
+export function originLabel(item: Pick<ScratchItem, 'how' | 'origin' | 'by'> & Partial<Pick<ScratchItem, 'kind' | 'ref' | 'source' | 'external' | 'fromVersion'>>, partName: (path: string) => string = defaultPartName): string {
   if (item.external) return item.external.provenance
+  if (item.fromVersion) return fromVersionLabel(item.fromVersion, item.by)
   if (item.by === 'agent') return 'Suggested by the agent'
   if ((item.kind === 'ref' || item.kind === 'evidence') && item.ref) {
     const part = item.ref.sourcePart ?? partName(item.origin.path)
@@ -506,6 +522,11 @@ export function originLabel(item: Pick<ScratchItem, 'how' | 'origin' | 'by'> & P
   if (item.how === 'cut') return `Cut from ${part}`
   if (item.how === 'copy') return `Copied from ${part}`
   return `Saved scrap · ${part}`
+}
+
+/** “From “First full draft” · Findings · Sam Rowe”: the version, the part and who wrote it; an agent's send says so first. */
+export function fromVersionLabel(from: ScratchFromVersion, by: 'writer' | 'agent' = 'writer'): string {
+  return `${by === 'agent' ? 'Suggested by the agent · ' : ''}From “${from.versionName}” · ${from.part.title} · ${from.writtenBy}`
 }
 
 export const defaultPartName = (path: string): string => (path.split('/').pop() ?? path).replace(/\.(md|markdown|mdx)$/i, '')

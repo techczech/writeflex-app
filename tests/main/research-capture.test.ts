@@ -11,7 +11,6 @@ import { registerResearchCaptureIpc } from '../../src/main/research-capture-ipc'
 import { Workspace } from '../../src/main/workspace'
 import { pauseCollectionWrites, resumeCollectionWrites } from '../../src/main/collection-write-gate'
 import { researchCaptureTarget } from '../../src/renderer/src/app/research-capture-target'
-import { ownerLockPath } from '../../src/main/owner-lock'
 import { writeFixture, type WriteFixture } from '../helpers/cli-write-fixture'
 
 // The verb seam of "Capture to research": a fake `scout` on the environment records its argv (one line per
@@ -325,28 +324,6 @@ test('writeflex capture forwards to the verb with the app closed, and reports th
     expect(failed.code).toBe(1)
     expect(failed.json.error?.message).not.toContain('no such project')
     expect(failed.json.error?.message).toContain('Scout could not file this capture')
-  } finally {
-    if (saved === undefined) delete process.env.WRITEFLEX_SCOUT_BIN
-    else process.env.WRITEFLEX_SCOUT_BIN = saved
-    await fx.dispose()
-  }
-})
-
-test('with the app closed, an owner lock replaced after validation and before the spawn stops the capture: scout is not spawned and the ownership error is returned', async () => {
-  const fx: WriteFixture = await writeFixture()
-  const saved = process.env.WRITEFLEX_SCOUT_BIN
-  process.env.WRITEFLEX_SCOUT_BIN = fake
-  try {
-    await writeFake({ stdout: JSON.stringify({ file: join(fx.root, 'talks/research/2026-10-20-t.md'), corpus: null, indexed: false }) })
-    await writeFile(argvLog(), 'untouched\n')
-    const stolen = { version: 1, pid: process.pid, kind: 'app', host: hostname(), startedAt: Date.now(), heartbeatAt: Date.now(), processStartedAt: null, token: 'planted' }
-    const run = await fx.cli(['capture', 'talks/york.md', '--kind', 'snippet', '--title', 'T', '--body', 'b'], {
-      write: { seams: { beforeWrite: async () => { await writeFile(ownerLockPath(fx.root), JSON.stringify(stolen)) } } },
-    })
-    expect(run.code).toBe(1)
-    expect(run.json.error?.code).toBe('owner-lock-lost')
-    expect(await readFile(argvLog(), 'utf8')).toBe('untouched\n')
-    expect(existsSync(join(fx.root, 'talks/research'))).toBe(false)
   } finally {
     if (saved === undefined) delete process.env.WRITEFLEX_SCOUT_BIN
     else process.env.WRITEFLEX_SCOUT_BIN = saved

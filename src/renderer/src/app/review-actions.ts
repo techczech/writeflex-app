@@ -292,7 +292,7 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
       }
       await reloadChanges()
       // Only what was settled is counted; an Accept that could not be applied is named, never counted.
-      flash(action === 'accept' ? acceptedSummary(done, refused) : `Rejected ${done} change${done === 1 ? '' : 's'}${refused.length > 0 ? `. ${refused.length} could not be declined.` : ''}`)
+      flash(action === 'accept' ? acceptedSummary(done, refused) : `Declined ${done} change${done === 1 ? '' : 's'}${refused.length > 0 ? `. ${refused.length} could not be declined.` : ''}`)
     },
     [dockChanges, acceptChange, rejectChange, reloadChanges, flash],
   )

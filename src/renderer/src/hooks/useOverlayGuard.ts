@@ -6,7 +6,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef, useState } from 
  * palette (Task 13), 'settings'/'cheatsheet' arrive in Task 17. A plain string keeps the guard
  * agnostic of which surfaces exist so later tasks add their own without touching this hook.
  */
-export type OverlayId = 'files' | 'commands' | 'settings' | 'cheatsheet' | 'version' | 'capture' | 'materialise' | 'skills' | 'focus' | 'goal' | 'export' | 'folderPiece' | 'widgetPicker' | 'sessionStarter' | 'statusDisclosure' | 'statusEvents' | 'makeVault' | 'diskMerge' | 'researchCapture'
+export type OverlayId = 'files' | 'commands' | 'settings' | 'cheatsheet' | 'version' | 'capture' | 'materialise' | 'skills' | 'focus' | 'goal' | 'export' | 'folderPiece' | 'widgetPicker' | 'sessionStarter' | 'statusDisclosure' | 'statusEvents' | 'makeVault' | 'diskMerge' | 'researchCapture' | 'folioSaveChoose' | 'folioSave'
 
 export type OverlayGuard = {
   /** The overlay currently raised, or null. Reactive — drives conditional rendering of the sheet. */

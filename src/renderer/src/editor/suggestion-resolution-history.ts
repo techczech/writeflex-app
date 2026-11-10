@@ -21,18 +21,20 @@ export function suggestionResolutionSpec(input: {
   action: 'accept' | 'reject'
   changes?: ChangeSpec | readonly ChangeSpec[]
   beforeContent?: string
+  /** A one-use Put back has already been approved: replay only its editor text and placement. */
+  replay?: 'text'
   /** Effects that must be born on this same transaction (a Scratchpad put-back anchor). */
   effects?: readonly StateEffect<unknown>[]
 }): TransactionSpec {
   return {
     ...(input.changes ? { changes: input.changes } : {}),
-    effects: [suggestionResolutionEffect.of({
+    effects: [...(input.replay === 'text' ? [] : [suggestionResolutionEffect.of({
       id: input.id,
       path: input.path,
       action: input.action,
       resolved: true,
       ...(input.beforeContent !== undefined ? { beforeContent: input.beforeContent } : {}),
-    }), ...(input.effects ?? [])],
+    })]), ...(input.effects ?? [])],
     annotations: [
       initialSuggestionResolution.of(true),
       skipWriterReviewTracking.of(true),

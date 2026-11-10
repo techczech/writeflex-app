@@ -50,7 +50,10 @@ test('every version restore from the renderer carries a basis (the restore repla
 
 test('the preload sends the basis over file:save', () => {
   const preload = readFileSync(join(ROOT, 'src/preload/index.ts'), 'utf8')
-  expect(preload).toContain("saveFile: (path, content, basis) => ipcRenderer.invoke('file:save', { path, content, basis })")
+  // With or without the editor-receipt identity (A2), both shapes carry the basis.
+  expect(preload).toContain("saveFile: (path, content, basis, receipt) => ipcRenderer.invoke('file:save', receipt")
+  expect(preload).toContain("? { path, content, basis, receipt: { docEpoch: receipt.docEpoch, gen: receipt.gen")
+  expect(preload).toContain(": { path, content, basis }),")
 })
 
 test('every writing-goal write from the renderer carries the basis the flush left (goal:set)', () => {

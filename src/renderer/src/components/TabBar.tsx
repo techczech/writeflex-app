@@ -287,7 +287,7 @@ export function TabBar({
     const folderGroups = sort === 'folder'
       ? (groups ?? tabStripView({ tabs, active, pinned, recent }, ownFolderGroup).groups)
       : []
-    const folderLabels = tabGroupLabels(folderGroups.map((group) => group.key), rootName ?? 'Workspace')
+    const folderLabels = tabGroupLabels(folderGroups.map((group) => group.key), rootName ?? 'Vault')
     const renderTree = (paths: string[], spill = false): JSX.Element[] => {
       const pathSet = new Set(paths)
       const children = new Map<string, string[]>()
@@ -410,12 +410,11 @@ export function TabBar({
       {tabs.filter((path) => stripVisible.includes(path) && !pinned.includes(path)).map((path) => tabButton(path, 'tab'))}
       {tabs.length > stripVisible.length && (
         <button className="tab-more" aria-label="More open tabs" title="More open tabs (⌘2)" onClick={onOpenTabs}>
-          <Ellipsis className="icon sm" /><span className="n">+{tabs.length - stripVisible.length}</span><span className="chord" aria-hidden="true">⌘2</span>
+          <Ellipsis className="icon sm" /><span className="n">+{tabs.length - stripVisible.length}</span>
         </button>
       )}
       <button className="tbtn newtab" title="New tab (⌘N)" aria-label="New file" onClick={onNew}>
         <Plus className="icon" />
-        <span className="chord" aria-hidden="true">⌘N</span>
       </button>
       {pinMenuElement}
     </>

@@ -146,7 +146,7 @@ export function SharingSettingsPanel({ onOpenSetup, onFlash, initialStatus, init
           <div className="shr-panel problem danger-zone" data-panel="remove">
             <div className="shr-panel-h"><Trash2 className="icon" aria-hidden="true" /><span>Remove sharing from this account</span></div>
             <div className="shr-panel-b">
-              <p className="shr-p">Set-up already wrote on {status.account?.name ?? 'your Cloudflare account'}. Removing deletes the sharing service and everything in it from that account.</p>
+              <p className="shr-p">Set-up already wrote on {status.account?.name ?? 'your Cloudflare account'}. Removing deletes the sharing service and everything in it from that account, for every Mac.</p>
               {removal()}
             </div>
           </div>
@@ -205,7 +205,7 @@ export function SharingSettingsPanel({ onOpenSetup, onFlash, initialStatus, init
           <div className="shr-panel problem danger-zone" data-panel="remove">
             <div className="shr-panel-h"><Trash2 className="icon" aria-hidden="true" /><span>Remove sharing from this account</span></div>
             <div className="shr-panel-b">
-              <p className="shr-p">Deletes the sharing service and everything in it from your Cloudflare account. Every link stops working and comments not yet collected are lost. Your pieces on this Mac are not touched.</p>
+              <p className="shr-p">Deletes the sharing service and everything in it from your Cloudflare account. Every link stops working for every Mac on this account, and comments not yet collected are lost. Your pieces on this Mac are not touched.</p>
               {removal()}
             </div>
           </div>

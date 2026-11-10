@@ -276,9 +276,9 @@ export function SuggestionCallout({
           <Check className="icon sm" />
           Accept <kbd>⏎</kbd>
         </button>
-        <button className="cbtn" title="Reject the edit (⌫)" onClick={reject}>
+        <button className="cbtn" title="Decline the edit (⌫)" onClick={reject}>
           <X className="icon sm" />
-          Reject <kbd>⌫</kbd>
+          Decline <kbd>⌫</kbd>
         </button>
         <button className="cbtn" title="Revise with a note (R)" onClick={openRevise}>
           <CornerUpLeft className="icon sm" />

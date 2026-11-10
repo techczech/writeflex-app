@@ -9,6 +9,7 @@ export function linkState(link: ShareLinkView): LinkState {
   if (!link.on) return { kind: 'off', label: 'Off', tone: 'off' }
   // Ticket 04 (ruling R-B): the piece is not where the share has it; nothing is published until the writer decides.
   if (link.lost) return { kind: 'not-found', label: 'Piece not found', tone: 'warn' }
+  if ((link.problem?.kind === 'partial-publish' || link.problem?.kind === 'service-update' && link.publishedAt !== null)) return { kind: 'published', label: link.problem.reason, tone: 'warn' }
   if (link.problem) return { kind: 'not-published', label: 'Not published', tone: 'warn' }
   if (link.publishing && link.publishedAt === null) return { kind: 'publishing', label: 'Publishing…', tone: 'live' }
   // A Folio link (ticket 09, frame `folio`): published, with a part readers see as "not available".
@@ -20,6 +21,7 @@ export function linkState(link: ShareLinkView): LinkState {
 /** The right-column "Not published" row (frame `problems`): what happened and what readers see. */
 export function notPublishedText(link: ShareLinkView, now = Date.now()): string {
   const reason = link.problem?.reason ?? ''
+  if ((link.problem?.kind === 'partial-publish' || link.problem?.kind === 'service-update' && link.publishedAt !== null)) return reason
   if (link.publishedAt === null) return `${reason} Nothing has been published on this link yet, so readers see the link-off page. Your saves are published when it works again.`
   const when = shortTime(link.publishedAt, now)
   // Ticket 04 (frame `problems`): a save waiting is kept on this Mac, through a restart, and sent once publishing works.

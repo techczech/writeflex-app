@@ -63,7 +63,8 @@ import {
 import { planCollectionPieceStatus } from './collection'
 import { DocumentReadRefused, readDocumentGuarded } from './guarded-document-read'
 import { prepareSourceAttach } from './source-attach'
-import { placeRecordedReplacement } from './recorded-placement'
+import { placeRecordedReplacement, stagedInsertUnplaced } from './recorded-placement'
+import { folioRevisionOf } from '../shared/folio-version-stage'
 import { PlacementError, frontmatterSplit, normaliseExistingFrontmatter, resolveOutsideInsert, resolveProseMove, setFrontmatterKeys } from './verbs/verb-support'
 import type { Workspace } from './workspace'
 
@@ -202,6 +203,11 @@ const BUILDERS: Record<string, Build> = {
     }] }
   },
   'restore-version': async (ws, args, stores) => {
+    // A table, widget page or image is restored as a file, not as a text change in a margin: only the writer does that, in WriteFlex (Folio Details,
+    // Inserted files). The refusal says where, so an agent tells the writer instead of retrying (Folio versions ticket 19).
+    if (typeof args.path === 'string' && !MARKDOWN.test(args.path) && ws.classifyPath(args.path) === 'document') {
+      return refuse(`${quote(args.path)} is not a Markdown document, so a restore of one of its versions cannot be shown for review as a change to text. Restoring a table, widget page or image replaces the file, and only the writer does it, in WriteFlex: Folio Details, Inserted files, choose the file and Restore. Nothing was changed.`, 'not-a-document')
+    }
     const { path, content } = await readTarget(ws, args.path)
     const id = typeof args.version === 'string' ? args.version.trim() : ''
     if (id === '' || id.length > 200) refuse('The version to restore is missing ("writeflex versions" lists them by id).')
@@ -362,6 +368,11 @@ export function unplaceableIn(change: Change, content: string): Unplaceable | nu
       return null
     }
     if (change.editClass === 'insert') {
+      // A suggestion staged from a co-author's revision goes after a WHOLE paragraph that still stands once with its neighbour after it.
+      if (folioRevisionOf(change) !== null) {
+        const staged = stagedInsertUnplaced(content, change)
+        if (staged) return staged
+      }
       resolveOutsideInsert(content, { path: change.path, insertAfter: change.insertAfter ?? '', text: change.newText })
       return null
     }

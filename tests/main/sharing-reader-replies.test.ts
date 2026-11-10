@@ -15,7 +15,7 @@ import { readerNoteOf } from '../../src/main/outside-change-fields'
 import { createServiceClient } from '../../src/main/sharing-client'
 import { registerSharingIpc } from '../../src/main/sharing-ipc'
 import type { SharingSetup } from '../../src/main/sharing-setup'
-import { repliesNeedServiceUpdate, setReaderNotesSource, startReaderNotesCollection } from '../../src/main/sharing-reader-notes-run'
+import { readerReplyVisibility, repliesNeedServiceUpdate, setReaderNotesSource, startReaderNotesCollection } from '../../src/main/sharing-reader-notes-run'
 import { collectReaderNotes, guardedDocumentReader, type ReaderLinkSource } from '../../src/main/sharing-reader-notes'
 import { LEGACY_ANSWERS_AT_MOST, LEGACY_RETRY_MS, owedFor, readerOutcomeOf, readerReplyFor, sendReaderOutcomes, type LegacyAnswers, type OutcomeItem, type ReaderRepliesPorts } from '../../src/main/sharing-reader-replies'
 import { Workspace } from '../../src/main/workspace'
@@ -215,8 +215,8 @@ describe('the outcome sender', () => {
     // What a request carries: the note key, the outcome and the replies. No path, no piece text, no names.
     const wire = JSON.stringify(requests)
     for (const leak of [PIECE, 'reading list is for', 'Most reading lists', c.root, 'For Marta', 'Workshop group', 'Marta', 'Dominik', 'Many']) expect(wire).not.toContain(leak)
-    for (const item of requests.flatMap((r) => r.items)) expect(Object.keys(item).sort()).toEqual(['at', 'key', 'outcome', 'replies'])
-    for (const r of requests.flatMap((x) => x.items.flatMap((item) => item.replies))) expect(Object.keys(r).sort()).toEqual(['at', 'id', 'text'])
+    for (const item of requests.flatMap((r) => r.items)) expect(Object.keys(item).sort()).toEqual(['at', 'baseOutcomeAt', 'key', 'outcome', 'replies'])
+    for (const r of requests.flatMap((x) => x.items.flatMap((item) => item.replies))) expect(Object.keys(r).sort()).toEqual(['at', 'id', 'text', 'visibility'])
     // The link not asked about heard nothing.
     expect((await elsewhere.mine())[0].replies).toEqual([])
     expect((await s.mine())[0].replies.map((r) => r.text)).toEqual([`Reply to ${mineId}`])
@@ -307,7 +307,7 @@ describe('final answers and one outcome per note (Sol review round 1)', () => {
     expect(requests).toHaveLength(1)
   })
 
-  test('two ledger records of one note send one outcome, the latest decision\'s, and keep sending it', async () => {
+  test('two ledger records of one note converge to one card and send its latest decision', async () => {
     const c = await collection()
     const s = await sharedPiece()
     const id = await s.post(NOTE)
@@ -318,11 +318,12 @@ describe('final answers and one outcome per note (Sol review round 1)', () => {
     const lines = (await readFile(journal, 'utf8')).split('\n').filter((line) => line.trim() !== '')
     const original = lines.find((line) => line.includes(record.id))!
     const twinId = `${record.id.slice(0, -1)}${record.id.endsWith('z') ? 'y' : 'z'}`
-    await writeFile(journal, [...lines, original.split(record.id).join(twinId)].join('\n') + '\n')
+    await writeFile(journal, [...lines, JSON.stringify({ ...JSON.parse(original), id: twinId, status: 'accepted', readerDecidedAt: Date.now() })].join('\n') + '\n')
     const store = c.changes
     const ledger = { changes: store }
     // The later record is decided first (done), the earlier record after it (declined): declined is the latest decision.
-    expect((await store.setStatus(twinId, 'accepted')).status).toBe('accepted')
+    expect(await store.list()).toHaveLength(1)
+    expect((await store.get(record.id))?.status).toBe('accepted')
     await new Promise((resolve) => setTimeout(resolve, 5))
     await store.setReviewStatus(record.id, 'rejected')
     const declinedAt = ((await store.get(record.id)) as Change & { readerDecidedAt?: number }).readerDecidedAt
@@ -333,7 +334,8 @@ describe('final answers and one outcome per note (Sol review round 1)', () => {
       expect((await s.mine())[0]).toMatchObject({ status: 'declined', outcomeAt: declinedAt })
     }
     expect(requests.flatMap((r) => r.items.map((item) => item.outcome))).toEqual(['declined'])
-    for (const change of [await store.get(record.id), await store.get(twinId)]) expect(change?.readerHeard).toEqual({ outcome: 'declined', at: declinedAt! })
+    expect((await store.get(record.id))?.readerHeard).toEqual({ outcome: 'declined', at: declinedAt! })
+    expect(await store.get(twinId)).toBeUndefined()
   })
 
   test('the outcome\'s time is the decision time kept on the record; a resend after a lost answer sends the same time', async () => {
@@ -598,4 +600,30 @@ describe('the reply door', () => {
     // A restart keeps them, as the ledger keeps everything else.
     expect((await new ChangeStore(c.workspace).get(record.id))?.readerReplies).toHaveLength(READER_REPLIES_MOST)
   })
+})
+
+test('the ledger and sender retain the visibility recorded when an owner reply was written', async () => {
+  const c = await collection()
+  const s = await sharedPiece()
+  const id = await s.post(NOTE)
+  await collect(c, s)
+  const record = await recordFor(c, id)
+  let mode: 'private' | 'open' = 'private'
+  setReaderNotesSource({ links: () => [], fetchNotes: s.client.notes, markCollected: s.client.collected,
+    replyVisibility: (root, shareId) => root === c.root && shareId === s.shareId ? mode : 'private' })
+  let privateReply, openReply
+  try {
+    privateReply = readerReplyFor('Written while private', 'Dominik', Date.now(), undefined, readerReplyVisibility(c.root, s.shareId))
+    mode = 'open'
+    openReply = readerReplyFor('Written while open', 'Dominik', Date.now(), undefined, readerReplyVisibility(c.root, s.shareId))
+    expect(readerReplyVisibility(c.root, 'unknown')).toBe('private')
+    expect(readerReplyVisibility('another-workspace', s.shareId)).toBe('private')
+  } finally { setReaderNotesSource(null) }
+  expect(readerReplyVisibility(c.root, s.shareId)).toBe('private')
+  await c.changes.addReaderReply(record.id, privateReply)
+  await c.changes.addReaderReply(record.id, openReply)
+  const persisted = (await new ChangeStore(c.workspace).list()).find((change) => change.id === record.id)!
+  expect(persisted.readerReplies?.map((r) => r.visibility)).toEqual(['private', 'open'])
+  expect(owedFor(persisted)!.item.replies.map((r) => r.visibility)).toEqual(['private', 'open'])
+  expect(readerReplyFor('Legacy', 'Dominik', Date.now()).visibility).toBe('private')
 })

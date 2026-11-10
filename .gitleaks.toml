@@ -1,14 +1,14 @@
 [extend]
 useDefault = true
 
+# The snapshot gate verifies every path and digest before scanning.
+# Anchors deliberately exclude only the manifest at the snapshot root.
+[[allowlists]]
+description = "Structurally verified root snapshot hash manifest"
+paths = ['''^public-snapshot-receipt\.json$''']
+
 [[rules]]
 id = "generic-api-key"
-[[rules.allowlists]]
-description = "Validated generated SHA-256 receipt"
-condition = "AND"
-regexTarget = "secret"
-regexes = ['''^[a-f0-9]{64}$''']
-paths = ['''(^|/)public-snapshot-receipt\.json$''']
 [[rules.allowlists]]
 description = "Zotero key alphabet constant"
 condition = "AND"

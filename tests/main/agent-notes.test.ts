@@ -184,7 +184,7 @@ test('a failed note create keeps reject settled and returns a visible path-namin
   const result = await agent.resolveChange(change.id, 'reject')
 
   expect(result.applied).toBe(true)
-  expect(result.message).toMatch(/Change rejected.*agent-notes\/.*\.md.*forced createFile failure/)
+  expect(result.message).toMatch(/Change declined.*agent-notes\/.*\.md.*forced createFile failure/)
   expect((await changes.get(change.id))?.status).toBe('rejected')
   agent.dispose()
 })

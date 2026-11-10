@@ -2,7 +2,7 @@
  * The vault switcher's switch (vaults ticket 06, review 2026-10-16): switching a window to another root
  * REPLACES the window. The chosen root opens in a new window, hidden, at the old window's place; the old
  * window then closes by the ordinary close route (its renderer writes every document, drains its
- * ledger, and main makes the close checkpoints, releases the lock and disposes its services); only once
+ * ledger, and main makes the close checkpoints, closes the Collection and disposes its services); only once
  * it has closed is the new window shown. Nothing of a live window is rebound in place.
  *
  * The window manager supplies the window operations; this module is the order of the steps, every way

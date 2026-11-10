@@ -35,9 +35,6 @@ export function buildVendored() {
 validateBuildCompiler(resolve('.'));
 // Same bun build scripts as the source workspaces, in dependency order.
 const order = [
-  'bridle/contract', 'bridle/ledger', 'bridle/model-access',
-  'bridle/core', 'bridle/cognition', 'bridle/secrets', 'bridle/perception',
-  'bridle/knowledge', 'bridle/packs', 'bridle/lens', 'bridle/react', 'bridle/electron',
   'readflex/sqlite-driver', 'readflex/zotero-paths', 'readflex/reader-embed',
   'readflex/sidecar', 'readflex/zotero-bridge',
 ];

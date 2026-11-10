@@ -12,7 +12,6 @@ import { join } from 'node:path'
 import { runBounded } from '../../src/main/bounded-child'
 import { CliError } from '../../src/main/cli/operation'
 import { trashMover } from '../../src/main/cli/system-trash'
-import { inspectOwnerLock } from '../../src/main/owner-lock'
 import { humanAuthorForWorkspace } from '../../src/main/versions'
 import { writeFixture, type WriteFixture } from '../helpers/cli-write-fixture'
 
@@ -120,7 +119,7 @@ test('writeflex trash with a mover that never answers refuses, leaves the docume
   expect(result.json.error!.message).toContain('could not be moved to the Trash in time')
   expect(result.json.error!.message).toContain('It is still where it was.')
   expect(await fx.snapshot()).toEqual(before)
-  expect((await inspectOwnerLock(fx.root)).state).toBe('free')
+  expect(existsSync(join(fx.root, '.writeflex', 'owner.lock'))).toBe(false)
   // And with a mover that works, the same command still does.
   expect((await fx.cli(['trash', 'notes.md'], { write: { trash: async (absolute) => { await rename(absolute, join(fx.trashed, 'notes.md')) } } })).json.ok).toBe(true)
 }, TEST_MS)

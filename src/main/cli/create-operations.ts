@@ -1,6 +1,6 @@
 /**
  * Direct writes that make something new: a document, a folder, a copy, an agent note, a scrap, a
- * Folio manifest. Each runs with the owner lock held (write-access.ts) and writes only through the
+ * Folio manifest. Each runs through write-access.ts (no Collection lock) and writes only through the
  * WriteSession. A new file is never journalled (undo does not delete); adding a scrap to an existing
  * scraps file changes that file, so it is.
  */
@@ -161,7 +161,7 @@ export const CREATE_OPERATIONS: Operation[] = [
       const project = String(args.project)
       const path = project === '.' || project === '' ? '' : isAbsolute(project) ? relative(ctx.workspace.root, project) : project
       const sources = typeof args.sources === 'string' ? args.sources.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : []
-      // Through the WriteSession's workspace and write turn, so the owner lock and the write gate apply, and what scout
+      // Through the WriteSession's workspace and write turn, so the content guards and the write gate apply, and what scout
       // wrote is registered as touched (the app's executor then tells the window; see request-executor.ts).
       const result = await captureInWorkspace(ctx.workspace, {
         project: path, title: String(args.title), kind, body, sources,

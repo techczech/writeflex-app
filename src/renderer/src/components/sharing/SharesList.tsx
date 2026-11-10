@@ -14,9 +14,11 @@
 // page). Ticket 04: a link whose piece is not found shows its "Piece not found" row (Turn off, Follow to).
 // Added: the Opened total, the empty list,
 // the not-set-up line, and Change settings opening the link's one setting in place.
+import { CommentsChoice } from './CommentsChoice'
+import { BackControl } from '../BackControl'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Copy, FileText, Globe, Layers, Link, List, Lock, MessageSquareOff, Minus, Power, PowerOff, Search, Settings, SlidersHorizontal, TriangleAlert, X } from 'lucide-react'
-import { linkLabel, type SharingLinkResult } from '../../../../shared/sharing-links'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Copy, FileText, Globe, Layers, Link, List, Lock, Users, MessageSquareOff, Minus, Power, PowerOff, Search, Settings, SlidersHorizontal, TriangleAlert, X } from 'lucide-react'
+import { linkLabel, linkSettingsLabel, type SharingLinkResult } from '../../../../shared/sharing-links'
 import {
   OPENED_SETTLE_MS, filterEntries, listTotals, needsAttention, notesTotals, openedKey, openedLabel, sameNameFolders, sortEntries,
   type ListColumn, type ListFilter, type ListSort, type OpenedCounts, type ShareListEntry, type SharesListView,
@@ -207,7 +209,7 @@ export function SharesList({ collectionName, onPiecePage, onOpenPiece, onBack, o
   return (
     <div className="shr-overlay" data-testid="shares-list" ref={page} tabIndex={-1} onKeyDown={onKeyDown}>
       <header className="shr-head">
-        <button type="button" className="shr-btn" onClick={onBack}><ArrowLeft className="icon" aria-hidden="true" />Back to text<kbd>⌥⌘S</kbd></button>
+        <BackControl className="shr-back" onBack={onBack} />
         <div className="shr-title">
           <h2>Sharing</h2>
           <span className="shr-sub">Shares list · {collectionName} · {linksWord}</span>
@@ -272,7 +274,7 @@ export function SharesList({ collectionName, onPiecePage, onOpenPiece, onBack, o
                           <span className={link.name ? 'shr-nm' : 'shr-nm shr-unnamed'}>{label(entry)}</span>
                           {(needsAttention(entry) || !!notes[link.shareId]?.limit) && <StateChip link={link} limit={!!notes[link.shareId]?.limit} />}
                         </span>
-                        <span className="shr-cellset" role="cell">{link.comments ? <Lock className="icon" aria-hidden="true" /> : <MessageSquareOff className="icon" aria-hidden="true" />}{link.comments ? 'Private comments' : 'Comments off'}</span>
+                        <span className="shr-cellset" role="cell">{link.comments ? link.notes === 'open' ? <Users className="icon" aria-hidden="true" /> : <Lock className="icon" aria-hidden="true" /> : <MessageSquareOff className="icon" aria-hidden="true" />}{linkSettingsLabel(link)}</span>
                         <span className="shr-dim" role="cell">{madeDay(link.madeAt)}</span>
                         <span className="shr-num" role="cell" data-opened={link.shareId}>{openedLabel(opened[link.shareId])}</span>
                         <WaitingCell count={notes[link.shareId]?.waiting} shareId={link.shareId} />
@@ -312,7 +314,7 @@ export function SharesList({ collectionName, onPiecePage, onOpenPiece, onBack, o
                       onClick={() => void act(() => window.writeflex.sharing.setComments(current.link.shareId, !current.link.comments), current.link.comments ? 'Readers can no longer leave comments on this link.' : 'Readers can leave comments on this link.')}>
                       <span className="trk" aria-hidden="true" />Readers can leave comments
                     </button>
-                    <span className="shr-p shr-dim">Private comments: each reader sees only their own comments and your replies.</span>
+                    <CommentsChoice value={current.link.notes} disabled={busy || !current.link.comments} hasPrivateComments={current.link.hasPrivateComments || (current.link.notes !== 'open' && ((notes[current.link.shareId]?.waiting ?? 0) + (notes[current.link.shareId]?.handled ?? 0) > 0))} onChange={(value) => void act(() => window.writeflex.sharing.setNotes(current.link.shareId, value), value === 'open' ? 'Comments are open on this link.' : 'Comments are private on this link.')} />
                   </div>
                 )}
                 {current.sourceGone && !current.link.lost && (

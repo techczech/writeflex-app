@@ -79,6 +79,7 @@ export function parseInvocation(argv: string[], table: Operation[]): Invocation 
     if (spec.positional && args[name] !== undefined) throw new CliError(`${operation.name} was given <${name}> twice (as a bare word and as --${name}, or as --${name} twice). Give it once.`, 'usage')
     if (spec.type === 'boolean') args[name] = value === true || value === 'true'
     else if (value === true) throw new CliError(`--${name} needs a value.`, 'usage')
+    else if (spec.repeatable && spec.type === 'string' && typeof args[name] === 'string') args[name] = `${args[name]}\n${value}`
     else args[name] = coerce(spec, value)
   }
   for (const spec of operation.args) {

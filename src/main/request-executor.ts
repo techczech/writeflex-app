@@ -72,15 +72,17 @@
  * request files and 16 MiB of them, oldest first, and leaves the rest for the next look.
  *
  * A failed operation is put back before the reply is written (cli/write-access.ts), so a refused
- * request is never left partly applied, WHILE THE APP STILL HOLDS THE COLLECTION. Once it does not,
- * nothing more is written to a document, putting back included: the change stays on record in the
- * app's own undo journal as interrupted, and the answer (`owner-lock-lost`) says what had been
- * changed. A file is put back only if it holds exactly what the request wrote to it.
+ * request is never left partly applied, WHILE THE APP STILL HAS THE COLLECTION OPEN. Once it does not
+ * (the window closed or was bound to another Collection), nothing more is written to a document,
+ * putting back included: the change stays on record in the app's own undo journal as interrupted, and
+ * the answer (`collection-closed`) says what had been changed. A file is put back only if it holds exactly what the request wrote to it.
  */
+import { replicaRecoveryDir } from './replica-save-cycles'
 import { reattachVersionHistory } from './version-history-reattach'
 import { statSync } from 'node:fs'
 import { isAbsolute, relative } from 'node:path'
 import { WritesPausedError } from './collection-write-gate'
+import { addressedTo, answerableAddresses } from './request-address'
 import type { PathKind } from './document-path'
 import { documentOnlyView } from './document-only-workspace'
 import { NotADocumentPathError, type Workspace } from './workspace'
@@ -101,8 +103,10 @@ import { replyMac } from './reply-key'
 import { buildOperationTable } from './cli/table'
 import { runWithAccess, type SharingFollow } from './cli/write-access'
 import type { VersionSaveInput } from './cli/history-store'
+import type { FolioSaveInput, SavedFolioVersion } from './folio-version-save'
 import { VersionSaveRefused, type SavedTextVersion } from './saved-text-version'
 import type { ChangeStore } from './changes'
+import type { RequestedRevisionImport, RequestedRevisionWithdraw } from './requested-folio-revision'
 import type { OutsideLook } from '../shared/outside-source'
 import { addOutsideRequests, type IngestOutcome, type WaitingRequest } from './outside-change-ingest'
 import {
@@ -117,14 +121,16 @@ import { WriteSession, sessionWorkspace } from './cli/write-session'
  * creation as a first version (cli/agent-created-hook.ts). They are the only two that call
  * `WriteAccess.saveVersion`; no other request waits for the agent.
  */
-export const OPERATIONS_SAVING_A_VERSION: ReadonlySet<string> = new Set(['save-version', 'create'])
+export const OPERATIONS_SAVING_A_VERSION: ReadonlySet<string> = new Set(['save-version', 'save-folio-version', 'import-revision', 'create'])
 
 export const REQUEST_MAX_AGE_MS = 15 * 60_000
 /** A sender's clock may run ahead of this one's by this much. */
 export const REQUEST_MAX_AHEAD_MS = 5 * 60_000
 export { HANDLED_KEEP_MS, STALE_FILE_MS }
 
-export type IgnoredFile = { name: string; why: 'conflict-copy' | 'not-a-request' }
+/** `other-computer`: a request addressed to WriteFlex on another computer (request-address.ts), left exactly as found.
+ *  `no-address`: this computer's request address could not be read or made, so no request was touched. */
+export type IgnoredFile = { name: string; why: 'conflict-copy' | 'not-a-request' | 'other-computer' | 'no-address' }
 export type HandledRequest = { id: string; outcome: Reply['outcome']; reason?: string; operation?: string; repeat: boolean }
 /**
  * What one look at the inbox did with the shown-first requests in it (outside-change-ingest.ts), and
@@ -142,15 +148,16 @@ export type RequestExecutorOptions = {
    *  undelivered answers and the undo journal for this Collection are kept under it
    *  (collection-records.ts); the other variant's folder beside it is read, never written. */
   appData: string
-  /** This Collection's reply key (reply-key.ts), made when the app took ownership; null when there is none.
+  /** This Collection's reply key (reply-key.ts), made when the app opened it; null when there is none.
    *  Every reply is signed with it. Without it nothing is carried out: the command line could not verify the answer. */
   replyKey: () => Promise<Buffer | null>
-  /** Whether this app holds the Collection now. False while its owner lock is lost to another owner. */
+  /** Whether this executor's window still has the Collection open here. Nothing about any other
+   *  process or computer: there is no Collection lock (open-collections.ts). */
   ownsCollection: () => boolean
-  /** Whether this app holds the Collection's owner lock now, whatever its windows are bound to. Asked
-   *  before a failed request's writes are put back: a window that closed mid-request no longer "owns"
-   *  the Collection in the sense above, yet the app keeps the lock until `dispose` has resolved, and
-   *  under it the putting back is safe. Default: `ownsCollection`. */
+  /** Whether this app still has the Collection open, whatever its windows are bound to. Asked before a
+   *  failed request's writes are put back: a window that closed mid-request no longer has it in the
+   *  sense above, yet the app keeps it open until `dispose` has resolved, so the putting back is made.
+   *  Default: `ownsCollection`. */
   holdsLock?: () => boolean
   /** Moves a real path to the system Trash (Electron's `shell.trashItem` in the app). */
   trash: TrashMover
@@ -160,9 +167,14 @@ export type RequestExecutorOptions = {
    *  the app waits for its agent first only for `OPERATIONS_SAVING_A_VERSION` (collection-write-order.ts). */
   exclusive: <T>(work: () => Promise<T>, operation: string) => Promise<T>
   /** Save a version of a document's saved text into the app's own history stores, through the store
-   *  objects the window already holds (saved-text-version.ts); `confirmOwner` throws when the app no
-   *  longer holds the Collection. Absent (no stores to save into): a requested version save is refused. */
+   *  objects the window already holds (saved-text-version.ts); `confirmOwner` throws when the window no
+   *  longer has the Collection open. Absent (no stores to save into): a requested version save is refused. */
   saveVersion?: (input: VersionSaveInput, confirmOwner: () => Promise<void>) => Promise<SavedTextVersion>
+  /** The app's side of a requested Folio version save (requested-folio-version-save.ts). Never settles a change. */
+  saveFolioVersion?: (input: FolioSaveInput, confirmOwner: () => Promise<void>) => Promise<SavedFolioVersion>
+  /** The app's side of a requested revision import and its withdrawal (requested-folio-revision.ts, ticket 15): bound to this window's Collection. Absent: both are refused. */
+  importRevision?: RequestedRevisionImport
+  withdrawRevision?: RequestedRevisionWithdraw
   /** Told after an explicit history attachment or its Undo changes the journal. */
   onVersionHistoryChanged?: () => void
   /** The window's review ledger for this Collection. Shown-first requests become pending Changes in
@@ -201,6 +213,10 @@ const PATH_ARGS: Record<RequestOperation, Array<{ arg: string; kind: PathKind | 
   trash: [{ arg: 'path', kind: 'file' }],
   undo: [],
   'save-version': [{ arg: 'path', kind: 'file' }],
+  'save-folio-version': [{ arg: 'folio', kind: 'either', root: true }],
+  'import-revision': [{ arg: 'folio', kind: 'either', root: true }, { arg: 'file', kind: 'file' }],
+  'withdraw-revision': [],
+  'scratchpad-send-version-text': [{ arg: 'folio', kind: 'either', root: true }],
   'follow-history': [{ arg: 'map', kind: 'file' }],
   'undo-history': [],
 }
@@ -212,7 +228,7 @@ function isFolderOnDisk(ws: { absolute: (path: string) => string }, path: string
   try { return statSync(ws.absolute(path)).isDirectory() } catch { return false }
 }
 const CLOSED = 'WriteFlex closed this Collection while the request was being carried out, so it stopped. Run the command again.'
-const LOST = 'WriteFlex does not hold this Collection at the moment, so it carried out nothing. Run the command again in a moment.'
+const LOST = 'WriteFlex no longer has this Collection open in that window, so it carried out nothing. Run the command again.'
 
 export class RequestExecutor {
   readonly #options: RequestExecutorOptions
@@ -252,8 +268,8 @@ export class RequestExecutor {
    * call on it carries out nothing. A request not yet read is left in the inbox, untouched. The
    * request being carried out, if any, is refused at its next write, what it had written is put
    * back, and it is answered as refused and recorded, so it is never carried out later either.
-   * Resolves once nothing of this executor's is running: the caller keeps the Collection's owner
-   * lock until then.
+   * Resolves once nothing of this executor's is running: the caller keeps the Collection open (and its
+   * reply key in place) until then.
    */
   dispose(): Promise<void> {
     this.#disposed = true
@@ -309,6 +325,7 @@ export class RequestExecutor {
       const listing = await inbox.namesUpTo(MAX_ENTRIES_LISTED)
       if (listing.more) cut.add('inbox')
       const met = new Set<string>()
+      const addresses = await this.#thisComputer()
       for (const name of listing.names) {
         if (this.#disposed) return done()
         const claimed = idOfClaimedName(name)
@@ -322,6 +339,25 @@ export class RequestExecutor {
         // A request standing under both its names is one request.
         if (met.has(id)) continue
         met.add(id)
+        // Another computer's request (the inbox syncs, and the same Collection may be open there too):
+        // not claimed, answered, removed or added for review here. Left exactly as found.
+        if (addresses === null) { claims.leave(id); result.ignored.push({ name, why: 'no-address' }); continue }
+        if (this.#repeated.has(id)) continue
+        if ((this.#deferred.get(id) ?? 0) > this.#now().getTime()) {
+          budget.left += 1; budget.because.add('ledger-full'); continue
+        }
+        const size = Math.min((await claims.look(id))?.size ?? 0, MAX_REQUEST_BYTES)
+        if (budget.read >= MAX_REQUESTS_PER_PASS || budget.bytes + size > MAX_REQUEST_BYTES_PER_PASS) {
+          budget.left += 1; budget.because.add('look-limit'); continue
+        }
+        budget.read += 1
+        budget.bytes += size
+        const peeked = await claims.peek(id, MAX_REQUEST_BYTES)
+        if (peeked.kind === 'text' && addressedTo(peeked.text, addresses) === 'not-ours') {
+          claims.leave(id)
+          result.ignored.push({ name, why: 'other-computer' })
+          continue
+        }
         const handled = await this.#handle(id, folders, budget, waiting)
         if (handled) result.handled.push(handled)
       }
@@ -342,18 +378,20 @@ export class RequestExecutor {
     }
   }
 
+  /** This computer's request addresses, or null when this app's own can be neither read nor made (then no request is touched). */
+  async #thisComputer(): Promise<string[] | null> {
+    // Read afresh at each look: the other variant may have made its address since.
+    try { return await answerableAddresses(this.#place.own, this.#place.others) } catch { return null }
+  }
+
   async #handle(id: string, folders: Folders, budget: LookBudget, waiting: WaitingRequest[]): Promise<HandledRequest | null> {
     // Bounded before anything of this request is read: an inbox can hold thousands of planted files.
     // What is past the limit stays where it is for the next look (every two seconds while open).
     if (this.#repeated.has(id)) return null
     if ((this.#deferred.get(id) ?? 0) > this.#now().getTime()) { budget.left += 1; budget.because.add('ledger-full'); return null }
-    const size = Math.min((await folders.claims.look(id))?.size ?? 0, MAX_REQUEST_BYTES)
-    if (budget.read >= MAX_REQUESTS_PER_PASS || budget.bytes + size > MAX_REQUEST_BYTES_PER_PASS) { budget.left += 1; budget.because.add('look-limit'); return null }
-    budget.read += 1
-    budget.bytes += size
     const key = await this.#options.replyKey().catch(() => null)
     const finish = async (answer: Reply, extra: { operation?: string; repeat?: boolean } = {}): Promise<HandledRequest> => {
-      // Signed here, at the moment it is written, with the key of THIS ownership: a stored reply given
+      // Signed here, at the moment it is written, with the key of THIS opening of the Collection: a stored reply given
       // again after a restart is signed afresh, and one signed under an earlier key is of no use to anyone.
       const unsigned: Reply = { ...answer, ...(extra.operation && answer.operation === undefined ? { operation: extra.operation } : {}) }
       delete unsigned.mac
@@ -378,6 +416,7 @@ export class RequestExecutor {
       return finish(reply, { repeat: true })
     }
 
+
     await this.#options.seams?.beforeRead?.(id)
     // Claimed, then read: from here `writeflex withdraw` can no longer take it back unseen.
     const read = await folders.claims.take(id, MAX_REQUEST_BYTES)
@@ -388,6 +427,11 @@ export class RequestExecutor {
     const parsed = parseRequest(read.text, id, this.#table)
     if (!parsed.ok) return finish(refuse(`The request file ${requestFileName(id)} was refused: ${parsed.reason}. Nothing was done.`))
     const { request } = parsed
+
+    // Sync may have replaced the request after the initial peek. Judge the bytes actually read
+    // before executing, replaying an answer, or adding a proposed change for review.
+    const addresses = await this.#thisComputer()
+    if (addresses === null || !request.to?.some((address) => addresses.includes(address))) return null
 
     // A shown-first request is never carried out and does not expire: it is set aside, and everything
     // set aside in this look is validated and added to the review ledger together (#addForReview).
@@ -447,7 +491,7 @@ export class RequestExecutor {
    * `waiting` is this look's shown-first requests already read: a move this request makes is applied to them.
    */
   async #act(request: WriteRequest, waiting: WaitingRequest[]): Promise<Reply> {
-    const { workspace: appWorkspace, trash, seams, onChanged, saveVersion, sharing } = this.#options
+    const { workspace: appWorkspace, trash, seams, onChanged, saveVersion, saveFolioVersion, importRevision, withdrawRevision, sharing } = this.#options
     const at = (): string => this.#now().toISOString()
     const touched = new Set<string>()
     try {
@@ -474,9 +518,12 @@ export class RequestExecutor {
       }
       const session = new WriteSession(view.workspace, {
         seams: seams?.write, intent, confirmOwner,
-        // Putting back is asked only whether the app still holds the Collection's lock. A disposed
-        // executor does (its caller keeps the lock until `dispose` resolves), so what it wrote is put
-        // back; one whose Collection is another's now writes nothing more (cli/write-access.ts).
+        // Versions in a OneDrive Collection: the app's own local recovery first, the synced store after,
+        // never waited for (document-write-versions.ts); the window's session lists and writes leftovers.
+        recoveryDir: replicaRecoveryDir(this.#options.appData),
+        // Putting back is asked only whether the app still has the Collection open. A disposed
+        // executor does (its caller keeps it open until `dispose` resolves), so what it wrote is put
+        // back; one whose Collection was closed writes nothing more (cli/write-access.ts).
         confirmRollback: async () => { if (!(this.#options.holdsLock ?? this.#options.ownsCollection)()) throw new CliError(LOST) },
         // The app's own-write record, as for any change the app makes: the folder watcher does not echo it.
         onWrite: (path, expected) => { touched.add(path); appWorkspace.recordOwnWrite(path, expected) },
@@ -497,6 +544,18 @@ export class RequestExecutor {
           saveVersion: async (input) => {
             if (!saveVersion) throw new CliError('WriteFlex cannot save a version on request for this Collection. Nothing was saved.', 'failed')
             return saveVersion(input, confirmOwner)
+          },
+          saveFolioVersion: async (input) => {
+            if (!saveFolioVersion) throw new CliError('WriteFlex cannot save a Folio version on request for this Collection. Nothing was saved.', 'failed')
+            return saveFolioVersion(input, confirmOwner)
+          },
+          importRevision: async (input) => {
+            if (!importRevision) throw new CliError('WriteFlex cannot bring in a revision on request for this Collection. Nothing was changed.', 'failed')
+            return importRevision(input, confirmOwner)
+          },
+          withdrawRevision: async (id) => {
+            if (!withdrawRevision) throw new CliError('WriteFlex cannot withdraw a revision on request for this Collection. Nothing was changed.', 'failed')
+            return withdrawRevision(id, confirmOwner)
           },
         },
         (write) => operation.run({
@@ -552,7 +611,7 @@ export class RequestExecutor {
     try {
       pass.outcomes = await addOutsideRequests({ requests: waiting, workspace: this.#options.workspace, changes, now: this.#now })
     } catch (error) {
-      // The ledger could not be written (another owner holds the Collection, a disk error): nothing
+      // The ledger could not be written (a disk error, or the folder cannot be written): nothing
       // was added, and every request is still in the inbox for the next look.
       pass.left += waiting.length
       because.add('ledger-not-writable')

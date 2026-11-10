@@ -184,7 +184,7 @@ test('completion toast renders staged, review-notes, and failure variants', () =
   )
   expect(staged).toContain('Copy-edit staged 4 changes')
   expect(staged).toContain('Review ›')
-  expect(staged).toContain('opens Reviewing')
+  expect(staged).toContain('opens the review margin')
 
   const notes = renderToStaticMarkup(
     <SkillCompletionToast toast={{ kind: 'notes', skillName: 'review', path: 'draft.review.md' }} onDismiss={() => {}} onReview={() => {}} onOpenNotes={() => {}} />,

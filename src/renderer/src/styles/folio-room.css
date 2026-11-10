@@ -382,3 +382,176 @@ textarea.fr-syn{resize:vertical;box-sizing:border-box}.fr-edit:focus-visible,.fr
 .fd-section-export{border:0;border-top:1px solid var(--line,#ddd);margin:12px 0 0;padding:12px 0 0;display:flex;flex-direction:column;gap:8px;}
 .fd-section-export legend{font-size:12px;color:var(--ink-3,#777);padding-right:8px;}
 .fd-section-export label{display:flex;gap:8px;align-items:center;font-size:12px;}
+
+/* The Versions tab (ADR-0052, Folio versions ticket 05): timeline left (30%), the chosen version's contents right (70%). */
+.fv-shell{flex:1;min-height:0;display:flex;flex-direction:column}
+.fv-banner{flex:none;display:flex;align-items:center;gap:10px;padding:8px 16px;font-size:12.5px;border-bottom:1px solid #cdd9f7;background:#eef3ff;color:#254aa8}
+.fv-banner svg{width:15px;height:15px;flex:none}
+.fv-banner > span{flex:1;min-width:0}
+.fv-btn.sm{height:26px;padding:0 10px;font-size:12px}
+.fv{flex:1;min-height:0;display:flex;background:var(--bg-pane);color:var(--ink-2);font:13px/1.45 var(--ui)}
+.fv-none{align-items:center;justify-content:center}
+.fv-list{flex:0 0 30%;min-width:280px;max-width:420px;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg-sunk);min-height:0}
+.fv-listhead{flex:none;display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 14px}
+.fv-rows{flex:1;min-height:0;overflow:auto}
+.fv-row{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--line-soft);border-left:3px solid transparent;cursor:default}
+.fv-row:hover{background:var(--hover)}
+.fv-row.sel{background:var(--accent-soft);border-left-color:var(--accent)}
+.fv-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fv-row-icon{flex:none;width:15px;height:15px;margin-top:2px;color:var(--ink-3)}
+.fv-row-body{flex:1;min-width:0}
+.fv-nm{display:flex;flex-wrap:wrap;align-items:center;gap:6px;color:var(--ink)}
+.fv-name{font-weight:600}
+.fv-meta{margin-top:2px;font-size:11.5px;color:var(--ink-3)}
+.fv-chip{display:inline-flex;align-items:center;padding:0 8px;border:1px solid var(--line);border-radius:999px;background:var(--bg-elev);font-size:11px;line-height:18px;color:var(--ink-3);font-weight:400}
+.fv-chip.acc{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+.fv-chip.warn{background:#fdf3e1;border-color:transparent;color:#8a5a00}
+.fv-btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg-elev);font:12.5px var(--ui);color:var(--ink-2);white-space:nowrap}
+.fv-btn svg{width:14px;height:14px;flex:none}
+.fv-btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.fv-btn[aria-disabled="true"]{opacity:.5;cursor:default}
+.fv-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fv-main{flex:1;min-width:0;min-height:0;overflow:auto}
+/* Bottom room so the floating Scratchpad pill (fixed, 44px up, about 34px tall) never covers the last rows at scroll end. */
+.fv-contents{padding:16px 22px 100px}
+.fv-title{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px}
+.fv-title h2{margin:0;font:600 19px var(--prose);color:var(--ink)}
+.fv-sub{font-size:12px;color:var(--ink-3)}
+.fv-note{margin:6px 0 0;color:var(--ink-3)}
+.fv-actions{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 14px}
+.fv-card{margin-top:12px;border:1px solid var(--line);border-radius:9px;background:var(--bg-elev);overflow:hidden}
+.fv-card h3{margin:0;padding:8px 14px;border-bottom:1px solid var(--line-soft);background:var(--bg-sunk);font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.fv-sec{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 14px;border-top:1px solid var(--line-soft)}
+.fv-sec:first-of-type{border-top:0}
+.fv-sec .num{text-align:right;font-size:11px;color:var(--ink-4)}
+.fv-sec svg{width:14px;height:14px;color:var(--ink-3)}
+.fv-ptitle{font:13.5px var(--prose);color:var(--ink)}
+.fv-count{font-size:12px;color:var(--ink-3);white-space:nowrap}
+.fv-sec .mono{font:12px var(--mono);overflow:hidden;text-overflow:ellipsis}
+.fv-ftitle{color:var(--ink)}.fv-path{font-size:11px;color:var(--ink-4)}
+.fv-notice{margin:14px 22px 0;padding:10px 14px;border:1px solid #ecd9ae;border-radius:9px;background:#fdf6e6;color:#6b4a00;font-size:12.5px}
+.fv-notice b{color:#5a3d00}.fv-notice p{margin:4px 0 0}
+.fv-empty{max-width:420px;display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px;text-align:center;color:var(--ink-3)}
+.fv-empty h3{margin:0;font:600 16px var(--prose);color:var(--ink)}
+.fv-empty p{margin:0;line-height:1.5}
+.fv-empty-icon{width:34px;height:34px;color:var(--ink-4)}
+.fr-versions{flex:1;min-height:0;display:flex}
+
+/* Folio versions ticket 07: a saved version read-only (the banner, the reader's Outline, Text and Cards, the Binder's list). */
+.fvr{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}
+.fvr-banner{flex:none;display:flex;align-items:center;gap:10px;padding:8px 16px;font-size:12.5px;border-bottom:1px solid #d9cdf5;background:#efe9fb;color:#4b3590}
+.fvr-lock{flex:none;width:15px;height:15px}
+.fvr-bannertext{min-width:0}
+.fvr-bannertext b{font-weight:700;color:#3a2a78}
+.fvr-push{margin-left:auto;flex:none;display:flex;gap:6px;justify-content:flex-end}
+.fvr-body{flex:1;min-height:0;overflow:auto;background:#f8f7fc}
+.fvr-text{flex:1;min-height:0;background:#f8f7fc}
+.fvr-text .fr-tbar{background:#f8f7fc}
+.fvr-scroll{flex:1;min-height:0;overflow:auto;padding:14px 26px 100px;position:relative;outline:none}
+.fvr-scroll:focus-visible{box-shadow:inset 0 0 0 2px var(--accent)}
+.fvr-prose{max-width:760px;margin:0 auto;font:17px/1.55 var(--prose);color:var(--ink);user-select:text;-webkit-user-select:text;cursor:text}
+.fvr-prose h1{font-size:25px;line-height:1.25;margin:0 0 .6em}.fvr-prose h2{font-size:21px}.fvr-prose h3{font-size:18px}
+.fvr-prose p{margin:0 0 .85em}
+.fvr-prose ::selection{background:#d9cdf5}
+.fvr-cards{padding:16px 18px 100px}
+.fvr-card{cursor:default}
+.fvr-rowlock{width:11px!important;height:11px!important;margin-left:auto;color:var(--ink-4)!important;flex:none}
+.fr-stage .fvr-rowlock{margin:0 4px 0 0}
+.fvr-brow .fvr-rowlock{opacity:.7}
+.fvr-outline{padding:8px 18px 12px}
+.fvr-olrow{display:grid;grid-template-columns:36px minmax(140px,.9fr) minmax(0,2fr) 90px;gap:10px;align-items:baseline;padding:8px 10px;border-bottom:1px solid var(--line-soft);cursor:default;border-left:3px solid transparent}
+.fvr-olrow:hover{background:var(--hover)}
+.fvr-olrow[aria-selected="true"]{background:var(--accent-soft);border-left-color:var(--accent)}
+.fvr-olrow:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fvr-olrow .num{text-align:right;font:11px var(--mono);color:var(--ink-4)}
+.fvr-olrow .ttl{font:600 13.5px var(--prose);color:var(--ink)}
+.fvr-olrow .lead{font-size:12.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fvr-olrow .wds{text-align:right;font-size:12px;color:var(--ink-3);white-space:nowrap}
+.fvr-nio{margin:8px 18px 100px;border:1px solid var(--line);border-radius:9px;background:var(--bg-elev);overflow:hidden}
+.fvr-nio h3{margin:0;padding:8px 14px;border-bottom:1px solid var(--line-soft);background:var(--bg-sunk);font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.fvr-nio-row{display:flex;align-items:center;gap:8px;width:100%;padding:6px 14px;border-top:1px solid var(--line-soft);font:12px var(--mono);color:var(--ink-2);text-align:left}
+.fvr-nio-row:first-of-type{border-top:0}
+.fvr-nio-row svg{width:14px;height:14px;color:var(--ink-3);flex:none}
+.fvr-nio-row small{margin-left:auto;font:12px var(--ui);color:var(--ink-3)}
+.fvr-nio-row:hover{background:var(--hover)}
+.fvr-binder .fr-brow.cur{background:#efe9fb;box-shadow:inset 3px 0 0 #7a62d6}
+
+/* Compare two Folio versions (Folio versions ticket 08): the pickers, the lines with their chips, a changed part opened to its two texts. */
+.fvc{padding:14px 22px 100px}
+.fvc-pick{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px}
+.fvc-pickone select{max-width:260px;height:30px;padding:0 8px;border:1px solid var(--line);border-radius:999px;background:var(--bg-elev);font:12.5px var(--ui);color:var(--ink);text-overflow:ellipsis}
+.fvc-pickone select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fvc-arrow{width:14px;height:14px;color:var(--ink-3)}
+.fvc-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.fvc-push{display:flex;gap:6px;margin-left:auto}
+.fvc-status{margin:6px 0 4px;font-size:12.5px;color:var(--ink-3)}
+.fvc-status b{color:var(--ink);font-weight:600}
+.fvc-total{color:var(--ink-4)}
+.fvc-line + .fvc-line{border-top:1px solid var(--line-soft)}
+.fvc-head{grid-template-columns:14px 22px minmax(0,1fr) auto;width:100%;border:0;border-top:0;background:transparent;text-align:left;font:inherit;color:inherit;cursor:pointer}
+.fvc-head.fvc-plain{cursor:default}
+.fvc-head:hover{background:var(--hover)}
+.fvc-head:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fvc-chev{width:14px;height:14px;color:var(--ink-3)}
+.fvc-ltitle{display:flex;align-items:baseline;gap:8px;min-width:0}
+.fvc-ltitle svg{align-self:center}
+.fvc-chips{display:flex;gap:6px}
+.fvc-take{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:0 14px 8px 50px}
+.fvc-takemsg{font-size:12.5px;color:var(--ink-3);flex:1 1 220px;min-width:0}
+.fvc-takemsg.warn{color:var(--ink)}
+.fvc-detail{padding:2px 14px 12px 44px}
+.fvc-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+.fvc-colhead{font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);padding:2px 0 4px}
+.fvc-changed{padding:6px 0;border-top:1px solid var(--line-soft)}
+.fvc-text{margin:0;font:14px/1.55 var(--prose);color:var(--ink);overflow-wrap:anywhere}
+.fvc-text del{background:#f8d7d3;text-decoration:line-through;text-decoration-color:#a33a2f}
+.fvc-text ins{background:#d3efdc;text-decoration:underline;text-decoration-style:dotted}
+.fvc-same{padding:5px 0;border-top:1px solid var(--line-soft);font-size:11.5px;color:var(--ink-4)}
+.fvc-more{margin-top:8px}
+
+/* Folio versions ticket 10: Send a copy to Scratchpad from saved text (the read-only view and Compare). The gutter icon shows on hover and on keyboard focus. */
+.fvb{position:relative}
+.fvb-send{position:absolute;left:-30px;top:2px;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);background:var(--bg-elev);color:var(--ink-2);border-radius:6px;cursor:pointer;opacity:0;padding:0}
+.fvb-send svg{width:14px;height:14px}
+.fvb:hover>.fvb-send,.fvb:focus-within>.fvb-send,.fvb-send:focus-visible{opacity:1}
+.fvb-send:hover{background:var(--hover);color:var(--ink)}
+.fvr-prose .fvb .bridle-md>:last-child{margin-bottom:0}
+.fvr-prose .fvb{margin:0 0 .85em}
+.fvc-unit{padding-left:0}
+.fvc-unit>.fvb-send{left:auto;right:100%;margin-right:4px}
+.fvc-split{position:relative;display:inline-flex}
+.fvc-split>.fv-btn:first-child{border-top-right-radius:0;border-bottom-right-radius:0}
+.fvc-splitmore{border-top-left-radius:0;border-bottom-left-radius:0;border-left:1px solid rgba(255,255,255,.35);padding-left:6px;padding-right:6px}
+.fvc-splitmore svg{width:14px;height:14px}
+.fvc-menu{position:absolute;top:100%;left:0;z-index:5;margin-top:4px;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 28px rgba(0,0,0,.18);padding:4px;min-width:260px}
+.fvc-menuitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--ink);font:13px var(--ui);padding:7px 10px;border-radius:6px;cursor:pointer}
+.fvc-menuitem:hover,.fvc-menuitem:focus-visible{background:var(--hover)}
+
+.fvi-notstaged{margin:6px 0 4px 26px;padding:0;list-style:disc;font-size:12.5px;color:var(--ink-3)}.fvi-notstaged li{margin:2px 0}
+/* Manage Folio: ONE bar (R1/R2): back, name, views, Details, Split, and the outline's tools; no key legend (it is in the cheat sheet, ⌘/). */
+.fr-bar{display:flex;align-items:center;gap:6px;padding:7px 12px;flex-wrap:nowrap;min-width:0}
+.fr-bar .fr-open{flex:0 0 auto;width:max-content;margin:0}
+.fr-bar .fr-open .folio-open{padding:0;background:none;width:max-content;flex:none}
+.fr-bar .fr-open .folio-open-split{width:max-content}
+.fr-bar .fr-open .back-control-label{overflow:visible;text-overflow:clip;min-width:auto}
+.fr-bar .fr-open .folio-open-main{width:max-content;max-width:none;overflow:hidden;background:var(--bg-elev);color:var(--ink-2);border:1px solid var(--line);border-right:0;font-weight:500}
+.fr-bar .fr-open .folio-open-main:hover{background:var(--hover)}
+.fr-bar .fr-open .folio-open-main kbd{display:none}
+.fr-bar .fr-open .folio-open-caret{background:var(--bg-elev);color:var(--ink-2);border:1px solid var(--line)}
+.fr-bar .fr-open .folio-open-split{box-shadow:none}
+.fr-bar .fr-crumb{flex:1 1 40px;min-width:0;overflow:hidden}
+.fr-bar .fr-crumb b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.fr-bar .fr-viewrow{display:contents}
+.fr-bar .fr-views{flex:0 1 auto;max-width:none;overflow:visible;gap:0}
+.fr-bar .fr-views button{padding:0 7px;height:27px}
+.fr-bar .fr-views button:not([aria-selected="true"]) .fr-vl{display:none}
+.fr-bar .fr-views button .fr-vl{margin-left:5px}
+.fr-bar .fr-tb{height:27px;padding:0 7px;flex:none}
+.fr-bar .fr-tb:not(.on) .fr-vl{display:none}
+.fr-bar .fr-viewrow>.g{display:none}
+.fr-bar .fr-tools,.fr-bar .fr-otools-inline{display:inline-flex;align-items:center;gap:4px;flex:none}
+.fr-bar .fr-otools-inline .fr-tb{font-size:0;gap:0;padding:0 7px;border:0;background:none}
+.fr-bar .fr-otools-inline .fr-tb svg{width:14px;height:14px}
+.fr-bar .fr-otools-inline .fr-heading-filter{font-size:11px;padding:3px 6px;width:104px;min-width:0;margin-left:0;max-width:140px}
+/* The old key-legend footer kept the room's last row clear of the Scratchpad pill; without it the bottom actions sat under the pill. */
+.fr-mid{padding-bottom:44px;box-sizing:border-box}

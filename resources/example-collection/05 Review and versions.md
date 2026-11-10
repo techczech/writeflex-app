@@ -2,7 +2,7 @@
 
 There is nothing to save: the file is written to disk as you type. This file is a first draft of the part about the wall builders, with sentences that need work. Use it to try checkpoints, versions and review. Where a command has no key, its name is in bold: press <kbd>⇧⌘P</kbd>, type the name and press <kbd>↵</kbd>.
 
-> **Drafting and Reviewing.** The button at the top right says Drafting or Reviewing, and <kbd>⌥⌘M</kbd> switches between them. Your edits are recorded in both. Drafting hides the marks; Reviewing shows them, with what was taken out struck through. Switch to Reviewing, then delete **any** and **at all** from the first sentence under **The wall builders**.
+> **Track my changes.** The button at the top right says Track my changes, and <kbd>⌥⌘M</kbd> switches it on and off. Your edits are recorded either way. Off hides the marks; on shows them, with what was taken out struck through. Switch it on, then delete **any** and **at all** from the first sentence under **The wall builders**.
 
 ## The wall builders
 
@@ -31,3 +31,11 @@ A wall that is left alone lasts a hundred years. What brings it down is a tree r
 When a length falls it is called a gap, and mending one is called gapping. The waller takes the fallen stone back out to the two sound ends, sorts it by size on the grass, and builds it up again in the same order.
 
 > **Versions and compare.** Press <kbd>⌘S</kbd> to make a checkpoint: a state of the file you can go back to. Closing the file makes one too. <kbd>⇧⌘S</kbd> saves a version with a name, such as First draft. <kbd>⌘3</kbd> opens Versions in the right-hand pane, which lists both kinds. <kbd>⌥⌘C</kbd> compares versions side by side, and <kbd>Esc</kbd> returns to the file.
+>
+> A Folio keeps versions of the whole piece too. The commands below work in a Folio, which [[07 Collect and plan]] shows how to make. **Save Folio Version…** saves a version of the whole Folio, and <kbd>⇧⌘S</kbd> in a Folio asks whether you mean the whole Folio or this part. <kbd>⌥8</kbd> opens the Folio’s Versions tab, which lists the saved versions.
+>
+> **Open Folio Version Read-only** opens a saved version for reading, and <kbd>Esc</kbd> or **Back to Working Draft** leaves it and returns you to where you were. **Compare Folio Versions…** compares two versions, or a version with the working draft, part by part.
+>
+> **Export This Folio Version…** makes a Word or HTML file from a saved version. **Mark Version as Sent…** records who a version went to, for a file you sent some other way or exported earlier. When their revision comes back, **Import Revision from Word…** is the command for it: it opens Import in the Versions tab, offers the version you marked as the one they started from, and writes nothing until you choose Bring changes into the Folio.
+>
+> A table, a widget page or an image inserted in a Folio has versions of its own. With the cursor on it, or the file chosen under Inserted files in the Inspector, **Save Version of This File…** saves one, **Compare This File Version with Working Copy** compares a version with the file as it is now, **Restore This File Version…** puts an earlier version back and **Save This File Version as a Copy…** keeps an earlier version as a second file.

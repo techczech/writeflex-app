@@ -38,7 +38,7 @@ export function SourcesSection({ sources, onOpen, onReveal }: SourcesSectionProp
       <div className="scrap-sec">Sources</div>
       {sources.length === 0 ? (
         <p className="sources-empty">
-          Put reference material in <code>research/</code> and it appears here.
+          No sources yet.
         </p>
       ) : (
         <ul className="source-list" role="list">

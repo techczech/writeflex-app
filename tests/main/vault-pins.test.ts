@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { movePin, pinnedRows } from '../../src/renderer/src/vault-pins'
+import { migrateFavouritesToPins, movePin, pinnedRows } from '../../src/renderer/src/vault-pins'
 import type { VaultIndex, VaultWork } from '../../src/shared/vault-index'
 
 const work = (path: string, kind: VaultWork['kind'], parts: string[] = []): VaultWork => ({ path, kind, title: path, status: null, mainPath: null, parts, sidecars: [], support: [] })
@@ -16,10 +16,10 @@ const titled: VaultIndex = { ...index, labels: { ...index.labels, 'reports/b.md'
 test('rows keep pin order; a folder counts the works under it, a Folio its parts', () => {
   const rows = pinnedRows({ pins: ['reports', 'reports/a', 'blogs', 'empty'], index, folders, titles: false })
   expect(rows.map((r) => [r.path, r.countText, r.folio, r.missing])).toEqual([
-    ['reports', '3 works', false, false],
+    ['reports', '3 pieces', false, false],
     ['reports/a', 'Folio · 3 parts', true, false],
-    ['blogs', '2 works', false, false],
-    ['empty', '0 works', false, false],
+    ['blogs', '2 pieces', false, false],
+    ['empty', '0 pieces', false, false],
   ])
 })
 
@@ -33,7 +33,7 @@ test('a pin whose folder is gone is missing, with no count; no index yet gives n
   const [gone] = pinnedRows({ pins: ['old/place'], index, folders, titles: true })
   expect(gone).toMatchObject({ missing: true, countText: '', label: 'old/place', folio: false })
   expect(pinnedRows({ pins: ['reports'], index: null, folders, titles: true })[0]!.countText).toBe('')
-  expect(pinnedRows({ pins: ['blogs/x'], index, folders, titles: false })[0]!.countText).toBe('1 work')
+  expect(pinnedRows({ pins: ['blogs/x'], index, folders, titles: false })[0]!.countText).toBe('1 piece')
   expect(pinnedRows({ pins: [], index, folders, titles: true })).toEqual([])
 })
 
@@ -67,7 +67,7 @@ test('folders and documents mix in one order; folder rows keep their counts and 
   const rows = pinnedRows({ pins: ['loose.md', 'reports', 'blogs/y.md'], kinds: [['loose.md', 'document'], ['reports', 'folder'], ['blogs/y.md', 'document']], index, folders, documents, titles: false })
   expect(rows.map((r) => [r.path, r.kind, r.countText])).toEqual([
     ['loose.md', 'document', ''],
-    ['reports', 'folder', '3 works'],
+    ['reports', 'folder', '3 pieces'],
     ['blogs/y.md', 'document', ''],
   ])
   expect(rows[1]!.tip).toBeNull()
@@ -108,4 +108,33 @@ test('every pinned row that names something offers hover Unpin (folders and docu
   const rows = pinnedRows({ pins: ['reports', 'loose.md', 'old/place'], kinds: [['reports', 'folder'], ['loose.md', 'document'], ['old/place', 'missing']], index, folders, documents, titles: false })
   expect(rows.map((r) => [r.path, r.unpinnable])).toEqual([['reports', true], ['loose.md', true], ['old/place', false]])
   expect(rows.filter((r) => r.missing).every((r) => !r.unpinnable)).toBe(true)
+})
+
+test('favourites become pins: removed only once the pin exists, failures kept for a later try, a second run moves nothing twice (Sol S3)', async () => {
+  let favourites = ['a.md', 'b.md', 'gone.md', 'refused.md', 'throws.md', 'already.md']
+  const pins = new Set(['already.md'])
+  const calls: string[] = []
+  const run = () => migrateFavouritesToPins({
+    favourites,
+    isPinned: (path) => pins.has(path),
+    canPin: (path) => path !== 'gone.md',
+    addPin: async (path) => {
+      calls.push(path)
+      if (path === 'refused.md') return { ok: false, reason: 'invalid', message: 'Cannot pin that.' } as never
+      if (path === 'throws.md') throw new Error('disk')
+      pins.add(path)
+      return { ok: true } as never
+    },
+    removeFavourite: (path) => { favourites = favourites.filter((item) => item !== path) },
+  })
+  const first = await run()
+  expect(first.moved).toEqual(['a.md', 'b.md', 'already.md'])
+  expect(first.kept).toEqual(['gone.md', 'refused.md', 'throws.md'])
+  expect(first.message).toBe('Cannot pin that.')
+  expect(favourites).toEqual(['gone.md', 'refused.md', 'throws.md'])
+  expect(calls).toEqual(['a.md', 'b.md', 'refused.md', 'throws.md'])
+  const second = await run()
+  expect(second.moved).toEqual([])
+  expect(favourites).toEqual(['gone.md', 'refused.md', 'throws.md'])
+  expect([...pins].sort()).toEqual(['a.md', 'already.md', 'b.md'])
 })

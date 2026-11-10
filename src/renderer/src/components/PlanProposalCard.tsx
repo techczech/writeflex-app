@@ -199,7 +199,7 @@ function ProposalBody({ card, actions, dim }: { card: PlanCard; actions: PlanPro
           ) : (
             <>
               <button type="button" className="b" disabled={card.busy} onClick={() => actions.onEdit(card.id)}>Edit first</button>
-              <button type="button" className="b" disabled={card.busy} onClick={() => actions.onDiscard(card.id)}>Discard</button>
+              <button type="button" className="b" disabled={card.busy} onClick={() => actions.onDiscard(card.id)}>Decline</button>
             </>
           )}
         </div>
@@ -288,7 +288,7 @@ export function PlanProposalCard({ card, actions }: { card: PlanCard; actions: P
           </div>
           <div className="btns">
             <button type="button" className="b p" disabled={card.busy} onClick={() => actions.onProposeAgain(card.id)}>Propose again</button>
-            <button type="button" className="b" disabled={card.busy} onClick={() => actions.onDiscard(card.id)}>Discard</button>
+            <button type="button" className="b" disabled={card.busy} onClick={() => actions.onDiscard(card.id)}>Decline</button>
           </div>
         </div>
       )
@@ -300,7 +300,7 @@ export function PlanProposalCard({ card, actions }: { card: PlanCard; actions: P
         </div>
       )
     case 'discarded':
-      return <div className="act plan-act muted"><span className="atext">Proposal discarded<small>Nothing was written.</small></span></div>
+      return <div className="act plan-act muted"><span className="atext">Proposal declined<small>Nothing was written.</small></span></div>
     case 'gone':
       return <div className="act plan-act muted"><span className="atext">This proposal was replaced<small>A newer proposal for this folder supersedes it.</small></span></div>
   }

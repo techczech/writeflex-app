@@ -14,6 +14,9 @@
 import { WORKING_VERSION_ID, type VersionCompareEndpoint, type VersionCompareResult } from '../../engine'
 import { compareVersionRange } from '../version-compare'
 import { humanAuthorForWorkspace } from '../versions'
+import { defaultFileVersionReads } from '../file-version-sources'
+import { compareFileVersions, FileVersionRefused } from '../file-versions'
+import { isMarkdownDocument, type FileCompare } from '../../shared/file-versions'
 import { checkedStoresForReading, versionTextReader } from './history-store'
 import { CliError, type Operation } from './operation'
 import { visiblePath } from './paths'
@@ -36,6 +39,16 @@ export function compareText(result: VersionCompareResult): string {
     return [`@@ ${where} (${change.diffKind ?? 'changed'}; ${change.author.name}${source})`, ...prefixed('-', change.compareOldText), ...prefixed('+', change.compareNewText)]
   })
   return [head, `${result.changes.length} difference${result.changes.length === 1 ? '' : 's'}.`, ...hunks].join('\n')
+}
+
+/** A comparison of two versions of a table, widget page or image as plain text: the cells that differ for a table, otherwise whether the bytes differ. */
+export function fileCompareText(path: string, result: FileCompare): string {
+  const head = `${path}: ${result.from.label} -> ${result.to.label}`
+  if (result.kind === 'other') return `${head}\n${result.same ? 'No differences: the same file, byte for byte.' : `They differ (${result.from.bytes} bytes -> ${result.to.bytes} bytes${result.linesChanged !== null ? `; ${result.linesChanged} line${result.linesChanged === 1 ? '' : 's'} changed` : ''}).`}`
+  if (result.cellsDiffering === 0) return `${head}\nNo cells differ.`
+  const cells = result.rows.flatMap((row, r) => row.flatMap((cell, c) => (cell.before !== cell.after ? [`row ${r + 2}, column ${c + 1} (${result.header[c]?.after ?? result.header[c]?.before ?? ''}): ${cell.before ?? '(none)'} -> ${cell.after ?? '(none)'}`] : [])))
+  const headers = result.header.flatMap((cell, c) => (cell.before !== cell.after ? [`row 1, column ${c + 1}: ${cell.before ?? '(none)'} -> ${cell.after ?? '(none)'}`] : []))
+  return [head, `${result.cellsDiffering} cell${result.cellsDiffering === 1 ? '' : 's'} differ.`, ...headers, ...cells, ...(result.rowsNotShown > 0 ? [`${result.rowsNotShown} more row${result.rowsNotShown === 1 ? '' : 's'} not listed.`] : [])].join('\n')
 }
 
 export const VERSION_OPERATIONS: Operation[] = [
@@ -68,15 +81,15 @@ export const VERSION_OPERATIONS: Operation[] = [
   },
   {
     name: 'save-version', group: 'Review and versions', behaviour: 'direct', writes: true,
-    summary: 'Save a named version of a document, from the text saved on disk. WriteFlex lists it and can restore it.',
+    summary: 'Save a named version of a document, or of an inserted table, widget page or image, from the file as saved on disk. WriteFlex lists it and can restore it. A file over 25 MiB is refused: a Folio version lists it as a reference.',
     args: [
-      { name: 'path', type: 'string', required: true, positional: true, description: 'Collection-relative Markdown path.' },
+      { name: 'path', type: 'string', required: true, positional: true, description: 'Collection-relative path of a Markdown document, or of a table, widget page or image.' },
       { name: 'name', type: 'string', required: true, description: 'The version\'s name, as it will be listed.' },
       { name: 'note', type: 'string', description: 'A note kept with the version.' },
     ],
     run: async (ctx, args) => {
       const access = writeAccess(ctx)
-      const path = visiblePath(ctx.workspace, String(args.path), { markdown: true })
+      const path = visiblePath(ctx.workspace, String(args.path), { file: true })
       const name = String(args.name).trim()
       if (name === '') throw new CliError('Give the version a name with --name "...".', 'usage')
       const note = args.note === undefined ? '' : String(args.note).trim()
@@ -89,18 +102,28 @@ export const VERSION_OPERATIONS: Operation[] = [
   },
   {
     name: 'compare-versions', group: 'Review and versions', behaviour: 'direct',
-    summary: 'Compare two saved versions of a document, or a version with the text now on disk.',
+    summary: 'Compare two saved versions of a document, or a version with the text now on disk. For a table, the cells that differ; for a widget page or image, whether it differs.',
     args: [
-      { name: 'path', type: 'string', required: true, positional: true, description: 'Collection-relative Markdown path.' },
+      { name: 'path', type: 'string', required: true, positional: true, description: 'Collection-relative path of a Markdown document, or of a table, widget page or image.' },
       { name: 'from', type: 'string', required: true, positional: true, description: 'A version id from "writeflex versions", or "working" for the text on disk now.' },
       { name: 'to', type: 'string', positional: true, description: 'The version to compare with (default: "working").' },
     ],
     run: async (ctx, args) => {
       const ws = ctx.workspace
-      const path = visiblePath(ws, String(args.path), { markdown: true })
+      const path = visiblePath(ws, String(args.path), { file: true })
       const fromId = String(args.from).trim()
       const toId = args.to === undefined ? WORKING_VERSION_ID : String(args.to).trim()
       if (fromId === '' || toId === '') throw new CliError('Name the versions to compare by their ids ("writeflex versions" lists them).', 'usage')
+      // A table, widget page or image has no tracked changes: it is compared as saved, version against version or against the file now (read only).
+      if (!isMarkdownDocument(path)) {
+        try {
+          const compared = await compareFileVersions(defaultFileVersionReads(ws, checkedStoresForReading(ws).versions), { path, from: fromId, to: toId })
+          return { data: { path, compare: compared }, text: fileCompareText(path, compared) }
+        } catch (error) {
+          if (error instanceof FileVersionRefused) throw new CliError(error.message, 'failed')
+          throw error
+        }
+      }
       try {
         const stores = checkedStoresForReading(ws)
         const result = await compareVersionRange(

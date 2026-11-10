@@ -1,10 +1,13 @@
-import { app, BrowserWindow, ipcMain, Menu, powerMonitor, protocol, shell } from 'electron'
+import { HISTORY_APPROVAL_BASENAME } from '../backup-helper/history-approvals'
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, protocol, shell } from 'electron'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { existsSync, readFileSync, writeSync } from 'node:fs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { existsSync, readFileSync, realpathSync, writeSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createOutsideChangeFollower } from './sharing-outside-changes'
 import { applyFollowSignal, takeAtStart, watchFollowSignals } from './sharing-follow-signals'
-import { onDocumentsChanged, onDocumentsChangedOutside, onDocumentsMoved, onDocumentsTrashed, onWorkspaceOpened, registerIpc } from './ipc'
+import { onDocumentsChanged, onDocumentsChangedOutside, onSharingIdentityChanged, onDocumentsMoved, onDocumentsTrashed, onWindowWorkspaceBound, onWorkspaceOpened, reconcileSyncedCollectionsAfterWake, registerIpc } from './ipc'
+import { installUpdateNotices } from './update-notices'
 import { SettingsStore } from './settings'
 import { WindowManager } from './windows'
 import { buildAppMenu, updateCollectionMenu } from './menu'
@@ -21,7 +24,23 @@ import { ExampleCollection, resolveExampleDocumentsDir } from './example-collect
 import { ExampleRemoval, resolveExampleTrash } from './example-removal'
 import { moveIntoHarnessBin } from './example-trash-harness'
 import { registerCliInstallIpc } from './cli/install-ipc'
+import { createBackupHelperService } from './backup-helper/service'
+import { registerBackupEnrolmentIpc, registerBackupHelperIpc, registerBackupReceiptIpc } from './backup-helper/ipc'
+import { createActiveBackupServices } from './backup-helper/active-services'
+import { backupHelperEntry, createBackupEnrolment } from './backup-helper/enrolment'
+import { BACKUP_GITHUB_CONFIG } from './backup-github-config'
+import { createGitHubAuthStore, githubSecretsFiles } from './backup-helper/github-auth-store'
+import { createGitHubAuth } from './backup-helper/github-auth'
+import { registerGitHubIpc } from './backup-helper/github-ipc'
+import { BACKUP_GITHUB_CHANNELS } from '../shared/backup-github'
+import { createHelperSupervisor } from './backup-helper/supervisor'
+import { BACKUP_ENROLMENT_CHANNELS } from '../shared/backup-enrolment'
+import { createBackupReceiptService } from './backup-helper/receipt-service'
+import { setSaveReceiptPort } from './backup-helper/save-port'
+import { setNonAtomicWritePolicy } from './save-receipt-gate'
+import { readProcessStartTime } from './local-process'
 import { bundleIdentifierFor } from './cli/shim'
+import { agentIdsArg, confirmedAgentAction, type ConfirmDialog, agentSkillStateStore, createWriteFlexAgentSkills, decideOnboarding, type AgentSkillHostParams } from './agent-skill-host'
 import { exitPackagedSmoke, packagedSmokeIpcProbe, packagedSmokeReceipt, packagedSmokeRequested } from './packaged-smoke'
 import { applyMainFrameOnly } from './ipc-main-frame-only'
 import { removeOpenedWidgetCopiesSync } from './widget-open'
@@ -30,7 +49,7 @@ import { openSecretsStore } from './secrets-store-electron'
 import { openSharingSetup, registerSharingIpc } from './sharing-ipc'
 import { SHARING_SERVICE_DIST_DIR } from './sharing-service-bundle'
 import { createSharingPublisher } from './sharing-publisher'
-import { readerLinksChanged, setReaderNotesSource } from './sharing-reader-notes-run'
+import { readerLinksChanged, rememberReaderClaims, setReaderNotesSource } from './sharing-reader-notes-run'
 import { READER_CLOSED_KEPT, readerNoteRecords } from './sharing-reader-notes'
 import { createServiceClient } from './sharing-client'
 import { renderPieceForSharing } from './sharing-render'
@@ -55,6 +74,7 @@ if (app.isPackaged && packagedSmoke && app.isReady()) {
 }
 
 protocol.registerSchemesAsPrivileged([
+  { scheme: 'wf-reader', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
   { scheme: 'wf-asset', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ])
 // Smoke mode must not re-register the protocol handler with the system.
@@ -131,6 +151,38 @@ if (!app.requestSingleInstanceLock()) {
     // which comes from this one function. A run with the e2e flag never sees the real one: it gets
     // WRITEFLEX_E2E_DOCUMENTS (unpackaged only) or nothing at all.
     let example: ExampleCollection | null = null
+    // The built-in agent skill (agent-skill-host.ts; contract: design element 19). Decided before the settings file is
+    // made: a person who had one has used WriteFlex and gets the one later offer in the status bar, a new person the
+    // dialog over the start screen. Then the copies the person installed are refreshed if the version changed. Never
+    // awaited by the window and never a startup failure.
+    const agentSkills = ((): ReturnType<typeof createWriteFlexAgentSkills> => {
+      const dev = join(dirname(ENTRY_FILE), '..', '..', 'agent-skill-dist', 'writeflex')
+      const params: AgentSkillHostParams = {
+        userDataDir: app.getPath('userData'), version: app.getVersion(), bundleId: bundleIdentifierFor(readRunningAppMetadata()),
+        skillDir: app.isPackaged ? join(process.resourcesPath, 'agent-skill', 'writeflex') : existsSync(dev) ? dev : null,
+      }
+      return createWriteFlexAgentSkills(params)
+    })()
+    try {
+      decideOnboarding(agentSkillStateStore(app.getPath('userData')), existsSync(join(app.getPath('userData'), 'settings.json')))
+      void agentSkills.refresh().catch(() => {})
+    } catch (error) { console.warn('[agent-skill] launch check skipped', error) }
+    ipcMain.handle('agent-skill:status', () => agentSkills.status())
+    // A test run is never offered the skill for the agents on the machine it happens to run on.
+    ipcMain.handle('agent-skill:offer', () => (process.env.WRITEFLEX_E2E === '1' ? { kind: 'none', agents: [], via: [] } : agentSkills.offer()))
+    ipcMain.handle('agent-skill:install', (_event, ids: unknown) => agentSkills.install(agentIdsArg(ids)))
+    ipcMain.handle('agent-skill:decline', (_event, ids: unknown) => agentSkills.decline(agentIdsArg(ids)))
+    ipcMain.handle('agent-skill:answer-offer', (_event, answer: unknown) => {
+      const a = (answer && typeof answer === 'object' ? answer : {}) as { install?: unknown; decline?: unknown }
+      return agentSkills.answerOffer(agentIdsArg(a.install), agentIdsArg(a.decline))
+    })
+    ipcMain.handle('agent-skill:offer-shown', (_event, ids: unknown) => agentSkills.offerShown(agentIdsArg(ids)))
+    // Remove and Replace are confirmed here, in a native dialog (confirmedAgentAction): Settings is in-page, so main cannot tell it from the editor by sender.
+    const unchanged = async () => ({ ok: true, action: 'remove' as const, rows: [], written: [], cli: null, status: await agentSkills.status() })
+    const confirmDialog: ConfirmDialog = (options) => { const win = BrowserWindow.getFocusedWindow(); return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options) }
+    ipcMain.handle('agent-skill:remove', (_event, ids: unknown) => confirmedAgentAction('remove', ids, { dialog: confirmDialog, run: (id) => agentSkills.remove([id]), unchanged }))
+    ipcMain.handle('agent-skill:replace', (_event, ids: unknown) => confirmedAgentAction('replace', ids, { dialog: confirmDialog, run: (id) => agentSkills.install([id], { replace: true }), unchanged }))
+    const hadUpdateConfiguration = existsSync(join(app.getPath('userData'), 'settings.json'))
     const readySettings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), {
       shownExampleRoot: () => example?.shownRoot() ?? null,
     })
@@ -182,9 +234,6 @@ if (!app.requestSingleInstanceLock()) {
       ownLocksReleased: (root) => exampleWindows.exampleLocksReleased(root),
       log: (event, details) => { void recordMainProcessDiagnostic(event, details) },
     })
-    // No timer runs while the machine sleeps, so on waking every owner-lock heartbeat is as old as the
-    // sleep was long. Rewrite them at once rather than up to a heartbeat interval later.
-    powerMonitor.on('resume', () => { void manager?.ownership.refreshNow() })
     // T6: a shortcut reassignment must relabel the native menu's displayed accelerators live —
     // the closure reads manager.refreshMenu lazily, since it is assigned just below.
     registerCliInstallIpc(ipcMain, bundleIdentifierFor(readRunningAppMetadata()))
@@ -212,6 +261,8 @@ if (!app.requestSingleInstanceLock()) {
     // Sharing a piece (0.24 ticket 03): the publisher, subscribed at the common post-save point.
     const sharingE2e = !app.isPackaged && process.env.WRITEFLEX_E2E === '1'
     const sharingPublisher = createSharingPublisher({
+      workspaceRoots: { read: () => readySettings.sharingWorkspaceRoots(), write: (roots) => readySettings.setSharingWorkspaceRoots(roots) },
+      openRoots: () => allStates().flatMap((state) => state.workspace ? [state.workspace.root] : []),
       records: { read: () => readySettings.sharingLinks(), write: (links) => readySettings.setSharingLinks(links) },
       secrets: sharingSecrets,
       access: () => sharingSetup.serviceAccess(),
@@ -241,6 +292,7 @@ if (!app.requestSingleInstanceLock()) {
       saved: (root, paths) => sharingPublisher.saved(root, paths),
     })
     onDocumentsChangedOutside((root, paths) => { void outsideChanges.changed(root, paths) })
+    onSharingIdentityChanged((root) => sharingPublisher.invalidateSharingIdentity(root))
     onDocumentsChanged((root, paths) => sharingPublisher.saved(root, paths))
     // Ticket 04 (R-D): a Collection opened again: its shares are looked at (changed, gone, moved while closed).
     onWorkspaceOpened((root) => { void sharingPublisher.reconcile(root) })
@@ -253,12 +305,24 @@ if (!app.requestSingleInstanceLock()) {
     // share is looked at (R-D); then a signal still held is removed (S4). The network tried again whenever the Mac wakes.
     void takeAtStart(followSignals, () => sharingPublisher.resume())
     powerMonitor.on('resume', () => { void followSignals.take().finally(() => sharingPublisher.reconnected()) })
+    // Synced Collections (OneDrive): what sync delivered while the Mac slept is reconciled (sync-replica-session.ts).
+    powerMonitor.on('resume', () => { reconcileSyncedCollectionsAfterWake() })
     // Readers' notes into the margin (0.24 ticket 07): the links and their owner tokens stay in main.
     const notesClient = createServiceClient({ fetch: (input, init) => fetch(input, init) })
     setReaderNotesSource({
+      refresh: (root) => sharingPublisher.refresh(root),
+      claimAccept: (base, id, owner, key, claim) => notesClient.claimNote(base, id, owner, key, claim),
+      releaseAccept: (base, id, owner, key, claim, force, at) => notesClient.releaseClaim(base, id, owner, key, claim, force, at),
       links: (root) => sharingPublisher.noteSources(root),
+      replyVisibility: (root, shareId) => sharingPublisher.shownNotes(root, shareId),
       shareIds: () => sharingPublisher.noteShareIds(),
-      fetchNotes: (base, shareId, owner) => notesClient.notes(base, shareId, owner),
+      fetchNotes: async (base, shareId, owner) => {
+        const answer = await notesClient.noteState(base, shareId, owner)
+        if (answer.kind === 'ok' && rememberReaderClaims(shareId, answer.body.notes)) {
+          for (const state of allStates()) if (!state.window.isDestroyed()) state.window.webContents.send('changes:changed', null)
+        }
+        return answer
+      },
       markCollected: (base, shareId, owner, keys) => notesClient.collected(base, shareId, owner, keys),
       // Ticket 08: outcomes and replies back to the link each note came through (sharing-reader-replies.ts).
       sendOutcomes: (base, shareId, owner, items) => notesClient.outcomes(base, shareId, owner, items),
@@ -276,6 +340,31 @@ if (!app.requestSingleInstanceLock()) {
       // Review round 1 of ticket 11, F1: notes Clear handled notes took off the service, marked in that window's review list.
       readerNotesGone: async (senderId, shareId, keys) => stateForSender(senderId).changes?.markReaderNotesGone(shareId, keys, Date.now(), READER_CLOSED_KEPT),
     })
+    const protectedWriters = new Set<number>()
+    const updates = installUpdateNotices({
+      editorWindows: () => allStates().map(state => state.window),
+      isProtectedNow: () => protectedWriters.size > 0,
+      readConfig: () => ({ updateNotices: readySettings.updateNotices(), updatesCheckForNewVersions: readySettings.get('updates.checkForNewVersions'), hadConfiguration: hadUpdateConfiguration }),
+      writeConfig: patch => {
+        if (patch.updateNotices) readySettings.setUpdateNotices(patch.updateNotices)
+      },
+      e2e: !app.isPackaged && process.env.WRITEFLEX_E2E === '1',
+    })
+    ipcMain.handle('updates:protected', (event, active: unknown) => {
+      if (!allStates().some(state => state.window.webContents.id === event.sender.id)) return
+      if (active === true) protectedWriters.add(event.sender.id)
+      else protectedWriters.delete(event.sender.id)
+      updates.busyChanged()
+    })
+    app.on('web-contents-created', (_event, contents) => {
+      const clear = () => { if (protectedWriters.delete(contents.id)) updates.busyChanged() }
+      contents.once('destroyed', clear)
+      contents.on('render-process-gone', clear)
+      contents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) clear() })
+    })
+    const stopUpdateSettings = readySettings.onChange(key => { if (key === 'updates.checkForNewVersions') updates.settingChanged() })
+    app.once('will-quit', () => { updates.stop(); stopUpdateSettings() })
+
     const ipc = registerIpc(manager.router(), readySettings, skills, {
       appVersionLabel: `${app.getVersion()}${appVariant.versionLabelSuffix}`,
       guide,
@@ -287,7 +376,81 @@ if (!app.requestSingleInstanceLock()) {
     app.once('will-quit', ipc.dispose)
     // Copies of widget files opened in the browser live only as long as the app (widget-open.ts).
     app.once('will-quit', removeOpenedWidgetCopiesSync)
-    manager.onWindowClosed = ipc.evictWindow
+    // Automatic backup (backup-helper/enrolment.ts): off unless this Mac's user turned it on for a folder in
+    // Settings › Backup. Both the control lane (status, Sync now) and the editor receipts are built from one
+    // trial configuration for the registered folders (active-services.ts) and rebuilt when that changes; with
+    // none registered they answer `disabled`, no socket is opened, no helper runs and every save is as before.
+    // A window's folder is main's own state. A window's receipt owner is retired when its page is replaced,
+    // its renderer dies, it closes or a Collection is bound to it, so a later call from it gets a new owner.
+    const windowRoot = (senderId: number): string | null => { try { return stateForSender(senderId).workspace?.root ?? null } catch { return null } }
+    const backupServices = createActiveBackupServices({
+      make: (trial) => ({
+        helper: createBackupHelperService({ trial, windowRoot }),
+        receipts: createBackupReceiptService({ trial, receiptsDir: join(app.getPath('userData'), 'backup-receipts'), windowRoot, startTime: readProcessStartTime }),
+      }),
+      onChanged: () => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send(BACKUP_ENROLMENT_CHANNELS.changed) },
+    })
+    const backupHelper = backupServices.helper
+    registerBackupHelperIpc(ipcMain, backupHelper)
+    const backupReceipts = backupServices.receipts
+    // The helper runs as a child of this app only (supervisor.ts): this app's binary in Node mode on the
+    // helper's packaged bin.js, never inside this process and never after quit.
+    const helperEntry = backupHelperEntry(app.isPackaged, process.resourcesPath, app.getAppPath())
+    const githubBindings = new Map<number, number>()
+    const trustedGitHubBinding = (senderId: number): string | null => {
+      try {
+        const state = stateForSender(senderId), contents = state.window.webContents
+        const expected = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '../renderer/index.html')).toString()
+        if (state.window.isDestroyed() || contents.isDestroyed() || contents.getURL() !== expected) return null
+        return `${senderId}:${githubBindings.get(senderId) ?? 0}:${windowRoot(senderId) ?? ''}`
+      } catch { return null }
+    }
+    const githubStore = createGitHubAuthStore(app.getPath('userData'), openSecretsStore(app.getPath('userData'), packagedSmokeRequested(process.env), githubSecretsFiles()), BACKUP_GITHUB_CONFIG?.clientId ?? null)
+    let backupEnrolment: ReturnType<typeof createBackupEnrolment>
+    let lastAuthGeneration = ''
+    let githubStarted = false
+    const githubAuth = createGitHubAuth({
+      config: BACKUP_GITHUB_CONFIG, store: githubStore, binding: trustedGitHubBinding, root: windowRoot,
+      supervisor: () => githubSupervisor,
+      holdBackups: () => backupServices.holdCopyGuard(),
+      open: url => shell.openExternal(url), copy: () => {},
+      changed: () => {
+        for (const state of allStates()) if (!state.window.isDestroyed()) state.window.webContents.send(BACKUP_GITHUB_CHANNELS.changed)
+        const gate = githubStore.gate.state(), generation = gate ? `${gate.epoch}:${gate.generation}:${gate.phase}` : 'unknown'
+        if (generation !== lastAuthGeneration) {
+          lastAuthGeneration = generation
+          if (githubStarted && backupEnrolment) void backupEnrolment.startup().catch(() => recordMainProcessDiagnostic('backup-github-reconfigure', { message: 'Backup remains held after account state changed' }))
+        }
+      },
+    })
+    const githubSupervisor = createHelperSupervisor({ command: process.execPath, entry: helperEntry, historyApprovalFile: join(realpathSync(app.getPath('userData')), 'backup-helper', HISTORY_APPROVAL_BASENAME), credentials: args => githubAuth.credentials(args), exposure: githubAuth.exposure })
+    registerGitHubIpc(ipcMain, githubAuth, event => {
+      try { return trustedGitHubBinding(event.sender.id) !== null && stateForSender(event.sender.id).window.webContents === event.sender } catch { return false }
+    })
+    const retireGitHubSender = (id: number) => { githubBindings.set(id, (githubBindings.get(id) ?? 0) + 1); githubAuth.retireSender(id) }
+    backupEnrolment = createBackupEnrolment({
+      dir: join(app.getPath('userData'), 'backup-helper'),
+      windowRoot,
+      helperEntry: () => helperEntry,
+      supervisor: githubSupervisor,
+      githubBinding: vault => githubAuth.githubBinding(vault),
+      githubUncertainty: () => githubStore.blocked() || githubStore.gate.debts().length > 0 || githubSupervisor.ownedChildren().length > 0,
+      services: backupServices,
+      shortRuntimeBase: join(tmpdir(), `writeflex-backup-${process.getuid?.() ?? 0}`),
+    })
+    registerBackupEnrolmentIpc(ipcMain, backupEnrolment)
+    app.once('will-quit', () => { githubAuth.quit(); backupEnrolment.quit(); void backupServices.dispose() })
+    void githubAuth.startup().then(() => { githubStarted = true; return backupEnrolment.startup() }).catch((error: unknown) => recordMainProcessDiagnostic('backup-enrolment-startup', { message: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300) }))
+    registerBackupReceiptIpc(ipcMain, backupReceipts)
+    setSaveReceiptPort(backupReceipts)
+    setNonAtomicWritePolicy((root) => backupReceipts.nonAtomicPolicy(root))
+    // A window's backup preview (enrolment.ts) is void on the same events: it was bound to that page and folder binding.
+    app.on('web-contents-created', (_event, contents) => {
+      contents.on('did-navigate', () => { backupReceipts.retireSender(contents.id); backupEnrolment.retireSender(contents.id); retireGitHubSender(contents.id) })
+      contents.on('render-process-gone', () => { backupReceipts.retireSender(contents.id); backupEnrolment.retireSender(contents.id); retireGitHubSender(contents.id) })
+    })
+    onWindowWorkspaceBound((webContentsId) => { backupReceipts.retireSender(webContentsId); backupEnrolment.retireSender(webContentsId); retireGitHubSender(webContentsId) })
+    manager.onWindowClosed = (webContentsId) => { ipc.evictWindow(webContentsId); backupHelper.disposeWindow(webContentsId); backupReceipts.retireSender(webContentsId); backupEnrolment.retireSender(webContentsId); retireGitHubSender(webContentsId) }
     // The menu lists pins and recents. Whether the example's entry for its fixed path is hidden
     // there follows one asynchronous look at that path; the menu is rebuilt if the answer changed.
     const buildMenu = (): void => Menu.setApplicationMenu(buildAppMenu(manager!, readySettings))
@@ -362,11 +525,11 @@ if (!app.requestSingleInstanceLock()) {
       // Await this final line: the serialised logger first persists any queued timeout warning, then this
       // settlement, before the second app.quit() ends the process.
       await recordMainProcessDiagnostic('app.will-quit.cleanup-settled', { outcome, elapsedMs: Date.now() - startedAt })
-      // Every window has closed and its writes have settled (or timed out): give each Collection up,
-      // so the command line can write directly. A lock left by a quit that outran this is recovered
-      // by the next owner, because this process will be gone.
-      await waitForCleanupWithTimeout(manager?.ownership.releaseAll() ?? Promise.resolve(), 1000, () => {
-        recordMainProcessDiagnostic('app.will-quit.owner-lock-timeout', { timeoutMs: 1000 })
+      // Every window has closed and its writes have settled (or timed out): remove each Collection's
+      // reply key, so the command line on this computer writes directly. A key left by a quit that
+      // outran this is ignored, because its presence record names this process, which will be gone.
+      await waitForCleanupWithTimeout(manager?.openCollections.closeAll() ?? Promise.resolve(), 1000, () => {
+        recordMainProcessDiagnostic('app.will-quit.close-collections-timeout', { timeoutMs: 1000 })
       })
       agentShutdownFlushed = true
       // The packaged smoke runs with piped stdio; Electron can retain the process after app.exit even
@@ -447,3 +610,7 @@ function focusAnyWindow(): void {
   if (window.isMinimized()) window.restore()
   window.focus()
 }
+
+// Memory-only diagnostics for bounded native delivery probes; no IPC or private document data.
+export { readerDeliveryReceipts } from './reading-room-resources'
+export { readerPolicyReceipts } from './reading-room-policy'

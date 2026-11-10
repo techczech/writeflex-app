@@ -13,7 +13,6 @@ import {
   isInsideDiaryRoot,
   invalidateCountedCollectionCache,
   persistDiarySession,
-  resumeDiaryDayFile,
   type DiarySessionRecord,
 } from '../../src/main/diary'
 import { parseFrontmatter } from '../../src/main/frontmatter'
@@ -110,15 +109,14 @@ test('a live Diary Workspace owns the instrumentation write for watcher deduplic
   expect(diaryWorkspace.wasRecentlyWrittenByApp('2026-08-02.md')).toBe(true)
 })
 
-test('a hostile Day Entry pauses after one visible refusal and can be resumed by an app edit', async () => {
+test('a hostile Day Entry reports each refusal and automatically retries after repair', async () => {
   const path = join(diaryRoot, '2026-08-02.md')
   await writeFile(path, '---\n words_written : 1\n---\n\n# Sunday 2 August 2026\n', 'utf8')
   const first = await persistDiarySession(diaryRoot, session())
   expect(first.error).toMatch(/2026-08-02\.md.*line 2/)
-  expect((await persistDiarySession(diaryRoot, session({ netWords: 30 }))).error).toBeUndefined()
-  resumeDiaryDayFile(path)
-  expect((await persistDiarySession(diaryRoot, session({ netWords: 35 }))).error).toBeUndefined()
-  expect(await readFile(path, 'utf8')).toContain(' words_written : 1')
+  expect((await persistDiarySession(diaryRoot, session({ netWords: 30 }))).error).toMatch(/2026-08-02/)
+  await writeFile(path, '# Repaired day\n')
+  expect(await persistDiarySession(diaryRoot, session({ netWords: 35 }))).toEqual({ name: '2026-08-02.md' })
 })
 
 test('Aggregate maintenance sums the latest checkpoint for each session', async () => {
@@ -127,8 +125,8 @@ test('Aggregate maintenance sums the latest checkpoint for each session', async 
   await appendDiarySession(diaryRoot, session({ id: 'session-2', startedAt: new Date(2026, 7, 2, 11, 30).getTime(), minutes: 3, netWords: -5 }))
   const content = await readFile(join(diaryRoot, '2026-08-02.md'), 'utf8')
   const frontmatter = parseFrontmatter(content)
-  expect(frontmatter?.extra.words_written).toBe('40')
-  expect(frontmatter?.extra.mins_spent).toBe('7')
+  expect(frontmatter?.extra.words_written).toBe('35')
+  expect(frontmatter?.extra.mins_spent).toBe('10')
   expect(content.match(/<!-- writeflex:recorded:meta /g)).toHaveLength(1)
 })
 
@@ -142,7 +140,7 @@ test('checkpoint row rewrites preserve CRLF day-file endings', async () => {
   expect(content).toContain('09:12 · 7 min · +40 words · [[one]]\r\n')
 })
 
-test('a non-positive session never creates a Day Entry', async () => {
+test('an edit-free zero session never creates a Day Entry', async () => {
   const name = await appendDiarySession(diaryRoot, session({ netWords: 0 }))
   expect(name).toBeNull()
   expect(existsSync(join(diaryRoot, '2026-08-02.md'))).toBe(false)
@@ -205,7 +203,78 @@ test('a diary folder inside a Collection another owner holds is not created or w
   } finally {
     resumeCollectionWrites(root)
   }
-  resumeDiaryDayFile(join(inside, '2026-08-02.md'))
   expect(await persistDiarySession(inside, session())).toEqual({ name: '2026-08-02.md' })
   expect(existsSync(join(inside, '2026-08-02.md'))).toBe(true)
+})
+
+for (const damage of ['missing', 'malformed', 'partial'] as const) {
+  test(`surviving recorded rows rebuild totals after ${damage} metadata; later sessions persist`, async () => {
+    await appendDiarySession(diaryRoot, session())
+    await appendDiarySession(diaryRoot, session({ id: 'second', netWords: 10 }))
+    const path = join(diaryRoot, '2026-08-02.md')
+    const original = await readFile(path, 'utf8')
+    const damaged = original.replace(/<!-- writeflex:recorded:meta .* -->/, damage === 'missing' ? '' : damage === 'malformed' ? '<!-- writeflex:recorded:meta [{broken -->' : '<!-- writeflex:recorded:meta [] -->')
+    await writeFile(path, damaged + '\nWriter reflection.\n')
+    await appendDiarySession(diaryRoot, session({ id: 'third', netWords: -5, startedAt: new Date(2026, 7, 2, 10, 0).getTime() }))
+    const result = await readFile(path, 'utf8')
+    expect(parseFrontmatter(result)?.extra.words_written).toBe('30')
+    expect(parseFrontmatter(result)?.extra.mins_spent).toBe('12')
+    expect(result).toContain('Writer reflection.')
+    expect(result).toContain('-5 words')
+  })
+}
+
+test('an incomplete recorded block refuses without changing a byte', async () => {
+  const path = join(diaryRoot, '2026-08-02.md')
+  const content = '# Reflection\n<!-- writeflex:recorded:start -->\n09:12 · 4 min · +25 words · [[one]]\n'
+  await writeFile(path, content)
+  await expect(appendDiarySession(diaryRoot, session())).rejects.toThrow('incomplete')
+  expect(await readFile(path, 'utf8')).toBe(content)
+})
+
+test('invalid exported session numbers never create a day file', async () => {
+  for (const input of [{ startedAt: NaN }, { startedAt: Infinity }, { minutes: NaN }, { netWords: NaN }]) {
+    await expect(appendDiarySession(diaryRoot, session(input))).rejects.toThrow('Invalid Diary')
+  }
+  expect(await new Workspace(diaryRoot).listFiles()).toHaveLength(0)
+})
+
+test('a zero-net edited session persists its minutes', async () => {
+  await appendDiarySession(diaryRoot, session({ netWords: 0, edited: true }))
+  expect(parseFrontmatter(await readFile(join(diaryRoot, '2026-08-02.md'), 'utf8'))?.extra.mins_spent).toBe('4')
+})
+
+test('a damaged marker cannot make the current checkpoint count its surviving row twice', async () => {
+  await appendDiarySession(diaryRoot, session())
+  const path = join(diaryRoot, '2026-08-02.md')
+  const damaged = (await readFile(path, 'utf8')).replace(/<!-- writeflex:recorded:meta .* -->/, '')
+  await writeFile(path, damaged)
+  await expect(appendDiarySession(diaryRoot, session({ netWords: 40 }))).rejects.toThrow('Cannot identify')
+  expect(await readFile(path, 'utf8')).toBe(damaged)
+})
+
+test('an unreadable block cannot replace existing totals with a zero-net checkpoint', async () => {
+  const path = join(diaryRoot, '2026-08-02.md')
+  const damaged = '---\nwords_written: 40\nmins_spent: 10\n---\n<!-- writeflex:recorded:start -->\nrecorded\n09:12 · damaged row\n<!-- writeflex:recorded:end -->\n'
+  await writeFile(path, damaged)
+  await expect(appendDiarySession(diaryRoot, session({ netWords: 0, edited: true }))).rejects.toThrow('no readable recorded rows')
+  expect(await readFile(path, 'utf8')).toBe(damaged)
+})
+
+test('recovery by another window cannot let a later old checkpoint duplicate a recovered sitting', async () => {
+  await appendDiarySession(diaryRoot, session())
+  const path = join(diaryRoot, '2026-08-02.md')
+  await writeFile(path, (await readFile(path, 'utf8')).replace(/<!-- writeflex:recorded:meta .* -->/, ''))
+  await appendDiarySession(diaryRoot, session({ id: 'other-window', startedAt: new Date(2026, 7, 2, 10, 0).getTime(), netWords: 10 }))
+  const recovered = await readFile(path, 'utf8')
+  await expect(appendDiarySession(diaryRoot, session({ netWords: 40 }))).rejects.toThrow('Cannot identify')
+  expect(await readFile(path, 'utf8')).toBe(recovered)
+})
+
+test('missing aggregates do not permit a zero derived from an unreadable recorded block', async () => {
+  const path = join(diaryRoot, '2026-08-02.md')
+  const damaged = '# Day\n<!-- writeflex:recorded:start -->\nrecorded\n09:12 · damaged row\n<!-- writeflex:recorded:end -->\n'
+  await writeFile(path, damaged)
+  await expect(appendDiarySession(diaryRoot, session({ netWords: 0, edited: true }))).rejects.toThrow('no readable recorded rows')
+  expect(await readFile(path, 'utf8')).toBe(damaged)
 })

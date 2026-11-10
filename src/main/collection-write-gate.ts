@@ -2,16 +2,20 @@
  * "May this Collection be written now?" — the one question every writer under a Collection asks
  * before it writes: the Workspace (documents, folders, images), the version, scrap and review stores
  * under `.writeflex`, this app's calls into the history store under `.bridle` (gated-snapshots.ts),
- * export when its target lies inside the Collection, and the delete and trash paths. The answer is set only by collection-ownership.ts: no while another owner holds a Collection
- * this app has open, yes otherwise. A process that never opens a Collection as the app (the command
- * line) always gets yes; it asks the owner lock itself.
+ * export when its target lies inside the Collection, and the delete and trash paths.
+ *
+ * SINCE 2026-11-03 NOTHING IN PRODUCTION CLOSES THIS GATE. It was closed by the Collection owner lock,
+ * which was removed: another Mac or program having the Collection open must never pause saving here
+ * (docs/plans/2026-11-03-sync-replicas-and-duplicate-reconciliation.md). The gate stays as a seam the
+ * tests use to prove each writer asks before it writes; do not wire it to anything synced, remote or
+ * lease-like. Removing it entirely is a separate cleanup.
  *
  * Electron-free and dependency-free, so any main-process module can ask.
  */
 import { realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 
-/** Thrown by a write refused while the Collection's owner lock is lost; the message is for the user. */
+/** Thrown by a write refused while the gate is closed; the message is for the user. */
 export class WritesPausedError extends Error {
   override readonly name = 'WritesPausedError'
 }
@@ -39,12 +43,12 @@ function canonical(path: string): string {
   }
 }
 
-/** @internal collection-ownership.ts only. */
+/** @internal Tests only (see above). */
 export function pauseCollectionWrites(root: string, reason: string): void {
   paused.set(root, { canonical: canonical(root), reason })
 }
 
-/** @internal collection-ownership.ts only. */
+/** @internal Tests only (see above). */
 export function resumeCollectionWrites(root: string): void {
   paused.delete(root)
 }

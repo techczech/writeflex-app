@@ -3,6 +3,7 @@ import { useOutlinePartDrag } from './folio-outline-drag'
 import { roomPartRenderKey } from '../../../shared/folio-room'
 import { outlineHeadingRows, filterOutlinePart, headingRoute, type FolioHeadingTarget } from '../../../shared/folio-workspace-headings'
 import { Fragment, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { noEvidence, evidenceFor, evidenceUnreadable } from './FolioRoomEvidence'
 import type { ShownFlag } from './FolioRoomFlags'
@@ -29,6 +30,8 @@ function Status({ part }: { part: RoomPart }): JSX.Element {
 }
 
 export type FolioRoomOutlineProps = {
+  /** The Folio bar's tools slot: Expand, Collapse and Filter draw there, in the one bar (R1). */
+  toolsHost?: HTMLElement | null
   /** The parts the room draws, in running order (front matter is not among them). */
   titleWidth?: number
   onTitleWidth?: (width: number | null) => void
@@ -57,7 +60,7 @@ export type FolioRoomOutlineProps = {
   onHeading?: (target: FolioHeadingTarget) => void
 }
 
-export function FolioRoomOutline({ titleWidth, onTitleWidth, parts, shown, listRef, onSelect, onKeyDown, drag, onMove, onDragActive, onDragRefuse, newCard = null, model, author, busy = false, multi, flags, headingOutline = null, expanded = [], onExpanded, onHeading }: FolioRoomOutlineProps): JSX.Element {
+export function FolioRoomOutline({ toolsHost = null, titleWidth, onTitleWidth, parts, shown, listRef, onSelect, onKeyDown, drag, onMove, onDragActive, onDragRefuse, newCard = null, model, author, busy = false, multi, flags, headingOutline = null, expanded = [], onExpanded, onHeading }: FolioRoomOutlineProps): JSX.Element {
   const column = useRef<HTMLDivElement>(null)
   const resizing = useRef<{ x: number; width: number } | null>(null)
   const totals = outlineTotals(parts)
@@ -83,9 +86,10 @@ export function FolioRoomOutline({ titleWidth, onTitleWidth, parts, shown, listR
   const toggle = (path: string): void => onExpanded?.(expanded.includes(path) ? expanded.filter(value => value !== path) : [...expanded, path])
   return (
     <div className="fr-ol" ref={column} data-testid="room-outline" style={{ '--fr-title-width': titleWidth ? `${titleWidth}px` : 'minmax(140px, 1fr)' } as React.CSSProperties}>
-      <div className="fr-otools" data-testid="outline-heading-tools">
-        <button type="button" className="fr-tb" onClick={() => onExpanded?.(parts.flatMap(part => part.outline && outlineHeadingRows(part.outline).length ? [part.outline.path] : []))}><ChevronDown aria-hidden="true" />Expand all</button>
-        <button type="button" className="fr-tb" onClick={() => onExpanded?.([])}><ChevronRight aria-hidden="true" />Collapse all</button>
+      {toolsHost ? createPortal(
+        <span className="fr-otools-inline" data-testid="outline-heading-tools">
+        <button type="button" className="fr-tb" onClick={() => onExpanded?.(parts.flatMap(part => part.outline && outlineHeadingRows(part.outline).length ? [part.outline.path] : []))} title="Expand all" aria-label="Expand all"><ChevronDown aria-hidden="true" />Expand all</button>
+        <button type="button" className="fr-tb" onClick={() => onExpanded?.([])} title="Collapse all" aria-label="Collapse all"><ChevronRight aria-hidden="true" />Collapse all</button>
         {allSectionRows.some(row => row.sectionPage) && <button type="button" className="fr-tb" onClick={() => {
           setCollapsedSections(new Set(parts.flatMap(part => part.outline?.sectionPage ? [part.outline.path] : [])))
           const owner = allSectionRows.find(row => row.index === shown)?.sectionIndex
@@ -94,10 +98,10 @@ export function FolioRoomOutline({ titleWidth, onTitleWidth, parts, shown, listR
         }}><ChevronRight aria-hidden="true" />Collapse all sections</button>}
         {allSectionRows.some(row => row.sectionPage) && <button type="button" className="fr-tb" onClick={() => setCollapsedSections(new Set())}>Expand all sections</button>}
         <input className="fr-heading-filter" type="text" aria-label="Filter headings" placeholder="Filter headings…" value={filter} onChange={event => setFilter(event.target.value)} />
-      </div>
-      <div className="fr-olbar"><span className="fr-sort">Running order</span><span className="fr-olhint">{drag.props(0).draggable ? <>Drag a row or <kbd>{roomMoveChord()}</kbd> to reorder · </> : null}<kbd>↵</kbd> opens its text</span></div>
+      </span>
+      , toolsHost) : null}
 
-      <div className="fr-outline-columns" aria-hidden="false"><span /><span className="fr-title-column">Title
+      <div className="fr-outline-columns" role="row" aria-hidden="false"><span /><span className="fr-title-column" role="columnheader">Title
         <button type="button" className="fr-title-resize" aria-label="Resize title column" title="Drag to widen the title column; double-click to reset" onDoubleClick={() => onTitleWidth?.(null)}
           onPointerDown={event => {
             const width = event.currentTarget.parentElement!.getBoundingClientRect().width
@@ -118,7 +122,7 @@ export function FolioRoomOutline({ titleWidth, onTitleWidth, parts, shown, listR
               onTitleWidth?.(event.key === 'Home' ? null : Math.max(140, Math.min(1800, (titleWidth ?? event.currentTarget.parentElement!.getBoundingClientRect().width) + (event.key === 'ArrowRight' ? 40 : -40))))
             }
           }} />
-      </span><span>Words</span><span>Label</span><span>Status</span><span>Priority</span><span>Sources</span></div>
+      </span><span role="columnheader">Words</span><span role="columnheader">Label</span><span role="columnheader">Status</span><span role="columnheader">Priority</span><span role="columnheader">Sources</span></div>
       <div className="fr-olrows" role="listbox" aria-label="Parts, in running order" aria-multiselectable="true" ref={listRef} onKeyDown={event => {
         if ((event.target as HTMLElement).closest('input, textarea, select, button') || event.altKey || event.metaKey || event.ctrlKey) { onKeyDown(event); return }
         const selected = parts.find(part => part.index === shown)

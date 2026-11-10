@@ -152,9 +152,9 @@ export function filterFolioFile(file: FolioOutlineFile, needle: string): { keep:
   return { keep: matching.length > 0, headings: matching }
 }
 
-/** "In Example guide, not in the running order." / the line for an empty group. */
+/** "In Example guide, not in the outline." / the line for an empty group. */
 export function alsoLine(name: string, count: number): string {
-  return count === 0 ? `Every piece in ${name} is in the running order.` : `In ${name}, not in the running order.`
+  return count === 0 ? `Every piece in ${name} is in the running order.` : `In ${name}, not in the outline.`
 }
 
 /** The Folder part's foot line for a folder that is not a Folio, and for a file loose in the collection. */

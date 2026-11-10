@@ -165,13 +165,13 @@ test('the derived rows of each chapter, as built (counts are the build\'s, not t
     'Shape the document': 28,
     'Stay focused': 20,
     'Listen': 9,
-    'Review and versions': 25, // +2 Accept all / Decline all from one agent (2026-10-27)
-    'Find and manage files': 33,
+    'Review and versions': 37, // +12 Folio/file version commands in the current registry
+    'Find and manage files': 38,
     'Collect and plan': 104, // +4 sheet-only Folio workspace keys (2026-10-25); +19 option A collection page commands (2026-10-21); +2 the Folio workspace's Files tab and inspector (2026-10-24).
     // // +1 Capture to research;  +5 Folio page redesign (0.26: the agent pill's three writes, Choose a file as front matter, Show or hide the files not in the outline); then 58: 41 at the fork; +5 title-conflict buttons, +1 Open Folio (next/0.25.1); +1 Add existing part to Folio outline as front matter (ADR-0046); +1 Go to the Details (0.26 ticket 4); +9 Folio outline keys (0.26 ticket 7: Open Folio at another part, Choose the role of a part, Open the file, six Details rows)
     'Work with the agent': 28, // +10 Scratchpad commands (2026-10-28, ADR-0050); fixture completed at the 2026-10-29 installed-base merge
     'Share and export': 15,
-    'Set up WriteFlex': 17,
+    'Set up WriteFlex': 19, // Check for Updates and What's new
   })
   expect(chapterFor(chapters, 'Shape the document')!.subgroups.map((group) => [group.name, group.rows.map((row) => row.label)])).toEqual([
     ['Fold', ['Fold Current Heading', 'Fold All Headings', 'Unfold All']],

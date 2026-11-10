@@ -4,9 +4,9 @@ import {
   AlertTriangle,
   Check,
   FileText,
-  MessageSquare,
   Pencil,
   Search,
+  Sparkles,
   X,
 } from 'lucide-react'
 import type { SkillMeta } from '../../../preload'
@@ -128,7 +128,7 @@ export function SkillEditProposal({
         <button type="button" className="ghost primary" disabled={applying} onClick={onApply}>
           <Check className="icon sm" aria-hidden="true" />{applying ? 'Applying…' : 'Apply'}
         </button>
-        <button type="button" className="ghost" disabled={applying} onClick={onDiscard}>Discard</button>
+        <button type="button" className="ghost" disabled={applying} onClick={onDiscard}>Decline</button>
         <small>applies on the skill's next run</small>
       </div>
     </div>
@@ -401,7 +401,7 @@ export function SkillsManager({
                     <pre className="skill-instructions">{detail.instructions}</pre>
                     <div className="skill-manager-actions view-actions">
                       <button type="button" className="ghost" onClick={() => { setMode('ask'); setActionError('') }}>
-                        <MessageSquare className="icon sm" aria-hidden="true" />Ask the agent to change it
+                        <Sparkles className="icon sm" aria-hidden="true" />Ask the agent to change it
                       </button>
                       <button type="button" className="ghost" onClick={() => void editByHand()}>
                         <Pencil className="icon sm" aria-hidden="true" />Edit by hand
@@ -413,7 +413,7 @@ export function SkillsManager({
                 {detail && mode === 'ask' && (
                   <>
                     <form className="skill-edit-console" onSubmit={(event) => { event.preventDefault(); void submitRequest() }}>
-                      <MessageSquare className="icon sm" aria-hidden="true" />
+                      <Sparkles className="icon sm" aria-hidden="true" />
                       <input
                         autoFocus
                         value={request}

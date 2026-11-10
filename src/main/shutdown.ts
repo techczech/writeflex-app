@@ -51,8 +51,8 @@ export class MainProcessDiagnostics {
 
 let diagnostics: MainProcessDiagnostics | null = null
 
-export function configureMainProcessDiagnostics(path: string): void {
-  diagnostics = new MainProcessDiagnostics(path)
+export function configureMainProcessDiagnostics(path: string | null): void {
+  diagnostics = path === null ? null : new MainProcessDiagnostics(path)
 }
 
 export function recordMainProcessDiagnostic(event: string, details: Record<string, unknown> = {}): Promise<void> {

@@ -97,6 +97,28 @@ export type WatchableWorkspace = {
 
 export type WorkspaceWatcher = { dispose: () => void }
 
+/**
+ * A file of the replica version store that sync delivers from another computer: a record
+ * (`records/<id>.json`) or an object (`objects/<sha256>`). Staged files (dot names, `.tmp`) are not.
+ * Contract: docs/plans/2026-11-03-sync-replicas-and-duplicate-reconciliation.md, "History arrivals".
+ */
+const REPLICA_HISTORY_PATH = /^\.writeflex\/replica-versions\/(?:records\/[^./][^/]*\.json|objects\/[0-9a-f]{64})$/
+
+export function isReplicaHistoryPath(path: string): boolean {
+  return REPLICA_HISTORY_PATH.test(normaliseWatchPath(path))
+}
+
+/**
+ * The second channel of a OneDrive Collection's watcher: replica history files that arrived, in their
+ * own bursts. They never reach `onChanged` (no listing refresh, no banner: they stay hidden). `isOwn`
+ * says a path still holds exactly what this app published there (replica-versions.ts
+ * `wasPublishedByThisApp`, the OwnWriteTracker rule): those are dropped, anything else is delivered.
+ */
+export type HistoryRoute = {
+  onArrived: (paths: string[]) => void
+  isOwn: (path: string, at?: number) => boolean
+}
+
 /** Where the watcher's raw events go: document paths in sorted bursts. (The vault settings file has
  *  its own watcher, vault-watcher.ts, which runs whatever this setting says.) */
 export type WatchRouter = { take: (filename: string) => void; dispose: () => void }
@@ -104,17 +126,30 @@ export type WatchRouter = { take: (filename: string) => void; dispose: () => voi
 /**
  * The watcher's rule, apart from the native watch so it can be tested: ignored paths (every dot-path,
  * `.writeflex` included) are dropped, and every other path is collected into a burst for `onChanged`
- * unless the app wrote it itself.
+ * unless the app wrote it itself. With a `history` route (OneDrive Collections only), replica history
+ * files are the one exception: they go to `history.onArrived`, never to `onChanged`.
  */
 export function createWatchRouter(
   workspace: WatchableWorkspace,
   onChanged: (paths: string[]) => void,
   debounceMs = WATCH_BURST_DEBOUNCE_MS,
+  history?: HistoryRoute,
+  sharingIdentityChanged?: () => void,
 ): WatchRouter {
   const releaseDeclarations = watchFolioDeclarations(workspace.root)
   const pending = new Set<string>()
   let timer: ReturnType<typeof setTimeout> | null = null
+  const historyPending = new Set<string>()
+  let historyTimer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
+
+  const flushHistory = (): void => {
+    historyTimer = null
+    if (disposed || !history || historyPending.size === 0) return
+    const paths = [...historyPending].filter(path => !history.isOwn(path)).sort((a, b) => a.localeCompare(b))
+    historyPending.clear()
+    if (paths.length) history.onArrived(paths)
+  }
 
   const flush = (): void => {
     timer = null
@@ -128,8 +163,16 @@ export function createWatchRouter(
     take: (filename) => {
       if (disposed || !filename) return
       const path = normaliseWatchPath(String(filename))
+      if (/^\.writeflex\/sharing-workspace.*\.json$/.test(path)) { sharingIdentityChanged?.(); return }
       // Hidden Folio sidecars matter; app journals do not invalidate declarations.
       invalidateFolioDeclarations(workspace.root, path)
+      if (history && isReplicaHistoryPath(path)) {
+        if (history.isOwn(path)) return
+        historyPending.add(path)
+        if (historyTimer) clearTimeout(historyTimer)
+        historyTimer = setTimeout(flushHistory, debounceMs)
+        return
+      }
       if (isIgnoredWorkspaceWatchPath(path) || workspace.wasRecentlyWrittenByApp(path)) return
       pending.add(path)
       if (timer) clearTimeout(timer)
@@ -142,6 +185,9 @@ export function createWatchRouter(
       if (timer) clearTimeout(timer)
       timer = null
       pending.clear()
+      if (historyTimer) clearTimeout(historyTimer)
+      historyTimer = null
+      historyPending.clear()
     },
   }
 }
@@ -151,6 +197,8 @@ export function createWorkspaceWatcher(
   workspace: WatchableWorkspace,
   onChanged: (paths: string[]) => void,
   debounceMs = WATCH_BURST_DEBOUNCE_MS,
+  history?: HistoryRoute,
+  sharingIdentityChanged?: () => void,
 ): WorkspaceWatcher {
   let router: WatchRouter | null = null
   let disposed = false
@@ -158,7 +206,7 @@ export function createWorkspaceWatcher(
   let watcher: FSWatcher | null = null
 
   const start = (): void => {
-    const nextRouter = createWatchRouter(workspace, onChanged, debounceMs)
+    const nextRouter = createWatchRouter(workspace, onChanged, debounceMs, history, sharingIdentityChanged)
     let next: FSWatcher
     try {
       next = watch(workspace.root, { recursive: true, encoding: 'utf8' }, (_event, filename) => {

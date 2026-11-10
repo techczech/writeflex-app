@@ -26,7 +26,6 @@ const code = await runCli(['--root', root, '--json', ...argv], {
   write: {
     appDataFolders: [appData], keyFolders: [],
     trash: async () => { throw new Error('no Trash in this fixture') },
-    lockEnv: { processStartedAt: async () => null },
     seams: {
       beforeWrite: async (path) => {
         step += 1

@@ -44,7 +44,7 @@ describe('rename and move: the share follows', () => {
     w.publisher.saved(w.root, [PATH, to])
     await w.publisher.idle()
     expect(record()).toMatchObject({ path: to, on: true, problem: null, ended: null })
-    expect(pages()).toHaveLength(2)
+    expect(pages()).toHaveLength(1)
     expect(w.publisher.view(w.root, to).links[0]).toMatchObject({ shareId, address, on: true })
     expect(w.publisher.view(w.root, PATH).links).toEqual([])
   })
@@ -235,7 +235,7 @@ describe('a start looks at every share (ruling R-D)', () => {
     expect(followed?.ok).toBe(true)
     await again.idle()
     expect(record()).toMatchObject({ path: to, on: true, lost: null })
-    expect(pages()).toHaveLength(2)
+    expect(pages()).toHaveLength(1)
   })
 })
 

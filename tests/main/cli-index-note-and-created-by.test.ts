@@ -17,7 +17,6 @@ import type { JournalEntry } from '../../src/main/cli/journal'
 import { ChangeStore } from '../../src/main/changes'
 import { indexNotePath } from '../../src/main/folio'
 import { parseFrontmatter } from '../../src/main/frontmatter'
-import { inspectOwnerLock } from '../../src/main/owner-lock'
 import { readVersionContent, restoreVersionContent } from '../../src/main/version-content'
 import { VersionStore, type Version } from '../../src/main/versions'
 import { Workspace } from '../../src/main/workspace'
@@ -206,7 +205,7 @@ for (const route of ['direct', 'request'] as const) {
       // The restore says which version the buffer was based on (save fix): the writer's, on disk.
       await restoreVersionContent(opened.versions, opened.agent, opened.workspace, { id: versions[0].id, basis: { kind: 'disk', text: rewritten } })
       expect(await fx.read('a.md')).toBe(text)
-      expect((await inspectOwnerLock(fx.root)).state).toBe('free')
+      expect(existsSync(join(fx.root, '.writeflex', 'owner.lock'))).toBe(false)
     }, 60_000)
   }
 }

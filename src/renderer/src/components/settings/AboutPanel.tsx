@@ -1,3 +1,4 @@
+import { AboutUpdates } from '../UpdateNotices'
 import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronDown, Copy, Info } from 'lucide-react'
 import changelogSource from '../../../../../CHANGELOG.md?raw'
@@ -5,7 +6,7 @@ import { parseReleaseNotes, type ReleaseNoteRelease } from './release-notes'
 
 type RuntimeInfo = { electron: string; chrome: string; node: string; macOS: string }
 
-type AboutPanelProps = { onFlash: (message: string) => void }
+type AboutPanelProps = { onFlash: (message: string) => void; onSet: (key: string, value: boolean, label: string) => void }
 
 function ReleaseBody({ release }: { release: ReleaseNoteRelease }): JSX.Element {
   return (
@@ -43,7 +44,10 @@ function ReleaseRow({ release, expanded, onToggle }: { release: ReleaseNoteRelea
   )
 }
 
-export function AboutPanel({ onFlash }: AboutPanelProps): JSX.Element {
+export function AboutPanel({ onFlash, onSet }: AboutPanelProps): JSX.Element {
+  const [readerNotices, setReaderNotices] = useState<Array<{ key: string; text: string; sha256: string }> | null>(null)
+  const [readerNoticesOpen, setReaderNoticesOpen] = useState(false)
+  const [readerNoticesError, setReaderNoticesError] = useState('')
   const [version, setVersion] = useState<string | null>(null)
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null)
   const [copied, setCopied] = useState(false)
@@ -67,7 +71,7 @@ export function AboutPanel({ onFlash }: AboutPanelProps): JSX.Element {
 
   return (
     <div className="set-sec" id="sec-about">
-      <h3>About</h3>
+      <h3>About and updates</h3>
       <p className="sub">The app identity and bundled release notes.</p>
       <div className="card about-identity">
         <div className="crow">
@@ -81,6 +85,25 @@ export function AboutPanel({ onFlash }: AboutPanelProps): JSX.Element {
             {copied ? 'Copied' : 'Copy'}
           </button>
         </div>
+      </div>
+      <AboutUpdates setEnabled={on => onSet('updates.checkForNewVersions', on, 'Check for new versions')} />
+      <div className="card about-releases">
+        <button type="button" className="crow about-release-toggle" aria-expanded={readerNoticesOpen} aria-controls="reader-legal-notices" onClick={() => {
+          setReaderNoticesOpen(open => !open)
+          if (!readerNotices) void window.writeflex.readingRoom.getReaderNotices().then(setReaderNotices).catch(error => setReaderNoticesError(String(error)))
+        }}>
+          <ChevronDown className="icon sm" aria-hidden="true" />
+          <span className="grow"><span className="lbl">Reader legal notices</span></span>
+        </button>
+        {readerNoticesOpen && <div className="about-release-body" id="reader-legal-notices">
+          {readerNoticesError && <p role="alert">{readerNoticesError}</p>}
+          {!readerNotices && !readerNoticesError && <p>Loading reader legal notices…</p>}
+          {readerNotices?.map(notice => <section key={notice.key}>
+            <h5>{notice.key}</h5>
+            <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', userSelect: 'text', font: 'inherit' }}>{notice.text}</pre>
+            <small>SHA-256: {notice.sha256}</small>
+          </section>)}
+        </div>}
       </div>
       <h4 className="about-heading">Release notes for {version ?? 'the running release'}</h4>
       <div className="card about-releases">

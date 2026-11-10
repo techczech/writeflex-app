@@ -1,7 +1,7 @@
 import { setEvidenceDrag, useEvidenceAttachmentTarget } from '../folio-evidence-transfer'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
-import { Library, Search, X } from 'lucide-react'
+import { Search } from 'lucide-react'
 import { ARCHIVE_SCOPES, type ArchivePassageResponse, type ArchiveResult, type ArchiveScope, type ArchiveSearchResponse } from '../../../shared/scout'
 import { createSequencer } from '../search-hits'
 import { buildPassageModel, NO_WIDENING, selectedSpans, widen, widenedQuote, type Widening } from '../archive-passage'
@@ -18,13 +18,14 @@ const SOURCE_BADGE: Record<string, { label: string; className: string }> = {
 }
 
 type ArchiveSearchDockProps = {
-  /** The chord that opens and closes the dock, for its header (⌃⌘F unless reassigned). */
-  shortcut: string
+  /** The Research tab is showing this scope: the search field takes the keyboard when it becomes so. */
+  active: boolean
   /** ⏎: insert the block into the draft as one edit. Returns false when there is no draft to insert into. */
   onInsertQuote: (result: ArchiveResult, block: string) => boolean
   /** ⌘⏎: insert the link only. */
   onInsertLink: (result: ArchiveResult, link: string) => boolean
-  onClose: () => void
+  /** Esc: the keyboard goes back to the document. The Research tab stays where it is. */
+  onExit: () => void
 }
 
 /** The one-line row's text: the piece title, a tweet's own words, or "Author · Title" for a highlight. */
@@ -57,13 +58,13 @@ function renderCitationLine(line: string): ReactNode[] {
 }
 
 /**
- * The archive search dock (WF-4B): a 460 px dock of its own, replacing both side panes while open.
- * Top: the query, the scope chips and a one-line-per-result list for scanning. Bottom: the passage in
- * context (the hit highlighted, ⇧↑/⇧↓ taking one more sentence) and exactly the block ⏎ will insert.
- * ⏎ inserts the quote and its citation, ⌘⏎ the link only; either closes the dock (App does). Every
- * result, passage and citation comes from the scout CLI through main; nothing is searched here.
+ * The archive search (WF-4B), now the "Archive" scope of the right sidebar's Research tab (house rule R6; it was a
+ * 460 px dock of its own that replaced both side panes). Top: the query, the corpus chips and a one-line-per-result
+ * list for scanning. Bottom: the passage in context (the hit highlighted, ⇧↑/⇧↓ taking one more sentence) and exactly
+ * the block ⏎ will insert. ⏎ inserts the quote and its citation, ⌘⏎ the link only; either returns the keyboard to the
+ * draft (App does). Every result, passage and citation comes from the scout CLI through main; nothing is searched here.
  */
-export default function ArchiveSearchDock({ shortcut, onInsertQuote, onInsertLink, onClose }: ArchiveSearchDockProps): JSX.Element {
+export default function ArchiveSearchDock({ active, onInsertQuote, onInsertLink, onExit }: ArchiveSearchDockProps): JSX.Element {
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<ArchiveScope>('all')
   const [response, setResponse] = useState<ArchiveSearchResponse | null>(null)
@@ -77,7 +78,7 @@ export default function ArchiveSearchDock({ shortcut, onInsertQuote, onInsertLin
   const inputRef = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
 
-  useEffect(() => { inputRef.current?.focus() }, [])
+  useEffect(() => { if (active) inputRef.current?.focus() }, [active])
 
   // Live, debounced, race-guarded: a slow earlier scout run can never overwrite a later one.
   useEffect(() => {
@@ -146,7 +147,7 @@ export default function ArchiveSearchDock({ shortcut, onInsertQuote, onInsertLin
     const onButton = (event.target as HTMLElement).tagName === 'BUTTON'
     if (event.key === 'Escape') {
       event.preventDefault()
-      onClose()
+      onExit()
     } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !event.metaKey && !event.altKey && !event.ctrlKey) {
       event.preventDefault()
       const down = event.key === 'ArrowDown'
@@ -161,14 +162,7 @@ export default function ArchiveSearchDock({ shortcut, onInsertQuote, onInsertLin
   }
 
   return (
-    <aside className="chrome-pane archive-dock" aria-label="Search the archive" onKeyDown={onKeyDown}>
-      <div className="archive-head">
-        <Library className="icon sm" aria-hidden="true" />
-        <span>Search the archive</span>
-        <span className="gap" />
-        {shortcut && <kbd>{shortcut}</kbd>}
-        <button type="button" className="x" aria-label="Close archive search" title="Close (esc)" onClick={onClose}><X className="icon sm" /></button>
-      </div>
+    <section className="archive-dock embedded" aria-label="Search the archive" onKeyDown={onKeyDown}>
       <label className="archive-field">
         <Search className="icon sm" aria-hidden="true" />
         <input
@@ -209,7 +203,7 @@ export default function ArchiveSearchDock({ shortcut, onInsertQuote, onInsertLin
         <button type="button" className="archive-btn pri" disabled={!current} onClick={insertQuote}>Insert quote + citation <kbd>⏎</kbd></button>
         <button type="button" className="archive-btn" disabled={!current} onClick={insertLink}>Insert link only <kbd>⌘⏎</kbd></button>
       </div>
-    </aside>
+    </section>
   )
 }
 

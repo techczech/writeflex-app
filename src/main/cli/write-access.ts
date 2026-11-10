@@ -1,3 +1,5 @@
+import { replicaRecoveryDir } from '../replica-save-cycles'
+import { COMMAND_STORE_GRACE_MS } from '../document-write-versions'
 import { withFolioTitleIdentity } from '../folio-title-write'
 /**
  * What an operation that writes is given, and the conditions under which it gets it:
@@ -5,12 +7,17 @@ import { withFolioTitleIdentity } from '../folio-title-write'
  * 1. The root was chosen by the user: named with `--root`, or found by climbing AND on the app's own
  *    list of opened Collections. A marker folder alone (it may have arrived in a download) is not
  *    enough to change files.
- * 2. No app owns the Collection. The command line takes the owner lock for the length of the
- *    operation and gives it up on success, on refusal and on a thrown error. When an app does own
- *    it, the write is not made here at all: `chooseWriteRoute` says so and the command line files a
- *    request for the app instead (request-route.ts).
- * 3. The lock is confirmed again before each file is written; `withOwnerLock` does not stop an
- *    operation whose lock was taken, so the WriteSession asks.
+ * 2. WriteFlex on THIS computer does not have the Collection open. When it does (its reply key and
+ *    presence record in its own application-data folder say so: reply-key.ts), the write is not made
+ *    here at all: `chooseWriteRoute` says so and the command line files a request for the app instead
+ *    (request-route.ts).
+ *
+ * THERE IS NO COLLECTION LOCK. Nothing inside the Collection, and nothing synced from another
+ * computer, decides whether this command may write; a leftover `.writeflex/owner.lock` from an older
+ * WriteFlex is neither read nor removed. Each file is still written only if it holds what the
+ * operation read (guarded-fs.ts and write-session.ts: the fingerprint and outside-change checks), and
+ * existing files are journalled for undo. The contract:
+ * docs/plans/2026-11-03-sync-replicas-and-duplicate-reconciliation.md.
  *
  * WHAT A DIRECT WRITE NEEDS BESIDES THE COLLECTION. A change to an existing file or path is recorded
  * for undo in application data (journal.ts), so that folder must be writable too; when it is not, the
@@ -19,18 +26,11 @@ import { withFolioTitleIdentity } from '../folio-title-write'
  * is not refused for it. With the app open the command line writes only its request, in the
  * Collection's inbox, and reads the reply key: nothing in application data is written from here.
  *
- * The owner lock decides the route and nothing else. It is a file inside the Collection, so it is
- * never what makes a reply from the app trusted (reply-key.ts is).
- *
- * A failed operation is put back from what the session remembers before the lock is released, while
- * the lock is still this command's. ONCE THE LOCK IS ANOTHER'S, NOTHING IS WRITTEN, PUTTING BACK
- * INCLUDED: the command stops, keeps its write-ahead record in application data, and says what it had
- * changed and what it had not; `writeflex undo` finishes the job from that record once the
- * Collection is free (write-session.ts states which system call can still land, and why).
+ * A failed operation is put back from what the session remembers: every file that still holds exactly
+ * what the operation wrote is put back, and a file somebody has written since is left and named.
  *
  * One write is not a document's and does not go through the session: saving a version, which goes to
- * the app's history stores through their own code (`saveVersion`; history-store.ts), under the same
- * lock, confirmed again before each store is written.
+ * the app's history stores through their own code (`saveVersion`; history-store.ts).
  */
 import { withFolioNotices } from '../folio-declaration'
 import { settleVersionMoves } from '../version-moves'
@@ -38,11 +38,16 @@ import { reattachVersionHistory, type HistoryRequest, type HistoryResult } from 
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { standardRecordsPlace, type RecordsPlace, type VariantFolder } from '../collection-records'
-import { REPLY_KEY_FOLDER } from '../reply-key'
-import { inspectOwnerLock, OwnerLockBusyError, OwnerLockFolderError, refreshOwnerLock, withOwnerLock, type OwnerLockEnv } from '../owner-lock'
+import { REPLY_KEY_FOLDER, appHasCollectionOpen } from '../reply-key'
+import type { LocalProcessSeams } from '../local-process'
 import { WritesPausedError } from '../collection-write-gate'
+import { FolderNotUsableError, privateFolder } from './request-files'
 import { VersionSaveRefused, type SavedTextVersion } from '../saved-text-version'
-import { followRenamesInLedger, saveVersionFromCommandLine, type VersionSaveInput } from './history-store'
+import { followRenamesInLedger, saveFolioVersionFromCommandLine, saveVersionFromCommandLine, type VersionSaveInput } from './history-store'
+import type { RevisionImportInput } from '../requested-folio-revision'
+import type { WithdrawResult } from '../folio-version-stage'
+import type { ImportCommitAnswer } from '../../shared/folio-version-import'
+import type { FolioSaveInput, SavedFolioVersion } from '../folio-version-save'
 import { leaveFollowSignal } from '../sharing-follow-signals'
 import type { WriteSeams } from './guarded-fs'
 import { CommandLineWorkspace } from './guarded-workspace'
@@ -56,9 +61,6 @@ import { removeStaleTemporaryFiles } from './stale-temporary-files'
 import { systemTrash, type TrashMover } from './system-trash'
 import { WriteSession, WritingWorkspace, type SessionStep } from './write-session'
 
-/** How long to wait for another `writeflex` command to finish with the Collection. */
-const OTHER_COMMAND_WAIT_MS = 5000
-
 /** Test seams and surroundings; production passes nothing. */
 export type WriteEnv = {
   /** The app settings files that list opened Collections. Default: the user's own, under `home`. */
@@ -67,7 +69,8 @@ export type WriteEnv = {
   trash?: TrashMover
   now?: () => Date
   seams?: WriteSeams
-  lockEnv?: OwnerLockEnv
+  /** Test seam: how a running app's process is judged (local-process.ts). */
+  processSeams?: LocalProcessSeams
   /** The folders that may hold a Collection's reply key (reply-key.ts). Default: beside each of `settingsFiles`. */
   keyFolders?: string[]
   /** How long to wait for the app's reply to a request, and how often to look. Default 10 s, 100 ms. */
@@ -102,17 +105,26 @@ export type WriteAccess = {
    *  file or path was changed (a new file is not journalled: undo never deletes). */
   commit: (summary: string) => Promise<string | null>
   /** Save a version of a document's saved text into the app's history stores (saved-text-version.ts).
-   *  The one write that is not a document's: it goes to the stores' own code, by whoever holds the
-   *  Collection (the app for a request, the command line under its lock), never through `session`. */
+   *  The one write that is not a document's: it goes to the stores' own code, by whoever carries the
+   *  write out (the app for a request, otherwise the command line), never through `session`. */
   saveVersion: (input: VersionSaveInput) => Promise<SavedTextVersion>
-  /** The command line under its own lock only: the review ledger's undecided outside Changes follow
+  /** Save a Folio version (folio-version-save.ts): the same stores and the Folio journal beside them. Never settles a change. */
+  saveFolioVersion: (input: FolioSaveInput) => Promise<SavedFolioVersion>
+  /**
+   * Bring in a co-author's Word revision and stage its changes as suggestions in the parts' margins (folio-version-import.ts, ticket 15), and
+   * take a staged revision back. Both are the APP's: the suggestions live in the window's review ledger beside the margins the writer decides in,
+   * so they are carried out only when WriteFlex has the Collection open (a request); written directly, they are refused with a sentence.
+   */
+  importRevision: (input: RevisionImportInput) => Promise<ImportCommitAnswer>
+  withdrawRevision: (id: string) => Promise<WithdrawResult>
+  /** The command line writing directly only: the review ledger's undecided outside Changes follow
    *  `moves` (history-store.ts `followRenamesInLedger`). Returns how many moved. Absent when the app
    *  carries out a request: the app follows its own ledger (request-executor.ts). */
   followLedger?: (moves: Array<{ from: string; to: string }>) => Promise<number>
   /** True when the app is carrying this out for a request: the app then looks after its own review ledger. */
   byApp?: boolean
   /** Sharing (ticket 04): told what a move or a Trash finished, so a link follows its piece or ends.
-   *  The app carrying out a request tells its publisher; the command line under its own lock leaves a
+   *  The app carrying out a request tells its publisher; the command line writing directly leaves a
    *  signal for the app (sharing-follow-signals.ts). Returns a line to add to the result, or null. */
   sharing?: SharingFollow
 }
@@ -122,7 +134,9 @@ export type SharingFollow = {
   trashed: (paths: string[]) => Promise<string | null>
 }
 
-const APP_OPEN = 'WriteFlex opened this Collection while the command was starting, so nothing was changed. Run the command again: it will be passed to WriteFlex to carry out.'
+/** The suggestions of a revision live in WriteFlex's review ledger, beside the margins the writer decides in: no other process stages them. */
+const NEEDS_THE_APP = 'A revision is staged as suggestions in WriteFlex, so WriteFlex has to have this Collection open. Open it there and run the command again. Nothing was changed.'
+
 const DENIED = new Set(['EACCES', 'EPERM', 'EROFS'])
 
 function assertChosenRoot(found: CollectionRoot, env: WriteEnv): void {
@@ -138,11 +152,8 @@ function assertChosenRoot(found: CollectionRoot, env: WriteEnv): void {
 /** A refusal in plain words for the failures a write can meet; anything else passes through. */
 function explained(error: unknown, root: string): unknown {
   if (error instanceof CliError) return error
-  if (error instanceof OwnerLockBusyError) {
-    return new CliError(error.owner?.kind === 'command-line' ? 'Another writeflex command is changing this Collection. Try again in a moment.' : APP_OPEN, 'refused', error.owner?.kind === 'command-line' ? 'command-busy' : 'app-opened-meanwhile')
-  }
-  // `.writeflex` is a link or a file: the Collection cannot be owned, so nothing in it is changed.
-  if (error instanceof OwnerLockFolderError) return new CliError(`Nothing was changed: this Collection cannot be marked as in use, because ${error.message}`, 'refused', 'write-not-permitted')
+  // Path containment: `.writeflex` is a link or a file, or lies outside the Collection.
+  if (error instanceof FolderNotUsableError) return new CliError(`Nothing was changed: ${error.message}`, 'refused', 'write-not-permitted')
   if (error instanceof WritesPausedError) return new CliError(error.message, 'refused', 'writes-paused')
   if (error instanceof VersionSaveRefused) return new CliError(error.message, 'refused', error.code)
   const code = (error as NodeJS.ErrnoException | undefined)?.code
@@ -150,12 +161,6 @@ function explained(error: unknown, root: string): unknown {
     return new CliError(`The command line is not allowed to write in this Collection (${code}). If it runs in a sandbox, allow writing to this folder: ${root}`, 'refused', 'write-not-permitted')
   }
   return error
-}
-
-class OwnerLockLostError extends CliError {
-  constructor() {
-    super('WriteFlex or another program took over this Collection while the command was running, so it stopped.', 'refused', 'owner-lock-lost')
-  }
 }
 
 const listed = (items: string[]): string => items.join('; ')
@@ -172,16 +177,16 @@ function stepsInWords(steps: SessionStep[]): string[] {
 }
 
 /**
- * The refusal for an operation that lost the Collection partway (`lost` is what the ownership check
- * said): what took it, what had been changed, what had not, that nothing further was written, and
+ * The refusal for a request the app stopped partway because its window closed the Collection (`lost`
+ * is what the open-Collection check said): why it stopped, what had been changed, what had not, that nothing further was written, and
  * where the change is on record. `recorded` is the intent's id when existing files or paths were
  * changed, so there is something for undo to act on.
  */
 function stoppedPartway(parts: AccessParts, steps: SessionStep[], stoppedAt: string | undefined, failure: unknown, lost: unknown, recorded: string | null): CliError {
   const said = (error: unknown): string => (error instanceof Error ? error.message : String(error))
   const took = parts.byApp
-    ? 'WriteFlex stopped holding this Collection partway through this request (another program or another Mac took the folder over), so the request stopped.'
-    : 'WriteFlex or another program took over this Collection partway through, so the command stopped.'
+    ? 'WriteFlex closed this Collection partway through this request, so the request stopped.'
+    : 'The command was stopped partway through.'
   // A failure of another kind came first, and the Collection was found taken when putting back began.
   const first = said(failure) === said(lost) ? '' : `${said(failure)} Then, before anything was put back: `
   const done = `Already changed: ${listed(stepsInWords(steps))}.`
@@ -191,9 +196,9 @@ function stoppedPartway(parts: AccessParts, steps: SessionStep[], stoppedAt: str
   const where = recorded === null
     ? 'No existing document or path was changed, so there is nothing to undo: what was newly made stays, and can be moved to the Trash.'
     : parts.operation === 'undo'
-      ? 'The undo is on record as not finished: run "writeflex undo --list" to see it, and "writeflex undo" again to finish it, or leave it, once the Collection is free.'
-      : `The change is on record as interrupted (${recorded}): run "writeflex undo --list" to see it, and "writeflex undo ${recorded}" to put it back once the Collection is free.`
-  return new CliError(`${first}${took} ${done} ${notDone} Nothing further was written, and nothing was put back. ${where}`, 'failed', 'owner-lock-lost')
+      ? 'The undo is on record as not finished: run "writeflex undo --list" to see it, and "writeflex undo" again to finish it, or leave it.'
+      : `The change is on record as interrupted (${recorded}): run "writeflex undo --list" to see it, and "writeflex undo ${recorded}" to put it back.`
+  return new CliError(`${first}${took} ${done} ${notDone} Nothing further was written, and nothing was put back. ${where}`, 'failed', 'collection-closed')
 }
 
 /** Where the app (release or beta) keeps reply keys: in its application-data folder, beside its settings file. */
@@ -213,6 +218,9 @@ export type AccessParts = {
   trash: TrashMover
   now: () => Date
   saveVersion: WriteAccess['saveVersion']
+  saveFolioVersion: WriteAccess['saveFolioVersion']
+  importRevision: WriteAccess['importRevision']
+  withdrawRevision: WriteAccess['withdrawRevision']
   history?: WriteAccess['history']
   followLedger?: WriteAccess['followLedger']
   byApp?: boolean
@@ -222,12 +230,13 @@ export type AccessParts = {
 /**
  * Run `work` with write access built from `parts`, and settle the journal whatever happens: a change
  * that finished is recorded; a failed one is put back from what the session remembers, and reported
- * as refused. Shared by the command line writing under its own lock and by the app carrying out a
- * request (request-executor.ts), so both keep the same promise about a failure partway:
- *  - while the Collection is still this owner's, every file that holds exactly what the operation
- *    wrote is put back, and a file somebody has written since is left and named;
- *  - once the Collection is another's, nothing is written at all. The intent stays on record and the
- *    failure (`owner-lock-lost`) says what had been changed and where to undo it.
+ * as refused. Shared by the command line writing directly and by the app carrying out a request
+ * (request-executor.ts), so both keep the same promise about a failure partway:
+ *  - every file that holds exactly what the operation wrote is put back, and a file somebody has
+ *    written since is left and named;
+ *  - for a request, once the app has closed the Collection nothing is written at all. The intent
+ *    stays on record and the failure (`collection-closed`) says what had been changed and where to
+ *    undo it.
  */
 export async function runWithAccess<T>(parts: AccessParts, work: (access: WriteAccess) => Promise<T>): Promise<T> {
   const { root, operation, session, journal, intent } = parts
@@ -238,7 +247,7 @@ export async function runWithAccess<T>(parts: AccessParts, work: (access: WriteA
   })
   const access: WriteAccess = {
     ...(parts.history ? { history: parts.history } : {}),
-    workspace: titleWorkspace, session, journal, trash: parts.trash, now: parts.now, saveVersion: parts.saveVersion,
+    workspace: titleWorkspace, session, journal, trash: parts.trash, now: parts.now, saveVersion: parts.saveVersion, saveFolioVersion: parts.saveFolioVersion, importRevision: parts.importRevision, withdrawRevision: parts.withdrawRevision,
     ...(parts.followLedger ? { followLedger: parts.followLedger } : {}), ...(parts.byApp ? { byApp: true } : {}),
     ...(parts.sharing ? { sharing: parts.sharing } : {}),
     commit: async (summary) => {
@@ -250,7 +259,9 @@ export async function runWithAccess<T>(parts: AccessParts, work: (access: WriteA
   }
   try {
     let { result, notices } = await withFolioNotices(() => work(access))
-    notices = [...notices, ...titleNotices]
+    const versionNotices = [...new Set(session.unkeptVersions)].map((path) =>
+      `${path} was written, but its new text was not kept as a version, not even on this Mac. Keep a copy before sync replaces it.`)
+    notices = [...notices, ...titleNotices, ...versionNotices]
     if (notices.length && result && typeof result === 'object') {
       result = { ...result, notices,
         ...('text' in result && typeof result.text === 'string' ? { text: `${result.text}\n${notices.join('\n')}` } : {}),
@@ -266,7 +277,7 @@ export async function runWithAccess<T>(parts: AccessParts, work: (access: WriteA
     const steps = session.steps
     const back = await session.rollback()
     if (back.lost !== undefined) {
-      // Not this owner's Collection any more: rollback wrote nothing from the moment it found out.
+      // The app closed the Collection under a request: rollback wrote nothing from the moment it found out.
       // An intent that announces nothing that happened is removed (application data, not the Collection).
       if (intent && !changed) await journal.abandon(intent).catch(() => {})
       if (steps.length === 0) throw failure
@@ -284,21 +295,18 @@ export async function runWithAccess<T>(parts: AccessParts, work: (access: WriteA
 }
 
 /**
- * Who carries out a write to this Collection: the app that has it open (`app`: the command line
- * files a request and writes nothing else), or the command line itself under the owner lock
- * (`direct`). Refuses a root the user did not choose before either.
+ * Who carries out a write to this Collection: WriteFlex on this computer, when it has the Collection
+ * open (`app`: the command line files a request and writes nothing else), or the command line itself
+ * (`direct`). Decided from this computer's own application data only (reply-key.ts
+ * `appHasCollectionOpen`), never from anything in the Collection or synced from another computer.
+ * Refuses a root the user did not choose before either.
  */
 export async function chooseWriteRoute(found: CollectionRoot, env: WriteEnv): Promise<'app' | 'direct'> {
   assertChosenRoot(found, env)
-  try {
-    const status = await inspectOwnerLock(found.root, env.lockEnv)
-    return status.state === 'held' && status.owner?.kind !== 'command-line' ? 'app' : 'direct'
-  } catch (error) {
-    throw explained(error, found.root)
-  }
+  return (await appHasCollectionOpen(replyKeyFolders(env), found.root, env.processSeams)) ? 'app' : 'direct'
 }
 
-/** Sharing (ticket 04): the command line, with the app not holding the Collection, leaves the signal in application data. */
+/** Sharing (ticket 04): the command line, with the app not having the Collection open, leaves the signal in application data. */
 function commandLineSharingFollow(root: string, env: WriteEnv): SharingFollow {
   // The settings files beside the application-data folders this run uses (a test's own), else the user's.
   const files = env.settingsFiles ?? (env.appDataFolders?.length ? env.appDataFolders.map((folder) => join(folder, 'settings.json')) : appSettingsFiles(env.home ?? homedir()))
@@ -308,12 +316,15 @@ function commandLineSharingFollow(root: string, env: WriteEnv): SharingFollow {
   }
 }
 
-/** Run `work` holding the Collection, with the one route by which it may be changed. */
+/** Run `work` writing the Collection directly, through the one guarded route by which it may be changed. */
 export async function withWriteAccess<T>(found: CollectionRoot, env: WriteEnv, operation: string, work: (access: WriteAccess) => Promise<T>): Promise<T> {
   assertChosenRoot(found, env)
   const { root } = found
   try {
-    return await withOwnerLock(root, { ...env.lockEnv, kind: 'command-line', waitMs: OTHER_COMMAND_WAIT_MS }, async (lock) => {
+    return await (async () => {
+      // Containment, not a lock: the Collection's own store folder must be an ordinary folder inside
+      // it, so nothing this command writes there lands somewhere else through a link.
+      await privateFolder(root, '.writeflex', false)
       settleVersionMoves(root, true)
       // What an earlier write left when it was killed between writing a temporary file and renaming it.
       await removeStaleTemporaryFiles(root, { now: env.now })
@@ -321,25 +332,33 @@ export async function withWriteAccess<T>(found: CollectionRoot, env: WriteEnv, o
       // Undo is not journalled as a change (there is no undo of an undo), but it leaves an intent like
       // any other, naming the entry it undoes, so that an undo killed partway can be finished (journal.ts).
       const intent = journal.begin(operation)
-      const confirmOwner = async (): Promise<void> => {
-        // Rewrites the heartbeat; `lost` means another owner's record is in the lock file now.
-        const state = await refreshOwnerLock(lock).catch(() => 'lost' as const)
-        if (state === 'lost') throw new OwnerLockLostError()
-      }
+      // No owner to confirm: there is no Collection lock. Every write is still guarded by content.
+      const confirmOwner = async (): Promise<void> => {}
       const guarded = new CommandLineWorkspace(root)
-      const session = new WriteSession(guarded, { seams: env.seams, intent, confirmOwner })
-      return runWithAccess({
+      // Versions in a OneDrive Collection: local recovery in this variant's application data first, the
+      // synced store asynchronously (document-write-versions.ts).
+      const session = new WriteSession(guarded, { seams: env.seams, intent, confirmOwner, recoveryDir: replicaRecoveryDir(recordsPlace(env).own) })
+      // A short-lived process: its writes to the synced version store are waited for a bounded time before
+      // it returns; what is left stays in local recovery, written by the app's next pass or the next command.
+      const settleVersions = async (): Promise<void> => { await session.versionsSettled(COMMAND_STORE_GRACE_MS) }
+      return await runWithAccess({
         root, operation, session, journal, intent, workspace: new WritingWorkspace(root, session),
         trash: env.trash ?? systemTrash, now: env.now ?? (() => new Date()),
         saveVersion: async (input) => {
           await env.seams?.beforeWrite?.(input.path)
           return saveVersionFromCommandLine(guarded, confirmOwner, input, { afterCheck: env.seams?.betweenCheckAndWrite })
         },
+        saveFolioVersion: async (input) => {
+          await env.seams?.beforeWrite?.(input.dir)
+          return saveFolioVersionFromCommandLine(guarded, confirmOwner, input, { afterCheck: env.seams?.betweenCheckAndWrite })
+        },
+        importRevision: async () => { throw new CliError(NEEDS_THE_APP, 'refused', 'refused') },
+        withdrawRevision: async () => { throw new CliError(NEEDS_THE_APP, 'refused', 'refused') },
         history: (request) => reattachVersionHistory(guarded, request, confirmOwner),
         followLedger: (moves) => followRenamesInLedger(guarded, confirmOwner, moves),
         sharing: commandLineSharingFollow(root, env),
-      }, work)
-    })
+      }, work).finally(settleVersions)
+    })()
   } catch (error) {
     throw explained(error, root)
   }

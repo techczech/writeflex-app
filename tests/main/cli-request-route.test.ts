@@ -4,20 +4,20 @@ import { configureScratchpadHolders, scratchpadHolder } from '../../src/main/scr
 import { test, expect, beforeEach, afterEach } from 'bun:test'
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { existsSync, realpathSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { INBOX_DIR, MAX_REPLY_BYTES, OUTBOX_DIR, REQUEST_OPERATIONS, idOfFileName, parseRequest } from '../../src/main/cli/request-format'
 import { runCli } from '../../src/main/cli/run'
 import { unshow } from '../../src/main/cli/terminal-text'
-import { CollectionOwnership } from '../../src/main/collection-ownership'
-import { createReplyKey, readReplyKey, replyKeyPath, replyMac } from '../../src/main/reply-key'
+import { OpenCollections } from '../../src/main/open-collections'
+import { appHasCollectionOpen, createReplyKey, readReplyKey, replyKeyPath, replyMac } from '../../src/main/reply-key'
 import { buildOperationTable } from '../../src/main/cli/table'
-import { acquireOwnerLock, inspectOwnerLock, releaseOwnerLock } from '../../src/main/owner-lock'
 import { NOTES, writeFixture, type WriteFixture } from '../helpers/cli-write-fixture'
 import { content, inboxNames, openAsApp, outboxNames, type AppSide } from '../helpers/request-app'
 
-// Ticket 05, the command line's side: who writes is decided by the owner lock (app -> one request file).
+// Ticket 05, the command line's side: who writes is decided by whether WriteFlex on THIS computer has the
+// Collection open (its reply key and presence record, outside the Collection): app -> one request file.
 let fx: WriteFixture
 let app: AppSide
 let outside: string
@@ -54,7 +54,7 @@ test('with the app owning the Collection, export --confirm writes the target its
   // Nothing in the Collection changed: no request, no journal, no lock taken from the app.
   expect(await fx.snapshot({ journal: true })).toEqual(before)
   expect(await inboxNames(fx)).toEqual([])
-  expect((await inspectOwnerLock(fx.root)).owner?.kind).toBe('app')
+  expect(await appHasCollectionOpen([fx.keys], fx.root)).toBe(true)
 
   // In plain text it says that unsaved text in the app is not in the export.
   let out = ''
@@ -78,6 +78,9 @@ test('with the app owning the Collection, each direct operation produces exactly
     ['scrap', 'talks/york.md', '--text', 'A scrap.'], ['create-manifest', 'drafts'], ['capture', 'talks/york.md', '--kind', 'snippet', '--title', 'A line', '--body', 'A line.'], ['move', 'talks/york.md', 'talks/y.md'], ['move-folder', 'talks', 'events'],
     ['follow-history', '--map', 'moves.tsv'], ['undo-history', 'history-attachment-id'],
     ['trash', 'notes.md'], ['undo'], ['save-version', 'notes.md', '--name', 'Before the rewrite', '--note', 'As sent to York.'],
+    ['save-folio-version', 'talks', '--name', 'Before the rewrite'],
+    ['scratchpad-send-version-text', 'talks', 'fv_abc123', 'talks/york.md', '--from', '1', '--to', '2'],
+    ['import-revision', 'talks', 'in/sam.docx', '--author', 'Sam Rowe', '--base', 'fv_abc123'], ['withdraw-revision', 'fv_abc123'],
   ]
   expect(operations.map(([name]) => name).sort()).toEqual([...REQUEST_OPERATIONS].sort())
   for (const argv of operations) {
@@ -99,7 +102,7 @@ test('with the app owning the Collection, each direct operation produces exactly
     await rm(join(fx.root, added[0]))
   }
   expect(await fx.journalNames()).toEqual([])
-  expect((await inspectOwnerLock(fx.root)).owner?.kind).toBe('app')
+  expect(await appHasCollectionOpen([fx.keys], fx.root)).toBe(true)
   // Reading, and listing the journal, are not writes: they go straight through.
   expect((await fx.cli(['undo', '--list'])).json).not.toHaveProperty('via')
 })
@@ -129,7 +132,7 @@ test('the app carries the operation out and the command line reports its reply; 
   } finally {
     await stop()
   }
-  expect((await inspectOwnerLock(fx.root)).owner?.kind).toBe('app')
+  expect(await appHasCollectionOpen([fx.keys], fx.root)).toBe(true)
 })
 
 test('a refusal by the app is reported as refused with its reason; piped text travels as the text', async () => {
@@ -175,7 +178,7 @@ test('the command line does not send into, or read a reply from, a request folde
   }
 })
 
-test('with nobody owning the Collection the command line writes it itself, under the lock, and files no request', async () => {
+test('with the app not having the Collection open the command line writes it itself and files no request', async () => {
   await app.close()
   expect((await fx.cli(['create', 'direct.md', '--content', 'x'])).json).not.toHaveProperty('via')
   expect(await fx.read('direct.md')).toBe('---\ncreated-by: Outside agent\n---\n\nx')
@@ -327,11 +330,10 @@ test('a well-formed reply is taken only if it is signed with this Collection\'s 
   }
 }, MANY_WAITS_MS)
 
-test('a key that is a link, or readable by others, is no key: nothing is sent and the command says the app could not be verified', async () => {
+test('a key that is a link, or readable by others, is no key: no request is sent, nothing planted is taken, and the command writes directly', async () => {
   const elsewhere = realpathSync(await mkdtemp(join(tmpdir(), 'wf-cli-elsewhere-')))
   const keyFile = replyKeyPath(fx.keys, fx.root)
   const key = await currentKey()
-  const before = await fx.snapshot({ journal: true })
   const unusable: Array<[string, () => Promise<void>, () => Promise<void>]> = [
     ['the key file is a link to the key', async () => { await rename(keyFile, join(elsewhere, 'key')); await symlink(join(elsewhere, 'key'), keyFile) }, async () => { await rm(keyFile); await rename(join(elsewhere, 'key'), keyFile) }],
     ['the key file is readable by others', () => chmod(keyFile, 0o644), () => chmod(keyFile, 0o600)],
@@ -346,73 +348,67 @@ test('a key that is a link, or readable by others, is no key: nothing is sent an
       await spoil()
       try {
         // A reply signed with the very key stands ready for any request: it must make no difference.
-        const refused = await answeredBy(async (id, outbox) => placeWhole(join(outbox, `${id}.json`), await reply(id, {}, key)))
-        expect(refused.code, what).toBe(1)
-        expect(refused.json.error, what).toMatchObject({ code: 'owner-not-verified' })
-        expect(refused.json.error!.message, what).toContain('appears to have this Collection open, but that could not be verified')
-        expect(refused.json.error!.message, what).toContain('nothing was sent and nothing was changed')
+        const direct = await answeredBy(async (id, outbox) => placeWhole(join(outbox, `${id}.json`), await reply(id, {}, key)))
+        expect(direct.code, what).toBe(0)
+        expect(direct.json, what).not.toHaveProperty('via')
+        expect(direct.out, what).not.toContain('MARKER')
         expect(await inboxNames(fx), what).toEqual([])
+        await rm(join(fx.root, 'x.md'))
       } finally {
         await restore()
       }
     }
-    expect(await fx.snapshot({ journal: true })).toEqual(before)
-    expect((await answeredBy(async (id, outbox) => placeWhole(join(outbox, `${id}.json`), await reply(id)))).code).toBe(0)
+    expect((await answeredBy(async (id, outbox) => placeWhole(join(outbox, `${id}.json`), await reply(id)))).json).toMatchObject({ via: 'app' })
   } finally {
     await rm(elsewhere, { recursive: true, force: true })
   }
 })
 
-test('a forged lock with a planted reply spoofs nothing: no request, no direct write, and words on how to proceed', async () => {
-  // No app at all. Something that can write the Collection writes a lock naming a live app, and a reply.
+test('a synced owner.lock naming an app here or on another Mac, with a planted reply, changes nothing: the command writes directly and takes no reply', async () => {
   await app.close()
-  const forged = await acquireOwnerLock(fx.root, { kind: 'app' })
-  const before = await fx.snapshot({ journal: true })
   await mkdir(join(fx.root, OUTBOX_DIR), { recursive: true })
   const planting = setInterval(() => {
     void inboxNames(fx).then((names) => Promise.all(names.map(async (name) => placeWhole(join(fx.root, OUTBOX_DIR, name), await reply(idOfFileName(name)!, { text: 'MARKER applied' }, Buffer.alloc(32, 7))))))
   }, 5)
   try {
-    const result = await fx.cli(['create', 'x.md', '--content', 'x'], { write: { request: { waitMs: 300, pollMs: 10 } } })
-    expect(result.code).toBe(1)
-    expect(result.out).not.toContain('MARKER')
-    expect(result.json.error!.message).toContain('appears to have this Collection open, but that could not be verified')
-    expect(result.json.error!.message).toContain('clears by itself within two minutes')
-    // Not sent, and not written directly either while a lock claims a live owner.
-    expect(existsSync(join(fx.root, 'x.md'))).toBe(false)
-    expect(await fx.snapshot({ journal: true })).toEqual(before)
-    // A lock naming WriteFlex on another computer reads differently, and is not overridden either.
-    await releaseOwnerLock(forged)
-    const remote = await acquireOwnerLock(fx.root, { kind: 'app', host: 'another-mac', pidIsAlive: () => true })
-    const far = await fx.cli(['create', 'x.md', '--content', 'x'], { write: { request: { waitMs: 300, pollMs: 10 } } })
-    await releaseOwnerLock(remote)
-    expect(far.code).toBe(1)
-    expect(far.json.error!.message).toContain('WriteFlex on another computer ("another-mac")')
-    expect(existsSync(join(fx.root, 'x.md'))).toBe(false)
+    for (const host of [hostname(), 'another-mac']) {
+      const lock = JSON.stringify({ version: 1, pid: process.pid, kind: 'app', host, startedAt: Date.now(), heartbeatAt: Date.now(), processStartedAt: null, token: `forged-${host}` })
+      await fx.write('.writeflex/owner.lock', lock)
+      const result = await fx.cli(['create', 'x.md', '--content', 'x'], { write: { request: { waitMs: 300, pollMs: 10 } } })
+      expect(result.json.error?.message ?? '', host).toBe('')
+      expect(result.code, host).toBe(0)
+      expect(result.out, host).not.toContain('MARKER')
+      expect(result.json, host).not.toHaveProperty('via')
+      expect(await fx.read('x.md'), host).toBe('---\ncreated-by: Outside agent\n---\n\nx')
+      expect(await fx.read('.writeflex/owner.lock'), host).toBe(lock)
+      expect(await inboxNames(fx), host).toEqual([])
+      await rm(join(fx.root, 'x.md'))
+    }
   } finally {
     clearInterval(planting)
+    await rm(join(fx.root, '.writeflex', 'owner.lock'), { force: true })
     app = await openAsApp(fx)
   }
 })
 
-test('the app makes the key when it takes a Collection, replaces it on the next taking, and removes it on letting go', async () => {
+test('the app makes the key when it opens a Collection, replaces it on the next opening, and removes it on closing', async () => {
   const other = await writeFixture()
-  const folder = join(other.keys, '..', 'made-by-ownership')
-  const ownership = new CollectionOwnership({ keyFolder: folder })
+  const folder = join(other.keys, '..', 'made-by-opening')
+  const ownership = new OpenCollections({ keyFolder: folder })
   try {
-    expect(await ownership.claim(other.root)).toBe('owned')
+    await ownership.open(other.root)
     const first = (await readReplyKey(folder, other.root))!
     expect(first).toHaveLength(32)
     expect((await stat(folder)).mode & 0o777).toBe(0o700)
     expect((await stat(replyKeyPath(folder, other.root))).mode & 0o777).toBe(0o600)
     expect(replyKeyPath(folder, other.root).startsWith(other.root)).toBe(false)
     expect((await readdir(folder)).filter((name) => name.endsWith('.tmp'))).toEqual([])
-    await ownership.release(other.root)
+    await ownership.close(other.root)
     expect(await readReplyKey(folder, other.root)).toBeNull()
-    expect(await ownership.claim(other.root)).toBe('owned')
+    await ownership.open(other.root)
     expect((await readReplyKey(folder, other.root))!.equals(first)).toBe(false)
   } finally {
-    await ownership.releaseAll()
+    await ownership.closeAll()
     await other.dispose()
   }
 })

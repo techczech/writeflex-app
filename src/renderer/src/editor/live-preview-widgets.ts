@@ -107,15 +107,21 @@ abstract class LivePreviewWidget extends WidgetType {
 }
 
 export class ImageWidget extends LivePreviewWidget {
-  constructor(source: string, readonly url: string, readonly alt: string, selected: boolean) { super(source, selected) }
-  eq(other: WidgetType): boolean { return other instanceof ImageWidget && other.source === this.source && other.url === this.url && other.selected === this.selected }
+  constructor(source: string, readonly url: string, readonly alt: string, selected: boolean, readonly fallbackUrl?: string) { super(source, selected) }
+  eq(other: WidgetType): boolean { return other instanceof ImageWidget && other.source === this.source && other.url === this.url && other.fallbackUrl === this.fallbackUrl && other.selected === this.selected }
   toDOM(): HTMLElement {
     const shell = this.shell('image')
     const image = document.createElement('img')
     image.src = this.url
     image.alt = this.alt
     image.loading = 'lazy'
+    let triedFallback = false
     image.addEventListener('error', () => {
+      if (this.fallbackUrl && !triedFallback) {
+        triedFallback = true
+        image.src = this.fallbackUrl
+        return
+      }
       shell.classList.add('lp-render-failed')
       shell.replaceChildren(hint(), document.createTextNode(this.source))
     })
@@ -339,7 +345,7 @@ function statusBadge(status: string | null): HTMLElement {
   return badge
 }
 
-function queryRow(row: QueryRow): HTMLTableRowElement {
+function queryRow(row: QueryRow, diary = false): HTMLTableRowElement {
   const tr = document.createElement('tr')
   if (row.agentAuthored) tr.dataset.agentAuthored = 'true'
   const title = document.createElement('td'); title.className = 'qt-title'; title.append(document.createTextNode(row.title))
@@ -351,7 +357,12 @@ function queryRow(row: QueryRow): HTMLTableRowElement {
   if (row.description) description.textContent = row.description
   else { description.classList.add('missing'); description.textContent = '— no description yet' }
   const date = document.createElement('td'); date.className = 'qt-date'; date.textContent = formatQueryDate(row.date)
-  tr.append(title, status, description, date)
+  if (diary) {
+    const words = document.createElement('td'); words.textContent = String(row.words_written ?? '—')
+    const minutes = document.createElement('td'); minutes.textContent = String(row.mins_spent ?? '—')
+    const target = document.createElement('td'); target.textContent = row.goal == null ? '—' : `${row.words_written ?? 0} / ${row.goal}`
+    tr.append(title, words, minutes, target, date)
+  } else tr.append(title, status, description, date)
   return tr
 }
 
@@ -359,7 +370,7 @@ function renderedQueryObject(result: Extract<QueryResult, { ok: true }>, onEdit:
   const object = document.createElement('div'); object.className = 'qobj'
   const table = document.createElement('table'); table.className = 'qtable'
   const header = table.createTHead().insertRow()
-  for (const label of ['Title', 'Status', 'Description', 'Date'] as const) {
+  for (const label of (result.query.diary ? ['Title', 'Net words', 'Minutes', 'Target', 'Date'] : ['Title', 'Status', 'Description', 'Date'])) {
     const th = document.createElement('th')
     const field = label.toLowerCase() as QuerySortableField
     if ((QUERY_SORTABLE_FIELDS as readonly string[]).includes(field)) {
@@ -375,7 +386,7 @@ function renderedQueryObject(result: Extract<QueryResult, { ok: true }>, onEdit:
     } else th.textContent = label
     header.appendChild(th)
   }
-  const body = table.createTBody(); result.rows.forEach((row) => body.appendChild(queryRow(row)))
+  const body = table.createTBody(); result.rows.forEach((row) => body.appendChild(queryRow(row, result.query.diary)))
   object.append(queryHead(result.source, onEdit), table, queryFoot(result.rows.length))
   return object
 }
@@ -411,7 +422,8 @@ export class QueryWidget extends LivePreviewWidget {
     }
     shell.appendChild(loadingQueryObject(inner, edit))
     const unsubscribe = window.writeflex.collection.onChanged(() => { void evaluate() })
-    ;(shell as HTMLElement & { __wfDispose?: () => void }).__wfDispose = () => { disposed = true; generation += 1; unsubscribe() }
+    const diaryRefresh = /^\s*diary:\s*true\s*$/m.test(inner) ? setInterval(() => { void evaluate() }, 5_000) : undefined
+    ;(shell as HTMLElement & { __wfDispose?: () => void }).__wfDispose = () => { disposed = true; generation += 1; unsubscribe(); clearInterval(diaryRefresh) }
     void evaluate()
     return shell
   }

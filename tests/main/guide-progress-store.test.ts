@@ -51,16 +51,17 @@ test('the record is read again by a new store on the same file (a restart), and 
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('the Guide tab is absent by default and last once opened; a chosen tab is respected, and a chosen Guide falls back', () => {
+test('the Guide tab is absent by default and last once opened; a chosen tab is respected, and a chosen Guide falls back to Versions (R6)', () => {
   expect(rightPaneTabsFor(false)).not.toContain('guide')
   expect(rightPaneTabsFor(true).at(-1)).toBe('guide')
-  expect(rightPaneTabsFor(true)[0]).toBe('agent')
-  expect(resolveRightPaneTab(null, true)).toBe('agent')
-  expect(resolveRightPaneTab(null, false)).toBe('agent')
+  expect(rightPaneTabsFor(true)[0]).toBe('versions')
+  expect(resolveRightPaneTab(null, true)).toBe('versions')
+  expect(resolveRightPaneTab(null, false)).toBe('versions')
   expect(resolveRightPaneTab('guide', true)).toBe('guide')
-  expect(resolveRightPaneTab('review', true)).toBe('review')
-  expect(resolveRightPaneTab('scratchpad', false)).toBe('scratchpad')
-  expect(resolveRightPaneTab('guide', false)).toBe('agent')
+  expect(resolveRightPaneTab('research', true)).toBe('research')
+  expect(resolveRightPaneTab('scratchpad', false, true)).toBe('scratchpad')
+  expect(resolveRightPaneTab('scratchpad', false, false)).toBe('versions')
+  expect(resolveRightPaneTab('guide', false)).toBe('versions')
 })
 
 test('the narrow-window rule: the editor keeps 560px, so a 900px window with a 340px pane closes the Files pane', () => {

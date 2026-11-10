@@ -181,8 +181,8 @@ test('the toolbar carries one action-bar toggle beside the palette and panels bu
   // The same aria-pressed contract as its siblings, and the title says which way it goes.
   expect(shown).toContain('aria-pressed="true" title="Hide the action bar"')
   expect(hidden).toContain('aria-pressed="false" title="Show the action bar"')
-  // Its siblings are untouched: the ADR-0026 shelf still carries exactly its own five chords.
-  expect(shown.match(/class="chord"/g)?.length).toBe(5)
+  // The title-bar icons carry no chord labels any more (R3): the chords live in their tooltips.
+  expect(shown).not.toContain('class="chord"')
   expect(shown.indexOf('Show/Hide the action bar')).toBeGreaterThan(shown.indexOf('aria-label="Command palette"'))
   expect(shown.indexOf('Show/Hide the action bar')).toBeLessThan(shown.indexOf('aria-label="Toggle panels"'))
 })
@@ -199,7 +199,7 @@ test('the toggle is a registered, rebindable, cheat-sheet-documented command wit
   expect(app).toContain('resolveActionBarItems(actionBarItems, runnable')
   // Hidden is ABSENCE: the shell renders the bar only when the setting says so, and reads that
   // setting from the app-level store rather than from any per-window state.
-  expect(app).toContain('{actionBarVisible && <ActionBar groups={actionBarGroups} onConfigure=')
+  expect(app).toContain('{actionBarVisible && collectionDir === null && <ActionBar groups={actionBarGroups} onConfigure=')
   expect(app).toContain('actionBarVisibleFrom(settingValues[ACTION_BAR_VISIBLE_KEY])')
 })
 

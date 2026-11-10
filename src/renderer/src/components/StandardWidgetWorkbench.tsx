@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BackControl } from './BackControl'
 import { ArrowLeft, Check, FileText, Maximize2, Play, Plus, RefreshCw, Undo2 } from 'lucide-react'
 import { relativeEmbedPath } from '../../../shared/widget-insert'
 import { mountWidgetFrame, type WidgetFrame } from '../widgets/widget-frame'
@@ -502,7 +503,7 @@ export function StandardWidgetWorkbench(props: StandardWidgetWorkbenchProps): JS
   if (typeof loaded === 'object') {
     return (
       <section className="swb" data-testid="widget-workbench" aria-label="Widget workbench">
-        <header className="swb-head"><button type="button" className="btn" data-testid="workbench-back" onClick={props.onBack}><ArrowLeft className="icon sm" />{WORKBENCH_TEXT.back}</button><h1>Widget workbench</h1></header>
+        <header className="swb-head"><BackControl testId="workbench-back" onBack={props.onBack} /><h1>Widget workbench</h1></header>
         <p className="swb-problem" role="alert" data-testid="workbench-problem">{loaded.problem}</p>
       </section>
     )
@@ -525,7 +526,7 @@ export function StandardWidgetWorkbench(props: StandardWidgetWorkbenchProps): JS
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'b') { event.preventDefault(); event.stopPropagation(); build() }
     }}>
       <header className="swb-head">
-        <button type="button" className="btn" data-testid="workbench-back" onClick={props.onBack}><ArrowLeft className="icon sm" />{WORKBENCH_TEXT.back}</button>
+        <BackControl testId="workbench-back" onBack={props.onBack} />
         <h1>{title || 'Record browser'}</h1>
         <span className="swb-grow" />
         <span className={`swb-state ${stateClass}`} data-testid="workbench-state">{statePill}</span>

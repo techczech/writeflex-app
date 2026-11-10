@@ -122,7 +122,11 @@ describe('filtering', () => {
   })
 
   test('every typed word has to match', () => {
-    expect(filterActionGroups(heading, 'move block', objects).flatMap((group) => group.rows).every((row) => /move/i.test(row.label) && /block/i.test(row.label))).toBe(true)
+    const paragraph = actionGroupsAt('paragraph', stateAt('Every wall', 3), {})
+    const rows = filterActionGroups(paragraph, 'move block', objects).flatMap((group) => group.rows)
+    // An empty result also passes Array.every: require the matching actions to remain reachable.
+    expect(rows.map((row) => row.id)).toEqual(['move.block'])
+    expect(rows.every((row) => /move/i.test(row.label) && /block/i.test(row.label))).toBe(true)
     expect(filterActionGroups(heading, 'fold zebra', objects)).toEqual([])
   })
 

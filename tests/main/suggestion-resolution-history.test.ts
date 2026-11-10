@@ -108,3 +108,18 @@ test('undoing a resolution leaves the prior typing edit as the next undo step', 
   state = applyCommand(state, undo).state
   expect(state.doc.toString()).toBe('Old text')
 })
+
+
+test('Undo and Redo of a spent Put back edit restore text without reopening or reaccepting its proposal', () => {
+  let state = EditorState.create({ doc: 'Before', extensions: [history(), suggestionResolutionHistory()] })
+  state = state.update(suggestionResolutionSpec({
+    id: 'put-back', path: 'draft.md', action: 'accept', beforeContent: 'Before',
+    changes: { from: 6, insert: ' and returned text' }, replay: 'text',
+  })).state
+  const undone = applyCommand(state, undo)
+  expect(undone.state.doc.toString()).toBe('Before')
+  expect(undone.effect).toBeNull()
+  const redone = applyCommand(undone.state, redo)
+  expect(redone.state.doc.toString()).toBe('Before and returned text')
+  expect(redone.effect).toBeNull()
+})

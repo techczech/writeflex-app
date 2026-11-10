@@ -60,15 +60,22 @@ test('a valid request is carried out, answered with what the operation prints di
 
 test('every requestable operation can be carried out on request', async () => {
   await fx.write('history-map.tsv', 'drafts/new.md\tdrafts/outside.md\n')
+  // A small Folio of its own, for the Folio version save (its Index Note and one part).
+  await fx.write('book/_book_INDEX.md', '# Book\n\n## Running order\n\n- [[./one.md|One]]\n')
+  await fx.write('book/one.md', '# One\n\nText.\n')
   let historyUndo: string | undefined
   const requests: Array<[string, Record<string, unknown>]> = [
     ['create', { path: 'drafts/new', content: '# New\n' }], ['create-folder', { path: 'empty' }], ['duplicate', { path: 'notes.md' }],
     ['note', { document: 'talks/york.md', body: 'Tighten the intro.', kind: 'review' }], ['scrap', { document: 'talks/york.md', text: 'A cut line.' }],
     ['create-manifest', { folder: 'drafts' }], ['capture', { project: 'talks', title: 'A line', kind: 'snippet', body: 'A line.' }], ['move', MOVE], ['move-folder', { path: 'talks', to: 'events' }], ['trash', { path: 'notes (copy).md' }],
     ['undo', {}], ['save-version', { path: 'talks/york-2026.md', name: 'As sent', note: 'Before the rewrite.' }],
-    ['follow-history', { map: 'history-map.tsv' }], ['undo-history', {}],
+    ['follow-history', { map: 'history-map.tsv' }], ['undo-history', {}], ['save-folio-version', { folio: 'book', name: 'Frozen', note: 'Before the pilot.' }],
+    // Ticket 10: a copy of the saved Folio version's text, filed in the Scratchpad as the agent's (the version id is filled in from the save's reply).
+    ['scratchpad-send-version-text', { folio: 'book', part: 'book/one.md', from: 1, to: 2 }],
   ]
-  expect(requests.map(([operation]) => operation).sort()).toEqual([...REQUEST_OPERATIONS].sort())
+  let folioVersionId: string | undefined
+  // Ticket 15's two are carried out, and checked in detail, by folio-version-stage-request.test.ts (they need a Word file and a saved Folio version).
+  expect(requests.map(([operation]) => operation).sort()).toEqual(REQUEST_OPERATIONS.filter((operation) => operation !== 'import-revision' && operation !== 'withdraw-revision').sort())
   // `capture` runs scout, which writes the file itself: a fake one stands in, so no real engine runs.
   const scoutDir = await mkdtemp(join(tmpdir(), 'wf-exec-scout-'))
   const scout = join(scoutDir, 'scout')
@@ -79,6 +86,7 @@ test('every requestable operation can be carried out on request', async () => {
     for (const [operation, args] of requests) {
       if (operation === 'follow-history') await rename(join(fx.root, 'drafts/new.md'), join(fx.root, 'drafts/outside.md'))
       if (operation === 'undo-history') args.id = historyUndo
+      if (operation === 'scratchpad-send-version-text') args.version = folioVersionId
       const id = await plantRequest(fx, operation, args)
       await app.executor.drain()
       const reply = await replyTo(fx, id)
@@ -86,6 +94,12 @@ test('every requestable operation can be carried out on request', async () => {
       expect(reply.outcome, operation).toBe('applied')
       if (operation === 'undo-history') await rename(join(fx.root, 'drafts/outside.md'), join(fx.root, 'drafts/new.md'))
       if (operation === 'follow-history') historyUndo = (reply.result as { undo: string }).undo
+      if (operation === 'save-folio-version') folioVersionId = (reply.result as { version: { id: string } }).version.id
+      if (operation === 'scratchpad-send-version-text') {
+        const item = (reply.result as { item: { id: string; by: string; markdown: string; fromVersion: { versionId: string } } }).item
+        expect(item).toMatchObject({ by: 'agent', markdown: '# One\n\nText.', fromVersion: { versionId: folioVersionId } })
+        expect(await fx.read(`.writeflex/scratchpad-item-${item.id}.md`)).toBe('# One\n\nText.')
+      }
       if (operation === 'capture') {
         expect(reply.result).toMatchObject({ path: 'talks/research/2026-10-20-a-line.md', project: 'talks', indexed: false })
         // Scout made the file; the window is told it, and the manifest, as for any change the app carries out.
@@ -103,19 +117,26 @@ test('every requestable operation can be carried out on request', async () => {
   expect(existsSync(join(fx.trashed, 'notes (copy).md'))).toBe(true)
   // The last undo put the folder back (the most recent journalled change was the folder move).
   expect(existsSync(join(fx.root, 'talks/york-2026.md'))).toBe(true)
-  // The app's stores were touched by the two version saves alone (the one a create makes to record
-  // itself, then the one asked for): for each, one restore point and one snapshot in the history
+  // The app's stores were touched by the version saves alone (the one a create makes to record
+  // itself, then the one asked for, then the Folio version's two files): for each, one restore point and one snapshot in the history
   // journal and one record in the version journal; and nothing in the review ledger.
   expect(await fx.read('.writeflex/changes.jsonl')).toBe('{"change":"fixture"}\n')
   const history = (await fx.read('.bridle/journal.jsonl')).split('\n').filter(Boolean)
   expect(history[0]).toBe('{"bridle":"fixture"}')
-  expect(history.slice(1).map((line) => (JSON.parse(line) as { kind: string }).kind)).toEqual(['restore-point', 'snapshot', 'restore-point', 'snapshot'])
+  expect(history.slice(1).map((line) => (JSON.parse(line) as { kind: string }).kind)).toEqual(['restore-point', 'snapshot', 'restore-point', 'snapshot', 'restore-point', 'snapshot', 'restore-point', 'snapshot'])
   const versions = (await fx.read('.writeflex/versions.jsonl')).split('\n').filter(Boolean)
   expect(versions[0]).toBe('{"version":"fixture"}')
   expect(versions.slice(1).map((line) => JSON.parse(line) as { path?: string }).filter(record => record.path)).toMatchObject([
     { path: 'drafts/new.md', name: 'Created by Outside agent', author: { name: 'Outside agent' } },
     { path: 'talks/york-2026.md', name: 'As sent', note: 'Before the rewrite.', author: { name: 'App Writer' } },
+    { path: 'book/_book_INDEX.md', name: 'Folio version: Frozen', author: { name: 'App Writer' } },
+    { path: 'book/one.md', name: 'Folio version: Frozen', author: { name: 'App Writer' } },
   ])
+  // And one record in the Folio journal, pointing at those two.
+  const folioRecords = (await fx.read('.writeflex/folio-versions.jsonl')).split('\n').filter(Boolean).map((line) => JSON.parse(line) as { kind: string; name: string; note?: string; members: Array<{ path: string; role: string }> })
+  expect(folioRecords).toHaveLength(1)
+  expect(folioRecords[0]).toMatchObject({ kind: 'folio-version', name: 'Frozen', note: 'Before the pilot.' })
+  expect(folioRecords[0].members.map((m) => `${m.role}:${m.path}`)).toEqual(['index:book/_book_INDEX.md', 'part:book/one.md'])
 })
 
 test('a request that fails a check is answered as refused with the reason, removed, and nothing is applied', async () => {
@@ -310,13 +331,13 @@ test('the autosave case: a document the app saved two seconds ago has a link rep
   expect(onDisk).toContain('Typed in WriteFlex.')
 })
 
-test('a request arriving while the lock is lost is answered as refused, not queued', async () => {
+test('a request arriving after its window closed the Collection is answered as refused, not queued', async () => {
   const before = await content(fx)
   app.owns.value = false
   const id = await plantRequest(fx, 'move', MOVE)
   const drained = await app.executor.drain()
   expect(drained.handled).toMatchObject([{ id, outcome: 'refused', operation: 'move' }])
-  expect((await replyTo(fx, id)).reason).toContain('does not hold this Collection')
+  expect((await replyTo(fx, id)).reason).toContain('no longer has this Collection open')
   expect(await inboxNames(fx)).toEqual([])
   expect(await content(fx)).toEqual(before)
   // It is not carried out later, when the lock is back.

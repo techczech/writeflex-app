@@ -12,6 +12,7 @@
  */
 import type { JournalEntry } from '@bridle/core'
 import { assertCollectionWritable } from './collection-write-gate'
+import { snapshotBytes, type SnapshotBytesMeta } from './snapshot-bytes'
 
 type SnapshotMeta = { sessionId?: string; capability?: string; toolCallId?: string; attemptId?: string; origin?: 'turn' | 'host' }
 
@@ -21,11 +22,13 @@ export type CollectionSnapshots = {
   readSnapshotContent(entryId: string): Promise<string | null>
   beginRestorePoint(label: string, sessionId?: string, meta?: { proposalId?: string }): Promise<string>
   snapshotFile(absPath: string, meta: SnapshotMeta): Promise<JournalEntry>
+  /** `snapshotFile` for bytes already in hand: stores exactly these bytes and never reads the file (snapshot-bytes.ts). */
+  snapshotBytes(absPath: string, bytes: Uint8Array, meta: SnapshotBytesMeta): Promise<JournalEntry>
   restoreTo(restorePointId: string, opts?: { origin?: 'turn' | 'host' }): Promise<string[]>
 }
 
 /** `store`, with every write refused while the Collection at `root` may not be written. */
-export function gatedSnapshots(root: string, store: CollectionSnapshots): CollectionSnapshots {
+export function gatedSnapshots(root: string, store: Omit<CollectionSnapshots, 'snapshotBytes'>): CollectionSnapshots {
   return {
     entries: () => store.entries(),
     readSnapshotContent: (entryId) => store.readSnapshotContent(entryId),
@@ -36,6 +39,10 @@ export function gatedSnapshots(root: string, store: CollectionSnapshots): Collec
     snapshotFile: async (absPath, meta) => {
       assertCollectionWritable(root)
       return store.snapshotFile(absPath, meta)
+    },
+    snapshotBytes: async (absPath, bytes, meta) => {
+      assertCollectionWritable(root)
+      return snapshotBytes(store, absPath, bytes, meta)
     },
     restoreTo: async (restorePointId, opts) => {
       assertCollectionWritable(root)

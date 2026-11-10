@@ -2,8 +2,9 @@
 //
 // The service accepts an admin bearer that equals the value of a secret named
 // `ADMIN_SECRET_<computer id>`. WriteFlex makes the key when a Mac sets up sharing, adds
-// it to the Worker as a secret and keeps it in that Mac's keychain. An admin key can make a share
-// (`POST /shares`); it cannot publish to or turn off a share, which takes that share's owner token.
+// it to the Worker as a secret and keeps it in that Mac's keychain. An admin key can make a share,
+// discover workspace shares and mint a share-scoped owner token (build 15). Publishing and
+// turning off still require that share's owner token.
 //
 // Unlike TalkWeaver there is no legacy `ADMIN_SECRET`: no sharing service predates per-computer keys.
 //

@@ -1,6 +1,7 @@
 import type { VersionStore, Version } from './versions'
 import type { EditorSaveResult } from './workspace'
 import type { SaveBasis } from '../shared/save-basis'
+import { replicaSnapshotHash, replicaVersionsFor } from './replica-versions'
 
 export type VersionContentRequest = {
   id?: string
@@ -28,6 +29,30 @@ export type VersionContentResult = {
   path: string | null
   snapshotId: string | null
   content: string | null
+}
+
+/**
+ * The reader for every version's text: a replica version (`replica:<sha256>`, replica-versions.ts) is read
+ * from the Collection's replica store, hash-checked, with no agent; any other from `primary` (the agent's
+ * History) when there is one, and, when `offline` is given (synced Collections), from that agent-free
+ * reader of the same History (cli/history-store.ts, which also reads journal copies made by sync) when
+ * there is no agent or it has no such entry. `local` (synced Collections): a replica text held only in this
+ * Mac's local recovery (replica-save-cycles.ts), read from local disk when the store has no such object.
+ */
+export function replicaAwareReader(root: string, primary: () => Promise<SnapshotContentReader | null>, offline?: SnapshotContentReader, local?: (sha: string) => Buffer | null): SnapshotContentReader {
+  return {
+    readSnapshotContent: async (entryId) => {
+      const hash = replicaSnapshotHash(entryId)
+      // `local`: this Mac's recovery copy (hash-checked), for a text the synced store does not hold yet.
+      if (hash) return ((await replicaVersionsFor(root).read(hash)) ?? local?.(hash) ?? null)?.toString('utf8') ?? null
+      // Without `offline` the primary's own failure stands (no agent: the error it always gave).
+      if (!offline) return (await primary())?.readSnapshotContent(entryId) ?? null
+      const reader = await primary().catch(() => null)
+      const text = reader ? await reader.readSnapshotContent(entryId) : null
+      if (text !== null) return text
+      return offline.readSnapshotContent(entryId).catch(() => null)
+    },
+  }
 }
 
 function matchesRequest(version: Version, input: VersionContentRequest): boolean {

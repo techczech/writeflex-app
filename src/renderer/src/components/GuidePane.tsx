@@ -25,7 +25,7 @@ import { GuideFeaturesTab } from './GuideFeaturesTab'
  * (`GuideHowItWorksTab`, `GuideFeaturesTab`); this component only chooses the tab.
  */
 export const GUIDE_TEXT = {
-  segments: ['Learn the commands', 'How it works', 'Features to delight you'],
+  segments: ['Commands', 'How it works', 'Features'],
   steps: { bar: 'First steps', open: 'Open a folder', file: 'Make your first file', example: 'Open the Example collection', openAction: 'Open folder…', fileAction: 'New file', exampleAction: 'Open', opened: 'Opened' },
   chaptersBar: 'Chapters',
   finishedOf: (n: number, of: number): string => `${n} of ${of} finished`,

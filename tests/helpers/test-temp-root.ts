@@ -1,3 +1,4 @@
+import { createE2ERunIdentity, finishE2ERun, RUN_ID, RUN_ROOT, type RunIdentity } from './test-run-claims'
 import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -5,7 +6,9 @@ import { join } from 'node:path'
 /**
  * One scratch root per test run. `startTestTempRoot()` creates `<realtmp>/wf-run-XXXXXX` and points
  * TMPDIR/TEMP/TMP at it, so every os.tmpdir()-based mkdtemp, spawned child and Electron launch lands
- * inside it. `finishTestTempRoot()` removes it (also on failure) and warns when something with one of
+ * inside it. E2E mode instead owns a physical six-character /private/tmp sibling, outside runner cleanup.
+ * E2E deletion requires all durable worker claims released; unknown ownership retains the root.
+ * Unit roots keep their existing cleanup behaviour. Cleanup also warns when something with one of
  * this app's prefixes still appeared in the REAL temp dir (a bypass of TMPDIR). Warn only: another
  * session may be running the same suite at the same time.
  */
@@ -15,25 +18,35 @@ const KEYS = ['TMPDIR', 'TEMP', 'TMP'] as const
 export interface TestTempRoot {
   root: string
   realTmp: string
+  identity?: RunIdentity
   startedAt: number
   /** Names already in the real temp dir at start, so the guard only looks at newcomers. */
   before: Set<string>
 }
 
-export function startTestTempRoot(): TestTempRoot {
-  const realTmp = tmpdir()
+export function startTestTempRoot(options: { e2e?: boolean } = {}): TestTempRoot {
+  const realTmp = options.e2e ? '/private/tmp' : tmpdir()
   const startedAt = Date.now()
   let before = new Set<string>()
   try { before = new Set(readdirSync(realTmp)) } catch { /* unreadable: guard compares against nothing */ }
-  const root = mkdtempSync(join(realTmp, 'wf-run-'))
+  const identity = options.e2e ? createE2ERunIdentity() : undefined
+  const root = identity?.root ?? mkdtempSync(join(realTmp, 'wf-run-'))
+  if (identity) { process.env[RUN_ROOT] = root; process.env[RUN_ID] = identity.id }
   for (const key of KEYS) process.env[key] = root
-  return { root, realTmp, startedAt, before }
+  return { root, realTmp, startedAt, before, identity }
 }
 
 export function finishTestTempRoot(run: TestTempRoot): string[] {
   const removalStarted = performance.now()
-  try { rmSync(run.root, { recursive: true, force: true }) }
-  finally { console.info(`[test-temp] run-root removal: ${Math.round(performance.now() - removalStarted)} ms`) }
+  try {
+    if (run.identity) {
+      if (run.root !== run.identity.root) throw new Error(`WriteFlex test root retained: ${run.root}; run identity mismatch`)
+      finishE2ERun(run.identity, () => rmSync(run.root, { recursive: true, force: true }))
+    } else {
+      if (!/\/wf-run-[^/]+$/.test(run.root)) throw new Error(`WriteFlex test root retained: ${run.root}; missing run identity`)
+      rmSync(run.root, { recursive: true, force: true })
+    }
+  } finally { console.info(`[test-temp] run-root removal: ${Math.round(performance.now() - removalStarted)} ms`) }
   const scanStarted = performance.now()
   let stray: string[] = []
   try {

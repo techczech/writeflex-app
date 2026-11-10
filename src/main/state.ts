@@ -18,6 +18,7 @@ import { persistDiarySession } from './diary'
 import { randomUUID } from 'node:crypto'
 import { recordMainProcessDiagnostic } from './shutdown'
 import type { RequestInboxWatch } from './request-inbox-watch'
+import type { SyncReplicaSession } from './sync-replica-session'
 
 export type WindowState = {
   collectionPageActive?: boolean
@@ -30,6 +31,9 @@ export type WindowState = {
   workspaceWatcher: WorkspaceWatcher | null
   /** Answers the command line's requests while this window has the Collection open; disposed on rebind/close. */
   requestInbox: RequestInboxWatch | null
+  /** Replica versions and sync-copy reconciliation, when this window's Collection is in a synced folder
+   *  (OneDrive: sync-replica-session.ts); null otherwise. Disposed (pending save versions kept) on rebind/close. */
+  syncReplicas?: SyncReplicaSession | null
   /** Readers' notes collected into this Collection's ledger (0.24 ticket 07). */
   /** Readers' notes in, and (ticket 08) outcomes and replies back: `look` runs one look now. */
   readerNotes: { dispose(): void; look?(): Promise<void> } | null
@@ -182,6 +186,8 @@ export function registerWindow(window: BrowserWindow): WindowState {
     if (state.workspace) clearFolioDeclarations(state.workspace.root)
     // Its executor stops at once; windows.ts keeps the Collection's lock until it has (waitForRequestDisposals).
     void state.requestInbox?.dispose()
+    if (state.syncReplicas) trackPendingDisposal(state.syncReplicas.dispose())
+    state.syncReplicas = null
     state.readerNotes?.dispose()
     state.readerNotes = null
     state.requestInbox = null
@@ -199,7 +205,18 @@ export function registerWindow(window: BrowserWindow): WindowState {
       trackPendingDisposal(persistDiarySession(state.diaryRoot, diaryRecord, {
         ...(state.workspace ? { sourceWorkspace: state.workspace } : {}),
         ...(diaryWorkspace ? { diaryWorkspace } : {}),
-      }).then(() => {}))
+      }).then(async (result) => {
+        if (!result.error) return
+        await recordMainProcessDiagnostic('diary.write.failed', { windowId: webContentsId, message: result.error })
+        // The closing renderer is gone; any surviving window can still tell the writer.
+        for (const candidate of states.values()) {
+          try {
+            if (!candidate.window.isDestroyed() && !candidate.window.webContents.isDestroyed()) {
+              candidate.window.webContents.send('diary:error', result.error)
+            }
+          } catch { /* A second window may close while the final write settles. */ }
+        }
+      }))
     }
     // The manager owns every thread instance (incl. the active one state.agent points at); its
     // disposeAll aborts in-flight turns and lets will-quit's waitForAgentDisposals cover the flush.

@@ -1,3 +1,4 @@
+import { SharingPeople } from './SharingPeople'
 // The Sharing page for the open piece (sharing ticket 03; locked frames `make-link`, `shared-one`,
 // `shared-several`, `problems`). Built in the manner of the Folder dashboard: a page over the text with
 // the piece's links and the selected link's detail on the left, and publishing, the address and what
@@ -15,7 +16,9 @@
 // Ticket 07: Notes waiting (column and fact) and Notes handled (fact), from this Collection's review
 // list, and the Limits panel in the right column (frame `problems`).
 //
-// Not in this ticket (drawn, built later): the notes in Activity (ticket 08), open notes and Live.
+// Live read-along remains a later feature.
+import { CommentsChoice } from './CommentsChoice'
+import { BackControl } from '../BackControl'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { ArrowLeft, CircleCheck, CloudOff, Copy, ExternalLink, FileText, FileWarning, FolderOpen, Globe, Layers, Link, List, Lock, MessageSquareOff, Minus, Monitor, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Settings, SlidersHorizontal, TriangleAlert, Users, X } from 'lucide-react'
 import { ENDED_BACK, ENDED_BY_TRASH, ENDED_REMOVAL_OWED, linkLabel, linkSettingsLabel, partMissingText, type PieceSharingView, type ShareLinkView, type SharingLinkResult } from '../../../../shared/sharing-links'
@@ -59,16 +62,6 @@ function Switch({ on, label, onChange, disabled }: { on: boolean; label: string;
   )
 }
 
-/** Private notes; Open notes ships with a later release (shown, not choosable). */
-function NotesSeg(): JSX.Element {
-  return (
-    <span className="shr-seg" role="group" aria-label="Comments are">
-      <button type="button" aria-pressed="true"><Lock className="icon" aria-hidden="true" />Private comments</button>
-      <button type="button" aria-pressed="false" disabled title="Open comments come in a later version of WriteFlex"><Users className="icon" aria-hidden="true" />Open comments</button>
-    </span>
-  )
-}
-
 export function SharingPage({ piecePath, pieceName, collectionName, folio = null, onShowInFiles, onOpenPlan, onBack, onFlash, onOpenSettings, onOpenSharesList }: SharingPageProps): JSX.Element {
   const folioDir = folio?.dir ?? null
   const thing = folio ? 'Folio' : 'piece'
@@ -78,6 +71,7 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
   const [making, setMaking] = useState(false)
   const [name, setName] = useState('')
   const [comments, setComments] = useState(true)
+  const [mode, setMode] = useState<'private' | 'open'>('private')
   const [rename, setRename] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
@@ -226,16 +220,17 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
   }, [run, onFlash, reload])
 
   const make = useCallback(async () => {
-    const request = { name: name.trim() || null, comments }
+    const request = { notes: comments ? mode : 'private', name: name.trim() || null, comments }
     const result = await run('make', () => window.writeflex.sharing.make(folioDir !== null ? { ...request, folio: folioDir } : { ...request, path: piecePath }))
     if (result?.ok) {
       setMaking(false)
       setName('')
       setComments(true)
+      setMode('private')
       if (result.shareId) setSelected(result.shareId)
       onFlash('Link made. Copy it to send it.')
     }
-  }, [run, piecePath, folioDir, name, comments, onFlash])
+  }, [run, piecePath, folioDir, name, comments, mode, onFlash])
 
   const copyAgain = useCallback(() => {
     const text = copyAgainText(view?.links ?? [])
@@ -326,7 +321,7 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
 
   const cancelMaking = useCallback(() => {
     if (links.length === 0) onBack()
-    else { setMaking(false); setName('') }
+    else { setMaking(false); setName(''); setComments(true); setMode('private') }
   }, [links.length, onBack])
 
   const onKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
@@ -370,7 +365,7 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
   return (
     <div className="shr-overlay" data-testid="sharing-page" ref={page} tabIndex={-1} onKeyDown={onKeyDown}>
       <header className="shr-head">
-        <button type="button" className="shr-btn" onClick={onBack}><ArrowLeft className="icon" aria-hidden="true" />Back to text<kbd>⌥⌘S</kbd></button>
+        <BackControl className="shr-back" onBack={onBack} />
         <div className="shr-title">
           <h2>Sharing</h2>
           <span className="shr-sub">{sub}</span>
@@ -385,6 +380,13 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
       </header>
       <div className="shr-body">
         <section className="shr-left" aria-label={`Links for this ${thing}`}>
+          {view?.workspaceConflict && <div className="shr-errbox" role="alert">
+            <div><b>{view.workspaceConflict.roots.join(' and ')} look like the same folder. Which one is the shared original? The other becomes a separate copy with no links.</b>
+              {view.workspaceConflict.roots.map((root) => <button type="button" className="shr-btn" key={root} onClick={() => {
+                void window.writeflex.sharing.chooseSharedOriginal(root).then((ok) => { if (ok) void reload() }).catch(() => {})
+              }}>{root}</button>)}
+            </div>
+          </div>}
           {problem && (
             <div className="shr-errbox" role="alert">
               <X className="icon" aria-hidden="true" />
@@ -406,9 +408,8 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
                 </div>
                 <div className="shr-row" style={{ gap: 22, alignItems: 'flex-start' }}>
                   <div><span className="shr-lbl">Readers</span><Switch on={comments} label="Readers can leave comments" onChange={setComments} /></div>
-                  <div><span className="shr-lbl">Comments are</span><NotesSeg /></div>
+                  <div><span className="shr-lbl">Comments are</span><CommentsChoice value={mode} disabled={!comments} onChange={setMode} /></div>
                 </div>
-                <div className="shr-p shr-dim">Private: each reader sees only their own comments and your replies. Open comments, where every reader sees all comments, come in a later version.</div>
                 <div className="shr-row">
                   <button type="button" className="shr-btn primary" disabled={busy === 'make'} onClick={() => void make()}><Link className="icon" aria-hidden="true" />{busy === 'make' ? 'Making the link…' : 'Make a link'}<kbd>⌘↵</kbd></button>
                   <button type="button" className="shr-btn" onClick={cancelMaking}><X className="icon" aria-hidden="true" />Cancel<kbd>Esc</kbd></button>
@@ -437,7 +438,7 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
                       tabIndex={tabRow === link.shareId ? 0 : -1} aria-selected={current?.shareId === link.shareId}
                       onClick={() => select(link.shareId)} onKeyDown={(event) => onRowKey(event, link.shareId)}>
                       <span className="shr-nm" role="cell">{linkLabel(link)}</span>
-                      <span className="shr-cellset" role="cell">{link.comments ? <Lock className="icon" aria-hidden="true" /> : <MessageSquareOff className="icon" aria-hidden="true" />}{linkSettingsLabel(link)}</span>
+                      <span className="shr-cellset" role="cell">{link.comments ? link.notes === 'open' ? <Users className="icon" aria-hidden="true" /> : <Lock className="icon" aria-hidden="true" /> : <MessageSquareOff className="icon" aria-hidden="true" />}{linkSettingsLabel(link)}</span>
                       <span role="cell"><StateChip link={link} limit={notes[link.shareId]?.limit !== null && notes[link.shareId]?.limit !== undefined} /></span>
                       <span role="cell" className="shr-num" data-opened={link.shareId}>{openedLabel(opened[link.shareId])}</span>
                       <WaitingCell count={notes[link.shareId]?.waiting} shareId={link.shareId} />
@@ -476,7 +477,7 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
                     <span className="shr-lbl">Settings</span>
                     <div className="shr-row" style={{ gap: 14 }}>
                       <Switch on={current.comments} label="Readers can leave comments" disabled={busy !== null} onChange={(next) => void run('comments', () => window.writeflex.sharing.setComments(current.shareId, next))} />
-                      <NotesSeg />
+                      <CommentsChoice value={current.notes} disabled={!current.comments || busy !== null} hasPrivateComments={current.hasPrivateComments || (current.notes !== 'open' && ((notes[current.shareId]?.waiting ?? 0) + (notes[current.shareId]?.handled ?? 0) > 0))} onChange={(value) => void run('notes', () => window.writeflex.sharing.setNotes(current.shareId, value))} />
                     </div>
                   </div>
                 </div>
@@ -489,6 +490,7 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
                   <div className="shr-pair"><span className="shr-k">Comments handled</span><span className="shr-v" data-testid="sharing-notes-handled">{countLabel(notes[current.shareId]?.handled)}</span></div>
                 </div>
               </div>
+              <SharingPeople key={current.shareId} shareId={current.shareId} onFlash={onFlash} />
               <div className="shr-detail-foot">
                 <button type="button" className="shr-btn" disabled={busy !== null || (sourceGone && !current.on)} onClick={() => void toggle(current)}>
                   {current.on ? <PowerOff className="icon" aria-hidden="true" /> : <Power className="icon" aria-hidden="true" />}{current.on ? 'Turn off' : 'Turn on'}<kbd>⌥⌘O</kbd>
@@ -569,17 +571,7 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
               onFollow={() => void followTo(current)} />
           )}
           {current?.problem && current.on && !current.ended && !current.lost && (
-            <div className="shr-panel problem" data-problem="not-published">
-              <div className="shr-panel-h"><CloudOff className="icon" aria-hidden="true" /><span>Not published</span></div>
-              <div className="shr-panel-b">
-                <p className="shr-p">{notPublishedText(current)}</p>
-                <div className="shr-row">
-                  <button type="button" className="shr-btn primary small" disabled={busy !== null} onClick={() => void run('retry', () => window.writeflex.sharing.retry(current.shareId))}>
-                    <RefreshCw className="icon" aria-hidden="true" />{busy === 'retry' ? 'Publishing…' : 'Retry'}
-                  </button>
-                </div>
-              </div>
-            </div>
+            <SharingPublicationPanel link={current} busy={busy} onRetry={() => void run('retry', () => window.writeflex.sharing.retry(current.shareId))} />
           )}
           {current && notes[current.shareId]?.limit && (
             <LimitsPanel linkName={linkLabel(current)} limit={notes[current.shareId]!.limit!} comments={current.comments} busy={busy}
@@ -612,7 +604,7 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
               <div className="shr-panel-b">
                 <div className="shr-preview">
                   <h4>{readersTitle}</h4>
-                  <p>{updatedLabel(current.publishedSavedAt)} · {current.comments ? 'comments in the margin · private comments' : 'comments off'}</p>
+                  <p>{updatedLabel(current.publishedSavedAt)} · {current.comments ? `comments in the margin · ${current.notes === 'open' ? 'open' : 'private'} comments` : 'comments off'}</p>
                 </div>
                 <div className="shr-row"><button type="button" className="shr-btn small" onClick={() => void window.writeflex.sharing.openLink(current.shareId)}><ExternalLink className="icon" aria-hidden="true" />Open the link in your browser</button></div>
               </div>
@@ -622,4 +614,23 @@ export function SharingPage({ piecePath, pieceName, collectionName, folio = null
       </div>
     </div>
   )
+}
+
+
+/** The existing publication explanation panel also carries non-error service-update notices. */
+export function SharingPublicationPanel({ link, busy, onRetry }: { link: ShareLinkView; busy: string | null; onRetry(): void }): JSX.Element {
+  const moved = link.problem?.kind === 'service-update' && link.publishedAt !== null
+  const Icon = moved ? FolderOpen : CloudOff
+  const title = moved ? 'Moved here' : link.problem?.kind === 'partial-publish' ? 'Published with parts retained' : link.problem?.kind === 'unreadable' ? link.problem.reason : 'Not published'
+  return <div className={`shr-panel${moved ? '' : ' problem'}`} data-problem={moved ? undefined : 'not-published'} data-notice={moved ? 'moved-here' : undefined}>
+    <div className="shr-panel-h"><Icon className="icon" aria-hidden="true" /><span>{title}</span></div>
+    <div className="shr-panel-b">
+      <p className="shr-p">{moved ? link.problem?.reason : notPublishedText(link)}</p>
+      {!moved && <div className="shr-row">
+        <button type="button" className="shr-btn primary small" disabled={busy !== null} onClick={onRetry}>
+          <RefreshCw className="icon" aria-hidden="true" />{busy === 'retry' ? 'Publishing…' : 'Retry'}
+        </button>
+      </div>}
+    </div>
+  </div>
 }

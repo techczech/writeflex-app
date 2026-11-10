@@ -20,7 +20,7 @@ const labels = (list: SwitcherList | null, isVault = false) => switcherRows(list
 describe('the switcher rows', () => {
   test('on a vault: Vaults with the tick and counts, Folders with parent paths, Open folder…, Make greyed "already a vault"; no Vault settings yet', () => {
     expect(labels(LIST)).toEqual([
-      '[Vaults]', 'Reports and proposals · 14 works ✓', 'Writing · 1,882 works',
+      '[Vaults]', 'Reports and proposals · 14 pieces ✓', 'Writing · 1,882 pieces',
       '—', '[Folders]', 'guides · ~/Documents/WriteFlex', '_agent-work-space · ~/sample-storage',
       '—', 'Open folder…', 'Make this folder a vault… · already a vault (off)',
     ])
@@ -38,7 +38,7 @@ describe('the switcher rows', () => {
     expect(html).toContain('role="menu"')
     expect(html).toContain('role="menuitemradio" aria-checked="true" data-root="/tmp/example-author/reports"')
     expect(html).toContain('role="menuitemradio" aria-checked="false" data-root="/tmp/example-author/Writing" class="fm-item hi"')
-    expect(html).toContain('<small>1,882 works</small>')
+    expect(html).toContain('<small>1,882 pieces</small>')
     expect(html).toContain('<small>~/Documents/WriteFlex</small>')
     expect(html).toContain('aria-label="Switch vault or open a folder"')
     expect(html).toContain('Open folder…')

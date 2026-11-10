@@ -30,6 +30,7 @@ import { basename, dirname, join } from 'node:path'
 
 /** Slot → its file in the user-data folder and how a message names what it holds. */
 export const SECRET_SLOTS = {
+  'backup-github-auth': { file: 'backup-github-auth.bin', what: 'the GitHub backup sign-in' },
   'cloudflare-token': { file: 'sharing-cloudflare-token.bin', what: 'the Cloudflare token' },
   'sharing-keys': { file: 'sharing-admin-keys.bin', what: 'this Mac\'s sharing key' },
   // Ticket 03: each link's owner token (publish, turn off, turn on), by share id.

@@ -2,12 +2,14 @@ import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { INBOX_DIR, OUTBOX_DIR, newRequestId, type Reply } from '../../src/main/cli/request-format'
-import { acquireOwnerLock, releaseOwnerLock, type OwnerLock } from '../../src/main/owner-lock'
-import { createReplyKey, readReplyKey, removeReplyKey } from '../../src/main/reply-key'
+import { createReplyKey, readReplyKey, removeReplyKey, writeAppPresence } from '../../src/main/reply-key'
+import { ensureRequestAddress } from '../../src/main/request-address'
 import { RequestExecutor, type RequestExecutorOptions } from '../../src/main/request-executor'
 import { ChangeStore } from '../../src/main/changes'
 import { gatedSnapshots } from '../../src/main/gated-snapshots'
 import { requestedVersionSave } from '../../src/main/requested-version-save'
+import { requestedFolioVersionSave, type FolioVersionSaveBinding } from '../../src/main/requested-folio-version-save'
+import { requestedRevisionImport, requestedRevisionWithdraw } from '../../src/main/requested-folio-revision'
 import { snapshotVersionOfSavedText } from '../../src/main/saved-text-version'
 import type { VersionSnapshotResult } from '../../src/main/agent'
 import { VersionStore } from '../../src/main/versions'
@@ -15,7 +17,7 @@ import { Workspace } from '../../src/main/workspace'
 import type { WriteFixture } from './cli-write-fixture'
 
 /**
- * The app's side of a fixture Collection, without a window: the app's owner lock, its one Workspace
+ * The app's side of a fixture Collection, without a window: its reply key, its one Workspace
  * and a RequestExecutor. The Trash mover is a rename into the fixture's own temporary Trash folder.
  */
 export type AppSide = {
@@ -23,7 +25,7 @@ export type AppSide = {
   executor: RequestExecutor
   /** Every `onChanged` call, in order. */
   changed: string[][]
-  /** Whether the app holds the Collection; set false to play a lost lock. */
+  /** Whether the app still has the Collection open in that window; set false to play a closed window. */
   owns: { value: boolean }
   /** A second executor on the same Collection, as after the app is started again. */
   restarted: (options?: Partial<RequestExecutorOptions>) => RequestExecutor
@@ -53,10 +55,42 @@ export function appVersionSaver(workspace: Workspace, snapshot?: (path: string) 
   })
 }
 
+/** A requested Folio version save as the app wires it (ipc.ts), over the same snapshot store as `appVersionSaver`. */
+export function appFolioVersionSaver(workspace: Workspace): NonNullable<RequestExecutorOptions['saveFolioVersion']> {
+  return requestedFolioVersionSave({
+    workspace, versions: new VersionStore(workspace), changes: new ChangeStore(workspace), live: () => true,
+    author: async () => ({ name: 'App Writer' }),
+    agent: async () => ({
+      workspace,
+      snapshotReviewVersion: async (path) => {
+        const { SnapshotStore } = await import('@bridle/core')
+        const snapshots = gatedSnapshots(workspace.root, await SnapshotStore.open({ dir: join(workspace.root, '.bridle') }))
+        return snapshotVersionOfSavedText({ workspace, snapshots, sessionId: 'app-session', path })
+      },
+    }),
+  })
+}
+
+/** The binding the app gives a requested revision import and withdrawal (ipc.ts): the window's own stores, the app's snapshot store, one Collection. */
+export function appRevisionBinding(workspace: Workspace, live: () => boolean = () => true): FolioVersionSaveBinding {
+  return {
+    workspace, versions: new VersionStore(workspace), changes: new ChangeStore(workspace), live,
+    author: async () => ({ name: 'App Writer' }),
+    agent: async () => ({
+      workspace,
+      snapshotReviewVersion: async (path) => {
+        const { SnapshotStore } = await import('@bridle/core')
+        const snapshots = gatedSnapshots(workspace.root, await SnapshotStore.open({ dir: join(workspace.root, '.bridle') }))
+        return snapshotVersionOfSavedText({ workspace, snapshots, sessionId: 'app-session', path })
+      },
+    }),
+  }
+}
+
 export async function openAsApp(fx: WriteFixture, options: Partial<RequestExecutorOptions> = {}): Promise<AppSide> {
-  const lock: OwnerLock = await acquireOwnerLock(fx.root, { kind: 'app' })
-  // As CollectionOwnership does when the app takes a Collection: a fresh reply key, outside the Collection.
+  // As OpenCollections does when the app opens a Collection: a fresh reply key and presence record, outside the Collection.
   await createReplyKey(fx.keys, fx.root)
+  await writeAppPresence(fx.keys, fx.root)
   const workspace = new Workspace(fx.root)
   const changed: string[][] = []
   const owns = { value: true }
@@ -66,6 +100,9 @@ export async function openAsApp(fx: WriteFixture, options: Partial<RequestExecut
     trash: async (absolute) => { await rename(absolute, join(fx.trashed, basename(absolute))) },
     onChanged: (paths) => { changed.push(paths) },
     saveVersion: appVersionSaver(workspace),
+    saveFolioVersion: appFolioVersionSaver(workspace),
+    importRevision: requestedRevisionImport(appRevisionBinding(workspace, () => owns.value)),
+    withdrawRevision: requestedRevisionWithdraw(appRevisionBinding(workspace, () => owns.value)),
     // As the app wires it (ipc.ts), without a scrap store: each request is one turn of the Collection's write turn.
     exclusive: (work) => workspace.exclusiveAll(work),
     ...options, ...extra,
@@ -85,16 +122,19 @@ export async function openAsApp(fx: WriteFixture, options: Partial<RequestExecut
     },
     close: async () => {
       await removeReplyKey(fx.keys, fx.root)
-      await releaseOwnerLock(lock)
     },
   }
 }
 
-/** Put a request file in the inbox as a program other than the command line might: any text, any name. */
+/** This computer's request address as the fixture's app keeps it (request-address.ts). */
+export const fixtureAddress = (fx: WriteFixture): Promise<string> => ensureRequestAddress(fx.appData)
+
+/** Put a request file in the inbox as a program other than the command line might: any text, any name.
+ *  Without `body` or `text` it is addressed to the fixture's app, as the command line addresses one. */
 export async function plantRequest(fx: WriteFixture, operation: string, args: Record<string, unknown>, extra: { id?: string; body?: unknown; text?: string | Uint8Array; name?: string } = {}): Promise<string> {
   const id = extra.id ?? newRequestId()
   await mkdir(join(fx.root, INBOX_DIR), { recursive: true })
-  const text = extra.text ?? `${JSON.stringify(extra.body ?? { version: 1, id, operation, args })}\n`
+  const text = extra.text ?? `${JSON.stringify(extra.body ?? { version: 1, id, operation, args, to: [await fixtureAddress(fx)] })}\n`
   await writeFile(join(fx.root, INBOX_DIR, extra.name ?? `${id}.json`), text)
   return id
 }

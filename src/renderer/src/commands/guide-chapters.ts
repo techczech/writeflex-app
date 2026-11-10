@@ -55,7 +55,7 @@ export const MERGED_ROWS: readonly MergedRow[] = [
   { label: 'Next / previous panel tab', kind: 'pair', ids: ['navigation.nextPanelTab', 'navigation.previousPanelTab'] },
   { label: 'Next / previous file in folder', kind: 'pair', ids: ['navigation.nextFolderFile', 'navigation.previousFolderFile'] },
   { label: 'Back / forward along the link trail', kind: 'pair', ids: ['navigation.linkTrailBack', 'navigation.linkTrailForward'] },
-  { label: 'Pin / unpin this workspace', kind: 'variants', ids: ['workspace.pin', 'workspace.unpin'] },
+  { label: 'Pin / unpin this vault', kind: 'variants', ids: ['workspace.pin', 'workspace.unpin'] },
   // Collect and plan
   { label: 'Move Folio outline part up / down', kind: 'pair', ids: ['plan.moveUp', 'plan.moveDown'] },
   // Share and export

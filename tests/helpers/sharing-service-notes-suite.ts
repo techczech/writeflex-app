@@ -50,7 +50,10 @@ export async function share(module: ServiceModule, body: Record<string, unknown>
     const mine = (reader: string, headers: Record<string, string> = {}) => svc.call(`/s/${shareId}/notes/mine`, {
       method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ reader }),
     })
-    return { shareId, ownerToken, owner, publish, post, mine, state: () => svc.shares.states.get(shareId)! }
+    const visible = (reader: string) => svc.call(`/s/${shareId}/notes/visible`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reader }),
+    })
+    return { shareId, ownerToken, owner, publish, post, mine, visible, state: () => svc.shares.states.get(shareId)! }
   }
   return { svc, make, first: await make() }
 }
@@ -59,6 +62,32 @@ export function runSharingServiceNotesSuite(label: string, module: () => Promise
   afterEach(() => setSystemTime())
 
   describe(`${label}: a reader's notes`, () => {
+    test('visible polling and content refresh never count openings and obey reader-route rules', async () => {
+      const { first: s, svc } = await share(await module())
+      const reader = secret()
+      const path = `/s/${s.shareId}/content`
+      const init = { method: 'POST', headers: { 'content-type': 'application/json', origin: ORIGIN, 'sec-fetch-site': 'same-origin' }, body: JSON.stringify({ reader }) }
+      expect((await svc.call(`/s/${s.shareId}`)).status).toBe(200)
+      const before = await (await s.owner('')).json() as { opened: number }
+      for (let i = 0; i < 3; i++) {
+        expect(await (await s.visible(reader)).json()).toMatchObject({ revision: 1 })
+        const content = await svc.call(path, init)
+        expect(content.status).toBe(200)
+        expect((await content.json() as { html: string }).html).toContain('data-revision="1"')
+      }
+      expect((await (await s.owner('')).json() as { opened: number }).opened).toBe(before.opened)
+      for (const method of ['GET', 'HEAD', 'PUT', 'OPTIONS']) expect((await svc.call(path, { method })).status).toBe(404)
+      for (const headers of [
+        { 'content-type': 'text/plain' },
+        { 'content-type': 'application/json', origin: 'https://elsewhere.example' },
+        { 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' },
+      ]) expect((await svc.call(path, { ...init, headers })).status).toBe(404)
+      await s.owner('/off', { method: 'POST' })
+      const off = await snapshot(await svc.call(path, init))
+      expect(off).toEqual(await snapshot(await svc.call(`/s/${'a'.repeat(22)}/content`, init)))
+      expect((await s.visible(reader)).status).toBe(404)
+    })
+
     test('a note is kept once, however often it is sent, and its reader gets it back', async () => {
       const { first: s } = await share(await module())
       const marta = secret()
@@ -139,7 +168,7 @@ export function runSharingServiceNotesSuite(label: string, module: () => Promise
       leaks.push(await s.mine(b))
       for (const forged of ['', 'x', a.slice(0, -1), `${a}x`, a.toUpperCase().replace(/[^A-Z]/g, 'A').slice(0, 43)]) leaks.push(await s.mine(forged))
       leaks.push(await other.mine(a))
-      const paths = [`/s/${s.shareId}/notes`, `/s/${s.shareId}/notes/mine`, `/s/${s.shareId}/notes/all`, `/s/${s.shareId}/notes/${aNote.id}`, `/shares/${s.shareId}/notes`, `/shares/${s.shareId}`, `/shares/${s.shareId}/notes/collected`]
+      const paths = [`/s/${s.shareId}/notes`, `/s/${s.shareId}/notes/mine`, `/s/${s.shareId}/notes/visible`, `/s/${s.shareId}/notes/all`, `/s/${s.shareId}/notes/${aNote.id}`, `/shares/${s.shareId}/notes`, `/shares/${s.shareId}`, `/shares/${s.shareId}/notes/collected`]
       for (const path of paths) {
         for (const method of ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']) {
           leaks.push(await svc.call(path, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${b}` }, body: method === 'GET' || method === 'HEAD' ? undefined : JSON.stringify({ reader: b, keys: [] }) }))
@@ -181,10 +210,12 @@ export function runSharingServiceNotesSuite(label: string, module: () => Promise
         answers.push(await snapshot(await s.post(B, first, fromB)))
         answers.push(await snapshot(await s.post(B, { ...first, text: 'again' }, fromB)))
         answers.push(await snapshot(await s.mine(B)))
+        answers.push(await snapshot(await s.visible(B)))
         answers.push(await snapshot(await s.mine(other)))
         answers.push(await snapshot(await s.post(B, note({ id: ids[1], name: '' }), fromB)))
         for (const id of ids.slice(1)) answers.push(await snapshot(await s.post(B, note({ id }), fromB)))
         answers.push(await snapshot(await s.mine(B)))
+        answers.push(await snapshot(await s.visible(B)))
         return answers
       }
       const nobody = await world('nobody')
@@ -192,7 +223,7 @@ export function runSharingServiceNotesSuite(label: string, module: () => Promise
       // The documented residual: with the share's hour full, B's first note is refused too. The
       // refusal is the very answer B gets at B's own limit, and B's list is empty, not A's.
       const full = await world('share full')
-      const ownLimit = nobody[nobody.length - 2]
+      const ownLimit = nobody[nobody.length - 3]
       expect(ownLimit.status).toBe(429)
       expect(full[0]).toEqual(ownLimit)
       expect(new TextDecoder().decode(new Uint8Array(full[2].body))).toBe('{"notes":[]}')

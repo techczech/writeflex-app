@@ -418,7 +418,7 @@ test('S-1 New card: a title that resolves to some other file of the Folio (here 
   expect(await tree()).toEqual(before)
 })
 
-// ---- A created manifest that keeps files not in the running order says so (review S-2) ----------------------------
+// ---- A created manifest that keeps files not in the outline says so (review S-2) ----------------------------
 
 test('S-2: the first room reorder on F-INDEX-ONLY with a loose file keeps it in export at the end, as ticket 06 does, and says so', async () => {
   await indexOnlyWithLoose()
@@ -427,7 +427,7 @@ test('S-2: the first room reorder on F-INDEX-ONLY with a loose file keeps it in 
   const manifest = JSON.parse(await read('index-only/_report-structure.json')) as { files: Array<{ path: string }> }
   expect(manifest.files.map((file) => file.path)).toEqual(['two.md', 'one.md', 'extra.md'])
   expect(withManifestNote('Moved Two to 1 of 3', result.manifestCreated, result.notInRunningOrder)).toBe(
-    'Moved Two to 1 of 3. This Folio now has a manifest, so export and sharing follow its running order. 1 file not in the running order stays in export, at the end: extra.md.',
+    'Moved Two to 1 of 3. This Folio now has a manifest, so export and sharing follow its running order. 1 file not in the outline stays in export, at the end: extra.md.',
   )
   // The next reorder creates nothing and says nothing of it.
   const second = await roomMove('index-only', 0, 1)
@@ -441,8 +441,8 @@ test('S-2: with no loose file the sentence is the manifest sentence alone; more 
   expect(result).toMatchObject({ ok: true, manifestCreated: true })
   expect(result.notInRunningOrder).toBeUndefined()
   expect(manifestCreatedSentence(result.notInRunningOrder)).toBe(MANIFEST_CREATED)
-  expect(manifestCreatedSentence(['f/a.md', 'f/b.md'])).toBe(`${MANIFEST_CREATED} 2 files not in the running order stay in export, at the end: a.md, b.md.`)
-  expect(manifestCreatedSentence(['a.md', 'b.md', 'c.md', 'd.md', 'e.md'])).toBe(`${MANIFEST_CREATED} 5 files not in the running order stay in export, at the end: a.md, b.md, c.md and 2 more.`)
+  expect(manifestCreatedSentence(['f/a.md', 'f/b.md'])).toBe(`${MANIFEST_CREATED} 2 files not in the outline stay in export, at the end: a.md, b.md.`)
+  expect(manifestCreatedSentence(['a.md', 'b.md', 'c.md', 'd.md', 'e.md'])).toBe(`${MANIFEST_CREATED} 5 files not in the outline stay in export, at the end: a.md, b.md, c.md and 2 more.`)
 })
 
 test('S-2: New card and Make export follow the running order that create the manifest name the loose files it keeps in export', async () => {

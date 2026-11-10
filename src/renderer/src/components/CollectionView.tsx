@@ -1,4 +1,5 @@
 import type { RoomEditorRef } from './FolioRoomFlags'
+import { BackControl, useEscapeBack } from './BackControl'
 import type { CollectionBatchResult } from '../app/collection-bulk'
 import { CollectionActionSheet, NO_MOVE_DESTINATION, type CollectionSheet } from './CollectionActionSheet'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -30,6 +31,8 @@ type SortState = DashSort
 type DashItem = { sub: CollectionSubfolder; row?: undefined } | { row: CollectionRow; sub?: undefined }
 
 export type CollectionViewProps = {
+  /** R10: the way back to the document the writer came from; absent when no document is open. */
+  onBack?: () => void
   /** The collection folder, workspace-relative ('' = the workspace root). */
   dir: string
   onRunCommand?: (id: string) => void
@@ -48,6 +51,12 @@ export type CollectionViewProps = {
   onReturnToFolio?: (dir: string) => void
   onFolderPieceSelected: (selection: { dir: string; folderPath: string; mode: 'one' | 'many' } | null) => void
   shortcutOverrides?: OverrideMap
+  /** The Versions tab's Save Folio version… button: the same way in as File ▸ Save Folio Version… (ticket 04's guarded sheet). */
+  onSaveFolioVersion?: (suggestedName?: string) => void
+  /** Whether a part has typed text not yet saved (Compare's take, ticket 09). */
+  partIsUnsaved?: (path: string) => boolean
+  /** Ticket 17: accepts or declines a suggestion through the document owner's route, for the three texts of the decide step. */
+  resolveSuggestion?: (change: { id: string; path: string }, action: 'accept' | 'reject') => Promise<{ applied: boolean; message?: string }>
   openPlanRequested?: boolean
   onStartFolio?: (dir: string) => void
   /** The Plan pane's Help with this report (ticket 10): start the report skill on this folder. */
@@ -116,8 +125,18 @@ export function CollectionFolioStatus({
  * and whenever a Collection write pushes `collection:changed`. Every row and control is a button, so
  * the whole surface is keyboard-reachable (Enter/Space opens a piece; the header buttons re-sort).
  */
-export function CollectionView({ dir, onOpenPiece, onNewPiece, onStatus, onOpenBoard, onOpenFolder, onReturnToFolio, onFolderPieceSelected, shortcutOverrides = {}, openPlanRequested = false, onStartFolio, onHelpWithReport, onMakeVault, rootIsVault = false, runningOrder, onOpenFolio, onRunCommand, onRename, onBulkAction, canAddToFolio = false, onShowRoomText, roomTextLoaded, roomEditor, headingOutline, renderBoard, onBoardShown }: CollectionViewProps): JSX.Element {
+export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus, onOpenBoard, onOpenFolder, onReturnToFolio, onFolderPieceSelected, shortcutOverrides = {}, openPlanRequested = false, onStartFolio, onHelpWithReport, onMakeVault, rootIsVault = false, runningOrder, onOpenFolio, onRunCommand, onRename, onBulkAction, canAddToFolio = false, onShowRoomText, roomTextLoaded, roomEditor, headingOutline, renderBoard, onBoardShown, onSaveFolioVersion, partIsUnsaved, resolveSuggestion }: CollectionViewProps): JSX.Element {
   const pageRef = useRef<HTMLDivElement>(null)
+  useEscapeBack(onBack)
+  // The vault's root page is titled with the vault's name, not its folder's, and is not "a Collection" (house rule R4).
+  const [vaultName, setVaultName] = useState<string | null>(null)
+  useEffect(() => {
+    if (dir !== '' || !rootIsVault) { setVaultName(null); return }
+    let live = true
+    void window.writeflex.vault.get().then((vault) => { if (live) setVaultName(vault?.settings.name ?? null) }, () => undefined)
+    const off = window.writeflex.vault.onChanged((event) => { if (live) setVaultName(event.vault?.settings.name ?? null) })
+    return () => { live = false; off() }
+  }, [dir, rootIsVault])
   const [filters, setFilters] = useState(EMPTY_COLLECTION_FILTERS)
   const [group, setGroup] = useState<CollectionGroup>('none')
   const [menuOpen, setMenuOpen] = useState(false)
@@ -298,9 +317,9 @@ export function CollectionView({ dir, onOpenPiece, onNewPiece, onStatus, onOpenB
     if (command === 'clear') { setFilters(EMPTY_COLLECTION_FILTERS); return }
     if (command === 'clear-selection') { setSelection(new Set()); return }
     if (command === 'select-all') { setSelection(new Set(hits.map(hit => hit.row.path))); return }
-    if (command === 'bulk-folio' && !canAddToFolio) { onStatus('Add documents from the Folio’s own collection folder.'); return }
+    if (command === 'bulk-folio' && !canAddToFolio) { onStatus('Add pieces from the Folio’s own collection folder.'); return }
     if (command === 'rename' || command in COLLECTION_BULK_COMMANDS) {
-      if (command.startsWith('bulk-') && selectedPaths.length === 0) { onStatus('Select documents first.'); return }
+      if (command.startsWith('bulk-') && selectedPaths.length === 0) { onStatus('Select pieces first.'); return }
       if (command === 'bulk-move' && sortedRows.some(row => row.folderPath && selectedPaths.includes(row.path))) { onStatus('Move folder pieces from Files so all their documents move together.'); return }
       if (command === 'bulk-move') setMoveFolders([])
       setSheet(command === 'rename' ? 'rename' : COLLECTION_BULK_COMMANDS[command as keyof typeof COLLECTION_BULK_COMMANDS]); setSheetValue(command === 'rename' ? data?.name ?? '' : command === 'bulk-move' ? NO_MOVE_DESTINATION : ''); setSheetError(''); return
@@ -356,7 +375,7 @@ export function CollectionView({ dir, onOpenPiece, onNewPiece, onStatus, onOpenB
     onSubmit={() => { void submitSheet() }}
   />
   const collectionMenu = <CollectionMenu canCreateFolio={canStart} hasCover={Boolean(data?.cover)} folio={folio !== null || planDeclared} open={menuOpen} onToggle={() => runPageCommand('menu')} onCommand={runPageCommand} onTurnBack={() => { setMenuOpen(false); onRunCommand?.('folio.turnBack') }} onAssemble={() => { setMenuOpen(false); onHelpWithReport?.(dir) }} onExport={() => { setMenuOpen(false); onRunCommand?.('export.document') }} />
-  const createButtons = <><button className="ghost primary" onClick={() => onNewPiece(dir)}><FilePlus2 className="icon sm" />New document<kbd aria-hidden="true">{effectiveSheetChords(registryCommand('sheet.Files.2'), shortcutOverrides).join(' / ')}</kbd></button>{!showPlan && canStart && onStartFolio && <button className="ghost" onClick={() => onStartFolio(dir)}><BookOpenText className="icon sm" />Start a Folio outline</button>}</>
+  const createButtons = <><button className="ghost primary" onClick={() => onNewPiece(dir)}><FilePlus2 className="icon sm" />New piece<kbd aria-hidden="true">{effectiveSheetChords(registryCommand('sheet.Files.2'), shortcutOverrides).join(' / ')}</kbd></button>{!showPlan && canStart && onStartFolio && <button className="ghost" onClick={() => onStartFolio(dir)}><BookOpenText className="icon sm" />Start a Folio outline</button>}</>
 
   if (!data) return <div className="cv-scroll" aria-busy="true" />
 
@@ -395,10 +414,11 @@ export function CollectionView({ dir, onOpenPiece, onNewPiece, onStatus, onOpenB
           return <span key={path}><span aria-hidden="true"> / </span><button className="ghost" aria-current={path === dir ? 'page' : undefined} onClick={() => openAncestor(path)}>{name}</button></span>
         })}
       </nav>}
+      {!embedded && onBack && <div className="cv-back"><BackControl onBack={onBack} /></div>}
       {!embedded && <div className="cv-head">
         <FolderOpen className="icon" style={{ width: 22, height: 22 }} />
-        <h1>{data.name}</h1>
-        <span className="cv-badge">{manifestUnreadable ? 'Folio manifest unreadable' : folio ? 'Folio' : 'Collection'}</span>
+        <h1>{vaultName ?? data.name}</h1>
+        {(vaultName === null || manifestUnreadable || folio) && <span className="cv-badge">{manifestUnreadable ? 'Folio manifest unreadable' : folio ? 'Folio' : 'Collection'}</span>}
         {collectionMenu}
       </div>}
 
@@ -417,7 +437,7 @@ export function CollectionView({ dir, onOpenPiece, onNewPiece, onStatus, onOpenB
             <button className="ghost" onClick={createIndex}>Create index note</button>
           </>
         )}
-        <span>·</span><span>{sortedRows.length} {sortedRows.length === 1 ? 'document' : 'documents'} · {totalWords.toLocaleString('en-GB')} words</span>
+        <span>·</span><span>{sortedRows.length} {sortedRows.length === 1 ? 'piece' : 'pieces'} · {totalWords.toLocaleString('en-GB')} words</span>
       </div>
 
       {manifestUnreadable && <FolioManifestWarning />}
@@ -433,7 +453,7 @@ export function CollectionView({ dir, onOpenPiece, onNewPiece, onStatus, onOpenB
 
       <div className="cv-table" role="table" aria-label={`Pieces in ${data.name}`}>
         <div className="cv-tr cv-th" role="row">
-          <input type="checkbox" aria-label="Select all matching documents" checked={hits.length > 0 && selectedPaths.length === hits.length} onChange={() => runPageCommand(selectedPaths.length === hits.length ? 'clear-selection' : 'select-all')} />
+          <input type="checkbox" aria-label="Select all matching pieces" checked={hits.length > 0 && selectedPaths.length === hits.length} onChange={() => runPageCommand(selectedPaths.length === hits.length ? 'clear-selection' : 'select-all')} />
           {columns.map((col) => (
             <button
               key={col.key}
@@ -448,7 +468,7 @@ export function CollectionView({ dir, onOpenPiece, onNewPiece, onStatus, onOpenB
           ))}
         </div>
         {hits.length === 0 && (activeFilters || (data.subfolders ?? []).length === 0) ? (
-          <div className="cv-empty">{activeFilters ? 'No documents match. Clear the search or filters to show more.' : 'No pieces in this folder yet.'}</div>
+          <div className="cv-empty">{activeFilters ? 'No pieces match. Clear the search or filters to show more.' : 'No pieces in this folder yet.'}</div>
         ) : (
           groups.map(g => <div key={g.label} className="cv-row-group">{g.label && <div className="cv-group-heading">{g.label}<span>{g.rows.length}</span></div>}{[
             ...(!activeFilters && group === 'none' ? ordered.filter(entry => entry.item.sub) : []),
@@ -510,8 +530,8 @@ export function CollectionView({ dir, onOpenPiece, onNewPiece, onStatus, onOpenB
         )}
       </div>
 
-      {activeFilters && <p className="cv-match-count" role="status">{hits.length} of {sortedRows.length} {sortedRows.length === 1 ? 'document' : 'documents'} {hits.length === 1 ? 'matches' : 'match'}. {filters.query && 'Text matches show the sentence they were found in.'}<button onClick={() => runPageCommand('clear')}>Clear filters</button></p>}
-      {selectedPaths.length > 0 && <div className="cv-bulk" role="toolbar" aria-label="Selected documents"><strong>{selectedPaths.length} selected</strong><button onClick={() => runPageCommand('bulk-status')}>Set status</button><button onClick={() => runPageCommand('bulk-move')}><ArrowRight className="icon sm" />Move to…</button>{canAddToFolio && <button onClick={() => runPageCommand('bulk-folio')}><BookOpenText className="icon sm" />Add to Folio…</button>}<button onClick={() => runPageCommand('bulk-tag')}><Tag className="icon sm" />Tag…</button><button onClick={() => runPageCommand('clear-selection')}>Clear <X className="icon sm" /></button></div>}
+      {activeFilters && <p className="cv-match-count" role="status">{hits.length} of {sortedRows.length} {sortedRows.length === 1 ? 'piece' : 'pieces'} {hits.length === 1 ? 'matches' : 'match'}. {filters.query && 'Text matches show the sentence they were found in.'}<button onClick={() => runPageCommand('clear')}>Clear filters</button></p>}
+      {selectedPaths.length > 0 && <div className="cv-bulk" role="toolbar" aria-label="Selected pieces"><strong>{selectedPaths.length} selected</strong><button onClick={() => runPageCommand('bulk-status')}>Set status</button><button onClick={() => runPageCommand('bulk-move')}><ArrowRight className="icon sm" />Move to…</button>{canAddToFolio && <button onClick={() => runPageCommand('bulk-folio')}><BookOpenText className="icon sm" />Add to Folio…</button>}<button onClick={() => runPageCommand('bulk-tag')}><Tag className="icon sm" />Tag…</button><button onClick={() => runPageCommand('clear-selection')}>Clear <X className="icon sm" /></button></div>}
       <p className="cv-foot">
         {collectionFooterText({ pieces: sortedRows.length, folderPieces, subfolders: subfolders.length, words: totalWords })}
         {bareCount > 0 && firstBare && ` · ${firstBare.name} carries no frontmatter — bare files are welcome here.`}
@@ -520,7 +540,7 @@ export function CollectionView({ dir, onOpenPiece, onNewPiece, onStatus, onOpenB
     </div>
   )
   if (roomOpens) return (
-    <div ref={pageRef} className="cv-folio-page">{sheetNode}<FolioRoom onOpenFolio={onOpenFolio} headingOutline={headingOutline} editor={roomEditor} dir={dir} onOpenPiece={onOpenPiece} onStatus={onStatus} onViewChange={setRoomView} files={() => renderList(true)} {...(renderBoard ? { board: renderBoard } : {})} {...(onBoardShown ? { onBoardShown } : {})} headerActions={collectionMenu} {...(onShowRoomText ? { onShowText: onShowRoomText } : {})} textLoaded={roomTextLoaded ?? null} {...(runningOrder ? { runningOrder } : {})} shortcutOverrides={shortcutOverrides} /></div>
+    <div ref={pageRef} className="cv-folio-page">{sheetNode}<FolioRoom onOpenFolio={onOpenFolio} headingOutline={headingOutline} editor={roomEditor} dir={dir} onOpenPiece={onOpenPiece} onStatus={onStatus} onViewChange={setRoomView} files={() => renderList(true)} {...(renderBoard ? { board: renderBoard } : {})} {...(onBoardShown ? { onBoardShown } : {})} headerActions={collectionMenu} {...(onShowRoomText ? { onShowText: onShowRoomText } : {})} textLoaded={roomTextLoaded ?? null} {...(runningOrder ? { runningOrder } : {})} shortcutOverrides={shortcutOverrides} {...(onSaveFolioVersion ? { onSaveFolioVersion } : {})} {...(partIsUnsaved ? { partIsUnsaved } : {})} {...(resolveSuggestion ? { resolveSuggestion } : {})} /></div>
   )
   return renderList(false)
 }

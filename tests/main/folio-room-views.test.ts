@@ -43,8 +43,8 @@ async function snapshot(base: string): Promise<string[]> {
 
 const part = (index: number, written = true) => ({ index, written, key: { title: `P${index}`, path: written ? `p${index}.md` : null } })
 
-test('All seven workspace tabs are available, in tab order', () => {
-  expect([...ROOM_AVAILABLE_VIEWS]).toEqual(['outline', 'text', 'cards', 'map', 'flags', 'evidence', 'files'])
+test('All eight workspace tabs are available, in tab order', () => {
+  expect([...ROOM_AVAILABLE_VIEWS]).toEqual(['outline', 'text', 'cards', 'map', 'flags', 'evidence', 'files', 'versions'])
 })
 
 test('switching views keeps the selection and the split toggle, in every view (interaction 3)', () => {

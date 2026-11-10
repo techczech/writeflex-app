@@ -99,8 +99,8 @@ function ProposalChip({ proposal, onResolve }: { proposal: TaskProposal; onResol
           <button type="button" className="an-task-proposal-act" onClick={() => onResolve(proposal.changeId, 'accept')} aria-label={proposal.tick ? 'Accept: tick this box' : 'Accept: untick this box'} title="Accept">
             <Check className="icon sm" aria-hidden="true" />Accept
           </button>
-          <button type="button" className="an-task-proposal-act" onClick={() => onResolve(proposal.changeId, 'reject')} aria-label="Discard the proposal" title="Discard">
-            <X className="icon sm" aria-hidden="true" />Discard
+          <button type="button" className="an-task-proposal-act" onClick={() => onResolve(proposal.changeId, 'reject')} aria-label="Decline the proposal" title="Decline">
+            <X className="icon sm" aria-hidden="true" />Decline
           </button>
         </>
       )}
@@ -154,7 +154,7 @@ function ObjectNoteCard({ note, onRestage }: { note: AgentObjectNote; onRestage:
     <article className="agent-note-row">
       <div className="an-meta">
         <time dateTime={note.recordedAt}>{new Date(note.recordedAt).toLocaleString()}</time>
-        <span className={`an-status ${note.status}`}>{note.status.toUpperCase()}</span>
+        <span className={`an-status ${note.status}`}>{note.status === 'discarded' ? 'DECLINED' : note.status.toUpperCase()}</span>
       </div>
       <div className="an-source-document">{displayDocument(note.sourceDocument)}</div>
       {note.invalidReason && <div className="an-invalid" role="status">Invalid: {note.invalidReason}</div>}
@@ -194,7 +194,7 @@ export function AgentNotesView({ notes, activePath, dir, error, notice, proposal
       {error && <p className="agent-notes-error" role="status">{error}</p>}
       {!error && notice && <p className="agent-notes-notice" role="status">{notice}</p>}
       {!error && empty && (
-        <p className="agent-notes-empty">Nothing here yet — notes the agent leaves about a piece appear beside it here, and agent objects you discard wait here to be restaged.</p>
+        <p className="agent-notes-empty">Nothing here yet — notes the agent leaves about a piece appear beside it here, and agent objects you decline wait here to be restaged.</p>
       )}
       {!error && !empty && (
         <section className="an-section" aria-label="Notes on this piece">
@@ -212,8 +212,8 @@ export function AgentNotesView({ notes, activePath, dir, error, notice, proposal
         </details>
       )}
       {objects.length > 0 && (
-        <section className="an-section" aria-label="Discarded objects">
-          <h2 className="an-section-title">Discarded objects</h2>
+        <section className="an-section" aria-label="Declined objects">
+          <h2 className="an-section-title">Declined objects</h2>
           {objects.map((note) => <ObjectNoteCard key={note.path} note={note} onRestage={actions.onRestage} />)}
         </section>
       )}

@@ -1,19 +1,147 @@
 # Changelog
 
-## [0.28.0-alpha.1] — 2026-10-29
+## [0.28.0] — 2026-11-10
+
+<!-- The date is set at publication. -->
+
+Covers everything since 0.22.0, the first public release.
 
 ### Added
 
-- A floating Scratchpad keeps formatted paragraphs and section fragments for later review and reuse. It can dock beside the document or collapse to a pill, with groups, search, previews and side-by-side comparison.
-- Insert a copy keeps the candidate. Put back is available for recorded cuttings and follows editor Undo and Redo. A cut is saved before text is removed, and existing scraps remain readable.
-- Browse pictures, SVG graphics, tables and compatible widgets already used in a document or across a Folio. Collect candidates, preview them and show their location in the document.
-- Review Folio references and evidence beside the text, with actions to cite, link, insert a quote with its citation or attach evidence.
-- Optional TalkWeaver vault browsing and SlideWell search have separate switches in Settings, both off by default. Insertion copies the chosen asset into the writing workspace and retains its source.
-- Folio section pages group the parts that follow them in the running order and outline, with optional section-page export settings.
+**Sharing and readers**
+- Share a piece or whole Folio read-only through multiple named browser links, each with its own comments and limits, Copy link, and on/off.
+- Set up, update and remove the sharing service inside WriteFlex; tokens are stored encrypted in the system keychain. Sharing uploads to your own Cloudflare account.
+- Use a domain held on the same Cloudflare account for links; earlier service-address links keep working.
+- Saves and external edits republish shared writing, images and Folio running-order changes; offline changes catch up on return, with last-success and Retry information on failure.
+- The Shares list shows links across the collection, their settings, opening counts and waiting or handled comments.
+- Readers select words to comment or propose an edit, keep their name in the browser, and queue comments offline.
+- Reader comments and edits arrive as review cards attributed to the reader and link. Only your Accept changes prose. Limits have Clear, Raise for this share and Turn comments off.
+- Private or open discussion per link; readers of an open link see one another's comments and edits.
+- Sharing links, reader edits, replies and handled states work across Macs on the same Cloudflare account and synced workspace.
+- Open reader pages receive discussion within about ten seconds and refresh published text while keeping the reading position.
+- Named people with individual links by email: opening and comment counts, on/off, New link and Remove.
+- Email invitation opens a prepared draft in your mail app and sends nothing itself.
+
+**Reviewing**
+- Review cards aligned with their passages, showing source, kind, time and unread marks, with replies, Accept, Decline, Done and More.
+- A status-bar review line with counts, All / Comments / Edits, navigation, filters, bulk actions on picked cards, Held both, Send back and Save version.
+- Settled today and My edits show past decisions and recorded changes, with Reopen and Return to review. Other-piece waiting lists, sidebar counts and Next piece with items waiting.
+- Accept all / Decline all for the suggestions of one outside agent across the collection.
+- Suggest / Work / Read only for agent behaviour, with a numbered turn strip and turn Undo.
+
+**Folio planning**
+- Cards, Table, Map, Flags, Text and Evidence views; cards group by status with drag and keyboard moves; split editing puts text beside cards.
+- Edit part synopses, labels, status and priority; manage Folio labels; start unwritten parts; add cards by title.
+- Select several parts and remove them from the running order and export while keeping their files, with Undo.
+- Reorder cards or rows by drag or keyboard, with placement notices and Undo.
+- Flag selected words as Needs citation, Rewrite, Check fact or Expand; filter, jump to or clear flags.
+- Attach files, notes, archive sources and Zotero items to written or planned parts; keep quotations, insert citations, spot evidence gaps.
+- Map parts, sources, notes, cards, clusters and labelled arrows; preview a path and write its order, with Undo.
+- Folio Details for title, standfirst, author, date, status, audience and language.
+- Front matter as a block before the chapters, kept out of contents; title pages become covers; per-part roles, Put back, Add all and Sort by chapter number.
+- Section pages group the parts that follow them; optional page breaks and section contents.
+- Turn back into a collection and Make Folio restore a Folio's running order.
+
+**Versions and reviewers' files**
+- Save versions of a whole Folio, including inserted files frozen for Git backup. Versions lists saved Folios and their parts.
+- Changed-part dots, a status-bar count and a working-draft row compare the current Folio with its latest saved version; read old Folios read-only.
+- Compare any two Folio versions, or a version and the working draft, part by part, including from the command line.
+- Take one old part's text as a margin suggestion, optionally keeping today's text in the Scratchpad.
+- Export a saved version to HTML or Word and mark who it was sent to.
+- Send selections or paragraphs from old versions and comparisons to the Scratchpad, with Open in that version.
+- Import a reviewer's returned Word file as an incoming version; tracked changes, or a comparison with the sent text, become named suggestions.
+- Decide lists the suggested changes and the added, moved and removed parts of a returned file, tracks your decisions and offers a version when you finish.
+- Side-by-side sent, reviewer and current paragraphs with Use theirs, Keep mine and Edit by hand.
+- Versions of inserted CSV, image and HTML-widget files: save, compare, restore, or save a separate copy.
+
+**Scratchpad and reuse**
+- The Scratchpad keeps exact Markdown selections or heading sections; float, dock, collapse, group, search, preview, mark done, colour, reject and restore.
+- Insert a copy and Put back, following editor Undo and Redo.
+- Browse pictures, SVG, tables and widgets used in a document or Folio, with Show in document and Add to Scratchpad.
+- Browse Folio sources and evidence, Zotero and archive candidates; insert a quote with citation, cite, link or attach to a part.
+- Compare two to four candidates side by side.
+- Optional TalkWeaver vaults and SlideWell search, each off by default.
+- Capture selected or clipboard text to research files with `scout capture`.
+- A record-browser widget; widget folders for standalone documents; support for copying and syncing outside files.
+- Filter the Reading Room Shelf by Zotero collection.
+
+**Backup, sync and history**
+- GitHub sign-in and automatic per-vault Git backup, with destination and scope confirmed first. Experimental: not yet proven with a real GitHub account from the installed app.
+- OneDrive writes enter local recovery before they sync; Versions, Compare and Restore include text held only on this Mac.
+- Reconcile proven sync copies: both texts are kept, identical or superseded copies are set aside recoverably, and non-overlapping edits merge.
+- Merge compares your text and the disk text with their shared original and offers Keep mine, Take disk or Keep both.
+
+**Finding, details and agents**
+- Make a vault: previewed structure and status mapping, writing-only and title views, ordered pins, vault switching and palette actions.
+- Collection page search, filtering and bulk actions.
+- Document metadata with labelled fields, workspace suggestions, tag chips and protected system fields; Edit as Markup remains.
+- External agents read and propose through `writeflex`; suggestions arrive for review. Folio context includes synopsis, labels, priority, status, evidence and flags.
+- Folio agent instructions written to AGENTS.md and CLAUDE.md, separately or together.
+- Install the WriteFlex skill and command for Claude Code, Codex, Gemini CLI or Antigravity agents you choose; `writeflex agent status|install|remove --agent <id>`.
+- Diary glance in the rail with today's words, day number and fourteen days of activity; saved queries across workspaces with project, date and word filters.
+- Check for Updates in the menu, palette and Settings; What's new ships with the app.
+- Quick-open matches titles and filenames loosely, includes and marks hidden files; sidebar filter field.
+
+**Export**
+- Contents depth per piece or Folio, with presets and All levels.
+- Export detects a Folio export order that differs from its running order; Make export follow the running order repairs it, and Export anyway keeps it.
+- Exported pages have a Contents button on phones that closes on heading selection or Escape.
+- Fix a title and leading-heading disagreement in either direction, for one piece or a Folio, with Undo.
 
 ### Changed
 
-- Updated the Electron runtime and patched bundled dependencies, including the agent runtime's HTTP dependency through a reviewed MIT derivative that changes its dependency pin.
+- Versions, Agent and Research share one Right Sidebar, which starts closed once after updating and then remembers your choice. Agent notes live in Agent; Archive is a Research scope. Labels use vault, Left Sidebar and Right Sidebar.
+- Track my changes is one on/off toggle replacing the Drafting and Reviewing mode names. Review names the margin; proposals use Accept / Decline.
+- Notes are called Comments throughout the app and the reader page. Existing comments and links stay readable.
+- The Review tab, dock review area and bar above the text are replaced by margin and status-bar controls. Earlier margin-position choices reset to Margin; Inline replaces Under.
+- Plan is renamed Folio outline. Folios open into text, Manage Folio holds the planning views, and the separate Folio page and Board route are gone. Earlier outline views are called Table.
+- The Left Sidebar has one Outline tree; Folio parts and unwritten parts are named consistently, and Contents counts written parts.
+- Delete moves Folio parts to the Folio bin with Undo; Restore recovers them, and Show bin in Finder leaves permanent emptying to you.
+- One Folio per project; creating a nested or parent Folio is refused.
+- Focus and readability separates text effects from the Line focus and Ruler overlays, allowing one of each.
+- Renaming or moving a shared piece keeps its links; moving it to Trash ends them and removes its published copy. External deletion pauses publishing as Piece not found.
+- Anyone with the link can be disabled so that only personal links work; it starts on for new and existing links.
+- Shared Folios show cover metadata, nested collapsible contents, reading position, a phone Contents control and right-column comments. Existing pages adopt the layout after you update the service and publish again.
+- The reader proposal box says Edit selected text here and its comparison says Preview of changes.
+- The collection lock between synced Macs is removed; two Macs can open and save the same synced folder, with conflict checks, history and local undo kept.
+- History defaults to retention forever, which uses more disk until you change it.
+- Scratchpad's status-bar chip counts candidates and opens a closed sidebar; expanded, it docks in the Right Sidebar unless you choose Float.
+- The Reading Room sends highlights, colours, comments and deletions to open Zotero through WriteFlex for Zotero instead of writing Zotero's library directly. Install the bundled plugin and close PDFs in Zotero first.
+- Start lists vaults in their own rows with location, counts and last opening; Dashboard groups folders before files.
+- Sidebar file search lists ranked matches with folders and takes `fo:`, `fi:`, `met:` and `da:` filters; Escape restores the previous tree.
+- Compact title-bar icons, one-row sidebar headers, one Manage Folio bar and status-bar notices leave more room for writing. Below 1260 pixels the sidebars take turns. Favourites is merged into Pinned.
+- Main-area modes use Back and Escape. One in-app confirmation card replaces browser and system prompts; Restore confirms; Settings Reset offers Undo.
+- Menus consistently show Settings, Export, Share and themes, with Help last.
+- HTML and Word titles, covers, browser titles and suggested filenames use the declared title or Folio Details first. Front matter stays out of contents and the title appears once. Output filenames and headings may differ from earlier exports.
+- Exported HTML now contains one small script for the phone Contents menu; contents links also work without JavaScript.
+- Opening large folders, typing in long documents, autosave and Folio operations are faster. In recorded tests, opening a 3,934-file folder went from 7.8 to 2.5 seconds and visible keystroke latency in a 20,000-line document from about 1.1 to 0.09 seconds. These are specific tests, not general figures.
+- Electron updated to 43.8.6; patched bundled dependencies include the agent runtime's HTTP and discovery libraries.
+
+### Fixed
+
+- Wide tables scroll inside their boxes on phones; Cloudflare setup names the cause of a connection failure, and an unconfirmed custom address says Address not attached with a working Try again.
+- Metadata changes apply only if the complete original metadata still matches; unrelated body edits do not block them.
+- Surrounding words locate an edit when the same words occur more than once. An Accept that cannot be placed stays waiting rather than recording Declined; a failed Decline reports why.
+- Outside suggestions and counts stay with the correct document or Folio; empty margins no longer squeeze prose because work is waiting elsewhere; More menus open left; passage outlines are lighter.
+- File links survive title edits and renames; older Folios link unambiguous parts once on opening, with Undo. Missing or ambiguous parts stay visible with Locate file and Link to a file.
+- Parts outside a content subfolder still appear in order; missing parts keep their entries and do not block reordering. Other files open their own text without changing the selected part.
+- Folio refreshes keep evidence forms, notes, Map and current text; dragging keeps the grabbed part, waits through refreshes and cancels safely.
+- Nested folders offer breadcrumbs, Up a level and Return to Folio. Broken outlines open as editable text, and an existing Folio never gets a second Index Note.
+- History follows moves and renames, including case-only renames; ambiguous history is held for Attach here.
+- Backup restoration checks the recorded file identity and asks when it is missing or different. History of a moved vault can confirm exact earlier locations on this Mac, followed by a separate preview and Turn on; the original history is unchanged.
+- Ambiguous moved-file history can be reattached from the command line or by an agent only after you approve the exact move list; orphan backup records move into `.writeflex/` without deletion.
+- Sync-created copies of version, change and Bridle journals and Folio completion records stay readable; late saves and closed-window flushes keep their own recovery.
+- Saving, recovery, proposal acceptance, renames and planning operations refuse to overwrite content changed on disk; failed multi-file operations roll back only their own writes and report files that changed meanwhile.
+- Vault switches wait for saves and the new window, time out safely, and closing records pending edits across documents.
+- Put back Undo and Redo restore text and placement without replaying a spent suggestion or creating a false disk conflict.
+- Nested document pictures resolve beside their file.
+- The Reading Room's library-wide list survives initial draft binding.
+- Word and HTML use the same Folio parts and order, including content subfolders; Export defaults to the whole Folio. Contents indent each heading level and nest chapter continuations as the Outline does.
+- Leading part titles do not repeat in the running order, headings are recognised at any level without a duplicate proposal, moving a part keeps its nested notes and code, and captured links update immediately.
+- Sidebar drags reserve at least 55% for the editor and narrow the left side only as far as needed; a late update cannot reopen a sidebar you closed; overlays collapse only over the caret.
+- Settings opens at the top, metadata has more editing space, the archive footer wraps, and status controls hide whole, leave the keyboard focus order and remeasure when neighbours change width. Renamed commands still resolve in saved shortcut history.
+- Command-[ and Command-] toggle the left and right sidebars consistently in Folio management and editing; widgets respect Command-W and Command-Q, and Escape ends engagement.
+- Viewing an earlier version and one harmless drawn-object layout notice no longer show Something broke; real errors still reach recovery. New-file and sidebar row controls stay reachable in narrow windows.
 
 ## [0.26.0] — 2026-10-21
 

@@ -12,18 +12,19 @@
 // proposed edit, through the existing accept path (agent.ts, the ledger door: the record's text at its
 // one place in the file as read, written with saveFileOverRead).
 //
-// COLLECTED ONCE. A note is marked collected on the service only after the ledger holds it (added, or
+// COLLECTED DURABLY. A note is marked collected on the service only after the ledger holds it (added, or
 // already there). A note the ledger has no room for, or refuses outright (dropped), is left on the
 // service and asked for again on the next look. A link with a document that cannot be read just now is
 // skipped for the look. A note the service still lists because marking failed is a repeat in the ledger. The
-// collector runs only in the window that owns the Collection (the owner lock), so two windows, or two
-// Macs on one synced Collection, never both add it; a Mac that reads after another marked a note
-// collected is not given it.
+// collector runs in the window that has the Collection open. Build 15 reads all retained items and
+// their state on every Mac, including collected items; the ledger deduplicates service item identity
+// across its primary journal and sync copies. The older waiting-only route stays compatible.
 //
 // THE READER'S TEXT IS TEXT. Every field from the service is checked for type and size here, again,
 // and kept as a string; nothing of it is read as a path, a pattern or markup.
 //
 // No Electron import.
+import type { ReaderItemState } from './sharing-review-state'
 import type { Change, NewChange } from '../engine'
 import { isRefusedOutsideChange, readerNoteOf } from './outside-change-fields'
 import { bornClosed, type ChangeStore, type OutsideBatchResult } from './changes'
@@ -42,6 +43,9 @@ export type OwnerNote = {
   key: string; id: string; kind: 'note' | 'edit'; name: string; text: string
   anchor: { quote: string; before: string; after: string; block: string | null; start: number | null; end: number | null }
   writtenAt: number | null; receivedAt: number
+  person?: { id: string; name: string; email: string }
+  replyTo?: { key: string; name: string; text: string }
+  state?: ReaderItemState
 }
 export type NotesRefused = { total: number; byReason: Record<string, number>; more: string[]; lastAt: number | null }
 export type NotesAnswer = { notes: unknown[]; more: boolean; refused: unknown; limits?: unknown }
@@ -68,7 +72,7 @@ export interface ReaderNotesPorts {
   /** The document as it stands on disk, read guarded and document-only; null when it cannot be read. */
   readDocument(path: string): Promise<string | null>
   /** `boundReaderClosed`: absent, closed records are not bounded here (tests of other rules). */
-  changes: Pick<ChangeStore, 'addOutside'> & Partial<Pick<ChangeStore, 'boundReaderClosed'>>
+  changes: Pick<ChangeStore, 'addOutside'> & Partial<Pick<ChangeStore, 'boundReaderClosed' | 'syncReaderState'>>
   now(): number
 }
 
@@ -89,7 +93,7 @@ export type CollectOutcome = {
 }
 
 /** The reader's fields, as the service limits them (sharing-service/reader-notes.ts NOTE_LIMITS). */
-const LIMITS = { name: 60, text: 4000, quote: 1000, context: 200, key: 100 }
+const LIMITS = { name: 80, text: 4000, quote: 1000, context: 200, key: 100 }
 const SUMMARY_CHARS = 200
 
 const str = (value: unknown, max: number): string | null => (typeof value === 'string' && value.length <= max ? value : null)
@@ -114,8 +118,33 @@ export function checkedNote(value: unknown): OwnerNote | null {
   return {
     key, id, kind: v.kind, name: name.trim() || 'A reader', text,
     anchor: { quote, before, after, block: str(anchor.block, 200), start: num(anchor.start), end: num(anchor.end) },
+    ...(checkedPerson(v.person) ? { person: checkedPerson(v.person)! } : {}),
+    ...(checkedParent(v.replyTo) ? { replyTo: checkedParent(v.replyTo)! } : {}),
+    ...(checkedState(v) ? { state: checkedState(v)! } : {}),
     writtenAt: num(v.writtenAt), receivedAt: num(v.receivedAt) ?? 0,
   }
+}
+
+function checkedState(v: Record<string, unknown>): ReaderItemState | null {
+  if (v.stateVersion !== 1) return null
+  if (!['open', 'accepted', 'declined', 'done', 'failed'].includes(v.status as string) || !Array.isArray(v.replies) || v.replies.length > 20) return null
+  if (v.status !== 'open' && !num(v.outcomeAt)) return null
+  const replies = v.replies.flatMap((r) => r && typeof r.id === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(r.id) && typeof r.text === 'string' && r.text.length <= 1000 && num(r.at) ? [{ id: r.id, text: r.text, at: r.at as number, visibility: r.visibility === 'open' ? 'open' as const : 'private' as const }] : [])
+  if (replies.length !== v.replies.length) return null
+  return { key: v.key as string, outcome: v.status === 'open' ? null : v.status as ReaderItemState['outcome'], at: num(v.outcomeAt), replies }
+}
+
+function checkedPerson(value: unknown): OwnerNote['person'] | null {
+  if (!value || typeof value !== 'object') return null
+  const p = value as Record<string, unknown>
+  return typeof p.id === 'string' && p.id.length <= 100 && typeof p.name === 'string' && p.name.length <= 80 && typeof p.email === 'string' && p.email.length <= 254 ? { id: p.id, name: p.name, email: p.email } : null
+}
+
+function checkedParent(value: unknown): OwnerNote['replyTo'] | null {
+  if (!value || typeof value !== 'object') return null
+  const p = value as Record<string, unknown>
+  const key = str(p.key, LIMITS.key), name = str(p.name, LIMITS.name), text = str(p.text, LIMITS.text)
+  return key && /^[A-Za-z0-9_.-]+$/.test(key) && name !== null && text !== null ? { key, name, text } : null
 }
 
 export function checkedRefused(value: unknown): NotesRefused {
@@ -229,6 +258,8 @@ export function readerChangeFor(note: OwnerNote, link: Pick<ReaderLinkSource, 's
   const span = placed && placed.anchor.state !== 'gone' ? uniqueSpan(placed.content, placed.anchor.from, placed.anchor.to) : null
   const fields: ReaderNoteFields = {
     shareId: link.shareId, key: note.key, link: link.label, name: note.name, kind: note.kind, text: note.text, quote: note.anchor.quote,
+    ...(note.person ? { person: note.person } : {}),
+    ...(note.replyTo ? { replyTo: note.replyTo } : {}),
     anchored: state, ...(ambiguous ? { ambiguous: true as const } : {}), at,
     // The words in the piece it was placed beside, as they stood when collected: a closed edit has no
     // text of its own, so the margin finds its place by these (never applied, never a write).
@@ -358,6 +389,7 @@ export async function collectReaderNotes(ports: ReaderNotesPorts, links: readonl
       else if (result === 'dropped') outcome.dropped += 1
       else outcome.full += 1
     }
+    if (ports.changes.syncReaderState) await ports.changes.syncReaderState(link.shareId, notes.filter((n) => kept.includes(n.key) && n.state).map((n) => n.state!))
     if (kept.length > 0) await ports.markCollected(link.base, link.shareId, link.owner, kept).catch(() => null)
   }
   return outcome

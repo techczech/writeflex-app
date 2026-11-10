@@ -45,19 +45,19 @@ export const OUTCOME_MEANINGS: Record<Outcome, string> = {
 /** The generic codes (`usage`, `refused`, `failed`) are the older ones and stay; the rest say why. */
 export const ERROR_CODES = [
   'usage', 'refused', 'failed',
-  'root-not-chosen', 'command-busy', 'app-opened-meanwhile', 'writes-paused', 'write-not-permitted', 'app-data-not-writable',
+  'root-not-chosen', 'writes-paused', 'write-not-permitted', 'app-data-not-writable',
   'request-too-large', 'not-passable-to-app', 'confirmation-needed',
-  'version-unsettled', 'review-allowance-full',
-  'owner-not-verified', 'reply-unreadable', 'owner-lock-lost',
+  'version-unsettled', 'review-allowance-full', 'out-of-backup-scope',
+  'owner-not-verified', 'reply-unreadable', 'collection-closed',
 ] as const
 export type ErrorCode = (typeof ERROR_CODES)[number]
 
 export const ERROR_OUTCOME: Record<ErrorCode, Outcome> = {
   usage: 'usage', refused: 'refused', failed: 'failed',
-  'root-not-chosen': 'refused', 'command-busy': 'refused', 'app-opened-meanwhile': 'refused', 'writes-paused': 'refused', 'write-not-permitted': 'refused', 'app-data-not-writable': 'refused',
+  'root-not-chosen': 'refused', 'writes-paused': 'refused', 'write-not-permitted': 'refused', 'app-data-not-writable': 'refused',
   'request-too-large': 'refused', 'not-passable-to-app': 'refused', 'confirmation-needed': 'refused',
-  'version-unsettled': 'needs-writer', 'review-allowance-full': 'needs-writer',
-  'owner-not-verified': 'not-verified', 'reply-unreadable': 'not-verified', 'owner-lock-lost': 'failed',
+  'version-unsettled': 'needs-writer', 'review-allowance-full': 'needs-writer', 'out-of-backup-scope': 'refused',
+  'owner-not-verified': 'not-verified', 'reply-unreadable': 'not-verified', 'collection-closed': 'failed',
 }
 
 /** The coarse class of a code: what decides the exit status (`usage` exits 2, the rest 1). */

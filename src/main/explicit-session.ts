@@ -46,7 +46,7 @@ export class ExplicitSessionRecorder {
 
   observe(path: string, words: number, at = Date.now(), beforeWords = words): ExplicitSessionState {
     if (!this.#session || this.#session.status !== 'running') throw new Error('No explicit session is running.')
-    this.#event = this.#capture.observe(path, words, at, beforeWords, { splitOnIdle: this.#session.durationMs === null })
+    this.#event = this.#capture.observe(path, words, at, beforeWords, { splitOnIdle: this.#session.durationMs === null, edited: true })
     const record = this.#capture.current()
     this.#session = {
       ...this.#session,

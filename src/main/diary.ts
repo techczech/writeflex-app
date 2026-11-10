@@ -3,7 +3,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { mkdir, readFile } from 'node:fs/promises'
 import { assertCollectionWritable } from './collection-write-gate'
 import { createHash } from 'node:crypto'
-import { Workspace } from './workspace'
+import { ChangedSinceRead, Workspace } from './workspace'
 import { createIndexNote, localCalendarDate } from './collection'
 import { documentTitle, parseFrontmatter } from './frontmatter'
 import { removeFrontmatterKeys, setFrontmatterKeys } from './capabilities'
@@ -21,6 +21,7 @@ export type DiarySessionRecord = {
   minutes: number
   netWords: number
   pieces: string[]
+  edited?: boolean
 }
 
 function indexPath(ws: Workspace, dir: string): string {
@@ -135,19 +136,23 @@ function rowChecksum(row: string): string {
   return createHash('sha256').update(row).digest('hex').slice(0, 12)
 }
 
+function rowPrefix(row: string): string {
+  return row.split(' words · ')[0] + ' words · '
+}
+
 function sessionRow(record: DiarySessionRecord, titles: string[]): string {
   const sign = record.netWords >= 0 ? '+' : ''
   return `${timeLabel(record.startedAt)} · ${record.minutes} min · ${sign}${record.netWords} words · ${titles.map(pieceLink).join(', ')}`
 }
 
-type MachineMeta = { id: string; checksum: string }
+type MachineMeta = { id: string; checksum: string; prefix?: string; suffixChecksum?: string }
 
 function metaLine(meta: MachineMeta[]): string {
   return `${RECORDED_META}${JSON.stringify(meta)} -->`
 }
 
 function recordedBlock(row: string, record: DiarySessionRecord, eol: string): string {
-  return [RECORDED_START, metaLine([{ id: record.id, checksum: rowChecksum(row) }]), 'recorded', row, RECORDED_END].join(eol)
+  return [RECORDED_START, metaLine([{ id: record.id, checksum: rowChecksum(row), prefix: rowPrefix(row), suffixChecksum: rowChecksum(row.slice(rowPrefix(row).length)) }]), 'recorded', row, RECORDED_END].join(eol)
 }
 
 type ParsedMachineRow = { id: string; minutes: number; words: number }
@@ -198,38 +203,85 @@ function appendOrCheckpoint(content: string, record: DiarySessionRecord, titles:
   const startIndex = clean.findIndex((line) => line === RECORDED_START)
   const endIndex = clean.findIndex((line, index) => index > startIndex && line === RECORDED_END)
   const metaIndex = clean.findIndex((line, index) => index > startIndex && index < endIndex && line.startsWith(RECORDED_META) && line.endsWith(' -->'))
-  if (startIndex >= 0 && endIndex >= 0 && metaIndex >= 0) {
+  if (startIndex >= 0 && endIndex >= 0) {
     let meta: MachineMeta[] = []
     try {
-      const parsed = JSON.parse(clean[metaIndex].slice(RECORDED_META.length, -4)) as unknown
+      const parsed = metaIndex < 0 ? [] : JSON.parse(clean[metaIndex].slice(RECORDED_META.length, -4)) as unknown
       if (Array.isArray(parsed)) meta = parsed.filter((entry): entry is MachineMeta => !!entry && typeof entry.id === 'string' && typeof entry.checksum === 'string')
-    } catch { /* malformed marker is preserved; a fresh trusted entry is appended below */ }
-    const prior = [...meta].reverse().find((entry) => entry.id === record.id)
-    const existingIndex = prior
-      ? clean.findIndex((line, index) => index > startIndex && index < endIndex && rowChecksum(line) === prior.checksum)
-      : -1
-    const checksum = rowChecksum(row)
+    } catch { /* Recover the surviving visible records below. */ }
+    // Match occurrences, not just fingerprints: identical visible rows are separate sittings.
+    const rowIndices = clean.flatMap((line, index) => index > startIndex && index < endIndex
+      && /^\d{2}:\d{2} · \d+ min · [+-]?\d+ words · \[\[.*\]\]/.test(line) ? [index] : [])
+    // No surviving rows means there is nothing to count twice, including stale metadata
+    // left behind when the writer deliberately removed every row.
+    if (rowIndices.length === 0) {
+      if (clean.slice(startIndex + 1, endIndex).some(line => /^\d{2}:\d{2} · /.test(line))) {
+        throw new Error('Cannot rebuild Diary totals: no readable recorded rows survive. Restore the recorded block before continuing.')
+      }
+      meta = []
+    }
+    const unmatched = new Set(rowIndices)
+    const matched = new Map<MachineMeta, number>()
+    for (const entry of meta) {
+      const index = rowIndices.find(index => unmatched.has(index) && rowChecksum(clean[index]) === entry.checksum)
+      if (index !== undefined) { matched.set(entry, index); unmatched.delete(index) }
+    }
+    // The original numeric prefix identifies a row whose link or trailing note was edited.
+    // Only accept a unique pairing; uncertain identities must refuse rather than double count.
+    for (const entry of meta) {
+      if (matched.has(entry) || typeof entry.prefix !== 'string') continue
+      const candidates = [...unmatched].filter(index => rowPrefix(clean[index]) === entry.prefix)
+      const owners = meta.filter(other => !matched.has(other) && typeof other.prefix === 'string'
+        && other.prefix === entry.prefix)
+      if (candidates.length === 1 && owners.length === 1) {
+        matched.set(entry, candidates[0]); unmatched.delete(candidates[0])
+      }
+    }
+    const prior = [...meta].reverse().find(entry => entry.id === record.id)
+    const existingIndex = prior ? matched.get(prior) ?? -1 : -1
+    if (prior && existingIndex < 0) {
+      throw new Error('Cannot identify this Diary checkpoint after its row was edited or deleted. Restore the recorded row before continuing this sitting.')
+    }
+    const recoveredCheckpoint = rowIndices.some(index => clean[index].startsWith(`${timeLabel(record.startedAt)} · `)
+      && (unmatched.has(index) || [...matched].some(([entry, at]) => at === index && entry.id.startsWith('recovered-'))))
+    if (!prior && recoveredCheckpoint) {
+      throw new Error('Cannot identify this Diary checkpoint after its metadata was damaged. Restore the recorded metadata before continuing this sitting.')
+    }
+    meta = meta.filter(entry => matched.has(entry)).map(entry => ({
+      id: entry.id, suffixChecksum: entry.suffixChecksum, checksum: rowChecksum(clean[matched.get(entry)!]), prefix: rowPrefix(clean[matched.get(entry)!]),
+    }))
+    for (const index of unmatched) {
+      meta.push({ id: `recovered-${index}-${rowChecksum(clean[index])}`, checksum: rowChecksum(clean[index]), prefix: rowPrefix(clean[index]) })
+    }
+    if (metaIndex < 0) {
+      lines.splice(startIndex + 1, 0, `${metaLine(meta)}${eol}`)
+      return appendOrCheckpoint(lines.join(''), record, titles)
+    }
+    const preserveSuffix = existingIndex >= 0 && prior && (rowChecksum(clean[existingIndex]) !== prior.checksum
+      || (prior.suffixChecksum && rowChecksum(clean[existingIndex].slice(rowPrefix(clean[existingIndex]).length)) !== prior.suffixChecksum))
+    const nextRow = preserveSuffix
+      ? row.split(' words · ')[0] + ' words · ' + clean[existingIndex].split(' words · ').slice(1).join(' words · ')
+      : row
+    const checksum = rowChecksum(nextRow)
     if (existingIndex >= 0) {
-      lines[existingIndex] = `${row}${lines[existingIndex].endsWith('\n') ? eol : ''}`
-      const metaPosition = meta.lastIndexOf(prior!)
-      meta[metaPosition] = { id: record.id, checksum }
+      lines[existingIndex] = `${nextRow}${lines[existingIndex].endsWith('\n') ? eol : ''}`
+      const metaPosition = meta.findLastIndex(entry => entry.id === record.id)
+      meta[metaPosition] = { id: record.id, checksum, prefix: rowPrefix(nextRow), suffixChecksum: preserveSuffix ? prior?.suffixChecksum : rowChecksum(nextRow.slice(rowPrefix(nextRow).length)) }
     } else {
       lines.splice(endIndex, 0, `${row}${eol}`)
-      meta.push({ id: record.id, checksum })
+      meta.push({ id: record.id, checksum, prefix: rowPrefix(nextRow), suffixChecksum: preserveSuffix ? prior?.suffixChecksum : rowChecksum(nextRow.slice(rowPrefix(nextRow).length)) })
     }
     lines[metaIndex] = `${metaLine(meta)}${lines[metaIndex].endsWith('\n') ? eol : ''}`
     return lines.join('')
   }
   const end = content.indexOf(RECORDED_END)
-  if (end >= 0) return content
+  if (end >= 0 || startIndex >= 0) throw new Error('The Diary recorded block is incomplete. Restore its start and end markers before recording more sessions.')
   const separator = content.length === 0 || content.endsWith(`${eol}${eol}`) ? '' : content.endsWith(eol) ? eol : `${eol}${eol}`
   return `${content}${separator}${recordedBlock(row, record, eol)}${eol}`
 }
 
 /** Atomic, non-empty Day Entry update. Only machine rows and aggregate target keys are changed. */
 const diaryWriteChains = new Map<string, Promise<string>>()
-const pausedDayFiles = new Set<string>()
-const surfacedDayFileErrors = new Set<string>()
 
 export type DiaryWriteContext = { diaryWorkspace?: Workspace; sourceWorkspace?: Workspace }
 
@@ -247,24 +299,37 @@ async function writeDiarySession(diaryRoot: string, record: DiarySessionRecord, 
   await mkdir(diaryRoot, { recursive: true })
   const diary = context.diaryWorkspace?.root === diaryRoot ? context.diaryWorkspace : new Workspace(diaryRoot)
   const name = `${localCalendarDate(new Date(record.startedAt))}.md`
-  const exists = existsSync(join(diaryRoot, name))
   const date = new Date(record.startedAt)
   const day = `${date.toLocaleDateString('en-GB', { weekday: 'long' })} ${date.getDate()} ${date.toLocaleDateString('en-GB', { month: 'long' })} ${date.getFullYear()}`
-  let content = exists ? await readFile(join(diaryRoot, name), 'utf8') : `# ${day}\n\n`
-  content = appendOrCheckpoint(content, record, await pieceTitles(record, context.sourceWorkspace))
-  const totals = latestTotals(content)
-  content = setFrontmatterKeys(content, {
-    words_written: String(totals.words),
-    mins_spent: String(totals.minutes),
-  }, name)
-  if (exists) await diary.saveFileWithoutReadBack(name, content)
-  else await diary.createFile(name, content)
+  const titles = await pieceTitles(record, context.sourceWorkspace)
+  for (let attempt = 0; ; attempt++) {
+    const exists = existsSync(join(diaryRoot, name))
+    const basis = exists ? await readFile(join(diaryRoot, name), 'utf8') : `# ${day}\n\n`
+    let content = appendOrCheckpoint(basis, record, titles)
+    const totals = latestTotals(content)
+    content = setFrontmatterKeys(content, {
+      words_written: String(totals.words),
+      mins_spent: String(totals.minutes),
+    }, name)
+    try {
+      if (exists) await diary.saveFileOverRead(name, content, basis)
+      else await diary.createFile(name, content)
+      break
+    } catch (error) {
+      // Closing a sitting may have no later checkpoint: rebuild over the latest bytes now.
+      const conflict = error instanceof ChangedSinceRead
+        || (!exists && error instanceof Error && error.message === `File already exists: ${name}`)
+      if (attempt > 0 || !conflict) throw error
+    }
+  }
   return name
 }
 
 /** Serialise read-modify-write updates per Day Entry across every open Workspace window. */
 export async function appendDiarySession(diaryRoot: string, record: DiarySessionRecord, context: DiaryWriteContext = {}): Promise<string | null> {
-  if (record.netWords <= 0) return null
+  if (!Number.isFinite(record.startedAt) || !Number.isFinite(new Date(record.startedAt).getTime())
+    || !Number.isFinite(record.netWords) || !Number.isFinite(record.minutes) || record.minutes < 0) throw new Error('Invalid Diary session numbers.')
+  if (record.netWords === 0 && !record.edited) return null
   const name = `${localCalendarDate(new Date(record.startedAt))}.md`
   const key = join(diaryRoot, name)
   const previous = diaryWriteChains.get(key)
@@ -281,23 +346,13 @@ export async function persistDiarySession(
   record: DiarySessionRecord | null,
   context: DiaryWriteContext = {},
 ): Promise<GuardedDiaryWrite> {
-  if (!record || record.netWords <= 0) return { name: null }
+  if (!record || (record.netWords === 0 && !record.edited)) return { name: null }
   const name = `${localCalendarDate(new Date(record.startedAt))}.md`
-  const absolute = resolve(diaryRoot, name)
-  if (pausedDayFiles.has(absolute)) return { name: null }
   try {
     return { name: await appendDiarySession(diaryRoot, record, context) }
   } catch (error) {
-    pausedDayFiles.add(absolute)
-    if (surfacedDayFileErrors.has(absolute)) return { name: null }
-    surfacedDayFileErrors.add(absolute)
     return { name: null, error: error instanceof Error ? error.message : `Could not update ${name}.` }
   }
-}
-
-/** A genuine in-app edit of the refused Day Entry permits one later persistence attempt. */
-export function resumeDiaryDayFile(path: string): void {
-  pausedDayFiles.delete(resolve(path))
 }
 
 export function countedSettingKey(root: string, dir: string): string {

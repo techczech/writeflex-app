@@ -16,7 +16,7 @@ type Props = {
   onClose: () => void
 }
 
-const projectName = (project: string): string => project.split('/').filter(Boolean).at(-1)?.replace(/\.md$/i, '') ?? 'this Workspace'
+const projectName = (project: string): string => project.split('/').filter(Boolean).at(-1)?.replace(/\.md$/i, '') ?? 'this vault'
 
 /**
  * "Capture to research…": files one reusable unit — Title, Kind, an optional Prompt and the Body (the selection,

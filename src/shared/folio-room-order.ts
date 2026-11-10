@@ -104,7 +104,7 @@ export const newCardFlash = (title: string, position: number, total: number): st
 export const undoneNewCardAnnouncement = (title: string): string => `Undone. ${title} is out of the running order again.`
 /**
  * The files a created manifest lists that the running order does not (ticket 06 keeps them in export, after the written
- * parts; review S-2): "1 file not in the running order stays in export, at the end: extra.md." Up to three names, then
+ * parts; review S-2): "1 file not in the outline stays in export, at the end: extra.md." Up to three names, then
  * "and n more". Empty when there are none.
  */
 export function notInRunningOrderSentence(paths: readonly string[] | undefined): string {
@@ -112,10 +112,10 @@ export function notInRunningOrderSentence(paths: readonly string[] | undefined):
   const names = paths.slice(0, 3).map(fileName).join(', ')
   const more = paths.length > 3 ? ` and ${paths.length - 3} more` : ''
   return paths.length === 1
-    ? `1 file not in the running order stays in export, at the end: ${names}.`
-    : `${paths.length} files not in the running order stay in export, at the end: ${names}${more}.`
+    ? `1 file not in the outline stays in export, at the end: ${names}.`
+    : `${paths.length} files not in the outline stay in export, at the end: ${names}${more}.`
 }
-/** The manifest-created sentence, with the files not in the running order the new manifest keeps in export, if any. */
+/** The manifest-created sentence, with the files not in the outline the new manifest keeps in export, if any. */
 export const manifestCreatedSentence = (notInRunningOrder?: readonly string[]): string =>
   [MANIFEST_CREATED, notInRunningOrderSentence(notInRunningOrder)].filter(Boolean).join(' ')
 /** A sentence with the manifest sentence after it when this write created the manifest. */

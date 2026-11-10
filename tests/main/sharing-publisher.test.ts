@@ -66,22 +66,23 @@ describe('publishing follows saves', () => {
     expect(page.text).not.toContain('A reading list is a promise.')
   })
 
-  test('comments off: the publish says so (false), and turning them on publishes true', async () => {
+  test('comments off: the publish says so, and turning them on changes the service without a text publish', async () => {
     const w = await publishWorld({ files })
     const made = await w.publisher.make(w.root, PATH, { name: null, comments: false })
     expect(made.ok).toBe(true)
     expect(w.publishes()[0].body.comments).toBe(false)
     expect((await w.readerPage(made.ok ? made.shareId! : '')).text).toContain('Comments are off for this link.')
     await w.publisher.setComments(made.ok ? made.shareId : '', true)
-    expect(w.publishes().at(-1)!.body.comments).toBe(true)
+    expect(await heldAtService(w, made.view.links[0].shareId)).toMatchObject({ comments: true })
+    expect(w.publishes()).toHaveLength(1)
   })
 
-  test('saves that arrive together publish once; a burst while publishing gives one more publish', async () => {
+  test('saves of identical content do not publish another revision', async () => {
     const w = await publishWorld({ files })
     await w.publisher.make(w.root, PATH, { name: null, comments: true })
     for (let i = 0; i < 5; i += 1) w.publisher.saved(w.root, [PATH])
     await w.publisher.idle()
-    expect(w.publishes()).toHaveLength(2)
+    expect(w.publishes()).toHaveLength(1)
   })
 
   test('sharing one piece shares no other piece: a linked piece is never published, and its words are not in the copy', async () => {
@@ -107,6 +108,7 @@ describe('publishing follows saves', () => {
     await w.publisher.rename(view.links[1].shareId, 'Seminar 3')
     expect(w.publisher.view(w.root, PATH).links[1].name).toBe('Seminar 3')
     const before = w.publishes().length
+    w.write(PATH, PIECE + '\nA newly saved paragraph.\n')
     w.publisher.saved(w.root, [PATH])
     await w.publisher.idle()
     const after = w.publishes().slice(before)
@@ -477,3 +479,77 @@ describe('pictures the service says it is missing', () => {
 
 // The shared tracker is cached across files; register this file's cleanup explicitly.
 afterAll(cleanUpScratch)
+
+
+test('open comments are durable, and changing privacy sends only settings, preserving the saved copy', async () => {
+  const w = await publishWorld({ files })
+  try {
+    const made = await w.publisher.make(w.root, PATH, { name: null, comments: true, notes: 'open' })
+    expect(made.ok).toBe(true)
+    const link = made.view.links[0]
+    expect(link.notes).toBe('open')
+    expect(await heldAtService(w, link.shareId)).toMatchObject({ commentsMode: 'open' })
+    const before = w.publishes().length
+    w.write(PATH, PIECE + '\nUNPUBLISHED_TEXT\n')
+    expect((await w.publisher.setNotes(link.shareId, 'private'))?.ok).toBe(true)
+    expect(w.publishes()).toHaveLength(before)
+    expect(w.publisher.view(w.root, PATH).links[0].notes).toBe('private')
+    expect((await w.readerPage(link.shareId)).text).not.toContain('UNPUBLISHED_TEXT')
+    expect(w.newPublisher().view(w.root, PATH).links[0].notes).toBe('private')
+    w.net.offline = true
+    expect((await w.publisher.setNotes(link.shareId, 'open'))?.ok).toBe(false)
+    expect(w.publisher.view(w.root, PATH).links[0].notes).toBe('private')
+  } finally { await w.publisher.idle() }
+})
+
+test('a stale local record cannot reopen comments after the owner made the link private', async () => {
+  const w = await publishWorld({ files })
+  const made = await w.publisher.make(w.root, PATH, { name: null, comments: true, notes: 'open' })
+  const shareId = made.view.links[0].shareId
+  w.recordWrites.fail = true
+  expect((await w.publisher.setNotes(shareId, 'private'))?.ok).toBe(true)
+  w.recordWrites.fail = false
+  const stale = w.newPublisher()
+  // The unsaved local record still says open; publishing text must leave the service's privacy alone.
+  expect(stale.records()[0].notes).toBe('open')
+  w.write(PATH, PIECE + '\nA later saved paragraph.\n')
+  stale.saved(w.root, [PATH])
+  await stale.idle()
+  expect(await heldAtService(w, shareId)).toMatchObject({ commentsMode: 'private' })
+  await stale.opened([shareId])
+  expect(stale.view(w.root, PATH).links[0].notes).toBe('private')
+})
+
+
+test('a link made with comments off starts private even if open was selected, then enabling comments stays private', async () => {
+  const w = await publishWorld({ files })
+  const made = await w.publisher.make(w.root, PATH, { name: 'Readers', comments: false, notes: 'open' })
+  expect(made.ok).toBe(true)
+  const link = made.view.links[0]
+  expect(link).toMatchObject({ comments: false, notes: 'private' })
+  const enabled = await w.publisher.setComments(link.shareId, true)
+  expect(enabled?.view.links[0]).toMatchObject({ comments: true, notes: 'private' })
+  expect(w.svc.shares.states.get(link.shareId)!.db.query('SELECT comments, comments_mode FROM share').get()).toEqual({ comments: 1, comments_mode: 'private' })
+})
+
+test('unreadable sharing identity holds publishing and collection, says why, and Retry recovers', async () => {
+  const { readFileSync, writeFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const w = await publishWorld({ files })
+  const made = await w.publisher.make(w.root, PATH, { name: null, comments: true })
+  const id = made.view.links[0].shareId
+  const file = join(w.root, '.writeflex/sharing-workspace.json'), bytes = readFileSync(file)
+  writeFileSync(file, '{truncated')
+  w.publisher.invalidateSharingIdentity(w.root)
+  await w.publisher.refresh(w.root)
+  const before = w.publishes().length
+  expect(w.publisher.noteSources(w.root)).toEqual([])
+  expect(w.publisher.view(w.root, PATH).links[0].problem).toMatchObject({ kind: 'unreadable', reason: "Cannot read this folder's sharing identity" })
+  await w.publisher.retry(id)
+  expect(w.publishes()).toHaveLength(before)
+  expect(w.publisher.records()[0].root).toBe(w.root)
+  writeFileSync(file, bytes)
+  await w.publisher.retry(id)
+  expect(w.publisher.view(w.root, PATH).links[0].problem).toBeNull()
+  expect(w.publisher.noteSources(w.root)).toHaveLength(1)
+})

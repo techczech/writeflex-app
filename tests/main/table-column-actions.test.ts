@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { EditorState } from '@codemirror/state'
-import { TABLE_COLUMN_COMMANDS, applyColumnCommand, columnAt, isTableColumnCommand, tableColumnEdit } from '../../src/renderer/src/editor/table-column-actions'
+import { TABLE_COLUMN_COMMANDS, applyColumnCommand, columnAt, isTableColumnCommand, pendingTableEdit, tableColumnEdit } from '../../src/renderer/src/editor/table-column-actions'
 import { parseTable } from '../../src/shared/object-markup'
 import { actionsAt } from '../../src/renderer/src/commands/place'
 
@@ -63,5 +63,52 @@ describe('every table command Actions here lists at the table place can be run',
     const listed = actionsAt('table', EditorState.create({ doc: DOC })).map((command) => command.id).filter((id) => id.startsWith('table.'))
     expect(listed.sort()).toEqual([...TABLE_COLUMN_COMMANDS].sort())
     for (const id of listed) expect(isTableColumnCommand(id)).toBe(true)
+  })
+})
+
+describe('a column delete confirmed after the document changed (Sol S1)', () => {
+  const deleteAtCount = () => {
+    const state = at(inCell('Count'))
+    const edit = tableColumnEdit(state, 'table.delete')!
+    return { state, edit, pending: pendingTableEdit(state, edit) }
+  }
+  const step = (pending: ReturnType<typeof pendingTableEdit>, state: EditorState, changes: { from: number; to?: number; insert?: string }) => {
+    const tr = state.update({ changes })
+    pending.observe({ startState: state, state: tr.state, changes: tr.changes, docChanged: tr.docChanged })
+    return tr.state
+  }
+
+  test('an insert above the table moves the edit with the table, and the prose stays', () => {
+    const { state, pending } = deleteAtCount()
+    const later = step(pending, state, { from: 0, insert: 'An agent wrote this. ' })
+    const mapped = pending.resolve(later)!
+    const result = later.update({ changes: mapped }).state.doc.toString()
+    expect(result.startsWith('An agent wrote this. Before.\n\n')).toBe(true)
+    expect(result.endsWith('\n\nAfter.\n')).toBe(true)
+    expect(parseTable(result.split('\n\n')[1])!.cells).toEqual([['Stone', 'Place'], ['cope', 'wall']])
+  })
+
+  test('the stale offsets alone would have replaced prose; the mapped edit does not', () => {
+    const { state, edit, pending } = deleteAtCount()
+    const later = step(pending, state, { from: 0, insert: 'Twelve more characters of prose. ' })
+    expect(later.sliceDoc(edit.from, edit.to)).not.toBe(state.sliceDoc(edit.from, edit.to))
+    expect(later.sliceDoc(pending.resolve(later)!.from, pending.resolve(later)!.to)).toBe(state.sliceDoc(edit.from, edit.to))
+  })
+
+  test('a table edited, or removed, while the card was open is refused', () => {
+    const { state, pending } = deleteAtCount()
+    expect(pending.resolve(step(pending, state, { from: DOC.indexOf('cope'), insert: 'x' }))).toBeNull()
+    const again = deleteAtCount()
+    expect(again.pending.resolve(step(again.pending, again.state, { from: DOC.indexOf('| Stone'), to: DOC.indexOf('\n\nAfter') }))).toBeNull()
+  })
+
+  test('another document in the editor (a state set without a transaction) is refused', () => {
+    const { pending } = deleteAtCount()
+    expect(pending.resolve(EditorState.create({ doc: DOC }))).toBeNull()
+  })
+
+  test('no change at all applies the edit as it was asked', () => {
+    const { state, edit, pending } = deleteAtCount()
+    expect(pending.resolve(state)).toEqual(edit)
   })
 })

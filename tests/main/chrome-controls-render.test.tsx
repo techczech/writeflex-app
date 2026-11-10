@@ -5,7 +5,7 @@ import { formatSidebarTabTime, measurementOverflowLabel } from '../../src/render
 import { commandRegistry } from '../../src/renderer/src/commands/registry'
 import { effectiveSheetChords } from '../../src/renderer/src/commands/chords'
 
-test('toolbar keeps one control per action and gives every control a visible chord', () => {
+test('toolbar keeps one control per action; chords are in the tooltips, not drawn under the icons', () => {
   const html = renderToStaticMarkup(
     <Toolbar
       sidebarOpen
@@ -28,7 +28,8 @@ test('toolbar keeps one control per action and gives every control a visible cho
   expect(html).not.toContain('aria-label="Toggle Changes panel"')
   expect(html).not.toContain('aria-label="Toggle agent panel"')
   expect(html).toContain('aria-label="Toggle panels"')
-  expect(html.match(/class="chord"/g)?.length).toBe(5)
+  expect(html).not.toContain('class="chord"')
+  expect(html).toContain('title="Toggle sidebar (⌘[)"')
 })
 
 test('document identity remains available for the native window title without duplicating it in the toolbar', () => {
@@ -68,12 +69,18 @@ test('sidebar tab times match the locked compact minute, hour and yesterday form
   expect(formatSidebarTabTime(now - 25 * 60 * 60_000, now)).toBe('yest')
 })
 
-test('mode drawer carries the locked two axes and byte-exact session copy', () => {
+test('mode drawer carries the locked two axes without explainer lines: Track my changes (on/off) and the three Showing choices', () => {
   const html = renderToStaticMarkup(<Toolbar sidebarOpen onToggleSidebar={() => {}} panelsOpen onTogglePanels={() => {}} writerMode="drafting" viewMode="clean" modeDrawerOpen onModeDrawerOpenChange={() => {}} onSelectWriterMode={() => {}} onSelectViewMode={() => {}} onOpenPalette={() => {}} />)
-  expect(html).toContain('Text is text. Your edits are recorded quietly.')
-  expect(html).toContain('Reveals this session — old struck, new highlighted.')
+  // R17: no resident descriptions under the mode names; R18: one on/off mode, whose description is its tooltip.
+  expect(html).not.toContain('Text is text. Your edits are recorded quietly.')
+  expect(html).not.toContain('<small>')
+  expect(html).toContain('>Track my changes</b>')
+  expect(html).toContain('title="Shows this session’s changes, old struck and new highlighted."')
+  expect(html).not.toContain('>Drafting</b>')
+  expect(html).not.toContain('>Reviewing</b>')
+  expect(html).toContain('role="menuitemcheckbox" aria-checked="false"')
   expect(html).toContain('>Clean</span>')
-  expect(html.match(/role="menuitemradio"/g)?.length).toBe(5)
+  expect(html.match(/role="menuitemradio"/g)?.length).toBe(3)
 })
 
 test('chrome 0.6 shortcut registry exposes the six provisional chords without the retired Files filter chord', () => {

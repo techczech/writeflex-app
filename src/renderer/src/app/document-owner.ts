@@ -33,11 +33,17 @@
  *   (snapshot, detach) so its buffer moves with the folder. No two folder-scoped actions with overlapping
  *   prefixes run at once, whatever documents either holds (2b round 3 review, finding 2).
  *
+ * - Receipts (save-receipts.ts): `edited` issues an edit receipt; every write issues a start receipt in the
+ *   turn it reads the buffer (the gen it captured) and a completion receipt when it ends. Only a write main
+ *   confirmed (its receipt, and a readback of the same bytes) completes as `flushed`, and only for the gen it
+ *   captured; typing during the write is newer and is not acknowledged by it.
+ *
  * Pure: no React, no IPC. Everything goes through the ports.
  */
 import { EditorBaselines, isTextChange } from '../../../shared/line-endings'
 import type { SaveBasis } from '../../../shared/save-basis'
 import { externalContentReconcileAction, type ExternalDiskNotice } from '../editor/reconcile'
+import type { SaveIdentity, SaveOutcome, SaveReceiptPort } from './save-receipts'
 import type { UnsavedRegistry } from './unsaved-registry'
 import { writeBuffer, type WriteAnswer } from './write-buffer'
 
@@ -59,8 +65,9 @@ export type DocumentOwnerPorts = {
   /** The notice standing for the path now, if any (App raises and clears them; the owner reads them). */
   notice(path: string): ExternalDiskNotice | undefined
   registry: Pick<UnsavedRegistry, 'typed' | 'matchesDisk' | 'discard' | 'beginWrite' | 'textOf' | 'busy' | 'settled' | 'diskIsUnknown'>
-  /** Main's file:save. */
-  write(path: string, doc: string, basis: SaveBasis): Promise<WriteAnswer>
+  /** Main's file:save. `identity`: the record's epoch and the gen captured in the turn `doc` was read
+   *  (save-receipts.ts); absent when the record was replaced before the read, so no receipt names it. */
+  write(path: string, doc: string, basis: SaveBasis, identity?: SaveIdentity): Promise<WriteAnswer>
   /** e2e only: what the harness does before a save reaches main (hold it, fail it). */
   beforeSave?(): Promise<void>
   /** The editor read-only (true) or editable (false) for these paths, in this turn. */
@@ -75,9 +82,15 @@ export type DocumentOwnerPorts = {
   /** The dirty dots changed: the set as it is now. */
   dirtyChanged(paths: ReadonlySet<string>): void
   report: OwnerReports
+  /** Edit, save-start and save-completion receipts (save-receipts.ts). */
+  receipts?: SaveReceiptPort
+  /** The clock receipts are stamped with (ms). Date.now when absent. */
+  now?(): number
 }
 
 type DocumentRecord = {
+  /** Which record of the path this is: a record made again (after a drop) has another; a move keeps it. */
+  epoch: number
   gen: number
   savedGen: number
   diskUnknown: boolean
@@ -170,6 +183,8 @@ export type DocumentOwner = ReturnType<typeof createDocumentOwner>
 export function createDocumentOwner(ports: DocumentOwnerPorts) {
   const baselines = new EditorBaselines()
   const records = new Map<string, DocumentRecord>()
+  const now = (): number => ports.now?.() ?? Date.now()
+  let epochs = 0
   const dirty = new Set<string>()
   const readOnly = new Set<string>()
   /** The folder scopes held now (`WithFlushedOptions.scope`): no operation on a path under `prefix` starts
@@ -195,7 +210,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
   const record = (path: string): DocumentRecord => {
     let rec = records.get(path)
     if (!rec) {
-      rec = { gen: 0, savedGen: 0, diskUnknown: false, inflight: 0, pending: 0, queue: Promise.resolve() }
+      rec = { epoch: ++epochs, gen: 0, savedGen: 0, diskUnknown: false, inflight: 0, pending: 0, queue: Promise.resolve() }
       records.set(path, rec)
     }
     return rec
@@ -255,11 +270,23 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
 
   /** One write of the buffer, run in the queue. True: the buffer's text (as read) is on disk. */
   const writeNow = async (path: string, answered?: ExternalDiskNotice, mayWrite?: () => Promise<boolean>): Promise<boolean> => {
-    if (mayWrite && !(await mayWrite())) return false
     const rec = record(path)
+    const epoch = rec.epoch
+    if (mayWrite && !(await mayWrite())) {
+      ports.receipts?.saveCompleted({ path, epoch, at: now(), outcome: 'not-allowed' })
+      return false
+    }
     // The gen of the text this write carries: read with the buffer, ONCE. writeBuffer reads the buffer
     // again after main answers (to set the dot); typing that arrived meanwhile is not what was written.
     let captured: number | undefined
+    // The epoch and gen that go to main with the bytes read in that same turn; never read again later.
+    let identity: SaveIdentity | undefined
+    let startedAt: number | undefined
+    let noEditor = false
+    // What the write came to, for its completion receipt. Unknown until a port says otherwise: a write
+    // that ends by an exception never completes as flushed.
+    let outcome: SaveOutcome = 'unknown'
+    let changedOnDisk = false
     // `committed`: main returned a receipt for this call (its text went to disk); `confirmed`: and the
     // readback was that text.
     let committed = false
@@ -268,13 +295,24 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
     try {
       const ok = await writeBuffer({
         notice: ports.notice,
-        buffer: (p) => { if (captured === undefined) captured = rec.gen; return ports.buffer(p) },
+        buffer: (p) => {
+          if (captured !== undefined) return ports.buffer(p)
+          captured = rec.gen
+          if (records.get(path) === rec) identity = { docEpoch: epoch, gen: captured }
+          const doc = ports.buffer(p)
+          if (doc === undefined) noEditor = true
+          else {
+            startedAt = now()
+            ports.receipts?.saveStarted({ path, epoch, gen: captured, at: startedAt })
+          }
+          return doc
+        },
         baseline: (p) => baselines.get(p),
         baselineDisk: (p) => baselines.diskText(p),
         // The receipt main returned for this call (`written`) is the only thing a save sets a baseline from.
         setBaseline: (p, diskText) => { baselines.set(p, diskText) },
         registry: ports.registry,
-        save: ports.write,
+        save: (p, doc, basis) => ports.write(p, doc, basis, identity),
         ...(ports.beforeSave ? { beforeSave: ports.beforeSave } : {}),
         setDirty: (p, isDirty, text) => {
           if (isDirty) ports.registry.typed(p, text)
@@ -283,19 +321,22 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
         },
         setDirtyDot: setDot,
         slow: ports.report.slow,
-        refusedByNotice: ports.report.refusedByNotice,
-        refusedByMain: ports.report.refusedByMain,
-        diskChanged: ports.report.diskChanged,
-        saved: (p, changed) => { committed = true; confirmed = true; ports.report.saved(p, changed) },
+        refusedByNotice: (p, message) => { outcome = 'refused-by-notice'; ports.report.refusedByNotice(p, message) },
+        refusedByMain: (p, message) => { outcome = 'refused-by-main'; ports.report.refusedByMain(p, message) },
+        diskChanged: (p, diskText, buffer, answering) => { outcome = 'disk-changed'; ports.report.diskChanged(p, diskText, buffer, answering) },
+        saved: (p, changed) => { committed = true; confirmed = true; changedOnDisk = changed; ports.report.saved(p, changed) },
         outsideAfterWrite: (p, diskText) => {
+          outcome = 'readback-mismatch'
           // Muse r3 M1: the readback is not what this call wrote. The buffer is based on `written`, but its
           // text is not on disk: the disk is unknown for the document until a write is confirmed.
           committed = true
           rec.diskUnknown = true
           ports.report.outsideAfterWrite(p, diskText)
         },
-        unknown: (p) => { rec.diskUnknown = true; ports.report.unknown(p) },
+        unknown: (p) => { outcome = 'unknown'; rec.diskUnknown = true; ports.report.unknown(p) },
       }, path, answered)
+      if (confirmed) outcome = 'flushed'
+      else if (ok) outcome = noEditor ? 'no-editor' : 'nothing-to-write'
       if ((ok || committed) && captured !== undefined && records.get(path) === rec) {
         // The gen this call read is on disk (or nothing needed writing). Whether the disk still holds it
         // is `diskUnknown`'s to say: a readback that differs keeps the document unsaved by that mark.
@@ -305,6 +346,15 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
       return ok
     } finally {
       rec.inflight -= 1
+      ports.receipts?.saveCompleted({
+        path,
+        epoch,
+        ...(captured !== undefined && !noEditor ? { gen: captured } : {}),
+        ...(startedAt !== undefined ? { startedAt } : {}),
+        at: now(),
+        outcome,
+        ...(outcome === 'flushed' ? { changed: changedOnDisk } : {}),
+      })
     }
   }
 
@@ -396,6 +446,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
     edited(path: string, text: string): boolean {
       const rec = record(path)
       rec.gen += 1
+      ports.receipts?.edited({ path, epoch: rec.epoch, gen: rec.gen, at: now() })
       const differs = isTextChange(baselines.get(path), text)
       if (differs) ports.registry.typed(path, text)
       else ports.registry.matchesDisk(path, text)
@@ -609,7 +660,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
       ports.forgetBuffer(from) // the app's traces of `from`; the editor's state is under `to` now
       ports.registry.discard(from)
       setDot(from, false)
-      records.set(to, { gen: rec.gen, savedGen: rec.savedGen, diskUnknown: rec.diskUnknown, inflight: 0, pending: 0, queue: Promise.resolve() })
+      records.set(to, { epoch: rec.epoch, gen: rec.gen, savedGen: rec.savedGen, diskUnknown: rec.diskUnknown, inflight: 0, pending: 0, queue: Promise.resolve() })
       if (disk !== undefined) baselines.set(to, disk)
       if (wasReadOnly) readOnly.add(to)
       if (saved) {

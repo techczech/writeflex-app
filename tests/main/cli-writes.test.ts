@@ -3,7 +3,6 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { acquireOwnerLock, inspectOwnerLock, ownerLockPath, releaseOwnerLock } from '../../src/main/owner-lock'
 import { MANIFEST_NAME } from '../../src/main/folio'
 import { ScrapStore } from '../../src/main/scraps'
 import { Workspace } from '../../src/main/workspace'
@@ -24,7 +23,8 @@ afterEach(async () => {
   await rm(outside, { recursive: true, force: true })
 })
 
-const lockFree = async (): Promise<boolean> => !existsSync(ownerLockPath(fx.root)) && (await inspectOwnerLock(fx.root)).state === 'free'
+/** No Collection lock exists any more: a write leaves no `owner.lock` behind. */
+const lockFree = async (): Promise<boolean> => !existsSync(join(fx.root, '.writeflex', 'owner.lock'))
 /** The app's own stores: everything under .writeflex (journal and lock aside) and .bridle. */
 const stores = async (): Promise<Record<string, string>> =>
   Object.fromEntries(Object.entries(await fx.snapshot()).filter(([path]) => path.startsWith('.writeflex/') || path.startsWith('.bridle/')))

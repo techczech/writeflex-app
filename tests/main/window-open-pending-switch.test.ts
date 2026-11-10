@@ -19,6 +19,7 @@ const probe = String.raw`
   void mock.module('electron', () => ({
     app: { getPath: () => home, getVersion: () => '0.0.0-test', isPackaged: false, quit: () => {} },
     BrowserWindow: class {},
+    webFrameMain: { fromId: () => null },
     dialog: { showMessageBox: async () => ({ response: 1 }) },
     shell: { openExternal: async () => {} },
     ipcMain: { handle: () => {}, removeHandler: () => {}, on: () => {} },
@@ -95,8 +96,7 @@ const probe = String.raw`
   let bindError = ''
   try { await manager.openFolder(null, other) } catch (error) { bindError = String(error) }
   const bindLog = log.splice(0)
-  const claimFreeAfterBind = await manager.ownership.claim(other).then(() => true, () => false)
-  await manager.ownership.release(other)
+  const claimFreeAfterBind = !manager.openCollections.isOpen(other)
 
   // Bookkeeping after a good bind throws: the same.
   const third = join(home, 'Third')
@@ -107,8 +107,7 @@ const probe = String.raw`
   try { await manager.openFolder(null, third) } catch (error) { afterBindError = String(error) }
   const afterBindLog = log.splice(0)
   settingsThrows = false
-  const claimFreeAfterBookkeeping = await manager.ownership.claim(third).then(() => true, () => false)
-  await manager.ownership.release(third)
+  const claimFreeAfterBookkeeping = !manager.openCollections.isOpen(third)
 
   // Round 3 (T1): a start-screen window reused, bookkeeping after the bind throws. The window stays bound
   // and is returned with a notice; the folder stays claimed while it is bound.
@@ -122,7 +121,7 @@ const probe = String.raw`
   settingsThrows = false
   const reusedLog = log.splice(0)
   const reusedBound = start.workspace?.root === fourth
-  const reusedClaimHeld = manager.ownership.owns(fourth)
+  const reusedClaimHeld = manager.openCollections.isOpen(fourth)
 
   // A reused start-screen window whose bind throws before it binds: nothing bound, the claim let go,
   // the window kept (it is the start screen still).
@@ -134,7 +133,7 @@ const probe = String.raw`
   try { await manager.openFolder(start2, fifth) } catch (error) { unboundError = String(error) }
   bindBehaviour = 'ok'
   const unboundLog = log.splice(0)
-  const unboundClaimHeld = manager.ownership.owns(fifth)
+  const unboundClaimHeld = manager.openCollections.isOpen(fifth)
   const unboundWorkspace = start2.workspace ?? null
 
   console.log(JSON.stringify({

@@ -77,7 +77,7 @@ test('a Guide topic whose Try it opens a lesson file finds what its caption prom
   const promised: Record<string, { file: string; has: string[] }> = {
     'how.3': { file: '05 Review and versions.md', has: ['<kbd>⌘S</kbd>', 'checkpoint', '<kbd>⇧⌘S</kbd>'] },
     'how.4': { file: '02 Shape the document.md', has: ['<kbd>⌘8</kbd>', '<kbd>⌥⌘↑</kbd>'] },
-    'how.5': { file: '05 Review and versions.md', has: ['Drafting', 'Reviewing', '<kbd>⌥⌘M</kbd>'] },
+    'how.5': { file: '05 Review and versions.md', has: ['Track my changes', '<kbd>⌥⌘M</kbd>'] },
     'how.6': { file: '08 Work with the agent.md', has: ['<kbd>⌘J</kbd>', 'suggestion'] },
     'how.7': { file: '08 Work with the agent.md', has: ['**Skills.**', 'Copy-edit', '**Manage skills…**'] },
     'how.8': { file: '07 Collect and plan.md', has: ['Board', 'Folio outline', '<kbd>⇧⌘B</kbd>'] },

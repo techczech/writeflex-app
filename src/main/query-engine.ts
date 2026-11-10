@@ -12,10 +12,12 @@ import { collectionMaterial, collectionOffcuts, collectionSourceUse, isResearchN
 import { readWaitingLossless } from './scrap-listing'
 import { isScrapsPath } from './scraps'
 
-export type QueryFilterField = 'title' | 'date' | 'status' | 'description' | 'purpose' | 'related' | 'tags' | 'goal' | 'due' | 'project' | 'words'
-export type QuerySortField = 'date' | 'title' | 'status' | 'description' | 'purpose' | 'goal' | 'due' | 'project' | 'words'
+export type QueryFilterField = 'title' | 'date' | 'status' | 'description' | 'purpose' | 'related' | 'tags' | 'goal' | 'due' | 'project' | 'words' | 'words_written' | 'mins_spent'
+export type QuerySortField = 'date' | 'title' | 'status' | 'description' | 'purpose' | 'goal' | 'due' | 'project' | 'words' | 'words_written' | 'mins_spent'
 export type QuerySortDirection = 'asc' | 'desc'
 export type Query = Partial<Record<QueryFilterField, string[]>> & {
+  diary?: boolean
+  group?: 'day' | 'week'
   folder?: string
   sort?: { field: QuerySortField; direction: QuerySortDirection }
   limit?: number
@@ -30,6 +32,8 @@ export type QueryRow = {
   description: string | null
   date: string | null
   words: number
+  words_written?: number
+  mins_spent?: number
   goal?: number | null
   due?: string | null
   project?: string | null
@@ -61,9 +65,9 @@ export type QueryResult =
   | { ok: false; source: string; error: QueryError }
 export type CollectionQueryInvalidation = { paths: string[] }
 
-const FILTER_FIELDS = ['title', 'date', 'status', 'description', 'purpose', 'related', 'tags', 'goal', 'due', 'project', 'words'] as const satisfies readonly QueryFilterField[]
-const QUERY_KEYS = [...FILTER_FIELDS, 'folder', 'sort', 'limit'] as const
-const SORT_FIELDS = new Set<QuerySortField>(['date', 'title', 'status', 'description', 'purpose', 'goal', 'due', 'project', 'words'])
+const FILTER_FIELDS = ['title', 'date', 'status', 'description', 'purpose', 'related', 'tags', 'goal', 'due', 'project', 'words', 'words_written', 'mins_spent'] as const satisfies readonly QueryFilterField[]
+const QUERY_KEYS = [...FILTER_FIELDS, 'folder', 'sort', 'limit', 'diary', 'group'] as const
+const SORT_FIELDS = new Set<QuerySortField>(['date', 'title', 'status', 'description', 'purpose', 'goal', 'due', 'project', 'words', 'words_written', 'mins_spent'])
 
 /** Payload for the shared Collection/Query watcher channel. Paths stay in mutation order so a future
  *  projection can refresh selectively without relying on filesystem access in the renderer. */
@@ -124,10 +128,24 @@ export function parseQuery(source: string): QueryParseResult {
     if (value === '') return error(lineNumber, `Query key "${key}" needs a value.`, `add a value after “${key}:”.`)
     seen.add(key)
 
+    if (key === 'diary') {
+      if (value !== 'true') return error(lineNumber, 'Invalid diary source.', 'use “diary: true” for the designated Diary.')
+      query.diary = true
+      continue
+    }
+    if (key === 'group') {
+      if (value !== 'day' && value !== 'week') return error(lineNumber, 'Invalid diary grouping.', 'use “group: day” or “group: week”.')
+      query.group = value
+      continue
+    }
     if ((FILTER_FIELDS as readonly string[]).includes(key)) {
       const values = commaValues(value, true)
       if (values === null) return error(lineNumber, `Invalid quoted value for "${key}".`, 'close every double quote and escape quotes inside a value with a backslash.')
       if (values.length === 0) return error(lineNumber, `Query key "${key}" needs at least one value.`, `add one or more comma-separated values after “${key}:”.`)
+      if (['words', 'words_written', 'mins_spent', 'goal'].includes(key) && values.some(value => !numericRange(value))) {
+        return error(lineNumber, 'Invalid numeric range.', 'use a number, >=100, <0, or an inclusive range such as -50..500.')
+      }
+      if (key === 'date' && values.some(value => value.includes('..') && !/^\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/.test(value))) return error(lineNumber, 'Invalid date range.', 'use YYYY-MM-DD..YYYY-MM-DD.')
       query[key as QueryFilterField] = values
       continue
     }
@@ -153,8 +171,22 @@ export function parseQuery(source: string): QueryParseResult {
   return { ok: true, query }
 }
 
-function lowerSet(values: string[] | undefined): Set<string> | null {
-  return values ? new Set(values.map((value) => value.toLocaleLowerCase())) : null
+function numericRange(source: string): ((value: number) => boolean) | null {
+  if (/^[+-]?\d+(?:\.\d+)?$/.test(source)) return value => value === Number(source)
+  const range = /^([+-]?\d+)\.\.([+-]?\d+)$/.exec(source)
+  if (range && Number(range[1]) <= Number(range[2])) return value => value >= Number(range[1]) && value <= Number(range[2])
+  const comparison = /^(>=|<=|>|<)([+-]?\d+)$/.exec(source)
+  if (!comparison) return null
+  const n = Number(comparison[2])
+  return value => comparison[1] === '>=' ? value >= n : comparison[1] === '<=' ? value <= n : comparison[1] === '>' ? value > n : value < n
+}
+
+function matchesFilter(field: QueryFilterField, wanted: string[], values: string[]): boolean {
+  return values.some(value => wanted.some(filter => {
+    if (['words', 'words_written', 'mins_spent', 'goal'].includes(field)) return numericRange(filter)?.(Number(value)) ?? false
+    if (field === 'date' && filter.includes('..')) { const [start, end] = filter.split('..'); return value >= start && value <= end }
+    return value.toLocaleLowerCase() === filter.toLocaleLowerCase()
+  }))
 }
 
 function comparePresent<T>(a: T | null, b: T | null, compare: (left: T, right: T) => number): number {
@@ -168,9 +200,9 @@ function rowComparator(sort: NonNullable<Query['sort']>): (a: QueryRow, b: Query
   const statusRank = new Map<string, number>(BOARD_STATUS_ORDER.map((status, index) => [status.toLowerCase(), index]))
   return (a, b) => {
     let compared = 0
-    if (sort.field === 'words' || sort.field === 'goal') {
-      const left = sort.field === 'words' ? a.words : a.goal ?? null
-      const right = sort.field === 'words' ? b.words : b.goal ?? null
+    if (['words', 'goal', 'words_written', 'mins_spent'].includes(sort.field)) {
+      const left = a[sort.field as 'words' | 'goal' | 'words_written' | 'mins_spent'] ?? null
+      const right = b[sort.field as 'words' | 'goal' | 'words_written' | 'mins_spent'] ?? null
       compared = comparePresent(left, right, (one, two) => one - two)
     }
     else if (sort.field === 'status') {
@@ -180,7 +212,7 @@ function rowComparator(sort: NonNullable<Query['sort']>): (a: QueryRow, b: Query
         return leftRank - rightRank || left.localeCompare(right, undefined, { sensitivity: 'base' })
       })
     } else {
-      compared = comparePresent(a[sort.field] ?? null, b[sort.field] ?? null, (left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
+      compared = comparePresent(a[sort.field] ?? null, b[sort.field] ?? null, (left, right) => String(left).localeCompare(String(right), undefined, { sensitivity: 'base' }))
     }
     // Missing values stay last in either direction; reverse only comparisons where both values exist.
     const leftMissing = sort.field !== 'words' && (a[sort.field] ?? null) === null
@@ -195,9 +227,9 @@ function scalar(value: unknown): string | null {
   return null
 }
 
-function filterValues(piece: Awaited<ReturnType<typeof collectionPieces>>[number], field: QueryFilterField): string[] {
+function filterValues(piece: Awaited<ReturnType<typeof collectionPieces>>[number], field: QueryFilterField, diary = false): string[] {
   if (field === 'title') return [piece.metadata.title]
-  if (field === 'date') return piece.metadata.date ? [piece.metadata.date] : []
+  if (field === 'date') return diary && /^\d{4}-\d{2}-\d{2}\.md$/.test(posix.basename(piece.path)) ? [posix.basename(piece.path).slice(0, -3)] : piece.metadata.date ? [piece.metadata.date] : []
   if (field === 'status') return piece.path.split('/').includes('agent-notes') ? [] : [piece.metadata.status]
   if (field === 'description') return piece.frontmatter?.description ? [piece.frontmatter.description] : []
   if (field === 'purpose') return piece.metadata.purpose ? [piece.metadata.purpose] : []
@@ -232,10 +264,11 @@ export async function evaluateCollectionQuery(ws: Workspace, dir: string, source
   const rows: QueryRow[] = []
 
   for (const piece of pieces) {
+    if (parsed.query.diary && !/^\d{4}-\d{2}-\d{2}\.md$/.test(posix.basename(piece.path))) continue
     let matches = true
     for (const field of FILTER_FIELDS) {
-      const wanted = lowerSet(parsed.query[field])
-      if (wanted && !filterValues(piece, field).some((value) => wanted.has(value.toLocaleLowerCase()))) {
+      const wanted = parsed.query[field]
+      if (wanted && !matchesFilter(field, wanted, filterValues(piece, field, parsed.query.diary))) {
         matches = false
         break
       }
@@ -248,8 +281,12 @@ export async function evaluateCollectionQuery(ws: Workspace, dir: string, source
       title: piece.metadata.title,
       status: agentAuthored ? null : piece.metadata.status,
       description: piece.frontmatter?.description ?? null,
-      date: piece.metadata.date,
+      date: parsed.query.diary ? posix.basename(piece.path).slice(0, -3) : piece.metadata.date,
       words: piece.derived.words,
+      ...Object.fromEntries(['words_written', 'mins_spent'].flatMap(key => {
+        const raw = scalar(piece.frontmatter?.extra[key])
+        return raw !== null && Number.isFinite(Number(raw)) ? [[key, Number(raw)]] : []
+      })),
       ...(rawGoal !== null && /^\d+$/.test(rawGoal) ? { goal: Number(rawGoal) } : {}),
       ...(scalar(piece.frontmatter?.extra.due) !== null ? { due: scalar(piece.frontmatter?.extra.due) } : {}),
       ...(scalar(piece.frontmatter?.extra.project) !== null ? { project: scalar(piece.frontmatter?.extra.project) } : {}),
@@ -272,6 +309,19 @@ export async function evaluateCollectionQuery(ws: Workspace, dir: string, source
     })
   }
 
+  if (parsed.query.group) {
+    const grouped = new Map<string, QueryRow>()
+    for (const row of rows) {
+      if (!row.date || row.words_written === undefined) continue
+      const date = new Date(`${row.date}T12:00:00`)
+      if (parsed.query.group === 'week') date.setDate(date.getDate() - (date.getDay() + 6) % 7)
+      const key = parsed.query.group === 'day' ? row.date : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+      const prior = grouped.get(key)
+      if (prior) { prior.words_written! += row.words_written; prior.mins_spent! += row.mins_spent ?? 0; if (prior.goal != null || row.goal != null) prior.goal = (prior.goal ?? 0) + (row.goal ?? 0) }
+      else grouped.set(key, { ...row, title: key, date: key, mins_spent: row.mins_spent ?? 0 })
+    }
+    rows.splice(0, rows.length, ...grouped.values())
+  }
   if (parsed.query.sort) rows.sort(rowComparator(parsed.query.sort))
   else rows.sort((a, b) => a.path.localeCompare(b.path))
   return { ok: true, source, query: parsed.query, rows: parsed.query.limit === undefined ? rows : rows.slice(0, parsed.query.limit) }

@@ -33,8 +33,10 @@ test('the preload reads the hooks from main\'s argument, never from the environm
 // The preload as the renderer sees it: `e2eWriteHooks` follows main's argument.
 const preloadProbe = (withArgument: boolean): string => String.raw`
   import { mock } from 'bun:test'
+  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
   let exposed
   void mock.module('electron', () => ({
+    ...electronMainStandIn,
     clipboard: { readText: () => '' }, webUtils: { getPathForFile: () => '' },
     contextBridge: { exposeInMainWorld: (_name, api) => { exposed = api } },
     ipcRenderer: { invoke: async () => null, on: () => {}, removeListener: () => {} },
@@ -65,6 +67,7 @@ test('the preload exposes the write hooks only when main passed the argument', a
 // and a malformed value never stops registration (review S2: parsed when a save asks).
 const saveProbe = (isPackaged: boolean): string => String.raw`
   import { mock } from 'bun:test'
+  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -75,6 +78,7 @@ const saveProbe = (isPackaged: boolean): string => String.raw`
   const handlers = new Map()
   const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: (channel) => handlers.delete(channel) }
   void mock.module('electron', () => ({
+    ...electronMainStandIn,
     app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: ${isPackaged} },
     clipboard: { write: () => {} }, ipcMain,
     dialog: { showMessageBox: async () => ({ response: 0 }) },

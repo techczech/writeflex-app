@@ -32,7 +32,7 @@ test('an absent neighbour leaves its place empty and the other in place', () => 
 test('the Index Note and an unlisted file say so in place of a position', () => {
   expect(folioPositionText({ kind: 'index', position: null, total: 5 })).toBe('Index Note')
   expect(line(place({ kind: 'index', position: null, previous: null }))).toContain('Index Note')
-  expect(line(place({ kind: 'unlisted', position: null, previous: null, next: null }))).toContain('Not in the running order')
+  expect(line(place({ kind: 'unlisted', position: null, previous: null, next: null }))).toContain('Not in the outline')
 })
 
 const toolbar = (folioName?: string | null): string =>

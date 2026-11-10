@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { BookOpen, Bot, Sparkles } from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronRight, Sparkles } from 'lucide-react'
 import type { CollectionDigest } from '../../../preload'
 import { digestDisplayGist } from '../../../shared/digest-display'
 
@@ -10,11 +10,15 @@ type DigestProps = {
   onOpenPiece: (path: string) => void
 }
 
-function summary(digest: CollectionDigest): string {
-  const statuses = Object.entries(digest.summary.statuses)
+/** R5: one line, "<name> · N pieces · …", with the writer's own status words and at most the three largest groups. */
+/** `inVault`: the digest is of the whole vault, so the piece count says so (a Folio's members are parts, counted elsewhere). */
+export function digestSummaryLine(digest: CollectionDigest, inVault = false): string {
+  const groups = Object.entries(digest.summary.statuses)
     .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
     .map(([status, count]) => `${count} ${status}`)
-  return `${digest.collection} — ${digest.summary.pieces} ${digest.summary.pieces === 1 ? 'piece' : 'pieces'}${statuses.length ? ` · ${statuses.join(' · ')}` : ''}`
+  return [digest.collection, `${digest.summary.pieces} ${digest.summary.pieces === 1 ? 'piece' : 'pieces'}${inVault ? ' in this vault' : ''}`, ...groups].join(' · ')
 }
 
 function pieceCount(piece: DigestPiece): string {
@@ -25,6 +29,7 @@ function pieceCount(piece: DigestPiece): string {
 export function Digest({ dir, onOpenPiece }: DigestProps): JSX.Element | null {
   const [digest, setDigest] = useState<CollectionDigest | null>(null)
   const [showAll, setShowAll] = useState(false)
+  const [open, setOpen] = useState(false)
 
   const reload = useCallback(async (): Promise<void> => {
     if (dir === null) {
@@ -40,6 +45,7 @@ export function Digest({ dir, onOpenPiece }: DigestProps): JSX.Element | null {
 
   useEffect(() => {
     setShowAll(false)
+    setOpen(false)
     void reload()
     const stopCollection = window.writeflex.collection.onChanged((event) => {
       if (dir === '' || event.paths.some((path) => path === dir || path.startsWith(`${dir}/`))) void reload()
@@ -57,12 +63,12 @@ export function Digest({ dir, onOpenPiece }: DigestProps): JSX.Element | null {
 
   return (
     <section className="digest" aria-label="Active Collection Digest">
-      <div className="d-head">
+      <button type="button" className="d-head d-toggle" aria-expanded={open} aria-controls="digest-details" data-testid="digest-toggle" title={digestSummaryLine(digest, dir === '')} onClick={() => setOpen((now) => !now)}>
         <Sparkles className="icon sm" aria-hidden="true" />
-        <strong className="d-t">Digest</strong>
-        <span className="d-live">live</span>
-      </div>
-      <p className="d-sum">{summary(digest)}</p>
+        <span className="d-sum">{digestSummaryLine(digest, dir === '')}</span>
+        {open ? <ChevronDown className="icon sm" aria-hidden="true" /> : <ChevronRight className="icon sm" aria-hidden="true" />}
+      </button>
+      {open && <div id="digest-details" data-testid="digest-details">
       <div className="dg-list">
         {visiblePieces.map((piece) => (
           <button
@@ -73,7 +79,7 @@ export function Digest({ dir, onOpenPiece }: DigestProps): JSX.Element | null {
             title={`${piece.path} · ${piece.links.inbound} inbound, ${piece.links.outbound} outbound`}
             aria-label={`${piece.title}, ${pieceCount(piece)}`}
           >
-            <span className="ti">{piece.title}{piece.agentAuthored && <Bot className="prov" aria-label="Agent-authored Piece" />}</span>
+            <span className="ti">{piece.title}{piece.agentAuthored && <Sparkles className="prov" aria-label="Agent-authored Piece" />}</span>
             <span className="gi" aria-hidden="true">{digestDisplayGist(piece.gist) || 'No description yet'}</span>
             <span className="ct">{pieceCount(piece)}</span>
           </button>
@@ -90,6 +96,7 @@ export function Digest({ dir, onOpenPiece }: DigestProps): JSX.Element | null {
           <small>in full</small>
         </button>
       ))}
+      </div>}
     </section>
   )
 }

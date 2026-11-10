@@ -269,7 +269,7 @@ export async function writeWidgetFile(root: string, documentRelative: string, pl
 /** The synchronous block of writeWidgetFile: permission read, then the syscalls, with no await anywhere. */
 function createWidgetFileNow(place: Extract<WidgetPlace, { ok: true }>, plannedPath: string, bytes: Buffer, allowed: () => boolean): { ok: true; created: CreatedWidgetFile } | Refusal {
   if (!allowed()) return { ok: false, message: WIDGET_WRITE_SWITCHED_OFF }
-  // The owner lock's write gate (collection-write-gate.ts), asked in the same tick as the syscalls below.
+  // The write gate (collection-write-gate.ts), asked in the same tick as the syscalls below.
   const paused = pausedMessage(place.realRoot)
   if (paused !== null) return { ok: false, message: paused }
   const assetsAbsolute = join(place.realRoot, place.assets)

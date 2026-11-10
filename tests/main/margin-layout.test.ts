@@ -215,3 +215,15 @@ test('a lone settled row that has to fold stays a row', () => {
   const layout = layoutMargin({ cards })
   expect(layout.placements.find((p) => p.id === 'done')!.fold).toBe('row')
 })
+
+test('nested replies count in collapsed paragraph heads and expand with their root in both views', () => {
+  const cards = [{ id: 'root', paragraph: 0, anchorTop: 0, height: 300, count: 3 }]
+  const collapsed = layoutMargin({ cards, options: { maxDrift: -1 } })
+  expect(collapsed.groups[0].count).toBe(3)
+  expect(collapsed.placements[0].hidden).toBe(true)
+  const expanded = layoutMargin({ cards, openIds: new Set(['root']), options: { maxDrift: -1 } })
+  expect(expanded.placements[0]).toMatchObject({ hidden: false, fold: 'open' })
+  const under = layoutUnder({ cards })
+  expect(under.groups[0]).toMatchObject({ count: 3, fold: 'stack' })
+  expect(layoutUnder({ cards, openIds: new Set(['root']) }).placements[0].fold).toBe('open')
+})

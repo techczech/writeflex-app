@@ -105,7 +105,7 @@ test('mode chips exist only while their mode is active', () => {
 
   const reviewing = renderStatus({ writerMode: 'reviewing' })
   expect(reviewing).toContain('class="reviewing-chip"')
-  expect(reviewing).toContain('Reviewing')
+  expect(reviewing).toContain('Track my changes')
 })
 
 test('development defaults false and only an explicit development build shows the version', () => {

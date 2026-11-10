@@ -195,7 +195,7 @@ export function ThreadSwitcherPopover({
         onClick={onNewChat}
         title="Start a new chat"
       >
-        <MessageSquare className="icon" aria-hidden="true" />
+        <Sparkles className="icon" aria-hidden="true" />
         <span className="thread-row-copy"><strong>New chat</strong><small>Everything the app can do</small></span>
         <kbd>↵</kbd>
       </button>
@@ -235,7 +235,7 @@ export function ThreadSwitcherPopover({
       {recent.map((thread) => {
         const index = rowIndex++
         const meta = thread.kind === 'skill' ? skills.find((skill) => skill.name === thread.skillName) : undefined
-        const Icon = thread.kind === 'skill' ? skillIcon(meta?.icon) : MessageSquare
+        const Icon = thread.kind === 'skill' ? skillIcon(meta?.icon) : Sparkles
         const kind = thread.kind === 'skill' ? skillDisplayNameFor(thread.skillName ?? '', skills) : 'Chat'
         return (
           <div
@@ -395,10 +395,10 @@ export function SkillCompletionToast({
               ? `${name} left notes`
               : `${name} stopped — nothing was changed.`}
         </strong>
-        {toast.kind === 'staged' && <small>opens Reviewing</small>}
+        {toast.kind === 'staged' && <small>opens the review margin</small>}
         {toast.kind === 'error' && detailsOpen && toast.details && <small className="skill-toast-details">{toast.details}</small>}
       </div>
-      {toast.kind === 'staged' && <button type="button" className="ghost" onClick={onReview} title="Open Reviewing">Review ›</button>}
+      {toast.kind === 'staged' && <button type="button" className="ghost" onClick={onReview} title="Open the review margin">Review ›</button>}
       {toast.kind === 'notes' && toast.path && <button type="button" className="ghost" onClick={() => onOpenNotes(toast.path as string)} title={`Open ${toast.path}`}>Open notes ›</button>}
       {toast.kind === 'error' && <button type="button" className="ghost" onClick={() => setDetailsOpen((open) => !open)} title="Show failure details">Details</button>}
       <button type="button" className="skill-toast-dismiss" onClick={onDismiss} title="Dismiss" aria-label="Dismiss notification"><X className="icon sm" aria-hidden="true" /></button>
@@ -429,8 +429,8 @@ export function SkillHandoffRow({ skillName, skills = [], stagedCount, notesPath
       {stagedCount > 0 ? (
         <>
           <ShieldCheck className="icon sm" aria-hidden="true" />
-          <span className="skill-handoff-copy"><strong>{name} staged {stagedCount} {stagedCount === 1 ? 'change' : 'changes'}</strong><small>waiting in Reviewing</small></span>
-          <button type="button" className="ghost" onClick={onReview} title="Open Reviewing">Review ›</button>
+          <span className="skill-handoff-copy"><strong>{name} staged {stagedCount} {stagedCount === 1 ? 'change' : 'changes'}</strong><small>waiting in the review margin</small></span>
+          <button type="button" className="ghost" onClick={onReview} title="Open the review margin">Review ›</button>
         </>
       ) : (
         <>

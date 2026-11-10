@@ -26,8 +26,9 @@ const pendingDisposals = new Set<Promise<void>>()
 
 /**
  * Resolves once every disposed executor has finished the request it was carrying out. A closing
- * window cannot await; whoever releases the Collection's owner lock waits for this first, so the
- * last write of a request in flight (and the putting back of what it wrote) lands under the lock.
+ * window cannot await; whoever closes the Collection (open-collections.ts) waits for this first, so
+ * the last write of a request in flight (and the putting back of what it wrote) lands before its
+ * reply key goes.
  */
 export async function waitForRequestDisposals(): Promise<void> {
   while (pendingDisposals.size > 0) await Promise.allSettled([...pendingDisposals])

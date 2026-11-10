@@ -1,0 +1,5 @@
+# Verbs that are deliberately not described in the hand-written skill, one per line: <verb> | <reason>.
+# The coverage test (scripts/test-agent-skill-coverage.mjs) fails for a verb that is neither described nor listed here,
+# and for a line here that names no verb or a verb the skill does describe. A verb listed here is also left out of the
+# generated references/commands.md. Verbs are written as the command line names them (without the leading `writeflex`).
+capture | Runs a separate command-line tool that most computers do not have; there it is refused with a plain reason. Describing it would send a stranger's agent to a command that cannot work. The skill describes the research/ folder's files instead.

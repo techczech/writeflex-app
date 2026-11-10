@@ -82,7 +82,7 @@ export async function notInRunningOrderNow(ws: Workspace, dir: string): Promise<
   }
 }
 
-/** The `manifestCreated` fields of an answer: the flag, and the files not in the running order when there are any. */
+/** The `manifestCreated` fields of an answer: the flag, and the files not in the outline when there are any. */
 async function manifestCreatedFields(ws: Workspace, dir: string): Promise<{ manifestCreated: true; notInRunningOrder?: string[] }> {
   const strays = await notInRunningOrderNow(ws, dir)
   return { manifestCreated: true, ...(strays.length > 0 ? { notInRunningOrder: strays } : {}) }

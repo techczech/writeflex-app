@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { Bot, ChevronDown } from 'lucide-react'
+import { Sparkles, ChevronDown } from 'lucide-react'
 import { agentPillItemFor, agentPillModel, type AgentPillItem, type AgentPillRequest } from '../plan/agent-instructions-pill'
 import { humanReadableError } from '../error-text'
 import type { FolioAgentInstructionsAction, FolioAgentInstructionsStatus } from '../../../shared/folio-agent-files'
@@ -46,7 +46,7 @@ export function FolioAgentInstructionsRow({ status, busy = false, onOpen, onAct 
   return (
     <div className="folio-agents" role="group" aria-label="Agent instructions">
       <div className="cv-src folio-agents-line" data-state={status.agents}>
-        <Bot className="icon sm" aria-hidden="true" />
+        <Sparkles className="icon sm" aria-hidden="true" />
         <strong>Agent instructions</strong>
         <span className="folio-agents-text">{lines.agents.text}</span>
         {lines.canOpen && (
@@ -167,7 +167,7 @@ export const FolioAgentInstructionsPill = forwardRef<FolioAgentPillHandle, { dir
     // Both exist (or the problem is not one a button can fix): plain text, with a way to open the file.
     return (
       <span className="folio-agent-pill plain" role="group" aria-label="Agent instructions" data-state={model.state} title={model.title}>
-        <Bot className="icon sm" aria-hidden="true" />
+        <Sparkles className="icon sm" aria-hidden="true" />
         <span className="folio-agent-pill-text">{model.label}</span>
         {model.canOpen && <button type="button" className="folio-agent-pill-open" title={`Open ${status.agentsPath}`} aria-label={`Open the agent instructions, ${status.agentsPath}`} onClick={() => onOpenPiece(status.agentsPath)}>Open</button>}
       </span>
@@ -188,7 +188,7 @@ export const FolioAgentInstructionsPill = forwardRef<FolioAgentPillHandle, { dir
         onClick={() => setOpen((value) => !value)}
         onKeyDown={(event) => { if (event.key === 'ArrowDown' && !open) { event.preventDefault(); setOpen(true) } }}
       >
-        <Bot className="icon sm" aria-hidden="true" />
+        <Sparkles className="icon sm" aria-hidden="true" />
         <span className="folio-agent-pill-text">{model.label}</span>
         <ChevronDown className="icon sm" aria-hidden="true" />
       </button>

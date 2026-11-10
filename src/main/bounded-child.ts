@@ -1,10 +1,10 @@
 /**
  * Run an external program and wait for it NO LONGER THAN A LIMIT. A program that never answers (a
  * stalled `git`, a Trash mover waiting on a permission prompt) would otherwise hold whatever its
- * caller holds, which for the command line is the Collection's owner lock. When the limit passes the
+ * caller holds, which for the command line is a write in progress. When the limit passes the
  * child is killed, its streams are destroyed and every listener removed, so nothing keeps the caller
- * or the process waiting; the result says `timed-out`. The pattern is the one the owner lock uses to
- * read a process's start time (owner-lock-liveness.ts). Electron-free.
+ * or the process waiting; the result says `timed-out`. The pattern is the one used to read a
+ * process's start time (local-process.ts). Electron-free.
  */
 import { spawn } from 'node:child_process'
 

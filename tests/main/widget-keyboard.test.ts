@@ -2,7 +2,7 @@
 // widgets ticket 02, security fix rounds 1 and 2). The gate is driven here with a fake window: which
 // frame has the focus, real presses, what reclaiming does, and what is sent again.
 import { expect, test } from 'bun:test'
-import { createKeyboardGate, DELIVERY_MARKER, DELIVERY_WAIT_MS, guardInput, isQuitKey, keyCodeFor, parseOwnerClaim, PRESS_SLACK_MS, PRESS_WINDOW_MS, type KeyboardGateHost } from '../../src/main/widget-keyboard'
+import { createKeyboardGate, DELIVERY_MARKER, DELIVERY_WAIT_MS, guardInput, isCloseTabKey, isQuitKey, keyCodeFor, mainOwnKeyHooks, parseOwnerClaim, PRESS_SLACK_MS, PRESS_WINDOW_MS, type KeyboardGateHost } from '../../src/main/widget-keyboard'
 
 type Frame = { origin: string; processId: number; routingId: number }
 const TOP: Frame = { origin: 'file://', processId: 1, routingId: 1 }
@@ -20,6 +20,7 @@ function fakeWindow(options: { reclaimWorks?: boolean; reclaimNeverReturns?: boo
   let reclaims = 0
   let dropped = 0
   let quits = 0
+  let tabCloses = 0
   const heldMeta: string[] = []
   // The top frame's listener for main's marker key, and the bound on main's wait for it.
   let markerSeen: ((seen: boolean) => void) | null = null
@@ -35,7 +36,11 @@ function fakeWindow(options: { reclaimWorks?: boolean; reclaimNeverReturns?: boo
       },
     }),
     onHeld: (input) => { if (input.type === 'keyDown' && input.meta) heldMeta.push(input.key) },
-    actsOn: (input) => (isQuitKey(input, 'darwin') ? () => { quits += 1; delivered.push('main:quit') } : null),
+    // The wiring windows.ts uses, so the tests and the window cannot drift apart.
+    ...mainOwnKeyHooks('darwin', {
+      quit: () => { quits += 1; delivered.push('main:quit') },
+      closeTab: () => { tabCloses += 1; delivered.push('main:close-tab') },
+    }),
     focusedFrame: () => focused,
     mainFrame: () => TOP,
     reclaim: async () => {
@@ -78,7 +83,7 @@ function fakeWindow(options: { reclaimWorks?: boolean; reclaimNeverReturns?: boo
     setFocus: (frame: Frame | 'unreadable' | null) => { focused = frame },
     tick: (ms: number) => { clock += ms },
     get reclaims() { return reclaims }, get dropped() { return dropped },
-    get quits() { return quits }, heldMeta,
+    get quits() { return quits }, get tabCloses() { return tabCloses }, heldMeta,
     get markers() { return markers },
     expireDeliveryWait: () => { for (const expire of expireWaits.splice(0)) expire() },
     get longWaits() { return longWaits },
@@ -403,26 +408,97 @@ test('a reset before the bound runs out: the ⌘Q held for the old document is n
   expect(w.quits).toBe(0)
 })
 
-test('only ⌘Q on a Mac is main’s own: every other held Meta key is sent again as before', async () => {
+test('only ⌘Q and ⌘W on a Mac are main’s own: every other held Meta key is sent again as before', async () => {
   const w = fakeWindow()
   w.setFocus(WIDGET)
-  w.press(key('w', 'keyDown', { meta: true }))
+  w.press(key('s', 'keyDown', { meta: true }))
   w.press(key('q', 'keyDown', { meta: true, shift: true }))
+  w.press(key('w', 'keyDown', { meta: true, shift: true }))
   await settle()
   expect(w.quits).toBe(0)
-  expect(w.sent.map((event) => `${event.keyCode}+${event.modifiers.join('+')}`)).toEqual(['w+meta', 'q+shift+meta'])
-  expect(w.heldMeta).toEqual(['w', 'q'])
+  expect(w.tabCloses).toBe(0)
+  expect(w.sent.map((event) => `${event.keyCode}+${event.modifiers.join('+')}`)).toEqual(['s+meta', 'q+shift+meta', 'w+shift+meta'])
+  expect(w.heldMeta).toEqual(['s', 'q', 'w'])
   expect(isQuitKey(key('q', 'keyDown', { meta: true }), 'darwin')).toBe(true)
   expect(isQuitKey(key('Q', 'keyDown', { meta: true }), 'darwin')).toBe(true)
   expect(isQuitKey(key('q', 'keyUp', { meta: true }), 'darwin')).toBe(false)
   expect(isQuitKey(key('q', 'keyDown', { meta: true, alt: true }), 'darwin')).toBe(false)
   expect(isQuitKey(key('q', 'keyDown', { control: true }), 'darwin')).toBe(false)
   expect(isQuitKey(key('q', 'keyDown', { meta: true }), 'win32')).toBe(false)
+  expect(isCloseTabKey(key('w', 'keyDown', { meta: true }), 'darwin')).toBe(true)
+  expect(isCloseTabKey(key('w', 'keyDown', { control: true }), 'win32')).toBe(true)
+  expect(isCloseTabKey(key('w', 'keyDown', { control: true }), 'darwin')).toBe(false)
+  expect(isCloseTabKey(key('w', 'keyUp', { meta: true }), 'darwin')).toBe(false)
+  expect(isCloseTabKey(key('w', 'keyDown', { meta: true, alt: true }), 'darwin')).toBe(false)
 })
 
-test('⌘Q with the top frame or an engaged widget focused is not held: the gate leaves it to the menu', () => {
+// ⌘W while a widget that is not engaged has the focus (quit-never-stalls-and-never-drops-text, part 2).
+// The menu owns ⌘W (Close Tab) and a held key never reaches the menu, nor does a key sent again, so the
+// key did nothing. Main now sends the menu's own action, in the same turn the key would have taken.
+test('⌘W bound for a widget that is not engaged: main closes the tab, and the key is neither delivered nor sent again', async () => {
+  const w = fakeWindow()
+  w.setFocus(WIDGET)
+  w.press(key('w', 'keyDown', { meta: true }))
+  expect(w.tabCloses).toBe(1)
+  expect(w.gate.held).toBe(0)
+  await settle()
+  expect(w.sent).toEqual([])
+  expect(w.delivered).toEqual(['main:close-tab'])
+  expect(w.quits).toBe(0)
+})
+
+test('⌘W behind held keys waits its turn: the keys typed before it have reached the document when the tab closes', async () => {
+  const w = fakeWindow()
+  w.setFocus(WIDGET)
+  w.press(key('a'))
+  w.press(key('w', 'keyDown', { meta: true }))
+  expect(w.tabCloses).toBe(0)
+  await settle()
+  w.replay()
+  await settle()
+  expect(w.tabCloses).toBe(1)
+  expect(w.delivered.indexOf('main:close-tab')).toBeGreaterThan(w.delivered.indexOf('top:keyDown:a'))
+})
+
+// ⌘Q while a widget the writer has clicked into has the focus. That widget receives keys, and a page that
+// calls preventDefault on a key keeps it from the menu: it could swallow ⌘Q. Main quits on ⌘Q whenever a
+// widget frame has the focus, engaged or not.
+test('⌘Q while an engaged widget has the focus: main quits, and the widget is not given the key', async () => {
+  const w = fakeWindow()
+  expect(w.gate.claimOwner({ engaged: true, how: 'keyboard', frame: 'wf-widget-a' })).toBe(true)
+  w.setFocus(WIDGET)
+  w.press(key('q', 'keyDown', { meta: true }))
+  expect(w.quits).toBe(1)
+  await settle()
+  expect(w.delivered).toEqual(['main:quit'])
+  expect(w.sent).toEqual([])
+})
+
+test('an engaged widget still gets every other key, ⌘W included', () => {
+  const w = fakeWindow()
+  w.gate.claimOwner({ engaged: true, how: 'keyboard', frame: 'wf-widget-a' })
+  w.setFocus(WIDGET)
+  w.press(key('a')); w.press(key('w', 'keyDown', { meta: true })); w.press(key('q', 'keyDown', { meta: true, shift: true }))
+  expect(w.delivered).toEqual(['widget:keyDown:a', 'widget:keyDown:w', 'widget:keyDown:q'])
+  expect(w.quits).toBe(0)
+  expect(w.tabCloses).toBe(0)
+})
+
+test('⌘Q while a widget the writer did not engage, with another widget engaged: main quits', () => {
+  const w = fakeWindow()
+  w.gate.claimOwner({ engaged: true, how: 'keyboard', frame: 'wf-widget-b' })
+  w.setFocus(WIDGET)
+  w.press(key('q', 'keyDown', { meta: true }))
+  expect(w.quits).toBe(1)
+})
+
+test('⌘Q and ⌘W with the top frame or the Reading Room focused are not held: the gate leaves them to the menu', () => {
   const w = fakeWindow()
   w.press(key('q', 'keyDown', { meta: true }))
+  w.press(key('w', 'keyDown', { meta: true }))
+  w.setFocus(READING_ROOM)
+  w.press(key('q', 'keyDown', { meta: true }))
   expect(w.quits).toBe(0)
-  expect(w.delivered).toEqual(['top:keyDown:q'])
+  expect(w.tabCloses).toBe(0)
+  expect(w.delivered).toEqual(['top:keyDown:q', 'top:keyDown:w', 'reading-room:keyDown:q'])
 })

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { Download, FileCode2, FileText } from 'lucide-react'
+import { Download, FileCode2, FileText, History } from 'lucide-react'
+import { cueChipText, cueTotal } from '../../../shared/folio-version-changes'
+import { useFolioCues } from '../plan/folio-cues-store'
 import type { ExportFormat, HtmlExportOptions } from '../../../preload'
 import { ExportOptionControls } from './ExportOptionControls'
 import { ExportPresetControls } from './ExportPresetControls'
@@ -102,6 +104,8 @@ export type ExportSheetProps = {
   tocDepthHomes?: Record<ExportScope, ExportTocDepthHome | null>
   /** Whether `collection` is a Folio (a folder with a manifest). Decides the opening scope only. */
   inFolio?: boolean
+  /** Folio versions ticket 11: closes this sheet and opens Save Folio version… for the Folio at `dir`. Absent: the sheet does not offer to save first. */
+  onSaveFolioVersionFirst?: (dir: string) => void
 }
 
 /** Each scope's Contents depth home, as this sheet last knew it. */
@@ -150,7 +154,18 @@ function rendererStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
   try { return typeof localStorage === 'undefined' ? null : localStorage } catch { return null }
 }
 
-export function ExportSheet({ workspaceRoot, title, words, collection, onExport, onReveal, onClose, initialPresetAction, tocDepthHomes, inFolio = false }: ExportSheetProps): JSX.Element {
+/**
+ * Folio versions ticket 11: what the working draft of the Folio at `dir` holds that no saved version does, as a sentence, or null when
+ * there is nothing to offer a save for (not a Folio, no saved version of the writer's own yet, or no change since the last one). A Folio
+ * the writer has never saved a version of is not asked: the question belongs to a Folio that already keeps versions. Reads only.
+ */
+function useUnsavedDraft(dir: string | null): string | null {
+  const cues = useFolioCues(dir)
+  if (dir === null || cues.state !== 'ready') return null
+  return cueTotal(cues) > 0 ? `The working draft has changes no saved version holds: ${cueChipText(cues)}.` : null
+}
+
+export function ExportSheet({ workspaceRoot, title, words, collection, onExport, onReveal, onClose, initialPresetAction, tocDepthHomes, inFolio = false, onSaveFolioVersionFirst }: ExportSheetProps): JSX.Element {
   // Read once at mount: the parent keys the sheet per open, so each open starts from its own file's default.
   const [scope, setScope] = useState<ExportScope>(() => defaultExportScope({ hasCollection: collection !== null, inFolio }))
   // The Contents depth's home per scope. A scope with a home shows and exports the file's value (Default
@@ -158,12 +173,22 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
   const [homes, setHomes] = useState<TocDepthHomes>(() => tocDepthHomes ?? { piece: null, collection: null })
   const [presetState, setPresetState] = useState<ExportPresetState | null>(null)
   const presetStateRef = useRef<ExportPresetState | null>(null)
+  const formRef = useRef<HTMLFormElement>(null)
+  useEffect(() => {
+    // Escape must reach the sheet before the asynchronous preset choices mount their autofocus button.
+    formRef.current?.focus()
+  }, [])
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState<{ target: string; missingImages: string[]; unreadableImages: string[]; pieces: number; listed: number; bundled: boolean; tocDepthNote?: string } | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   const running = useRef(false)
   // The out-of-step line (spec D-ORD-3), for a Folio's whole-collection export. Read once as the sheet opens; writes nothing.
   const order = useExportOrderCheck(collection?.dir ?? null)
+  // Ticket 11: exporting the working draft of a Folio offers to save a Folio version first, once; declining goes on to the export.
+  const unsaved = useUnsavedDraft(inFolio && onSaveFolioVersionFirst && collection?.dir !== undefined ? collection.dir : null)
+  const [saveOffer, setSaveOffer] = useState<'idle' | 'asking' | 'declined'>('idle')
+  // Choosing another scope takes the question back: it is asked again only if the whole Folio is what is exported.
+  useEffect(() => { setSaveOffer((held) => (held === 'asking' ? 'idle' : held)) }, [scope])
 
   useEffect(() => {
     let cancelled = false
@@ -257,6 +282,8 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
 
   const run = useCallback(() => {
     if (running.current) return
+    // The whole Folio goes out as it stands now, not as any saved version: offer to keep it first (ticket 11).
+    if (scope === 'collection' && unsaved !== null && saveOffer === 'idle') { setSaveOffer('asking'); return }
     running.current = true
     setBusy(true)
     setProblem(null)
@@ -272,7 +299,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
         running.current = false
         setBusy(false)
       })
-  }, [collection, format, home, onExport, options, scope])
+  }, [collection, format, home, onExport, options, saveOffer, scope, unsaved])
 
   // ADR-0029: "↵ is Choose where…". The scope rows and Format buttons are type="button", so a plain ↵ on
   // one would only re-press it; on these choice fields ↵ submits the sheet, as a native radio does.
@@ -319,6 +346,8 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
   return (
     <div className="version-modal-backdrop" role="presentation" onMouseDown={() => { if (!busy) onClose() }}>
       <form
+        ref={formRef}
+        tabIndex={-1}
         className="version-modal export-sheet"
         role="dialog"
         aria-modal="true"
@@ -454,6 +483,12 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
         {done !== null && done.tocDepthNote && <p className="export-toc-note" role="status">{done.tocDepthNote}</p>}
         {problem !== null && <p className="export-error" role="alert">{problem}</p>}
 
+        {done === null && saveOffer === 'asking' && unsaved !== null && collection?.dir !== undefined && (
+          <div className="export-offer" role="group" aria-labelledby="export-offer-head" data-testid="export-save-offer">
+            <b id="export-offer-head">Save a Folio version first?</b>
+            <span>{unsaved} A saved version keeps exactly what you are about to send, so you can compare it, export it again or come back to it.</span>
+          </div>
+        )}
         <div className="vm-actions">
           {busy && (
             <span className="export-working" role="status">
@@ -462,7 +497,17 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
             </span>
           )}
           <span className="grow" aria-hidden="true" />
-          {done === null && presetState?.mode === 'sheet' && (
+          {done === null && presetState?.mode === 'sheet' && saveOffer === 'asking' && unsaved !== null && collection?.dir !== undefined && (
+            <>
+              <button className="btn ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button>
+              <button className="btn ghost" type="button" data-testid="export-save-decline" disabled={busy} onClick={() => { setSaveOffer('declined'); run() }}>Export without saving</button>
+              <button className="btn primary" type="button" data-testid="export-save-first" disabled={busy} autoFocus onClick={() => onSaveFolioVersionFirst?.(collection.dir as string)}>
+                <History className="icon" aria-hidden="true" />
+                Save Folio version first…
+              </button>
+            </>
+          )}
+          {done === null && presetState?.mode === 'sheet' && !(saveOffer === 'asking' && unsaved !== null && collection?.dir !== undefined) && (
             <>
               <button className="btn ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button>
               {/* Off while Make export follow the running order runs: the export would read a manifest being rewritten. */}

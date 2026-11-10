@@ -1,3 +1,4 @@
+import { parseLinkRecord, type LinkRecord } from './share-record-protocol.ts'
 // What the app sends to publish a share, checked. Pure; no storage, no Workers runtime.
 //
 // A publish is two kinds of request (a very large piece publishes in parts, and nothing partial is
@@ -62,6 +63,8 @@ export interface PublishedHeading {
 }
 
 export interface PublishedPart {
+  key?: string
+  savedAt?: number
   title: string
   /** The part's rendered HTML; absent when the part's file is missing on disk. */
   html: string | null
@@ -71,8 +74,15 @@ export interface PublishedPart {
 export interface PublishBody {
   /** The previous published revision + 1. */
   revision: number
+  baseRevision?: number
+  sourceHash?: string
+  folioState?: Pick<LinkRecord, 'partKeys' | 'parts'>
+  /** Part keys this Mac has rendered from its own local files for this link. */
+  seenPartKeys?: string[]
   /** When the author saved this text (ms since 1970): the page's "Updated" date and time. */
   savedAt: number
+  structureSavedAt?: number
+  structureKind?: 'index' | 'manifest'
   /** The author's time zone (IANA name) to write "Updated" in; UTC when absent. */
   timeZone: string | null
   /** The language of the text, for `<html lang>`. */
@@ -82,6 +92,7 @@ export interface PublishBody {
    * Whether readers may leave notes and propose edits. Off when absent: a page takes notes only when the author asked for it.
    */
   comments: boolean
+  notes?: 'private' | 'open'
   kind: 'piece' | 'folio'
   title: string
   chips: { label: string; value: string }[]
@@ -145,7 +156,17 @@ export function parsePublishBody(value: unknown): PublishBody {
     lang = v.lang
   }
   if (v.kind !== 'piece' && v.kind !== 'folio') fail('invalid_publish', 'kind must be "piece" or "folio".')
+  if (v.baseRevision !== undefined && (!Number.isSafeInteger(v.baseRevision) || (v.baseRevision as number) < 0 || typeof v.sourceHash !== 'string' || !/^[0-9a-f]{64}$/.test(v.sourceHash))) fail('invalid_publish', 'Conditional publishing needs a base revision and source hash.')
+  if (v.sourceHash !== undefined && (v.baseRevision === undefined || typeof v.sourceHash !== 'string' || !/^[0-9a-f]{64}$/.test(v.sourceHash))) fail('invalid_publish', 'Invalid source hash.')
   const kind = v.kind
+  if (v.seenPartKeys !== undefined && (!Array.isArray(v.seenPartKeys) || v.seenPartKeys.some(key => typeof key !== 'string' || !/^[a-z][a-z0-9]{5}$/.test(key)))) fail('invalid_publish', 'Invalid previously seen Folio part keys.')
+  let folioState: PublishBody['folioState']
+  if (v.folioState !== undefined) {
+    const f = v.folioState as Record<string, unknown> | null
+    const record = parseLinkRecord({ workspace: { id: 'validationfixture', createdAt: 1 }, kind: 'folio', path: '', name: null, madeAt: 1, partKeys: f?.partKeys, parts: f?.parts })
+    if (!record) fail('invalid_publish', 'Invalid Folio identities.')
+    folioState = { partKeys: record.partKeys, parts: record.parts }
+  }
   const title = oneLine(v.title, SHARE_LIMITS.titleChars, 'title') as string
   const sharedBy = oneLine(v.sharedBy, SHARE_LIMITS.sharedByChars, 'sharedBy', { optional: true })
   if (v.comments !== undefined && v.comments !== null && typeof v.comments !== 'boolean') fail('invalid_publish', 'comments must be true or false.')
@@ -167,6 +188,7 @@ export function parsePublishBody(value: unknown): PublishBody {
   if (kind === 'piece' && partsIn.length !== 1) fail('invalid_publish', 'A piece is published as exactly one part.')
   if (partsIn.length > SHARE_LIMITS.folioParts) fail('invalid_publish', `A Folio is published with at most ${SHARE_LIMITS.folioParts} parts.`)
   const headingIds = new Set<string>()
+  const partKeys = new Set<string>()
   const parts = partsIn.map((part, index): PublishedPart => {
     const where = `part ${index + 1}`
     if (!part || typeof part !== 'object' || Array.isArray(part)) fail('invalid_publish', `${where} must be an object.`)
@@ -192,9 +214,18 @@ export function parsePublishBody(value: unknown): PublishBody {
       headingIds.add(h.id)
       return { id: h.id, text: oneLine(h.text, SHARE_LIMITS.headingChars, `${where} heading ${at + 1} text`) as string }
     })
-    return { title: partTitle, html, headings }
+    if (p.key !== undefined && (typeof p.key !== 'string' || !/^[a-z][a-z0-9]{5}$/.test(p.key))) fail('invalid_publish', `${where} has an invalid part key.`)
+    if (typeof p.key === 'string') {
+      if (partKeys.has(p.key)) fail('invalid_publish', `${where} repeats a part key.`)
+      partKeys.add(p.key)
+    }
+    if (p.savedAt !== undefined && (!Number.isSafeInteger(p.savedAt) || (p.savedAt as number) < 0)) fail('invalid_publish', `${where} has an invalid save time.`)
+    return { title: partTitle, html, headings, ...(typeof p.key === 'string' ? { key: p.key } : {}), ...(typeof p.savedAt === 'number' ? { savedAt: p.savedAt } : {}) }
   })
 
+  if (v.notes !== undefined && v.notes !== 'private' && v.notes !== 'open') fail('invalid_publish', 'notes must be private or open.')
+  if (v.structureKind !== undefined && v.structureKind !== 'index' && v.structureKind !== 'manifest') fail('invalid_publish', 'Invalid Folio structure kind.')
+  if (v.structureSavedAt !== undefined && (!Number.isSafeInteger(v.structureSavedAt) || (v.structureSavedAt as number) < 0)) fail('invalid_publish', 'The structure save time must be a non-negative integer.')
   const imagesIn = v.images ?? []
   if (!Array.isArray(imagesIn) || imagesIn.length > SHARE_LIMITS.shareImages) fail('invalid_publish', `images must be a list of at most ${SHARE_LIMITS.shareImages}.`)
   const images = [...new Set(imagesIn.map((name, index) => {
@@ -202,5 +233,8 @@ export function parsePublishBody(value: unknown): PublishBody {
     return name
   }))]
 
-  return { revision: v.revision as number, savedAt: v.savedAt as number, timeZone, lang, sharedBy, comments, kind, title, chips, parts, images }
+  return { revision: v.revision as number, ...(v.seenPartKeys !== undefined ? { seenPartKeys: [...new Set(v.seenPartKeys as string[])] } : {}), ...(v.structureKind === 'index' || v.structureKind === 'manifest' ? { structureKind: v.structureKind } : {}), ...(typeof v.structureSavedAt === 'number' ? { structureSavedAt: v.structureSavedAt } : {}), ...(folioState ? { folioState } : {}), ...(v.baseRevision !== undefined ? { baseRevision: v.baseRevision as number, sourceHash: v.sourceHash as string } : {}), savedAt: v.savedAt as number, timeZone, lang, sharedBy, comments, kind, title, chips, parts, images, ...(v.notes !== undefined ? { notes: v.notes as 'private' | 'open' } : {}) }
 }
+
+/** Claims never expire; only an explicit release after this interval is offered. */
+export const READER_CLAIM_RELEASE_MS = 10 * 60 * 1000

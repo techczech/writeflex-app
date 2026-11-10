@@ -72,13 +72,19 @@
 // counts a sliding hour: the last 60 minutes' counts under this hour's key and the last hour's. A
 // key and its counts are deleted when the hour after theirs ends (by the next request or the alarm),
 // so nothing about a network is kept for more than two hours.
+import { ensurePeopleSchema, SharePeople, type PersonLease } from './share-people.ts'
+import { signingKey } from './signing-key.ts'
+import { ShareNoteState, NOTE_COLUMNS, NOTE_READ, readerView, type NoteRow } from './share-note-state.ts'
+import { ShareOwnerState } from './share-owner-state.ts'
+import { commentsMode, ensureOpenCommentsSchema, parseCommentsMode, replyTarget, OPEN_COMMENTS_LIMIT, openCommentPredicate } from './open-comments.ts'
 import { sha256Hex } from './auth.ts'
+import { hasOlderFolioStructure, retainNewerFolioParts, publishedContent } from './folio-publish.ts'
 import { errorResponse, jsonResponse, type Env } from './http.ts'
 import { refundNoteBudget, takeNoteBudget, type NoteGrant } from './note-budget.ts'
-import { renderReaderPage } from './reader-page.ts'
-import { COMMENTS_OFF_MESSAGE, NOTE_LIMITS, NOTES_REFUSED_MESSAGE, NoteProtocolError, REFUSAL_REASONS, type NoteAnchor, type PostedNote, type ReaderNoteView, type RefusalReason } from './reader-notes.ts'
-import { OUTCOME_LIMITS, OUTCOMES, parseOutcomes, type NoteOutcome, type ReplyView } from './note-outcomes.ts'
-import { ShareProtocolError, SHARE_LIMITS, parseImageName, parsePublishBody } from './share-protocol.ts'
+import { renderReaderPage, renderReaderShell } from './reader-page.ts'
+import { COMMENTS_OFF_MESSAGE, NOTE_LIMITS, NOTES_REFUSED_MESSAGE, NoteProtocolError, parsePostedNote, REFUSAL_REASONS, type NoteAnchor, type PostedNote, type RefusalReason } from './reader-notes.ts'
+import { OUTCOME_LIMITS, type ReplyView } from './note-outcomes.ts'
+import { ShareProtocolError, SHARE_LIMITS, parseImageName, parsePublishBody, type PublishBody } from './share-protocol.ts'
 
 const PAGE_CHUNK_UNITS = 512 * 1024
 const IMAGE_CHUNK_BYTES = 1024 * 1024
@@ -91,34 +97,11 @@ interface ShareRow {
   published_at: number | null
   saved_at: number | null
   comments: number
+  comments_mode?: 'private' | 'open'
   opened?: number
   note_factor?: number
 }
 
-interface NoteRow {
-  reader_key: string
-  id: string
-  kind: 'note' | 'edit'
-  name: string
-  text: string
-  quote: string
-  before_text: string
-  after_text: string
-  block: string | null
-  start_at: number | null
-  end_at: number | null
-  written_at: number | null
-  revision: number | null
-  received_at: number
-  collected_at: number | null
-  /** The author's outcome and when; NULL while the note is open. */
-  outcome?: string | null
-  outcome_at?: number | null
-}
-
-const NOTE_COLUMNS = 'reader_key, id, kind, name, text, quote, before_text, after_text, block, start_at, end_at, written_at, revision, received_at, collected_at'
-/** What a read takes: the columns written when a note is kept, and the author's outcome. */
-const NOTE_READ = `${NOTE_COLUMNS}, outcome, outcome_at`
 const HOUR = 3_600_000
 const MINUTE = 60_000
 /**
@@ -151,35 +134,6 @@ interface NetworkWindow {
 function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
-/** How many characters of the reader's digest name the reader to the author. */
-const READER_ID_CHARS = 24
-
-function anchorOf(row: NoteRow): NoteAnchor {
-  return { quote: row.quote, before: row.before_text, after: row.after_text, block: row.block, start: row.start_at, end: row.end_at }
-}
-
-const outcomeOf = (row: NoteRow): NoteOutcome | null => (typeof row.outcome === 'string' && (OUTCOMES as readonly string[]).includes(row.outcome) ? row.outcome as NoteOutcome : null)
-
-/**
- * A note as its own reader sees it: nothing about the reader beyond the name they typed; the author's
- * outcome (open until there is one) and the author's replies, oldest first.
- */
-function readerView(row: NoteRow, replies: readonly ReplyView[] = []): ReaderNoteView {
-  const outcome = outcomeOf(row)
-  return {
-    id: row.id, kind: row.kind, name: row.name, text: row.text, anchor: anchorOf(row), writtenAt: row.written_at, receivedAt: row.received_at,
-    status: outcome ?? 'open', outcomeAt: outcome ? row.outcome_at ?? null : null, replies: [...replies],
-  }
-}
-
-/** The author's key for one note: the reader's id and the note's id. Unique in the share. */
-function noteKey(row: Pick<NoteRow, 'reader_key' | 'id'>): string {
-  return `${row.reader_key.slice(0, READER_ID_CHARS)}.${row.id}`
-}
-
-function ownerView(row: NoteRow) {
-  return { key: noteKey(row), readerId: row.reader_key.slice(0, READER_ID_CHARS), ...readerView(row), revision: row.revision, collectedAt: row.collected_at }
-}
 
 /**
  * Split text into chunks of at most `size` UTF-16 units without separating a surrogate pair, so
@@ -210,14 +164,17 @@ function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
-const INTERNAL_ROUTE = /^\/(init|page|page\/read|off|on|status|notes|notes\/mine|notes\/waiting|notes\/collected|notes\/clear|notes\/raise|notes\/outcomes|images\/staged|image\/([^/]+))$/
+const INTERNAL_ROUTE = /^\/(record|owner-token|notes\/state|notes\/claim|people|content|init|page|page\/read|off|on|status|settings|notes|notes\/visible|notes\/mine|notes\/waiting|notes\/collected|notes\/clear|notes\/raise|notes\/outcomes|images\/staged|image\/([^/]+))$/
 const READER_KEY = /^[0-9a-f]{64}$/
 
 export class SharedPiece {
   private readonly state: DurableObjectState
   private readonly sql: SqlStorage
   private readonly env: Env
+  private readonly noteState: ShareNoteState
+  private readonly ownerState: ShareOwnerState
   private notesReady = false
+  private readonly people: SharePeople
   /** Notes on their way (asked the service for room, not yet kept), and by `<readerKey>.<id>`. */
   private readonly holds = new Set<Hold>()
   private readonly sending = new Map<string, Promise<void>>()
@@ -232,6 +189,9 @@ export class SharedPiece {
     this.state = state
     this.sql = state.storage.sql
     this.env = env as Env
+    this.people = new SharePeople(this.sql)
+    this.ownerState = new ShareOwnerState(this.sql)
+    this.noteState = new ShareNoteState(state, { row: () => this.row(), ensure: () => this.ensureNotesSchema(), limits: () => this.shareLimits(), refusals: () => this.refusals() })
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -241,25 +201,49 @@ export class SharedPiece {
     const [, action, imageName] = match
     const method = request.method
     try {
+      if (['record', 'owner-token', 'notes/state', 'notes/claim'].includes(action)) {
+        if (!this.row()) return errorResponse('unknown_share', 'This share does not exist.', 404)
+        if (action === 'record' && method === 'PUT') return this.ownerState.keep(await request.json().catch(() => null))
+        if (action === 'record' && method === 'GET') {
+          const record = this.ownerState.record()
+          return record ? jsonResponse({ ...record, ...await this.status().json() as object, on: this.row()!.status === 'on', notes: commentsMode(this.row()!.comments_mode) }) : new Response(null, { status: 404 })
+        }
+        if (action === 'owner-token' && method === 'POST') return this.ownerState.mint(await request.json().catch(() => null))
+        if (action === 'notes/state' && method === 'POST') return this.noteState.ownerNotesState(await request.json().catch(() => null), request.headers.get('x-sharing-computer'))
+        if (action === 'notes/claim' && method === 'POST') return this.noteState.claimNote(await request.json().catch(() => null), request.headers.get('x-sharing-computer'))
+      }
+      if (action === 'people' && (method === 'GET' || method === 'POST')) {
+        if (!this.row()) return new Response(null, { status: 404 })
+        this.ensureNotesSchema()
+        const key = await signingKey(this.env)
+        const answer = await this.people.owner(this.row()!.share_id, key, method, method === 'POST' ? await request.json().catch(() => null) : null)
+        if (method !== 'GET' || !answer.ok) return answer
+        let title: string | undefined
+        try { title = JSON.parse([...this.sql.exec<{ text: string }>('SELECT text FROM publish_source_chunks ORDER BY idx')].map(r => r.text).join('')).title } catch { /* Older shares use the app's document name. */ }
+        return jsonResponse({ ...await answer.json() as object, ...(typeof title === 'string' ? { title } : {}) })
+      }
+      if (action === 'content' && method === 'POST') return this.readerContent(await request.json().catch(() => null))
       if (action === 'init' && method === 'POST') return this.init(await request.json().catch(() => null))
       if (action === 'page' && method === 'GET') return this.readPage()
       if (action === 'page/read' && method === 'GET') return this.readPage(true)
-      if (action === 'page' && method === 'PUT') return this.publish(new Uint8Array(await request.arrayBuffer()))
+      if (action === 'page' && method === 'PUT') return await this.publish(new Uint8Array(await request.arrayBuffer()))
       if (imageName !== undefined && method === 'GET') return this.readImage(imageName)
       if (imageName !== undefined && method === 'PUT') return await this.storeImage(imageName, new Uint8Array(await request.arrayBuffer()))
       if (action === 'images/staged' && method === 'DELETE') return this.deleteStaged()
       if ((action === 'off' || action === 'on') && method === 'POST') return this.setStatus(action)
+      if (action === 'settings' && method === 'POST') return this.setSettings(await request.json().catch(() => null))
+      if (action === 'notes/visible' && method === 'POST') return this.readerNotes(await request.json().catch(() => null), true)
       if (action === 'status' && method === 'GET') return this.status()
       if (action === 'notes' && method === 'POST') return await this.postNote(await request.json().catch(() => null))
       if (action === 'notes/mine' && method === 'POST') return this.readerNotes(await request.json().catch(() => null))
-      if (action === 'notes/waiting' && method === 'GET') return this.waitingNotes()
-      if (action === 'notes/collected' && method === 'POST') return this.markCollected(await request.json().catch(() => null))
-      if (action === 'notes/clear' && method === 'POST') return this.clearNotes(await request.json().catch(() => null))
+      if (action === 'notes/waiting' && method === 'GET') return this.noteState.waitingNotes()
+      if (action === 'notes/collected' && method === 'POST') return this.noteState.markCollected(await request.json().catch(() => null))
+      if (action === 'notes/clear' && method === 'POST') return this.noteState.clearNotes(await request.json().catch(() => null))
       if (action === 'notes/raise' && method === 'POST') return this.raiseLimit()
-      if (action === 'notes/outcomes' && method === 'POST') return this.recordOutcomes(await request.json().catch(() => null))
+      if (action === 'notes/outcomes' && method === 'POST') return this.noteState.recordOutcomes(await request.json().catch(() => null), request.headers.get('x-sharing-computer'))
     } catch (error) {
       if (error instanceof ShareProtocolError) return errorResponse(error.code, error.message, 400)
-      if (error instanceof NoteProtocolError) return errorResponse(error.code, error.message, 400)
+      if (error instanceof NoteProtocolError) return errorResponse(error.code, error.message, error.code === 'reply_unavailable' ? 403 : 400)
       throw error
     }
     return errorResponse('not_found', 'Share route not found.', 404)
@@ -297,6 +281,8 @@ export class SharedPiece {
     if (!row || row.status !== 'on' || row.published_at === null) return new Response(null, { status: 404 })
     const chunks = [...this.sql.exec<{ text: string }>('SELECT text FROM page_chunks ORDER BY idx')]
     if (chunks.length === 0) return new Response(null, { status: 404 })
+    this.ensureNotesSchema()
+    const shell = !this.people.plainLink()
     if (opening) {
       // Not wrapped in transactionSync: from the read above to this update
       // nothing awaits, and a Durable Object runs one request's synchronous code to the end before the
@@ -305,7 +291,7 @@ export class SharedPiece {
       this.ensureNotesSchema()
       this.sql.exec('UPDATE share SET opened = opened + 1 WHERE id = 1')
     }
-    return new Response(chunks.map((chunk) => chunk.text).join(''), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+    return new Response(shell ? renderReaderShell() : chunks.map((chunk) => chunk.text).join(''), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
   }
 
   private readImage(name: string): Response {
@@ -358,17 +344,57 @@ export class SharedPiece {
     return jsonResponse({ stored: name, already: false })
   }
 
-  private publish(bytes: Uint8Array): Response {
+  private async publish(bytes: Uint8Array): Promise<Response> {
     let value: unknown
     try {
-      value = JSON.parse(new TextDecoder().decode(bytes))
+      // fatal: invalid UTF-8 is refused, never expanded into replacement characters past the byte cap.
+      value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
     } catch {
       return errorResponse('invalid_publish', 'The publish body is not JSON.', 400)
     }
     const body = parsePublishBody(value)
+    // Hashing yields. Capture its base first, then re-read the row after the await; no storage
+    // mutation is allowed on a merge made against an intervening publish or turn-off.
+    const mergeBase = this.row()
+    this.sql.exec('CREATE TABLE IF NOT EXISTS publish_source_chunks (idx INTEGER PRIMARY KEY, text TEXT NOT NULL)')
+    const priorText = [...this.sql.exec<{ text: string }>('SELECT text FROM publish_source_chunks ORDER BY idx')].map((r) => r.text).join('')
+    const previous = priorText ? JSON.parse(priorText) as PublishBody : null
+    if (hasOlderFolioStructure(body, previous)) return errorResponse('older_folio_structure', 'Another Mac has a newer Folio order.', 409)
+    // Add only the merge's size delta to the raw request size, so parser defaults and
+    // normalisation do not change the byte measure used at the entry Worker.
+    const parsedBytes = new TextEncoder().encode(JSON.stringify(body)).byteLength
+    const skippedParts = retainNewerFolioParts(body, previous)
+    // Raw bytes are decoded with fatal UTF-8 above, so they cannot under-count what is stored
+    // except by the parser's small fixed defaults.
+    const mergedBytes = bytes.byteLength + new TextEncoder().encode(JSON.stringify(body)).byteLength - parsedBytes
+    if (body.parts.length > SHARE_LIMITS.folioParts) return errorResponse('folio_too_many_parts', `A Folio is published with at most ${SHARE_LIMITS.folioParts} parts.`, 413, { limit: SHARE_LIMITS.folioParts, count: body.parts.length })
+    if (mergedBytes > SHARE_LIMITS.publishBodyBytes) return errorResponse('body_too_large', `The text may be at most ${SHARE_LIMITS.publishBodyBytes} bytes.`, 413, { limit: SHARE_LIMITS.publishBodyBytes })
+    if (body.images.length > SHARE_LIMITS.shareImages) return errorResponse('share_images_full', 'The merged Folio has too many images. Nothing was published.', 413, { limit: SHARE_LIMITS.shareImages, count: body.images.length })
+    if (skippedParts.length) body.sourceHash = await sha256Hex(new TextEncoder().encode(publishedContent(body)))
     const row = this.row()
     if (!row) return errorResponse('unknown_share', 'This share does not exist.', 404)
     if (row.status !== 'on') return errorResponse('share_off', 'This link is turned off. Turn it on before publishing.', 409)
+    if (skippedParts.length && row.revision !== mergeBase?.revision) return errorResponse('revision_conflict', 'The published copy changed during this publish.', 409, { revision: row.revision })
+    const sourceHash = this.ownerState.hash()
+    if (body.sourceHash && body.sourceHash === sourceHash && row.published_at !== null) return jsonResponse({ revision: row.revision, publishedAt: row.published_at, savedAt: row.saved_at, sourceHash, skippedParts, unchanged: true })
+    // An old copy has no source receipt. Exact equality with its rendered page and published
+    // picture set proves adoption without republishing text or advancing its revision.
+    if (body.sourceHash && !sourceHash && body.baseRevision === row.revision && row.published_at !== null && row.saved_at !== null) {
+      const baseline = { ...body, revision: row.revision, savedAt: row.saved_at, comments: row.comments === 1 }
+      const heldPage = [...this.sql.exec<{ text: string }>('SELECT text FROM page_chunks ORDER BY idx')].map((r) => r.text).join('')
+      const heldPictures = [...this.sql.exec<{ name: string }>('SELECT name FROM images WHERE published = 1 ORDER BY name')].map((r) => r.name)
+      if (renderReaderPage(baseline) === heldPage && JSON.stringify([...body.images].sort()) === JSON.stringify(heldPictures)) {
+        this.state.storage.transactionSync(() => {
+          this.keepPublishedSource(baseline)
+          this.ownerState.published(body.sourceHash!, body.folioState)
+        })
+        return jsonResponse({ revision: row.revision, publishedAt: row.published_at, savedAt: row.saved_at, unchanged: true })
+      }
+    }
+
+    if (body.baseRevision !== undefined && (body.baseRevision !== row.revision || row.saved_at !== null && body.savedAt < row.saved_at && (body.kind !== 'folio' || body.structureSavedAt === undefined))) {
+      return errorResponse('revision_conflict', 'The published copy changed, or this source is older.', 409, { revision: row.revision, sourceHash, savedAt: row.saved_at })
+    }
     if (body.revision !== row.revision + 1) {
       return errorResponse('revision_conflict', `The next revision is ${row.revision + 1}.`, 409, { revision: row.revision })
     }
@@ -378,18 +404,21 @@ export class SharedPiece {
     if (missing.length > 0) {
       return errorResponse('missing_images', 'Send these images first; nothing was published.', 409, { missing })
     }
-    // The count of named images is checked by parsePublishBody; their bytes only here.
+    // Recheck the merged image set, including images retained from another Mac.
     const namedBytes = body.images.reduce((sum, name) => sum + (sizes.get(name) ?? 0), 0)
     if (namedBytes > SHARE_LIMITS.shareImageBytes) {
       return errorResponse('share_images_full', `A published copy's images may come to at most ${SHARE_LIMITS.shareImageBytes} bytes; these come to ${namedBytes}. Nothing was published.`, 413,
         { limit: SHARE_LIMITS.shareImageBytes, size: namedBytes })
     }
+    if (body.baseRevision !== undefined && row.revision > 0) body.comments = row.comments === 1
     const html = renderReaderPage(body)
     const publishedAt = Date.now()
     const keep = new Set(body.images)
     this.state.storage.transactionSync(() => {
       this.ensureNotesSchema()
       this.sql.exec('UPDATE share SET comments = ? WHERE id = 1', body.comments ? 1 : 0)
+      if (body.notes !== undefined) this.sql.exec('UPDATE share SET comments_mode = ? WHERE id = 1', body.notes)
+      this.keepPublishedSource(body)
       this.sql.exec('DELETE FROM page_chunks')
       splitOnCodePoints(html, PAGE_CHUNK_UNITS).forEach((chunk, index) => {
         this.sql.exec('INSERT INTO page_chunks (idx, text) VALUES (?, ?)', index, chunk)
@@ -403,8 +432,15 @@ export class SharedPiece {
         }
       }
       this.sql.exec('UPDATE share SET revision = ?, published_at = ?, saved_at = ? WHERE id = 1', body.revision, publishedAt, body.savedAt)
+      this.ownerState.published(body.sourceHash ?? null, body.folioState)
     })
-    return jsonResponse({ revision: body.revision, publishedAt })
+    return jsonResponse({ revision: body.revision, publishedAt, savedAt: body.savedAt, sourceHash: body.sourceHash, skippedParts })
+  }
+
+  private keepPublishedSource(body: PublishBody): void {
+    this.sql.exec('CREATE TABLE IF NOT EXISTS publish_source_chunks (idx INTEGER PRIMARY KEY, text TEXT NOT NULL)')
+    this.sql.exec('DELETE FROM publish_source_chunks')
+    splitOnCodePoints(JSON.stringify(body), PAGE_CHUNK_UNITS).forEach((text, idx) => this.sql.exec('INSERT INTO publish_source_chunks (idx, text) VALUES (?, ?)', idx, text))
   }
 
   private setStatus(status: 'on' | 'off'): Response {
@@ -414,6 +450,8 @@ export class SharedPiece {
       if (status === 'off') {
         // Removal: the published copy and its images are deleted.
         this.sql.exec('DELETE FROM page_chunks')
+        this.sql.exec('CREATE TABLE IF NOT EXISTS publish_source_chunks (idx INTEGER PRIMARY KEY, text TEXT NOT NULL)')
+        this.sql.exec('DELETE FROM publish_source_chunks')
         this.sql.exec('DELETE FROM image_chunks')
         this.sql.exec('DELETE FROM images')
         this.sql.exec("UPDATE share SET status = 'off', published_at = NULL WHERE id = 1")
@@ -421,6 +459,7 @@ export class SharedPiece {
         this.sql.exec("UPDATE share SET status = 'on' WHERE id = 1")
       }
     })
+    this.ownerState.touch()
     return jsonResponse({ status, revision: row.revision })
   }
 
@@ -438,6 +477,30 @@ export class SharedPiece {
     return jsonResponse({ deleted: names.length })
   }
 
+  private setSettings(value: unknown): Response {
+    if (!this.row()) return new Response(null, { status: 404 })
+    const settings = value as { notes?: unknown; comments?: unknown } | null
+    if (!settings || !Object.hasOwn(settings, 'notes') && !Object.hasOwn(settings, 'comments') || settings.comments !== undefined && typeof settings.comments !== 'boolean') return errorResponse('invalid_settings', 'Choose a comments setting.', 400)
+    this.ensureNotesSchema()
+    if (Object.hasOwn(settings, 'notes')) this.sql.exec('UPDATE share SET comments_mode = ? WHERE id = 1', parseCommentsMode(settings.notes))
+    if (typeof settings.comments === 'boolean') {
+      let source: string | null = null
+      try { source = [...this.sql.exec<{ text: string }>('SELECT text FROM publish_source_chunks ORDER BY idx')].map((r) => r.text).join('') || null } catch { /* build 14 copy: first new-client publish seeds its structured source */ }
+      if (!source && this.row()!.published_at !== null) return errorResponse('publish_required', 'Publish this link once from its original Mac before changing comments.', 409)
+      this.state.storage.transactionSync(() => {
+        this.sql.exec('UPDATE share SET comments = ? WHERE id = 1', settings.comments ? 1 : 0)
+        if (source) {
+          const body = parsePublishBody(JSON.parse(source))
+          body.comments = settings.comments === true
+          this.sql.exec('DELETE FROM page_chunks')
+          splitOnCodePoints(renderReaderPage(body), PAGE_CHUNK_UNITS).forEach((text, idx) => this.sql.exec('INSERT INTO page_chunks (idx, text) VALUES (?, ?)', idx, text))
+        }
+      })
+    }
+    this.ownerState.touch()
+    return jsonResponse({ notes: commentsMode(this.row()!.comments_mode), comments: this.row()!.comments === 1, hasPrivateComments: this.count("SELECT COUNT(*) AS n FROM notes WHERE visibility = 'private'") > 0 })
+  }
+
   private status(): Response {
     const row = this.row()
     if (!row) return errorResponse('unknown_share', 'This share does not exist.', 404)
@@ -451,11 +514,16 @@ export class SharedPiece {
       revision: row.revision,
       publishedAt: row.published_at,
       savedAt: row.saved_at,
+      sourceHash: this.ownerState.hash(),
+      changedAt: this.ownerState.changedAt(),
+      ...(this.ownerState.record()?.kind === 'folio' ? { folioState: { partKeys: this.ownerState.record()!.partKeys, parts: this.ownerState.record()!.parts } } : {}),
       images: held?.count ?? 0,
       imageBytes: held?.total ?? 0,
       staged: staged?.count ?? 0,
       stagedBytes: staged?.total ?? 0,
       comments: row.comments === 1,
+      commentsMode: commentsMode(row.comments_mode),
+      hasPrivateComments: this.count("SELECT COUNT(*) AS n FROM notes WHERE visibility = 'private'") > 0,
       notes: { waiting: notes?.waiting ?? 0, total: notes?.total ?? 0 },
       refused: this.refusals(),
       opened: this.row()?.opened ?? 0,
@@ -486,6 +554,8 @@ export class SharedPiece {
     if (!noteColumns.includes('outcome_at')) this.sql.exec('ALTER TABLE notes ADD COLUMN outcome_at INTEGER')
     this.sql.exec(`CREATE TABLE IF NOT EXISTS note_replies (note_seq INTEGER NOT NULL, id TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL, received_at INTEGER NOT NULL,
       PRIMARY KEY (note_seq, id))`)
+    ensureOpenCommentsSchema(this.sql)
+    ensurePeopleSchema(this.sql)
     this.sql.exec('CREATE INDEX IF NOT EXISTS notes_by_reader ON notes (reader_key, received_at)')
     this.sql.exec('CREATE INDEX IF NOT EXISTS notes_by_time ON notes (received_at)')
     this.sql.exec('CREATE INDEX IF NOT EXISTS notes_waiting ON notes (collected_at, seq)')
@@ -512,6 +582,30 @@ export class SharedPiece {
     if (!row || row.status !== 'on' || row.published_at === null) return null
     this.ensureNotesSchema()
     return row
+  }
+
+  private async readerIdentity(value: unknown): Promise<{ person: PersonLease | null } | null> {
+    const row = this.readable()
+    if (!row) return null
+    if (value && typeof value === 'object' && Object.hasOwn(value, 'person')) {
+      const person = await this.people.resolve(row.share_id, (value as { person: unknown }).person, await signingKey(this.env))
+      return person && this.readerAllowed(person) ? { person } : null
+    }
+    return this.people.plainLink() ? { person: null } : null
+  }
+
+  private readerAllowed(person: PersonLease | null): boolean {
+    return !!this.readable() && (person ? this.people.current(person) : this.people.plainLink())
+  }
+
+  private async readerContent(value: unknown): Promise<Response> {
+    const identity = await this.readerIdentity(value)
+    if (!identity || !this.readerAllowed(identity.person)) return new Response(null, { status: 404 })
+    const row = this.row()!
+    const html = [...this.sql.exec<{ text: string }>('SELECT text FROM page_chunks ORDER BY idx')].map(c => c.text).join('')
+    if (!html) return new Response(null, { status: 404 })
+    if (identity.person && row.comments !== 1) this.people.opened(identity.person, (value as { loadId?: unknown })?.loadId)
+    return jsonResponse({ html, ...(identity.person ? { openingRecorded: row.comments !== 1 } : {}), ...(identity.person ? { person: { name: identity.person.name } } : {}) })
   }
 
   private count(query: string, ...bindings: unknown[]): number {
@@ -663,7 +757,11 @@ export class SharedPiece {
   }
 
   private async postNote(value: unknown): Promise<Response> {
+    const identity = await this.readerIdentity(value)
+    if (!identity) return new Response(null, { status: 404 })
+    const person = identity.person
     const body = value as { readerKey?: unknown; network?: unknown; note?: PostedNote } | null
+    if (person && body) { body.readerKey = person.readerKey; if (body.note) body.note = { ...parsePostedNote({ ...body.note, name: 'Personal reader' }), name: person.name } }
     if (typeof body?.readerKey !== 'string' || !READER_KEY.test(body.readerKey) || typeof body.network !== 'string' || !NETWORK.test(body.network) || !body.note) {
       return errorResponse('invalid_note', 'A comment needs a reader, a network and a comment.', 400)
     }
@@ -685,7 +783,7 @@ export class SharedPiece {
     // From here until the note's place is held, nothing is awaited.
     let now = Date.now()
     const row = this.readable()
-    if (!row) return new Response(null, { status: 404 })
+    if (!row || !this.readerAllowed(person)) return new Response(null, { status: 404 })
     const already = this.existing(readerKey, note.id)
     // The same note sent again (a retry after a lost answer) arrives once.
     if (already) return jsonResponse({ note: readerView(already), already: true })
@@ -693,6 +791,8 @@ export class SharedPiece {
       this.refuse('comments_off', now)
       return errorResponse('comments_off', COMMENTS_OFF_MESSAGE, 403)
     }
+    if (note.replyTo) replyTarget(this.sql, row.comments_mode, note.replyTo)
+    const visibility = note.visibility === 'open' && row.comments_mode === 'open' ? 'open' : 'private'
     const newReader = this.isNewReader(readerKey)
     const over = this.overLimit(readerKey, win, newReader, now) ?? (this.serviceFullUntil > now ? 'service_rate' : null)
     if (over) {
@@ -709,6 +809,8 @@ export class SharedPiece {
       // The service-wide room, asked for only once this share's own limits have passed and the
       // note's place is held. While it is asked the link or comments may be turned off.
       const answer = await takeNoteBudget(this.env)
+      if (typeof answer === 'object') grant = answer
+      if (!this.readerAllowed(person)) return new Response(null, { status: 404 })
       if (answer === 'unavailable') {
         // No answer is not a "no": no pause, no refusal counted; the page keeps the note and sends it again.
         return errorResponse('notes_unavailable', 'Comments cannot be taken just now. Your comment is kept and sent again.', 503)
@@ -727,16 +829,20 @@ export class SharedPiece {
       for (let tries = 0; win.hour !== Math.floor(Date.now() / HOUR) && tries < 3; tries += 1) win = await this.networkWindow(network, Date.now())
       now = Date.now()
       const again = this.readable()
-      if (!again) return new Response(null, { status: 404 })
+      if (!again || !this.readerAllowed(person)) return new Response(null, { status: 404 })
       if (again.comments !== 1) {
         this.refuse('comments_off', now)
         return errorResponse('comments_off', COMMENTS_OFF_MESSAGE, 403)
       }
       const live = [...this.sql.exec('SELECT hour FROM network_key WHERE hour = ? AND hour >= ?', win.hour, Math.floor(now / HOUR) - 1)].length > 0
-      const a = note.anchor
+      const target = note.replyTo ? replyTarget(this.sql, again.comments_mode, note.replyTo) : null
+      const a = (target?.anchor ?? note.anchor) as NoteAnchor
+      // An in-flight open comment becomes private if the owner closed the link meanwhile.
+      const writtenVisibility = visibility === 'open' && again.comments_mode === 'open' ? 'open' : 'private'
       this.state.storage.transactionSync(() => {
-        this.sql.exec(`INSERT INTO notes (${NOTE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-          readerKey, note.id, note.kind, note.name, note.text, a.quote, a.before, a.after, a.block, a.start, a.end, note.writtenAt, note.revision, now)
+        this.sql.exec(`INSERT INTO notes (${NOTE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+          readerKey, note.id, note.kind, note.name, note.text, a.quote, a.before, a.after, a.block, a.start, a.end, note.writtenAt, note.revision, now,
+          writtenVisibility, writtenVisibility === 'open' ? crypto.randomUUID().replace(/-/g, '') : null, target?.root ?? null, target ? JSON.stringify(target.parent) : null, person?.id ?? null)
         if (live) {
           this.sql.exec('INSERT INTO network_minute (hour, network, minute, notes, readers) VALUES (?, ?, ?, 1, ?) ON CONFLICT(hour, network, minute) DO UPDATE SET notes = notes + 1, readers = readers + excluded.readers',
             win.hour, win.current, Math.floor(now / MINUTE), newReader ? 1 : 0)
@@ -753,132 +859,51 @@ export class SharedPiece {
     }
   }
 
-  /** One reader's own notes, found by the digest of their secret. Never anyone else's. */
-  private readerNotes(value: unknown): Response {
+  /** The SQL predicate controls notes and their author replies together; mine remains compatible. */
+  private async readerNotes(value: unknown, visible = false): Promise<Response> {
+    const identity = await this.readerIdentity(value)
+    if (!identity || !this.readerAllowed(identity.person)) return new Response(null, { status: 404 })
+    const person = identity.person
+    if (person && value && typeof value === 'object') (value as { readerKey: string }).readerKey = person.readerKey
+    if (visible && person) this.people.opened(person, (value as { loadId?: unknown })?.loadId)
     const body = value as { readerKey?: unknown } | null
     if (typeof body?.readerKey !== 'string' || !READER_KEY.test(body.readerKey)) return errorResponse('invalid_note', 'A reader is needed.', 400)
-    if (!this.readable()) return new Response(null, { status: 404 })
-    const rows = [...this.sql.exec<NoteRow & { seq: number }>(`SELECT ${NOTE_READ}, seq FROM notes WHERE reader_key = ? ORDER BY seq LIMIT ?`, body.readerKey, NOTE_LIMITS.readerTotal)]
-    // The author's replies on these notes only: joined on this reader's digest, never another's.
+    const share = this.readable()
+    if (!share) return new Response(null, { status: 404 })
+    const open = visible && share.comments_mode === 'open'
+    // One bounded selection is shared by the notes and owner-reply reads. Roots are added only
+    // for children in this selection, and only while the link still exposes open comments.
+    const selection = `WITH own AS (
+        SELECT seq FROM notes WHERE reader_key = ? ORDER BY seq LIMIT ${NOTE_LIMITS.readerTotal}
+      ), others AS (
+        SELECT seq FROM notes WHERE ${openCommentPredicate()} AND reader_key != ? AND ?
+        ORDER BY seq DESC LIMIT ${OPEN_COMMENTS_LIMIT + 1}
+      ), selected AS (
+        SELECT seq FROM own UNION ALL SELECT seq FROM (SELECT seq FROM others ORDER BY seq DESC LIMIT ${OPEN_COMMENTS_LIMIT})
+      ), visible AS (
+        SELECT seq FROM selected UNION
+        SELECT seq FROM notes WHERE ? AND ${openCommentPredicate()}
+          AND public_id IN (SELECT parent_id FROM notes WHERE seq IN (SELECT seq FROM selected))
+      )`
+    const bindings = [body.readerKey, body.readerKey, open ? 1 : 0, open ? 1 : 0]
+    const rows = [...this.sql.exec<NoteRow & { seq: number; more: number }>(`${selection}
+      SELECT ${NOTE_READ}, seq, (SELECT COUNT(*) > ${OPEN_COMMENTS_LIMIT} FROM others) AS more
+      FROM notes WHERE seq IN (SELECT seq FROM visible) ORDER BY seq`, ...bindings)]
+    const more = rows[0]?.more === 1
     const replies = new Map<number, ReplyView[]>()
-    for (const reply of this.sql.exec<{ note_seq: number; id: string; text: string; at: number }>(
-      'SELECT r.note_seq, r.id, r.text, r.at FROM note_replies r JOIN notes n ON n.seq = r.note_seq WHERE n.reader_key = ? ORDER BY r.at, r.received_at, r.id', body.readerKey,
-    )) replies.set(reply.note_seq, [...(replies.get(reply.note_seq) ?? []), { id: reply.id, text: reply.text, at: reply.at }])
-    return jsonResponse({ notes: rows.map((row) => readerView(row, replies.get(row.seq) ?? [])) })
-  }
-
-  /** For the author's app: notes not collected yet, oldest first, and what was refused. */
-  private waitingNotes(): Response {
-    if (!this.row()) return errorResponse('unknown_share', 'This share does not exist.', 404)
-    this.ensureNotesSchema()
-    const rows = [...this.sql.exec<NoteRow>(`SELECT ${NOTE_READ} FROM notes WHERE collected_at IS NULL ORDER BY seq LIMIT ?`, NOTE_LIMITS.collectBatch + 1)]
-    return jsonResponse({ notes: rows.slice(0, NOTE_LIMITS.collectBatch).map(ownerView), more: rows.length > NOTE_LIMITS.collectBatch, refused: this.refusals(), limits: this.shareLimits() })
-  }
-
-  /** For the author's app: mark notes collected. Saying so twice changes nothing. */
-  private markCollected(value: unknown): Response {
-    if (!this.row()) return errorResponse('unknown_share', 'This share does not exist.', 404)
-    this.ensureNotesSchema()
-    const keys = (value as { keys?: unknown } | null)?.keys
-    if (!Array.isArray(keys) || keys.length > NOTE_LIMITS.collectBatch || keys.some((key) => typeof key !== 'string' || key.length > 100)) {
-      return errorResponse('invalid_collect', `keys must be a list of at most ${NOTE_LIMITS.collectBatch} note keys.`, 400)
+    // Select ids in SQL: binding every displayed id would exceed Cloudflare's 100-parameter limit.
+    for (const reply of rows.length === 0 ? [] : this.sql.exec<{ note_seq: number; id: string; text: string; at: number }>(
+      `${selection} SELECT r.note_seq, r.id, r.text, r.at FROM note_replies r JOIN notes n ON n.seq = r.note_seq
+        WHERE r.note_seq IN (SELECT seq FROM visible) AND (n.reader_key = ? OR r.visibility = 'open')
+        ORDER BY r.at, r.received_at, r.id LIMIT ?`, ...bindings, body.readerKey, rows.length * OUTCOME_LIMITS.repliesPerNote,
+    )) {
+      const thread = replies.get(reply.note_seq) ?? []
+      thread.push({ id: reply.id, text: reply.text, at: reply.at })
+      replies.set(reply.note_seq, thread)
     }
-    const now = Date.now()
-    const collected: string[] = []
-    const already: string[] = []
-    const unknown: string[] = []
-    this.state.storage.transactionSync(() => {
-      for (const key of new Set(keys as string[])) {
-        const [readerId, id, extra] = key.split('.')
-        const row = readerId && id && extra === undefined && readerId.length === READER_ID_CHARS
-          ? [...this.sql.exec<{ seq: number; collected_at: number | null }>('SELECT seq, collected_at FROM notes WHERE substr(reader_key, 1, ?) = ? AND id = ?', READER_ID_CHARS, readerId, id)][0]
-          : undefined
-        if (!row) { unknown.push(key); continue }
-        if (row.collected_at !== null) { already.push(key); continue }
-        this.sql.exec('UPDATE notes SET collected_at = ? WHERE seq = ?', now, row.seq)
-        collected.push(key)
-      }
-    })
-    return jsonResponse({ collected, already, unknown })
-  }
-  /**
-   * For the author's app, Clear handled notes (the Limits panel): delete the notes named
-   * that the app has collected. A note not collected yet is never deleted (it is not in the app yet);
-   * it is listed as `waiting`. Deleting makes room under the share's and the readers' limits; the
-   * reader no longer sees a deleted note on the page. Saying so twice changes nothing.
-   */
-  private clearNotes(value: unknown): Response {
-    if (!this.row()) return errorResponse('unknown_share', 'This share does not exist.', 404)
-    this.ensureNotesSchema()
-    const keys = (value as { keys?: unknown } | null)?.keys
-    if (!Array.isArray(keys) || keys.length > NOTE_LIMITS.collectBatch || keys.some((key) => typeof key !== 'string' || key.length > 100)) {
-      return errorResponse('invalid_clear', `keys must be a list of at most ${NOTE_LIMITS.collectBatch} note keys.`, 400)
-    }
-    const cleared: string[] = []
-    const waiting: string[] = []
-    const unknown: string[] = []
-    this.state.storage.transactionSync(() => {
-      for (const key of new Set(keys as string[])) {
-        const [readerId, id, extra] = key.split('.')
-        const row = readerId && id && extra === undefined && readerId.length === READER_ID_CHARS
-          ? [...this.sql.exec<{ seq: number; collected_at: number | null }>('SELECT seq, collected_at FROM notes WHERE substr(reader_key, 1, ?) = ? AND id = ?', READER_ID_CHARS, readerId, id)][0]
-          : undefined
-        if (!row) { unknown.push(key); continue }
-        if (row.collected_at === null) { waiting.push(key); continue }
-        this.sql.exec('DELETE FROM note_replies WHERE note_seq = ?', row.seq)
-        this.sql.exec('DELETE FROM notes WHERE seq = ?', row.seq)
-        cleared.push(key)
-      }
-    })
-    return jsonResponse({ cleared, waiting, unknown })
-  }
-
-  /**
-   * For the author's app (hearing back): the outcome of each note named, and the author's
-   * replies on it. Only a collected note takes them (`waiting` otherwise: the app has not got it yet);
-   * a note not here (cleared, or never) is `unknown`. The outcome is set as sent, so a decision taken
-   * back (null) makes the note open again. A reply id already kept is kept once; a note with
-   * OUTCOME_LIMITS.repliesPerNote replies takes no new one and is listed in `full` (its outcome is still
-   * recorded). `replies` answers for each reply sent on a recorded note: `kept` (stored now), `already`
-   * (stored before) or `full` (refused for the limit, never stored), so the app marks sent only what
-   * is held. Saying the same thing twice changes nothing.
-   */
-  private recordOutcomes(value: unknown): Response {
-    if (!this.row()) return errorResponse('unknown_share', 'This share does not exist.', 404)
-    this.ensureNotesSchema()
-    const outcomes = parseOutcomes(value)
-    const recorded: string[] = []
-    const waiting: string[] = []
-    const unknown: string[] = []
-    const full: string[] = []
-    const replies: Array<{ key: string; kept: string[]; already: string[]; full: string[] }> = []
-    const now = Date.now()
-    this.state.storage.transactionSync(() => {
-      for (const item of outcomes) {
-        const [readerId, id] = item.key.split('.')
-        const row = [...this.sql.exec<{ seq: number; collected_at: number | null; outcome: string | null; outcome_at: number | null }>(
-          'SELECT seq, collected_at, outcome, outcome_at FROM notes WHERE substr(reader_key, 1, ?) = ? AND id = ?', READER_ID_CHARS, readerId, id,
-        )][0]
-        if (!row) { unknown.push(item.key); continue }
-        if (row.collected_at === null) { waiting.push(item.key); continue }
-        if (row.outcome !== item.outcome || (item.outcome !== null && row.outcome_at !== item.at)) {
-          this.sql.exec('UPDATE notes SET outcome = ?, outcome_at = ? WHERE seq = ?', item.outcome, item.outcome === null ? null : item.at, row.seq)
-        }
-        let kept = this.count('SELECT COUNT(*) AS n FROM note_replies WHERE note_seq = ?', row.seq)
-        const answer = { key: item.key, kept: [] as string[], already: [] as string[], full: [] as string[] }
-        for (const reply of item.replies) {
-          if (this.count('SELECT COUNT(*) AS n FROM note_replies WHERE note_seq = ? AND id = ?', row.seq, reply.id) > 0) { answer.already.push(reply.id); continue }
-          if (kept >= OUTCOME_LIMITS.repliesPerNote) { answer.full.push(reply.id); continue }
-          this.sql.exec('INSERT INTO note_replies (note_seq, id, text, at, received_at) VALUES (?, ?, ?, ?, ?)', row.seq, reply.id, reply.text, reply.at, now)
-          answer.kept.push(reply.id)
-          kept += 1
-        }
-        if (answer.full.length > 0) full.push(item.key)
-        if (item.replies.length > 0) replies.push(answer)
-        recorded.push(item.key)
-      }
-    })
-    return jsonResponse({ recorded, waiting, unknown, full, replies })
+    return jsonResponse({ ...(person ? { person: { name: person.name } } : {}), ...(visible ? { mode: commentsMode(share.comments_mode), more, revision: share.revision } : {}), notes: rows.map((row) => ({
+      ...readerView(row, replies.get(row.seq) ?? []), ...(visible ? { mine: row.reader_key === body.readerKey } : {}),
+    })) })
   }
 
   /**

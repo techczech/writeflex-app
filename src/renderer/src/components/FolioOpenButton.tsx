@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { BookOpen, ChevronDown } from 'lucide-react'
+import { ArrowLeft, BookOpen, ChevronDown } from 'lucide-react'
 import type { Folio, Plan } from '../../../preload'
+import { folioRoomEscapeGoesBack } from './BackControl'
 
 /** One running-order part the Folio can open at: a file on disk, with the title the Plan shows. */
 export type FolioOpenPart = { path: string; title: string }
@@ -43,8 +44,9 @@ const isEditableTarget = (target: EventTarget | null): boolean => {
  * The big primary Open Folio button on a Folio's page, with an attached Open at… menu of every part.
  * ⌘↩ presses the main button while the page is up (the page is a full overlay, so no editor chord competes).
  */
-export function FolioOpenButton({ parts, onOpen, returnPath }: { parts: readonly FolioOpenPart[]; returnPath?: string | null; onOpen: (path: string) => void }): JSX.Element | null {
+export function FolioOpenButton({ parts, onOpen, returnPath, roomEscape }: { parts: readonly FolioOpenPart[]; returnPath?: string | null; onOpen: (path: string) => void; roomEscape?: () => boolean }): JSX.Element | null {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [menuAt, setMenuAt] = useState<{ left: number; top: number } | null>(null)
   const root = useRef<HTMLDivElement>(null)
   const caret = useRef<HTMLButtonElement>(null)
   const first = returnPath && parts.some(part => part.path === returnPath) ? returnPath : folioOpenTarget(parts)
@@ -63,8 +65,26 @@ export function FolioOpenButton({ parts, onOpen, returnPath }: { parts: readonly
     return () => window.removeEventListener('keydown', onKey)
   }, [first, onOpen])
 
+  // In the room the main button is the Back control (R10): Esc goes where it goes once the room's own Esc steps decline (Sol S6).
+  // Registered on the window after the room's handlers have seen the key, so a step that took it has marked it handled.
+  useEffect(() => {
+    if (first === null || returnPath === undefined) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (!folioRoomEscapeGoesBack(event)) return
+      event.preventDefault()
+      // The room's own steps (Split, a selection) take the Esc first, even with the focus outside their lists.
+      if (roomEscape?.()) return
+      onOpen(first)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [first, onOpen, returnPath, roomEscape])
+
   useEffect(() => {
     if (!menuOpen) return
+    const box = root.current?.getBoundingClientRect()
+    // Fixed, so a bar that scrolls sideways (Manage Folio at a narrow width) never clips the menu.
+    if (box) setMenuAt({ left: box.left, top: box.bottom + 4 })
     root.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
     const onPointer = (event: PointerEvent): void => { if (!root.current?.contains(event.target as Node)) setMenuOpen(false) }
     window.addEventListener('pointerdown', onPointer)
@@ -90,8 +110,8 @@ export function FolioOpenButton({ parts, onOpen, returnPath }: { parts: readonly
   return (
     <div className="folio-open" ref={root}>
       <div className="folio-open-split">
-        <button type="button" className="folio-open-main" onClick={() => onOpen(first)} aria-keyshortcuts="Meta+Enter" title="Open the Folio at its first part and show its outline (⌘↩)">
-          <BookOpen className="icon" aria-hidden="true" />{returnPath === undefined ? 'Open Folio' : 'Return to text'}<kbd>⌘↩</kbd>
+        <button type="button" className="folio-open-main" onClick={() => onOpen(first)} aria-keyshortcuts="Meta+Enter" title={returnPath === undefined ? 'Open the Folio at its first part and show its outline (⌘↩)' : `Back to ${first.split('/').pop() ?? first} (⌘↩, Esc)`}>
+          {returnPath === undefined ? <BookOpen className="icon" aria-hidden="true" /> : <ArrowLeft className="icon" aria-hidden="true" />}{returnPath === undefined ? 'Open Folio' : <span className="back-control-label">Back to {(first.split('/').pop() ?? first)}</span>}<kbd>⌘↩</kbd>
         </button>
         <button
           type="button"
@@ -109,7 +129,7 @@ export function FolioOpenButton({ parts, onOpen, returnPath }: { parts: readonly
         </button>
       </div>
       {menuOpen && (
-        <div className="folio-open-menu" role="menu" aria-label="Open at…" onKeyDown={onMenuKey}>
+        <div className="folio-open-menu" role="menu" aria-label="Open at…" onKeyDown={onMenuKey} style={menuAt ? { position: 'fixed', left: menuAt.left, top: menuAt.top } : undefined}>
           <div className="folio-open-menu-head" aria-hidden="true">Open at…</div>
           {parts.map((part, index) => (
             <button key={`${index}:${part.path}`} type="button" role="menuitem" className="folio-open-item" onClick={() => { setMenuOpen(false); onOpen(part.path) }}>

@@ -12,6 +12,8 @@ export type SaveNamedVersionInput = {
   versions: VersionStore
   agent: WorkspaceAgent
   author: AuthorIdentity
+  /** Set only by a Folio save settling a file (folio-version-save.ts): the per-file version carries the save's id. */
+  folioSave?: string
 }
 
 export type SaveNamedVersionResult = VersionSnapshotResult & {
@@ -87,6 +89,7 @@ export async function saveNamedVersion(input: SaveNamedVersionInput): Promise<Sa
     ...(input.note?.trim() ? { note: input.note.trim() } : {}),
     snapshotId: version.snapshotId,
     versionId: version.versionId,
+    ...(input.folioSave ? { folioSave: input.folioSave } : {}),
   })
   return {
     ...version,

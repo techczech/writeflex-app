@@ -33,7 +33,7 @@ import { scanMarkdownCodeRanges } from './rename-repair'
 import { parseMarkdown } from '../shared/markdown/dialect'
 import { embedLine } from '../shared/markdown/embed-line'
 import { MANIFEST_NAME } from '../shared/folio-constants'
-import { fragmentTitle, isPlaced, unverifiedNote, type ScratchAssetKind, type ScratchExternalRef, type ScratchKind, type ScratchGroup, type ScratchItem, type ScratchSnapshot, type ScratchSourceRef, type ScratchStatus, type ScratchUse } from '../shared/scratchpad-items'
+import { fragmentTitle, isPlaced, unverifiedNote, type ScratchAssetKind, type ScratchExternalRef, type ScratchFromVersion, type ScratchKind, type ScratchGroup, type ScratchItem, type ScratchSnapshot, type ScratchSourceRef, type ScratchStatus, type ScratchUse } from '../shared/scratchpad-items'
 
 const STORE = '.writeflex'
 const INDEX = `${STORE}/scratchpad-index.json`
@@ -72,6 +72,9 @@ type ItemRecord = {
    *  revalidates the pointer in main and copies the checked bytes into this workspace. Records
    *  written before ticket 05 carry no `external` field and read exactly as before. */
   external?: ScratchExternalRef
+  /** Additive (Folio versions ticket 10): the saved Folio version this text was sent from. Filled by main from the version's own
+   *  record; a record without it reads exactly as before. */
+  fromVersion?: ScratchFromVersion
 }
 type LegacyOverlay = { status?: ScratchStatus; group?: string | null; uses?: ScratchUse[] }
 type IndexRecord = { version: 1; groups: ScratchGroup[]; legacy: Record<string, LegacyOverlay> }
@@ -91,7 +94,8 @@ export type ScratchpadStoreOptions = {
   liveHolders?: () => ReadonlySet<string>
 }
 
-export type AddTextInput = { origin: string; markdown: string; how: 'copy'; by: 'writer' | 'agent'; heading?: string | null; group?: string | null }
+/** `group` is an existing group's id. `groupName` names a group to file under that is created, in the same turn as the item, only once everything else about the item has been checked (so a refused item leaves no new group). */
+export type AddTextInput = { origin: string; markdown: string; how: 'copy'; by: 'writer' | 'agent'; heading?: string | null; group?: string | null; groupName?: string; fromVersion?: ScratchFromVersion }
 export type PreparedInsert = { ok: true; markdown: string; rewritten: number } | { ok: false; error: string }
 export type PreparedWidgetPreview = { ok: true; html: string; title: string; markdown: string } | { ok: false; error: string }
 
@@ -239,29 +243,45 @@ export class ScratchpadStore {
 
   async #add(input: AddTextInput & { capturedSpan?: { from: number; to: number; line: number }; sourceRef?: ScratchSourceRef; external?: ScratchExternalRef }, kind: ScratchKind): Promise<ScratchItem> {
     const origin = this.documentPath(input.origin)
+    if (input.fromVersion !== undefined && (kind !== 'text' || !validFromVersion(input.fromVersion))) throw new Error('That version text cannot be kept safely.')
     if (typeof input.markdown !== 'string') throw new Error('Nothing to keep.')
     const bytes = Buffer.from(input.markdown, 'utf8')
     if (bytes.length === 0) throw new Error('Nothing to keep.')
     if (bytes.length > MAX_FRAGMENT_BYTES) throw new Error('This selection is too large for the Scratchpad.')
     const heading = typeof input.heading === 'string' ? input.heading.slice(0, 300) : null
+    // A group NAME is checked here, before any turn is taken; the group itself is made below, after the item's own checks.
+    const groupName = input.groupName === undefined ? null : cleanGroupName(input.groupName)
     return this.#write(async () => {
-      const group = input.group ?? null
+      let group = input.group ?? null
       if (group !== null) {
         const index = await this.#readIndex([])
         if (!index.value.groups.some((g) => g.id === group)) throw new Error('That group is not there any more.')
       }
       const id = `p_${Date.now().toString(36)}${randomBytes(5).toString('hex')}`
+      await writeStoreFile(this.ws.root, payloadName(id), input.markdown, { mode: 'create' })
+      // The group is made only now that the payload is down, and withdrawn again if the record cannot be written.
+      let madeGroup: string | null = null
+      if (group === null && groupName !== null) {
+        const made = await this.#ensureGroup(groupName)
+        group = made.group.id
+        if (made.created) madeGroup = made.group.id
+      }
       const record: ItemRecord = {
         version: 1, id, kind, how: 'copy', by: input.by === 'agent' ? 'agent' : 'writer', createdAt: new Date().toISOString(),
         origin: { path: origin, heading, ...(input.capturedSpan ? { capturedSpan: { from: input.capturedSpan.from, to: input.capturedSpan.to, line: input.capturedSpan.line } } : {}) }, group, status: 'active', done: false, colour: null, uses: [],
         payload: { bytes: bytes.length, sha256: sha256(bytes) },
         ...(input.sourceRef ? { sourceRef: input.sourceRef } : {}),
         ...(input.external ? { external: input.external } : {}),
+        ...(input.fromVersion ? { fromVersion: input.fromVersion } : {}),
       }
-      await writeStoreFile(this.ws.root, payloadName(id), input.markdown, { mode: 'create' })
       // A failed record create leaves the payload intact. Listing reports the orphan or unreadable
       // record; copy Undo and failed creation never physically delete captured text.
-      await writeStoreFile(this.ws.root, recordName(id), `${JSON.stringify(record, null, 2)}\n`, { mode: 'create' })
+      try {
+        await writeStoreFile(this.ws.root, recordName(id), `${JSON.stringify(record, null, 2)}\n`, { mode: 'create' })
+      } catch (error) {
+        if (madeGroup !== null) await this.#dropGroup(madeGroup).catch(() => undefined)
+        throw error
+      }
       return itemOf(record, input.markdown)
     })
   }
@@ -566,8 +586,7 @@ export class ScratchpadStore {
   }
 
   async createGroup(name: string): Promise<ScratchGroup> {
-    const clean = typeof name === 'string' ? name.replace(/\s+/g, ' ').trim() : ''
-    if (clean === '' || clean.length > 60) throw new Error('A group name is 1 to 60 characters.')
+    const clean = cleanGroupName(name)
     return this.#write(async () => {
       const index = await this.#readIndex([])
       const existing = index.value.groups.find((g) => g.name.toLowerCase() === clean.toLowerCase())
@@ -576,6 +595,23 @@ export class ScratchpadStore {
       await this.#writeIndex({ ...index.value, groups: [...index.value.groups, group] }, index.version)
       return group
     })
+  }
+
+  /** The group called `clean` (case-insensitively), made if new. Inside a store turn; reads the index strictly so an unreadable one is never written over. */
+  async #ensureGroup(clean: string): Promise<{ group: ScratchGroup; created: boolean }> {
+    const index = await this.#readIndex([], true)
+    const existing = index.value.groups.find((g) => g.name.toLowerCase() === clean.toLowerCase())
+    if (existing) return { group: existing, created: false }
+    const group = { id: `g_${Date.now().toString(36)}${randomBytes(3).toString('hex')}`, name: clean }
+    await this.#writeIndex({ ...index.value, groups: [...index.value.groups, group] }, index.version)
+    return { group, created: true }
+  }
+
+  /** Take back a group `#ensureGroup` made a moment ago, when the item it was made for could not be written. */
+  async #dropGroup(id: string): Promise<void> {
+    const index = await this.#readIndex([], true)
+    if (!index.value.groups.some((g) => g.id === id)) return
+    await this.#writeIndex({ ...index.value, groups: index.value.groups.filter((g) => g.id !== id) }, index.version)
   }
 
   /** Rename one group in the checked index (the same writer `createGroup` uses). A name another
@@ -933,6 +969,13 @@ export class ScratchpadStore {
   }
 }
 
+/** A group name as the store keeps it: spaces collapsed, 1 to 60 characters, or a thrown refusal. */
+function cleanGroupName(name: unknown): string {
+  const clean = typeof name === 'string' ? name.replace(/\s+/g, ' ').trim() : ''
+  if (clean === '' || clean.length > 60) throw new Error('A group name is 1 to 60 characters.')
+  return clean
+}
+
 /** The folder an item's relative links resolve from. */
 const linkBase = (item: Pick<ScratchItem, 'origin'>): string => item.origin.base ?? dirOf(item.origin.path)
 
@@ -958,6 +1001,7 @@ function itemOf(record: ItemRecord, markdown: string): ScratchItem {
     done: record.done, ...(record.colour ? { colour: record.colour } : {}), uses: record.uses,
     ...(record.sourceRef ? { ref: record.sourceRef } : {}),
     ...(record.external ? { external: record.external } : {}),
+    ...(record.fromVersion ? { fromVersion: record.fromVersion } : {}),
   }
 }
 
@@ -999,6 +1043,17 @@ function validSourceRef(ref: unknown): ref is ScratchSourceRef {
     && (r.attachedParts === undefined || (Array.isArray(r.attachedParts) && r.attachedParts.length <= 200 && r.attachedParts.every(isString)))
 }
 
+/** The provenance of a text sent from a saved Folio version: strings of sane length, an optional whole part number, a known side. */
+function validFromVersion(value: unknown): value is ScratchFromVersion {
+  const v = value as ScratchFromVersion | null
+  const text = (x: unknown, max: number): x is string => isString(x) && x.length > 0 && x.length <= max && !/[\r\n\0]/.test(x)
+  return !!v && typeof v === 'object'
+    && text(v.folio, 1000) && text(v.versionId, 200) && text(v.versionName, 500) && text(v.writtenBy, 500)
+    && !!v.part && typeof v.part === 'object' && text(v.part.path, 1000) && text(v.part.title, 500) && (v.part.order === undefined || (Number.isSafeInteger(v.part.order) && v.part.order >= 0))
+    && ['version', 'sent', 'theirs', 'yours'].includes(v.side)
+    && typeof v.at === 'number' && Number.isFinite(v.at) && v.at >= 0
+}
+
 const validCapturedSpan = (span: unknown): span is { from: number; to: number; line: number } => {
   const value = span as { from: number; to: number; line: number } | undefined
   return !!value && Number.isSafeInteger(value.from) && value.from >= 0 && Number.isSafeInteger(value.to) && value.to >= value.from && Number.isSafeInteger(value.line) && value.line >= 1
@@ -1034,6 +1089,8 @@ function parseRecord(text: string, id: string): ItemRecord | null {
     colour: isString(raw.colour) ? raw.colour : null, uses: raw.uses, payload: { bytes: raw.payload.bytes, sha256: raw.payload.sha256 },
     ...(raw.sourceRef ? { sourceRef: raw.sourceRef } : {}),
     ...(raw.external ? { external: raw.external } : {}),
+    // Additive (ticket 10): kept when well formed; a malformed one is dropped on read, never fatal to the record.
+    ...(raw.kind === 'text' && validFromVersion(raw.fromVersion) ? { fromVersion: raw.fromVersion } : {}),
   }
 }
 

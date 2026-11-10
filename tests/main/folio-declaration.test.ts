@@ -1121,9 +1121,9 @@ for (const retry of ['save', 'unchanged save', 'claim'] as const) test(`r7 faile
     await ws.saveEditorText(path, running, { kind: 'disk', text: running })
     expect(notices.join(' ')).toContain('book is already the Folio here')
   } else {
-    const { CollectionOwnership } = await import('../../src/main/collection-ownership')
-    const owner = new CollectionOwnership({ schedule: () => () => {} })
-    try { expect(await owner.claim(root)).toBe('owned') } finally { await owner.release(root) }
+    const { OpenCollections } = await import('../../src/main/open-collections')
+    const owner = new OpenCollections()
+    try { await owner.open(root) } finally { await owner.close(root) }
   }
   expect(JSON.parse(await readFile(join(root, '.writeflex/folio-declarations-set-aside.json'), 'utf8'))).toEqual([{ folder: 'book/ch', file: 'book/ch/_ch_index.md' }])
   expect(folioDeclaration(new Workspace(root), 'book').isFolio).toBe(true)
@@ -1414,7 +1414,7 @@ test('r9 changed-folder invalidation keeps unrelated cached folders and ignores 
 
 test('r10 Collection close retains failed retries and last-good history across reopen', async () => {
   const { clearFolioDeclarations } = await import('../../src/main/folio-declaration')
-  const { CollectionOwnership } = await import('../../src/main/collection-ownership')
+  const { OpenCollections } = await import('../../src/main/open-collections')
   const { root, ws } = await fixture({ '_book_INDEX.md': running })
   await mkdir(join(root, 'book/ch'))
   await writeFile(join(root, 'book/ch/_ch_INDEX.md'), '# Cover\n')
@@ -1423,9 +1423,9 @@ test('r10 Collection close retains failed retries and last-good history across r
   await ws.saveEditorText('book/ch/_ch_INDEX.md', running, { kind: 'disk', text: '# Cover\n' })
   ws.writeAppStoreFile = writeStore
   clearFolioDeclarations(root)
-  const owner = new CollectionOwnership({ schedule: () => () => {} })
+  const owner = new OpenCollections()
   try {
-    expect(await owner.claim(root)).toBe('owned')
+    await owner.open(root)
     expect(JSON.parse(await readFile(join(root, '.writeflex/folio-declarations-set-aside.json'), 'utf8')))
       .toEqual([{ folder: 'book/ch', file: 'book/ch/_ch_index.md' }])
     const reopened = new Workspace(root)
@@ -1435,7 +1435,7 @@ test('r10 Collection close retains failed retries and last-good history across r
     clearFolioDeclarations(root)
     expect(folioDeclaration(new Workspace(root), 'book').isFolio).toBe(true)
     expect(folioDeclaration(new Workspace(root), 'book/ch').isFolio).toBe(false)
-  } finally { await owner.release(root) }
+  } finally { await owner.close(root) }
 })
 
 test('r10 clear leaves watched refcounts owned by their disposers', async () => {

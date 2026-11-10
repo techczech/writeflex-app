@@ -4,6 +4,7 @@
 //
 // The pasted token goes to the main process once (Check) and is never shown again: the field is a
 // password field and is emptied after every Check. Every answer is a status with no token in it.
+import { BackControl } from '../BackControl'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import {
   ArrowLeft, Check, CircleDot, Circle, Copy, Download, ExternalLink, KeyRound, Link, ListChecks, Lock, Pencil, RefreshCw, ShieldCheck, TriangleAlert, XCircle,
@@ -217,7 +218,7 @@ export function SharingSetup({ pieceName, onBack, onFlash, onOpenSettings, onDon
   return (
     <div className="shr-overlay" data-testid="sharing-setup" ref={page} tabIndex={-1} onKeyDown={onKeyDown}>
       <header className="shr-head">
-        <button type="button" className="shr-btn" onClick={onBack}><ArrowLeft className="icon" aria-hidden="true" />Back to text<kbd>Esc</kbd></button>
+        <BackControl className="shr-back" onBack={onBack} />
         <div className="shr-title">
           <h2>{ready ? 'Sharing' : 'Set up sharing'}</h2>
           <span className="shr-sub">{ready ? 'Set up on this Mac' : 'First time only'}{pieceName ? ` · ${pieceName}` : ''}</span>

@@ -107,6 +107,7 @@ test('a folder rename repair leaves a note changed since the plan as it is and r
 
 const folderRenameProbe = String.raw`
   import { mock } from 'bun:test'
+  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -115,6 +116,7 @@ const folderRenameProbe = String.raw`
   const sent = []
   const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: (channel) => handlers.delete(channel) }
   void mock.module('electron', () => ({
+    ...electronMainStandIn,
     app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
     clipboard: { write: () => {} }, dialog: {}, ipcMain,
     shell: { openExternal: async () => {}, showItemInFolder: () => {}, trashItem: async () => {} },

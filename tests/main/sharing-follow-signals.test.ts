@@ -456,3 +456,11 @@ describe('the Collection open in WriteFlex: the app carries the command out and 
 
 // The shared tracker is cached across files; register this file's cleanup explicitly.
 afterAll(cleanUpScratch)
+
+
+test('a move signal follows a colon inside a filename, using the service record rules', () => {
+  const move = { from: 'paper.md', to: 'notes/paper:final.md' }
+  const signal = { version: 3, root: fx.root, shareId: SHARE_ID, from: move.from, generation: 0, move }
+  expect(readSignal(JSON.stringify(signal))).toMatchObject({ move })
+  expect(readSignal(JSON.stringify({ ...signal, move: { ...move, to: 'C:/paper.md' } }))).toBeNull()
+})

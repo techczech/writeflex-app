@@ -1,7 +1,7 @@
 /**
  * What the Outline's Folio part needs to know about a Folio's running order besides the order itself:
  * whether the Outline may change it, which files Add will accept, and which files the Plan reports as
- * not in the running order. Computed once per Folio folder and kept (folio-order-cache.ts says when it
+ * not in the outline. Computed once per Folio folder and kept (folio-order-cache.ts says when it
  * is dropped). Read-only, and only for drawing: the write routes read again under the lock.
  *
  * A Folio with an Index Note costs one Plan load (it lists the workspace and reads the titles of the
@@ -24,7 +24,7 @@ export type FolioOrderFacts = {
   changeable: boolean
   /** The files Add will accept; empty when `changeable` is false. */
   addable: string[]
-  /** Files the Plan reports as not in the running order, wherever they are; the caller keeps those inside the Folio's folder. */
+  /** Files the Plan reports as not in the outline, wherever they are; the caller keeps those inside the Folio's folder. */
   unlisted: string[]
   /** The folder the Folio takes its pieces from: `content_root` when it has an accepted one, else the Folio folder. */
   root: string

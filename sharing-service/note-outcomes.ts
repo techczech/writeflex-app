@@ -32,7 +32,7 @@ export const OUTCOME_LIMITS = {
 const REPLY_ID = /^[A-Za-z0-9_-]{8,64}$/
 const NOTE_KEY = /^[0-9a-f]{24}\.[A-Za-z0-9_-]{8,64}$/
 
-export interface PostedReply { id: string; text: string; at: number }
+export interface PostedReply { id: string; text: string; at: number; visibility: 'private' | 'open' }
 export interface PostedOutcome {
   key: string
   outcome: NoteOutcome | null
@@ -79,7 +79,7 @@ function parseOne(value: unknown): PostedOutcome {
     if (typeof r.id !== 'string' || !REPLY_ID.test(r.id)) fail('reply id must be 8 to 64 letters, digits, - or _.')
     if (seen.has(r.id)) fail('a reply id is named twice.')
     seen.add(r.id)
-    return { id: r.id, text: parseReplyText(r.text), at: time(r.at, 'reply at') }
+    return { id: r.id, text: parseReplyText(r.text), at: time(r.at, 'reply at'), visibility: r.visibility === 'open' ? 'open' : 'private' }
   })
   return { key: o.key, outcome, at, replies }
 }

@@ -21,7 +21,7 @@ import type { FolioOutline, FolioPlace, OutlineScanEntry } from '../../../preloa
 import { FolderPartFoot, FolioOutlinePart, folioFileKeys } from './FolioOutline'
 import type { FolioRunningOrder } from '../app/folio-running-order'
 import { blockCommandTarget, type FocusedFolioRow } from '../../../shared/folio-running-order'
-import { clampOffset, outlineSwitch } from '../../../shared/folio-outline'
+import { clampOffset } from '../../../shared/folio-outline'
 import { extractOutline, type OutlineHeading } from '../editor/outline'
 import type { EditorSnapshot } from '../hooks/useEditorSnapshot'
 import { dispatchSectionsEdit, outlineSelectionField, runSectionAction, setOutlineSelection, type SectionAction } from '../editor/outline-selection'
@@ -117,8 +117,7 @@ const WORD_COUNTS_KEY = 'wf:outlineWordCounts'
 /** Pixels of sideways drag per heading level. */
 const LEVEL_STEP_PX = 16
 
-/** Document ⟷ second part (PRD S18). The second part is the Folder (the active file's folder + subfolders) or,
- *  when the file is in a Folio, the Folio. The writer's choice is the part, not its name, so it holds across both. */
+/** What the one tree shows: the open document's headings, or (in a Folio) the running order with the open part's headings nested. */
 type Scope = 'file' | 'folder'
 
 /** A stable empty-outline reference so the `entries` memo is not invalidated while no snapshot exists. */
@@ -285,12 +284,10 @@ function sameSet(a: ReadonlySet<number>, list: readonly number[]): boolean {
  * header bar, Levels drop-down and right-click menu run the structure commands; rows can show word counts.
  */
 export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot, activePath, onJumpToFile, savedTick, focusTick, shortcutFor, request, folioPlace, folderFileCount, onOpenFile, onOpenPlan, onStatus, runningOrder, folioRefreshTick }: OutlinePaneProps): JSX.Element {
-  const [chosenPart, setScope] = useState<Scope>(workspaceDir !== undefined || request?.action === 'showFolio' ? 'folder' : 'file')
-  // With no file open there is no folder to list: the Document part shows, whatever was chosen.
-  const scope: Scope = activePath == null && workspaceDir === undefined ? 'file' : chosenPart
-  const folioPart = scope === 'folder' && (workspaceDir !== undefined || folioPlace !== null)
-  const second = outlineSwitch(activePath != null || workspaceDir !== undefined, workspaceDir === undefined ? folioPlace : { dir: workspaceDir })
-  useEffect(() => { if (workspaceDir !== undefined) setScope('folder') }, [workspaceDir])
+  // ONE tree (house rule R13): in a Folio, the running order with the open part's headings nested; outside a Folio, the
+  // document's headings. There is no Document / Folio switch and no folder scan: where the file sits decides.
+  const folioPart = workspaceDir !== undefined || folioPlace !== null
+  const scope: Scope = folioPart ? 'folder' : 'file'
   // The Folio part (read-only): the Folio's pieces and the folder's other files with their headings, from main.
   const [folioOutline, setFolioOutline] = useState<FolioOutline | null>(null)
   const [folioExpanded, setFolioExpanded] = useState<ReadonlyMap<string, boolean>>(() => new Map())
@@ -623,13 +620,6 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
     [folderRows, effectiveFolderFocus, focusFolderRow, jumpFolderRow],
   )
 
-  const selectScope = useCallback((next: Scope) => {
-    setScope(next)
-    setFocusFrom(null)
-    setFolderFocusKey(null)
-    setSelected(new Set())
-  }, [])
-
   const jumpTo = useCallback(
     (entry: Entry, options: { keepFocus?: boolean } = {}) => {
       const view = editorRef.current?.view()
@@ -721,7 +711,7 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
     if (action === 'expandAll') expandAll()
     else if (action === 'collapseAll') collapseAll()
     else if (action === 'toggleWordCounts') toggleWordCounts()
-    else if (action === 'showFolio') { setScope('folder'); setFocusFrom(null); setFolderFocusKey(null) }
+    else if (action === 'showFolio') { setFocusFrom(null); setFolderFocusKey(null) }
     else if (action === 'rowMenu') {
       const focused = rows.find((r) => r.entry.from === effectiveFocus && r.entry.type === 'heading')?.entry.from ?? activeFrom
       if (focused != null) openRowMenu(focused)
@@ -1023,22 +1013,6 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
 
   return (
     <>
-      {/* Document ⟷ Folder, or Document ⟷ Folio when the open file's folder is a Folio (PRD S18). */}
-      <span className="scope-seg" role="group" aria-label="Outline part">
-        <button type="button" data-scope="file" aria-pressed={scope === 'file'} title="Headings of the open piece" onClick={() => selectScope('file')}>
-          Document outline
-        </button>
-        <button
-          type="button"
-          data-scope={second.second === 'Folio' ? 'folio' : 'folder'}
-          aria-pressed={scope === 'folder'}
-          disabled={second.secondDisabled}
-          title={second.second === 'Folio' ? 'The Folio of this folder: its pieces in running order, with their headings' : 'Every file in this folder, with its headings'}
-          onClick={() => selectScope('folder')}
-        >
-          {second.second === 'Folio' ? 'Folio outline' : second.second}
-        </button>
-      </span>
       <div className={folioPart ? "ol-controls folio-controls" : "ol-controls"}>
       <div className="ol-bar" role="toolbar" aria-label="Outline actions">
         {/* A Folio the Outline cannot change shows no Move arrows: they would refuse every time. */}

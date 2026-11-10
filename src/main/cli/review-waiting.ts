@@ -16,8 +16,8 @@
  *    operation are inside what is signed. Its outcome is shown ONLY if the signature verifies under a
  *    key the app holds for this Collection now. Anything else at such a name (unsigned, signed with
  *    another key, not a reply at all) is shown as its id with "outcome unknown" and none of its
- *    content. The app makes a new key each time it takes the Collection and removes it when it lets
- *    go, so an answer signed under an earlier ownership no longer verifies and reads as unknown: the
+ *    content. The app makes a new key each time it opens the Collection and removes it when it closes
+ *    it, so an answer signed under an earlier opening no longer verifies and reads as unknown: the
  *    narrow, safe result. The writer sees the real outcome in WriteFlex.
  *
  * EVERYTHING IS BOUNDED BEFORE IT IS READ. A folder is listed through `HeldFolder.namesUpTo`, which
@@ -27,7 +27,7 @@
  * request id, which is pattern-checked (review-operations.ts).
  *
  * The review ledger is READ here, and written only by `followInReview`, through `access.followLedger`
- * (history-store.ts) under the command line's own owner lock.
+ * (history-store.ts) when the command line writes directly.
  */
 import { RecordsNotUsableError, UNDELIVERED_KIND, holdOtherRecords, holdRecords, type RecordsPlace } from '../collection-records'
 import { readReplyKeys, replyIsSigned } from '../reply-key'
@@ -237,7 +237,7 @@ export async function rewriteWaitingPaths(root: string, moves: Move[]): Promise<
         if (next !== null) { args[arg] = next; changed = true }
       }
       if (!changed) return
-      const body = `${JSON.stringify({ version: 1, id: request.id, operation: request.operation, args })}\n`
+      const body = `${JSON.stringify({ version: 1, id: request.id, operation: request.operation, args, to: request.to })}\n`
       const again = name === requestFileName(request.id) && Buffer.byteLength(body) <= MAX_REQUEST_BYTES ? parseRequest(body, request.id, operations) : null
       const same = again?.ok === true && again.request.operation === request.operation
         && Object.keys(again.request.args).length === Object.keys(request.args).length
@@ -255,8 +255,8 @@ export async function rewriteWaitingPaths(root: string, moves: Move[]): Promise<
 /**
  * After a move the command line (or the app, for a request) made: the waiting requests follow it,
  * and so do the undecided outside Changes already in the review ledger (specification section 5).
- * The app follows its own ledger (request-executor.ts); with no app, the command line holds the
- * owner lock and follows it through `access.followLedger` (history-store.ts). Never fails the move:
+ * The app follows its own ledger (request-executor.ts); with no app open on this computer, the command
+ * line follows it through `access.followLedger` (history-store.ts). Never fails the move:
  * what could not be followed is a notice.
  */
 export async function followInReview(access: WriteAccess, moves: Move[]): Promise<{ data: Record<string, unknown>; lines: string[] }> {

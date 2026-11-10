@@ -106,7 +106,7 @@ test('T-CONTAIN: a manifest listing the evidence file → not exported (HTML, Wo
 test('T-CONTAIN: content_root "contents" with the root evidence file in the manifest → a reorder succeeds, that entry’s bytes unchanged', async () => {
   await write('paper/contents/01-a.md', '# A\n\nAlpha.\n')
   await write('paper/contents/02-b.md', '# B\n\nBeta.\n')
-  await write('paper/contents/03-c.md', '# C\n\nGamma, listed but not in the running order.\n')
+  await write('paper/contents/03-c.md', '# C\n\nGamma, listed but not in the outline.\n')
   await write(`paper/${EVIDENCE}`, EVIDENCE_TEXT)
   const index = '# Paper\n\n## Running order\n\n- [[A]]\n- [[B]]\n'
   await write('paper/_paper_INDEX.md', index)

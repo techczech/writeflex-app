@@ -15,14 +15,14 @@ const MARKDOWN = /\.(?:md|markdown|mdx)$/i
  * `york.md` are two files, and an argument names the one whose characters it holds. An empty path is
  * refused.
  */
-export function visiblePath(ws: Workspace, input: string, opts: { markdown?: boolean; allowRoot?: boolean } = {}): string {
+export function visiblePath(ws: Workspace, input: string, opts: { markdown?: boolean; /** Any file of the Collection, not only a Markdown one (a table, widget page or image's versions). */ file?: boolean; allowRoot?: boolean } = {}): string {
   const raw = input
   if (raw === '' || raw === '.' || raw === '/') {
     if (opts.allowRoot) return ''
     throw new CliError('A path is needed.', 'usage')
   }
   const typed = isAbsolute(raw) ? relative(ws.root, raw) : raw
-  const verdict = ws.classifyPath(typed, opts.markdown ? 'file' : 'folder')
+  const verdict = ws.classifyPath(typed, opts.markdown || opts.file ? 'file' : 'folder')
   if (verdict === 'outside') throw new CliError(`${input} is outside the Collection at ${ws.root}.`)
   if (verdict === 'hidden') {
     throw new CliError(`${input} is under a dot-folder or an ignored folder, which is not part of the Collection.`)

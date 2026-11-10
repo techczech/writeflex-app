@@ -42,7 +42,7 @@ import { OUTCOME_LIMITS } from '../../sharing-service/note-outcomes.ts'
 /** One link the sender may answer through: where its service is and its owner token (never leaves main). */
 export type ReplyLink = { shareId: string; base: string; owner: string }
 
-export type OutcomeItem = { key: string; outcome: ReaderOutcome | null; at: number | null; replies: Array<{ id: string; text: string; at: number }> }
+export type OutcomeItem = { baseOutcomeAt?: number | null; key: string; outcome: ReaderOutcome | null; at: number | null; replies: Array<{ id: string; text: string; at: number; visibility?: 'private' | 'open' }> }
 
 export interface ReaderRepliesPorts {
   sendOutcomes(base: string, shareId: string, owner: string, items: OutcomeItem[]): Promise<ServiceAnswer<{ recorded: unknown; waiting: unknown; unknown: unknown; full: unknown; replies?: unknown }>>
@@ -150,12 +150,12 @@ export function owedForNote(records: readonly Change[], withReplies = true): { i
       // The service takes at most OUTCOME_LIMITS.repliesPerNote replies a request; the rest go next look.
       if (seen.has(reply.id) || replies.length >= OUTCOME_LIMITS.repliesPerNote) continue
       seen.add(reply.id)
-      replies.push({ id: reply.id, text: reply.text, at: reply.at })
+      replies.push({ id: reply.id, text: reply.text, at: reply.at, visibility: reply.visibility === 'open' ? 'open' : 'private' })
     }
   }
   for (const change of records) replyIds.set(change.id, unsentOf(change).map((reply) => reply.id).filter((id) => seen.has(id)))
   if (replies.length === 0 && records.every((change) => sameHeard(change, heard))) return null
-  return { item: { key: fields.key, outcome: heard.outcome, at: heard.at, replies }, heard, replyIds }
+  return { item: { key: fields.key, outcome: heard.outcome, at: heard.at, replies, baseOutcomeAt: (records[0] as Change & OutsideChangeFields).readerHeard?.at ?? null }, heard, replyIds }
 }
 
 /** What one record owes its reader, as `owedForNote` for a note with this one record. */
@@ -169,12 +169,12 @@ export function owedFor(change: Change): { item: OutcomeItem; heard: ReaderHeard
  * characters removed, as from a reader), 1 to 1000 characters, with an id that makes it arrive once.
  * Throws with the writer's words when it cannot be a reply.
  */
-export function readerReplyFor(text: unknown, by: string, now: number, makeId: () => string = () => randomBytes(12).toString('base64url')): ReaderReply {
+export function readerReplyFor(text: unknown, by: string, now: number, makeId: () => string = () => randomBytes(12).toString('base64url'), visibility: 'private' | 'open' = 'private'): ReaderReply {
   if (typeof text !== 'string' || text.length > READER_REPLY_CHARS * 2) throw new Error(`A reply is at most ${READER_REPLY_CHARS.toLocaleString('en-GB')} characters.`)
   const cleaned = cleanText(text)
   if (cleaned === '') throw new Error('A reply needs some words.')
   if (cleaned.length > READER_REPLY_CHARS) throw new Error(`A reply is at most ${READER_REPLY_CHARS.toLocaleString('en-GB')} characters.`)
-  return { id: makeId(), text: cleaned, at: now, by: by.trim().slice(0, 200) || 'You' }
+  return { id: makeId(), text: cleaned, at: now, by: by.trim().slice(0, 200) || 'You', visibility }
 }
 
 

@@ -16,6 +16,8 @@ import { MANIFEST_NAME, assertManifestAbsent } from '../folio'
 import { writeFolioAgentInstructions } from '../folio-agent-instructions'
 import { scrapsPathFor } from '../scraps'
 import { scratchpadReadVerbs } from './scratchpad-reads'
+import { folioVersionVerbs } from './folio-versions'
+import { folioVersionScratchpadVerbs } from './folio-version-scratchpad'
 import { scratchpadReferenceVerbs } from './scratchpad-references'
 import { scratchpadInsertVerbs } from './scratchpad-insert'
 import { scratchpadExternalVerbs } from './scratchpad-external'
@@ -103,7 +105,9 @@ export function buildVerbTable(
   const mapHash = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
   const displayName = (name: string): string => name.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, char => `\\u${char.codePointAt(0)!.toString(16).padStart(4, '0')}`)
   const verbs: Verb[] = [
+    ...folioVersionVerbs(workspace, services),
     ...scratchpadReadVerbs(workspace, services?.scraps ?? null),
+    ...folioVersionScratchpadVerbs(workspace, services),
     ...scratchpadReferenceVerbs(workspace, services?.scraps ?? null, services),
     ...scratchpadInsertVerbs(workspace, services?.scraps ?? null, services),
     ...scratchpadExternalVerbs(workspace, services?.scraps ?? null),

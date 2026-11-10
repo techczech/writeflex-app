@@ -4,8 +4,9 @@
  * of exactly the text the writer means. Pure apart from Web Crypto (renderer and main both have it).
  */
 
-/** A snapshot in History (the Collection's snapshot store), the only place a version is kept. */
-export type PreserveReceipt = { store: 'history'; entryId: string; sha256: string }
+/** Where the version is kept: a snapshot in History (the Collection's snapshot store, needs the agent), or,
+ *  in a synced Collection, a replica version (main/replica-versions.ts; needs no agent). */
+export type PreserveReceipt = { store: 'history' | 'replica-versions'; entryId: string; sha256: string }
 
 export type PreserveResult =
   | { kept: true; receipt: PreserveReceipt }
@@ -23,6 +24,6 @@ export async function receiptFor(result: unknown, text: string): Promise<Preserv
   if (!result || typeof result !== 'object' || (result as { kept?: unknown }).kept !== true) return null
   const receipt = (result as { receipt?: unknown }).receipt as PreserveReceipt | undefined
   if (!receipt || typeof receipt !== 'object' || typeof receipt.sha256 !== 'string') return null
-  if (receipt.store !== 'history') return null
+  if (receipt.store !== 'history' && receipt.store !== 'replica-versions') return null
   return receipt.sha256 === await sha256OfText(text) ? receipt : null
 }

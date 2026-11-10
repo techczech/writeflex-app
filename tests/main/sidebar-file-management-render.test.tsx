@@ -220,10 +220,11 @@ test('file favourites do not claim the tab-pin chord', () => {
   expect(html).not.toContain('Unpin from Favourites (⌥⌘P)')
 })
 
-test('file finder is summoned on demand with no permanent input, Contents mode, or grep rows', () => {
+test('the file filter is one field in the single header row, with no Contents mode or grep rows', () => {
   const html = renderSidebar()
-  expect(html).toContain('aria-label="Filter files"')
-  expect(html).toContain('⌕')
+  // R12: a real filter field, always there, that names quick open; no glyph button, no results row until something is typed.
+  expect(html).toContain('placeholder="Find a file (⇧⌘K)"')
+  expect(html).not.toContain('⌕')
   expect(html).not.toContain('class="file-filter"')
   expect(html).not.toContain('Contents')
   expect(html).not.toContain('grep-file')

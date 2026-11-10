@@ -1,0 +1,67 @@
+/* The ⇧⌘S choice and the Save Folio version sheet (Folio versions ticket 04). After the locked mockup
+   docs/design/2026-11-02-folio-versions/mockup/locked/ (scenes choose-save and save): a modal over the
+   window, a serif title, bounded cards, a quiet footer with the one main button. */
+.fvs-backdrop{position:fixed;inset:0;z-index:80;background:rgba(21,20,18,.34);display:flex;align-items:center;justify-content:center;padding:24px}
+.fvs-sheet{width:min(660px,calc(100vw - 48px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;background:var(--bg-pane);border:1px solid var(--line);box-shadow:0 18px 56px rgba(20,25,40,.28);border-radius:12px;color:var(--ink);overflow:hidden}
+.fvs-sheet.fvs-chooser{width:min(520px,calc(100vw - 48px))}
+.fvs-head{display:flex;align-items:center;gap:9px;padding:14px 20px 4px}
+.fvs-head .icon{width:18px;height:18px;color:var(--ink)}
+.fvs-head h2{margin:0;font:600 17px var(--prose)}
+.fvs-folio{margin-left:auto;font-size:11.5px;color:var(--ink-3)}
+.fvs-body{padding:6px 20px 12px;overflow:auto}
+.fvs-question{margin:2px 0 8px;font-size:13px}
+.fvs-note{font-size:11.5px;color:var(--ink-3);line-height:1.45}
+.fvs-field{display:grid;gap:3px;margin:8px 0;font-size:11.5px;color:var(--ink-3);font-weight:400}
+.fvs-field input{height:34px;border:1px solid var(--line);border-radius:7px;background:var(--bg-elev);color:var(--ink);font:inherit;font-size:13px;padding:0 10px;outline:none}
+.fvs-field input:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.fvs-field input:disabled{opacity:.6}
+.fvs-error{margin:6px 0 0;color:var(--danger);font-size:12px}
+.fvs-banner{display:flex;gap:9px;align-items:flex-start;margin:8px 0;padding:9px 12px;border-radius:8px;border:1px solid color-mix(in srgb,var(--amber) 34%,var(--line));background:var(--amber-soft);font-size:12.5px;line-height:1.5}
+.fvs-banner .icon{flex:none;width:15px;height:15px;margin-top:2px;color:var(--amber)}
+.fvs-banner ul{margin:4px 0 0;padding-left:18px}
+.fvs-banner.info{border-color:var(--line);background:var(--bg-sunk)}
+.fvs-banner.info .icon{color:var(--ink-3)}
+.fvs-banner.bad{border-color:color-mix(in srgb,var(--danger) 40%,var(--line));background:var(--danger-soft)}
+.fvs-banner.bad .icon{color:var(--danger)}
+.fvs-card{margin-top:8px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.fvs-card.plain{background:var(--bg-sunk)}
+.fvs-card-head{margin:0;padding:6px 12px;font:600 10.5px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);background:var(--bg-sunk);border-bottom:1px solid var(--line)}
+.fvs-card.plain .fvs-card-head{background:transparent}
+.fvs-card-body{margin:0;padding:8px 12px}
+.fvs-reasons{padding-left:28px;font-size:12px;color:var(--ink-2);line-height:1.5}
+.fvs-kv{display:grid;grid-template-columns:128px 1fr;gap:6px 12px;margin:0;padding:8px 12px;font-size:12.5px}
+.fvs-kv dt{color:var(--ink-3)}
+.fvs-kv dd{margin:0;min-width:0}
+.fvs-files{margin:0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:3px 16px}
+.fvs-files li{display:inline-flex;align-items:center;gap:5px}
+.fvs-files .icon{width:13px;height:13px;color:var(--ink-3)}
+.fvs-file{font-weight:500}
+.fvs-check{display:flex;align-items:center;gap:8px;cursor:pointer}
+.fvs-foot{display:flex;align-items:center;gap:8px;padding:11px 20px;border-top:1px solid var(--line);background:var(--bg-sunk)}
+.fvs-foot-hint{margin-right:auto}
+.fvs-foot .btn{min-height:32px}
+.fvs-foot kbd,.fvs-chooser kbd{font:11px var(--mono);padding:0 5px;border:1px solid var(--line);border-radius:4px;background:var(--bg-elev)}
+.fvs-options{display:grid;gap:8px}
+.fvs-opt{display:flex;gap:11px;align-items:flex-start;text-align:left;width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:9px;background:var(--bg-pane);color:var(--ink);cursor:pointer}
+.fvs-opt:hover{background:var(--hover)}
+.fvs-opt.on{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 1px var(--accent) inset}
+.fvs-opt:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fvs-radio{flex:none;width:14px;height:14px;margin-top:3px;border-radius:50%;border:1.5px solid var(--ink-4);box-sizing:border-box}
+.fvs-opt.on .fvs-radio{border:4px solid var(--accent);background:var(--bg-pane)}
+.fvs-opt-text{display:grid;gap:3px}
+.fvs-opt-name{font-weight:650;font-size:13px;display:flex;gap:8px;align-items:center}
+.fvs-chip{font-weight:500;font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line));color:var(--accent);background:var(--bg-pane)}
+
+/* Export this Folio version and Mark as sent (ticket 11): the modal's own few rules, on the Save sheet's. */
+.fvs-banner.lock{border-color:color-mix(in srgb,var(--accent) 30%,var(--line));background:color-mix(in srgb,var(--accent) 9%,var(--bg-elev))}
+.fvs-banner.lock .icon{color:var(--accent)}
+.fvs-sheet.fvs-export,.fvs-sheet.fvs-mark{width:min(640px,calc(100vw - 48px))}
+.fvs-export .fvs-field>span{display:block;margin-bottom:5px;font-size:12px;color:var(--ink-3)}
+.fve-seg button{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;padding:6px 12px}
+.fve-seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
+.fve-markrow{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.fve-markrow .fve-name{flex:1;min-width:0;padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg-elev);color:var(--ink);font:inherit}
+.fve-markrow .fve-name:disabled{opacity:.55}
+.fve-working{margin-top:10px}
+/* The export sheet's offer to save a Folio version first (ticket 11). */
+.export-offer{display:flex;flex-direction:column;gap:3px;margin:8px 16px 0;padding:9px 12px;border-radius:8px;border:1px solid color-mix(in srgb,var(--amber) 34%,var(--line));background:var(--amber-soft);font-size:12.5px;line-height:1.5}

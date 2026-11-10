@@ -5,6 +5,7 @@ import { readFileSync, lstatSync, writeFileSync, unlinkSync, renameSync, symlink
 import { execFileSync } from 'node:child_process'
 import { putBackStep, stepChanges } from '../../src/main/standard-widgets/step-put-back'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { rollBackOperationWrites } from '../../src/main/operation-rollback'
 import { Workspace, atomicWriteSeams, type OperationWrite } from '../../src/main/workspace'
 import { backupManifestDocument } from '../../src/main/plan'
@@ -16,7 +17,7 @@ const file = '_report-structure.json'
 const backup = `${file}.writeflex-backup`
 const original = '{"files": []}\n'
 beforeEach(async () => {
-  root = await mkdtemp(join(import.meta.dir, '.backup-guard-'))
+  root = await mkdtemp(join(tmpdir(), 'wf-backup-guard-'))
   ws = new Workspace(root)
   await writeFile(join(root, file), original)
 })

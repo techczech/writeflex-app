@@ -154,7 +154,7 @@ export const TOP_PARAGRAPH = 'top'
  * where its words stand now, an item that could not be placed at its paragraph. `pos` is null for an item
  * with no known paragraph (top of the margin, under the filter line). `row`: a settled row, one line.
  */
-export type MarginEntry = { id: string; pos: number | null; row?: true }
+export type MarginEntry = { id: string; pos: number | null; row?: true; count?: number }
 
 /** Everything the margin draws, top items first, then in document order (cards before rows at one place). */
 export function marginEntriesOf(model: Pick<MarginModel, 'cards' | 'settled' | 'unplaced'> & Partial<Pick<MarginModel, 'mode'>>): MarginEntry[] {
@@ -162,18 +162,26 @@ export function marginEntriesOf(model: Pick<MarginModel, 'cards' | 'settled' | '
   const top: MarginEntry[] = []
   // In Settled today (ticket 08) the settled items are full cards, measured like any card; otherwise one-line rows.
   const asRow = model.mode !== 'settled'
-  model.cards.forEach((card, index) => placed.push({ id: card.id, pos: card.anchor.from, tie: index }))
+  model.cards.forEach((card, index) => { if (!card.threadParentId) placed.push({ id: card.id, pos: card.anchor.from, tie: index }) })
   model.settled.forEach((row, index) => {
     const pos = row.anchor?.from ?? row.at
     if (pos === null) top.push({ id: row.id, pos: null, ...(asRow ? { row: true as const } : {}) })
     else placed.push({ id: row.id, pos, ...(asRow ? { row: true as const } : {}), tie: model.cards.length + index })
   })
   model.unplaced.forEach((item, index) => {
+    if (item.threadParentId) return
     if (item.at === null) top.push({ id: item.id, pos: null })
     else placed.push({ id: item.id, pos: item.at, tie: model.cards.length + model.settled.length + index })
   })
   placed.sort((a, b) => a.pos! - b.pos! || a.tie - b.tie)
-  return [...top, ...placed.map(({ tie: _tie, ...entry }) => entry)]
+  const replyCounts = new Map<string, number>()
+  for (const item of [...model.cards, ...model.unplaced]) {
+    if (item.threadParentId) replyCounts.set(item.threadParentId, (replyCounts.get(item.threadParentId) ?? 0) + 1)
+  }
+  return [...top, ...placed.map(({ tie: _tie, ...entry }) => entry)].map((entry) => {
+    const replies = replyCounts.get(entry.id) ?? 0
+    return replies ? { ...entry, count: 1 + replies } : entry
+  })
 }
 
 /** The layout engine's input for every entry. An item with no known paragraph sits at the floor (top of the margin). */
@@ -190,6 +198,7 @@ export function layoutEntriesFor(entries: readonly MarginEntry[], document: stri
       floor: measured.floor,
       height: entry.row ? FOLDED_CARD_HEIGHT : measured.foldedIds.has(entry.id) ? FOLDED_CARD_HEIGHT : measured.heights.get(entry.id) ?? DEFAULT_CARD_HEIGHT,
       ...(entry.row ? { row: true } : {}),
+      ...(entry.count ? { count: entry.count } : {}),
     })
   }
   return out

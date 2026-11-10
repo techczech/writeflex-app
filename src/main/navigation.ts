@@ -45,6 +45,7 @@ export type FrameNavigation = {
   /** The navigating frame's current origin is opaque (a widget's frame). */
   frameOpaque: boolean
   /** The navigating frame sits inside a frame with an opaque origin (a frame a widget made). */
+  readerOrigin?: string
   parentOpaque?: boolean
   url: string
 }
@@ -59,6 +60,12 @@ export type FrameNavigation = {
  * widget. Only a move within the same document goes ahead.
  */
 export function decideFrameNavigation(navigation: FrameNavigation): 'continue' | 'refuse' {
+  if (navigation.readerOrigin) {
+    try {
+      const target = new URL(navigation.url)
+      if (`${target.protocol}//${target.host}` !== navigation.readerOrigin) return 'refuse'
+    } catch { return 'refuse' }
+  }
   if (navigation.isMainFrame) return navigation.initiator === 'top' || navigation.initiator === 'none' ? 'continue' : 'refuse'
   if (navigation.isSameDocument) return 'continue'
   if (navigation.parentOpaque || navigation.initiator === 'opaque') return 'refuse'

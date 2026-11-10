@@ -151,7 +151,7 @@ export const REVIEW_OPERATIONS: Operation[] = [
   }),
   shownFirst({
     name: 'restore-version', group: 'Review and versions',
-    summary: 'Propose restoring a saved version of a document, as one change to the whole document. Shown for review first.',
+    summary: 'Propose restoring a saved version of a Markdown document, as one change to the whole document. Shown for review first. A table, widget page or image is refused: only the writer restores one, in WriteFlex.',
     args: [{ name: 'version', type: 'string', required: true, positional: true, description: 'The version\'s id, from "writeflex versions".' }],
   }),
   {

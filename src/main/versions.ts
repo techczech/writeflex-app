@@ -21,9 +21,12 @@ export {
   type VersionScope,
 } from '../engine'
 import { WRITEFLEX_SELF_AUTHOR_NAME } from '../shared/part-title-proposal'
+import { folioSaveOf } from '../shared/folio-version-records'
 import { assertCollectionWritable } from './collection-write-gate'
 import { runBounded, type BoundedOptions } from './bounded-child'
 import { appendStoreLine, StoreAppendRefused } from './checked-store-append'
+import { isReplicaVersionId } from './replica-versions'
+import { FOLIO_SAVE_COMMITS_JOURNAL_REL, folioSaveCommitLine, withoutUnfinishedFolioSaves } from './folio-save-commit'
 
 export const WRITEFLEX_AGENT_AUTHOR: AuthorIdentity = { name: 'WriteFlex Agent' }
 
@@ -44,7 +47,9 @@ const makeVersionId = (): string =>
 export class VersionStore {
   #queue: Promise<unknown> = Promise.resolve()
 
-  constructor(private readonly ws: Workspace) {}
+  /** `extra`: versions listed beside the journal's that it does not keep (a OneDrive Collection's texts
+   *  held only in this Mac's local recovery, sync-replica-session.ts `localVersions`). Listed only. */
+  constructor(private readonly ws: Workspace, private readonly opts: { extra?: () => Version[] } = {}) {}
 
   /** The Collection this journal belongs to. */
   get root(): string {
@@ -64,6 +69,7 @@ export class VersionStore {
     if (!parseVersionLine(JSON.stringify(version))) {
       throw new Error('Refusing to persist a malformed version record.')
     }
+    if ('folioSave' in version && folioSaveOf(version) === undefined) throw new Error('Refusing to persist a version record with a malformed Folio save marker.')
   }
 
   /**
@@ -79,7 +85,11 @@ export class VersionStore {
     }
   }
 
-  async append(input: Omit<Version, 'id' | 'ts'> & { id?: string; ts?: number }): Promise<Version> {
+  /**
+   * `folioSave`: set only by a Folio save (folio-version-save.ts) on each per-file version it writes; the
+   * version counts only once the Folio journal holds a Folio version with that id (folio-save-commit.ts).
+   */
+  async append(input: Omit<Version, 'id' | 'ts'> & { id?: string; ts?: number; folioSave?: string }): Promise<Version> {
     return this.#run(async () => {
       const version: Version = {
         ...input,
@@ -96,6 +106,26 @@ export class VersionStore {
   }
 
   /**
+   * The commit line of a finished Folio save (folio-save-commit.ts): "the save with this id is complete",
+   * appended to `.writeflex/folio-save-commits.jsonl` (never to `versions.jsonl`, whose unknown kinds an older
+   * backup helper rejects) right after the save's Folio version record. It holds no content; the backup
+   * projection carries it so a restored copy keeps the save's per-file versions visible.
+   */
+  async commitFolioSave(saveId: string): Promise<void> {
+    if (folioSaveOf({ folioSave: saveId }) === undefined) throw new Error('Refusing to record a commit for a malformed Folio save id.')
+    return this.#run(async () => {
+      assertCollectionWritable(this.ws.root)
+      await mkdir(this.ws.absolute(STORE_DIR), { recursive: true })
+      try {
+        await appendStoreLine(this.ws.root, FOLIO_SAVE_COMMITS_JOURNAL_REL, folioSaveCommitLine(saveId, Date.now()))
+      } catch (error) {
+        if (error instanceof StoreAppendRefused) throw new Error(`WriteFlex did not record that this Folio version was saved: ${error.message}`)
+        throw error
+      }
+    })
+  }
+
+  /**
    * Append a document's foundation version only while it has no version records. The existence check,
    * snapshot callback and append share the store queue, so two close events cannot create two automatic
    * versions. Returning null from `build` records nothing (the empty-document path).
@@ -105,7 +135,9 @@ export class VersionStore {
     build: () => Promise<Omit<Version, 'id' | 'ts' | 'path'> | null>,
   ): Promise<Version | null> {
     return this.#run(async () => {
-      if ((await this.#readLatest()).some((version) => version.path === path)) return null
+      // Neither unfinished Folio saves nor replica checkpoints suppress the named foundation.
+      const existing = await withoutUnfinishedFolioSaves(this.ws.root, await this.#readLatest())
+      if (existing.some((version) => version.path === path && !isReplicaVersionId(version.id))) return null
       const input = await build()
       if (!input) return null
       const version: Version = {
@@ -123,10 +155,20 @@ export class VersionStore {
     })
   }
 
-  async list(scope?: VersionScope): Promise<Version[]> {
+  /**
+   * The per-file versions, newest first. A version written by a Folio save that never finished (its
+   * `folioSave` has no Folio version in the Folio journal) is an orphan and is not listed: it is no
+   * version of that Folio and must not be offered, or reused, as one. `including` names a Folio save
+   * still under way, whose own versions count already.
+   */
+  async list(scope?: VersionScope, opts: { includingFolioSave?: string } = {}): Promise<Version[]> {
     return this.#run(async () => {
       const versions = await this.#readLatest()
-      return sortVersionsNewestFirst(versions.filter((version) => matchesVersionScope(version, scope)))
+      const ids = new Set(versions.map((version) => version.id))
+      let extra: Version[] = []
+      try { extra = (this.opts.extra?.() ?? []).filter((version) => !ids.has(version.id)) } catch { extra = [] }
+      const matching = sortVersionsNewestFirst([...versions, ...extra].filter((version) => matchesVersionScope(version, scope)))
+      return withoutUnfinishedFolioSaves(this.ws.root, matching, opts.includingFolioSave)
     })
   }
 

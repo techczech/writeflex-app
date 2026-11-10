@@ -45,11 +45,11 @@ const systemOpen = (url: string): Promise<void> =>
  * then `filed`, with `shown: "now"` when the app added it to its review dock (`via: "app"`) and
  * `shown: "when-opened"` when it waits for the Collection to be opened.
  *
- * An operation that writes is carried out by whoever owns the Collection: by the app when it has the
+ * An operation that writes is carried out by the app when WriteFlex on THIS computer has the
  * Collection open (the command line files one request and reports the app's reply; `via: "app"` in
- * the JSON document), otherwise here, under the owner lock. Export is the exception: it writes
- * nothing in the Collection and is never a request, so with the app open it runs here, without the
- * lock, from what is saved on disk.
+ * the JSON document), otherwise here, directly. There is no Collection lock: nothing synced from another
+ * computer decides the route. Export is the exception: it writes nothing in the Collection and is
+ * never a request, so with the app open it runs here, from what is saved on disk.
  *
  * Every invocation that acts on a Collection names its root and how it came by it: `root` and
  * `rootSource` ("given" with --root, "discovered" by climbing to a marker) in the JSON document, and
@@ -74,9 +74,9 @@ const systemOpen = (url: string): Promise<void> =>
  * (`notes` in the JSON document, a line on stderr in plain text) and the notation is not decoded: the
  * escaped form is for reading, the JSON form is for passing back.
  *
- * TEXT PIPED IN (`--stdin`) IS READ HERE, ONCE, BEFORE ANY ROUTE IS CHOSEN: before the owner lock is
- * taken and before a request is filed. More than the limit (stdin.ts) is refused there, with nothing
- * changed and the lock never held; the operation is then handed the text already read.
+ * TEXT PIPED IN (`--stdin`) IS READ HERE, ONCE, BEFORE ANY ROUTE IS CHOSEN: before anything is
+ * written and before a request is filed. More than the limit (stdin.ts) is refused there, with nothing
+ * changed; the operation is then handed the text already read.
  */
 /** A reason, whoever wrote it, is shown up to this many characters. */
 const MAX_REASON = 8192
@@ -137,7 +137,7 @@ export async function runCli(argv: string[], env: CliEnv): Promise<number> {
     const writeEnv: WriteEnv = { ...(env.home === undefined ? {} : { home: env.home }), ...env.write }
     ctx.replyKeyFolders = replyKeyFolders(writeEnv)
     ctx.records = recordsPlace(writeEnv)
-    const surroundings = (): RequestSurroundings => ({ stdin: ctx.stdin, now: writeEnv.now, lockEnv: writeEnv.lockEnv, keyFolders: replyKeyFolders(writeEnv), ...writeEnv.request })
+    const surroundings = (): RequestSurroundings => ({ stdin: ctx.stdin, now: writeEnv.now, keyFolders: replyKeyFolders(writeEnv), appData: recordsPlace(writeEnv), ...writeEnv.request })
     // A shown-first operation, and withdrawing one, change nothing in the Collection but the command
     // line's own request file. They still need a root the user chose, and the same routing decision.
     const ownsOnlyTheInbox = operation.behaviour === 'shown-first' || operation.name === 'withdraw'

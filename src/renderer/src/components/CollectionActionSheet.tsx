@@ -6,7 +6,7 @@ export const NO_MOVE_DESTINATION = '\0'
 
 export type CollectionSheet = 'rename' | 'status' | 'move' | 'folio' | 'tag'
 const SHEET_TITLES: Record<CollectionSheet, string> = {
-  rename: 'Rename collection', status: 'Set status', move: 'Move to folder', folio: 'Add to Folio', tag: 'Tag documents',
+  rename: 'Rename collection', status: 'Set status', move: 'Move to folder', folio: 'Add to Folio', tag: 'Tag pieces',
 }
 const SHEET_LABELS: Record<CollectionSheet, string> = {
   rename: 'Name', status: 'Status', tag: 'Tags, separated by commas', folio: 'Folio', move: 'Destination folder in this workspace',
@@ -49,7 +49,7 @@ export function CollectionActionSheet({ sheet, value, folders, folioName, busy, 
         {sheet === 'move'
           ? <select value={value} disabled={busy} onChange={event => onChange(event.target.value)}>
               <option value={NO_MOVE_DESTINATION} disabled>Choose a folder…</option>
-              {folders.map(folder => <option key={folder} value={folder}>{folder || 'Workspace root'}</option>)}
+              {folders.map(folder => <option key={folder} value={folder}>{folder || 'Vault root'}</option>)}
             </select>
           : sheet === 'folio'
             ? <span>{folioName}</span>

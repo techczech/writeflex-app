@@ -8,7 +8,7 @@ function format(value: unknown): ExportFormat {
   return value
 }
 
-function htmlOptions(value: unknown): HtmlExportOptions | undefined {
+export function htmlOptions(value: unknown): HtmlExportOptions | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid HTML export options.')
   const input = value as Record<string, unknown>

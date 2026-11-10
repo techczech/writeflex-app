@@ -35,7 +35,7 @@ test('workspace recent files are capped at three and sorted by durable modified 
     <WorkspaceEmpty files={files} onNewFile={() => {}} onSearchFiles={() => {}} onOpenFile={() => {}} />,
   )
 
-  expect(html).toContain('Recent in this workspace')
+  expect(html).toContain('Recent in this vault')
   expect(html.match(/class="workspace-rec-row"/g)?.length).toBe(3)
   expect(html.indexOf('newest.md')).toBeLessThan(html.indexOf('middle.md'))
   expect(html.indexOf('middle.md')).toBeLessThan(html.indexOf('older.md'))
@@ -65,5 +65,5 @@ test('workspace empty omits the recent list when the workspace has no files', ()
     <WorkspaceEmpty files={[]} onNewFile={() => {}} onSearchFiles={() => {}} onOpenFile={() => {}} />,
   )
 
-  expect(html).not.toContain('Recent in this workspace')
+  expect(html).not.toContain('Recent in this vault')
 })

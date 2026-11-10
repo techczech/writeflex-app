@@ -98,7 +98,7 @@ test('every command-palette row shows its task group because results are flat', 
 
   expect(html).toContain('<span class="pal-command-group">Find and manage files</span>')
   expect(html).toContain('<span class="pal-command-group">Review and versions</span>')
-  for (const old of ['Files and versions', 'Reviewing', 'Reading room']) expect(html).not.toContain(`pal-command-group">${old}</span>`)
+  for (const old of ['Files and versions', 'Reviewing', 'Review', 'Reading room']) expect(html).not.toContain(`pal-command-group">${old}</span>`)
 })
 
 test('a query ranks matching skills and commands together with skill descriptions searchable', () => {

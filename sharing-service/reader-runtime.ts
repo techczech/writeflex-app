@@ -1,3 +1,4 @@
+import { READER_RUNTIME_PERSON } from './reader-runtime-person.ts'
 // The reader page's one script, and the content security policy that lets it run and nothing else.
 //
 // The script is added to a published page when it is served (readerPageResponse), not when it is
@@ -7,17 +8,19 @@
 // lets the script reach this service's reader routes and nothing else.
 //
 // What the script does: reader-runtime-text.ts (anchoring) and reader-runtime-ui.ts (notes). On a
-// page with comments off it only removes any <meta name="referrer"> the author's text carries and
-// marks every link no-referrer, so a link out never tells another site the page's address.
+// page with comments off it still polls publication revisions and refreshes the text. Links and
+// referrer metadata are hardened on initial load and after each content swap.
+import { READER_RUNTIME_LIVE } from './reader-runtime-live.ts'
 import { READER_RUNTIME_TEXT } from './reader-runtime-text.ts'
 import { READER_RUNTIME_NAVIGATION } from './reader-runtime-navigation.ts'
 import { READER_RUNTIME_UI, READER_RUNTIME_HARDENING } from './reader-runtime-ui.ts'
 
-export const READER_PAGE_RUNTIME = '(function () {\n"use strict";\nvar rp = document.body && document.body.firstElementChild;\n'
+export const READER_PAGE_RUNTIME = '(async function () {\n"use strict";\nvar rp = document.body && document.body.firstElementChild;\n'
   + 'if (!rp || !rp.classList.contains("rp")) return;\n'
+  + READER_RUNTIME_PERSON
   + READER_RUNTIME_HARDENING
   + 'try {\n' + READER_RUNTIME_NAVIGATION + '\n} catch (error) { /* Navigation must not prevent comments initialising. */ }\n'
-  + READER_RUNTIME_TEXT + READER_RUNTIME_UI + '\n})();\n'
+  + READER_RUNTIME_TEXT + READER_RUNTIME_LIVE + READER_RUNTIME_UI + '\n})();\n'
 
 let hash: Promise<string> | null = null
 

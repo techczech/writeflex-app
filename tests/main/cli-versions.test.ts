@@ -7,7 +7,6 @@ import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WorkspaceAgent } from '../../src/main/agent'
 import { ChangeStore, type NewChange } from '../../src/main/changes'
-import { inspectOwnerLock, ownerLockPath, type OwnerLockRecord } from '../../src/main/owner-lock'
 import { saveNamedVersion } from '../../src/main/save-version'
 import { compareVersionRange } from '../../src/main/version-compare'
 import { readVersionContent, restoreVersionContent } from '../../src/main/version-content'
@@ -54,7 +53,9 @@ const lines = async (rel: string): Promise<Array<Record<string, unknown>>> =>
   (existsSync(join(fx.root, rel)) ? await fx.read(rel) : '').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
 const stores = async (target: WriteFixture = fx): Promise<Record<string, string>> =>
   Object.fromEntries(Object.entries(await target.snapshot()).filter(([path]) => path.startsWith('.bridle/') || path === '.writeflex/versions.jsonl' || path === '.writeflex/changes.jsonl'))
-const lockFree = async (): Promise<boolean> => !existsSync(ownerLockPath(fx.root)) && (await inspectOwnerLock(fx.root)).state === 'free'
+const ownerLockPath = (root: string): string => join(root, '.writeflex', 'owner.lock')
+/** No Collection lock exists any more: nothing leaves an `owner.lock` behind. */
+const lockFree = async (): Promise<boolean> => !existsSync(ownerLockPath(fx.root))
 
 /** The Collection opened as the app opens it: its one Workspace, its stores, and a real agent over Bridle. */
 async function openedByTheApp(target: WriteFixture = fx): Promise<{ workspace: Workspace; versions: VersionStore; changes: ChangeStore; agent: WorkspaceAgent }> {
@@ -150,7 +151,7 @@ test('while the app owns the Collection a save is one request, carried out by th
     const added = Object.keys(after).filter((path) => !(path in before))
     expect(added).toEqual([`.writeflex/inbox/${sent.json.result!.request as string}.json`])
     expect(Object.fromEntries(Object.entries(after).filter(([path]) => path !== added[0]))).toEqual(before)
-    expect(JSON.parse(await fx.read(added[0]))).toEqual({ version: 1, id: sent.json.result!.request, operation: 'save-version', args: { path: 'notes.md', name: 'Asked for' } })
+    expect(JSON.parse(await fx.read(added[0]))).toEqual({ version: 1, id: sent.json.result!.request, operation: 'save-version', args: { path: 'notes.md', name: 'Asked for' }, to: [expect.any(String)] })
     await rm(join(fx.root, added[0]))
 
     // The app answers: the version is in the app's stores, saved by the app.
@@ -169,7 +170,6 @@ test('while the app owns the Collection a save is one request, carried out by th
     }
     expect(reached).toEqual([])
     expect(await inboxNames(fx)).toEqual([])
-    expect((await inspectOwnerLock(fx.root)).owner?.kind).toBe('app')
   } finally {
     await app.close()
   }
@@ -197,30 +197,15 @@ test('a request can ask only for a document path, a name and a note; anything el
   }
 })
 
-test('no save proceeds once the owner lock is lost: nothing is written to either store', async () => {
-  const before = await fx.snapshot({ journal: true })
-  const planted: OwnerLockRecord = { version: 1, pid: process.pid, kind: 'app', host: hostname(), startedAt: Date.now(), heartbeatAt: Date.now(), processStartedAt: null, token: 'planted' }
-  const result = await fx.cli(['save-version', 'notes.md', '--name', 'Too late'], {
-    write: { seams: { beforeWrite: async () => { await writeFile(ownerLockPath(fx.root), JSON.stringify(planted)) } } },
-  })
-  expect(result.code).toBe(1)
-  expect(result.json.error).toMatchObject({ code: 'owner-lock-lost' })
-  expect(result.json.error!.message).toContain('WriteFlex or another program took over this Collection')
-  expect(await fx.snapshot({ journal: true })).toEqual(before)
-  expect((JSON.parse(await readFile(ownerLockPath(fx.root), 'utf8')) as OwnerLockRecord).token).toBe('planted')
-  await rm(ownerLockPath(fx.root))
-})
-
-test('while one process is saving a version under the lock, a second process cannot write the stores; it saves after', async () => {
+test('two processes saving versions at once (no lock): both saves land whole in both stores', async () => {
   const before = await stores()
   let entered!: () => void
   let release!: () => void
   const inside = new Promise<void>((resolve) => { entered = resolve })
   const held = new Promise<void>((resolve) => { release = resolve })
-  // This process takes the lock and stops just before it writes.
+  // This process stops just before it writes.
   const mine = fx.cli(['save-version', 'notes.md', '--name', 'First in'], { write: { seams: { beforeWrite: async () => { entered(); await held } } } })
   await inside
-  expect((await inspectOwnerLock(fx.root)).owner).toMatchObject({ kind: 'command-line', pid: process.pid })
 
   // A second real process asks for the same thing.
   const child = spawn(process.execPath, [join(import.meta.dir, '..', 'fixtures', 'cli-version-child.ts'), fx.root, 'talks/york.md', 'Second in'], {
@@ -232,23 +217,19 @@ test('while one process is saving a version under the lock, a second process can
   const said = (): string[] => printed.split('\n').filter(Boolean)
   for (const until = Date.now() + 15_000; !said().includes('started') && Date.now() < until;) await new Promise((done) => { setTimeout(done, 20) })
   expect(said()).toContain('started')
-  // It has had time to write, and has written nothing and not finished: it waits for the lock.
-  await new Promise((done) => { setTimeout(done, 700) })
-  expect(said()).toEqual(['started'])
-  expect(await stores()).toEqual(before)
-
+  // Nothing makes it wait: it saves while the first is paused.
+  expect(await exited).toBe(0)
+  expect(await stores()).not.toEqual(before)
   release()
   const first = await mine
   expect(first.json.error?.message ?? '').toBe('')
-  expect(await exited).toBe(0)
   const second = JSON.parse(said()[1]) as { ok: boolean; result: { version: Version } }
   expect(said()[2]).toBe('exit 0')
   expect(second.ok).toBe(true)
-  // Each save's lines are whole and in turn: nothing of the second is among the first's.
+  // Each save's lines are whole (each parses): the second process's came first this time.
   const history = (await lines('.bridle/journal.jsonl')).slice(1)
-  expect(history.map((entry) => entry.kind)).toEqual(['restore-point', 'snapshot', 'restore-point', 'snapshot'])
-  expect(history.map((entry) => entry.label ?? entry.file)).toEqual(['version: notes.md', join(fx.root, 'notes.md'), 'version: talks/york.md', join(fx.root, 'talks/york.md')])
-  expect((await lines('.writeflex/versions.jsonl')).slice(1).map((version) => version.name)).toEqual(['First in', 'Second in'])
+  expect(history.map((entry) => entry.label ?? entry.file).sort()).toEqual(['version: notes.md', join(fx.root, 'notes.md'), 'version: talks/york.md', join(fx.root, 'talks/york.md')].sort())
+  expect((await lines('.writeflex/versions.jsonl')).slice(1).map((version) => version.name).sort()).toEqual(['First in', 'Second in'])
   expect(await lockFree()).toBe(true)
 }, 30_000)
 
@@ -342,8 +323,9 @@ test('a history store that is not an ordinary folder of ordinary files is never 
   await symlink(join(aside, 'written-through.txt'), join(fx.root, '.bridle', 'objects', object))
   await refusedWith('is not an ordinary file')
   await rm(join(fx.root, '.bridle', 'objects', object))
-  // An object that does not hold the text it is named for would become the version's text.
-  await writeFile(join(fx.root, '.bridle', 'objects', object), 'not the document\n')
+  // An object that does not hold the text it is named for would become the version's text. A plain one-name file is
+  // repaired (cli-history-store.test.ts); one that is also a name of a file outside is not touched.
+  await link(join(aside, 'kept.txt'), join(fx.root, '.bridle', 'objects', object))
   await refusedWith('does not hold the text it is named for')
   await rm(join(fx.root, '.bridle', 'objects', object))
   // The history journal is a second name of a file outside the Collection.

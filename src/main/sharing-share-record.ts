@@ -3,7 +3,7 @@
 // sharing-publisher.ts (ticket 04), which decides every change to a record.
 //
 // No Electron import.
-import { isAbsolute } from 'node:path'
+import { safeRelative } from '../../sharing-service/share-record-protocol.ts'
 import { SHARE_LIMITS } from '../../sharing-service/share-protocol.ts'
 import { PIECE_ID } from './sharing-piece-identity'
 import { cleanLinkName, type ShareKind, type SharePublishProblem } from '../shared/sharing-links'
@@ -13,6 +13,8 @@ export type PublishedPartRecord = { path: string; title: string; missing: boolea
 
 export type ShareRecord = {
   shareId: string
+  registryPending?: true
+  workspaceId?: string
   /** A piece, or a whole Folio (ticket 09). Absent in records from before ticket 09: a piece. */
   kind: ShareKind
   /** The Workspace root the link was made in, and the piece's path in it (a Folio: its folder, '' for the Workspace itself). */
@@ -20,6 +22,8 @@ export type ShareRecord = {
   path: string
   name: string | null
   comments: boolean
+  notes?: 'private' | 'open'
+  hasPrivateComments?: boolean
   on: boolean
   madeAt: number
   /** The revision the service holds (0: nothing published yet). */
@@ -33,6 +37,8 @@ export type ShareRecord = {
   note: string | null
   /** Folio links: each part file's key (sharing-folio.ts), kept so a part keeps its ids when the order changes. */
   partKeys: Record<string, string>
+  /** Keys this Mac rendered from local part files; never synced as link metadata. */
+  seenPartKeys?: string[]
   /** Folio links: the parts the last publish sent, in running order. */
   parts: PublishedPartRecord[]
   /** Ticket 07, the Limits panel: refusals by reason the writer has acted on (Clear, Raise, Turn
@@ -59,17 +65,24 @@ export type ShareRecord = {
 
 export type ShareLost = { at: number; why: 'gone' | 'unreadable'; candidate: string | null }
 
+/** Add local-render keys, or preserve that history when an older operation completes. */
+export function rememberSeen(record: Pick<ShareRecord, 'seenPartKeys'>, keys: readonly string[]): string[] {
+  return [...new Set([...(record.seenPartKeys ?? []), ...keys])]
+}
+
 /** A Workspace-relative path as records keep them: `/` separators, no climbing out. */
 export function relativePathOk(path: unknown): path is string {
-  return typeof path === 'string' && path !== '' && path.length <= 4096 && !isAbsolute(path) && !path.includes('\\') && !path.includes('\0')
-    && !path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
+  return safeRelative(path)
 }
 
 export function readRecords(raw: unknown): ShareRecord[] {
   if (!Array.isArray(raw)) return []
+  const seenIds = new Set<string>()
   return raw.slice(0, 2000).flatMap((entry): ShareRecord[] => {
     const r = entry as Partial<ShareRecord> | null
     if (!r || typeof r !== 'object' || typeof r.shareId !== 'string' || !/^[A-Za-z0-9]{8,64}$/.test(r.shareId)) return []
+    if (seenIds.has(r.shareId)) return []
+    seenIds.add(r.shareId)
     const kind: ShareKind = r.kind === 'folio' ? 'folio' : 'piece'
     // A Folio's folder may be the Workspace itself ('').
     if (typeof r.root !== 'string' || !r.root || typeof r.path !== 'string' || (!r.path && kind === 'piece')) return []
@@ -90,11 +103,15 @@ export function readRecords(raw: unknown): ShareRecord[] {
       : null
     return [{
       shareId: r.shareId,
+      ...(r.registryPending === true ? { registryPending: true as const } : {}),
+      ...(typeof r.workspaceId === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(r.workspaceId) ? { workspaceId: r.workspaceId } : {}),
       kind,
       root: r.root,
       path: r.path,
       name: cleanLinkName(r.name),
       comments: r.comments === true,
+      notes: r.notes === 'open' ? 'open' : 'private',
+      hasPrivateComments: r.hasPrivateComments === true,
       on: r.on === true,
       madeAt: time(r.madeAt) ?? 0,
       revision: Number.isSafeInteger(r.revision) && (r.revision as number) >= 0 ? r.revision as number : 0,
@@ -104,6 +121,8 @@ export function readRecords(raw: unknown): ShareRecord[] {
       problem,
       note: typeof r.note === 'string' && r.note ? r.note.slice(0, 400) : null,
       partKeys,
+      // Registry caches cannot prove that a part was ever rendered on this Mac.
+      ...(kind === 'folio' ? { seenPartKeys: rememberSeen({}, Array.isArray(r.seenPartKeys) ? r.seenPartKeys.filter((key): key is string => typeof key === 'string' && /^[a-z][a-z0-9]{5}$/.test(key)) : []) } : {}),
       parts,
       ...(seen ? { refusedSeen: seen } : {}),
       queuedAt: time(r.queuedAt),
@@ -119,9 +138,9 @@ export function readRecords(raw: unknown): ShareRecord[] {
 }
 
 /** How a reader's card names the link (spec section 2): its name, or its settings and the date it was made. */
-export function readerLinkLabel(record: Pick<ShareRecord, 'name' | 'comments' | 'madeAt'>): string {
+export function readerLinkLabel(record: Pick<ShareRecord, 'name' | 'comments' | 'madeAt' | 'notes'>): string {
   if (record.name) return record.name
   const made = record.madeAt > 0 ? new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' }).format(new Date(record.madeAt)) : ''
-  return `${record.comments ? 'Comments on, private' : 'Comments off'}${made ? ` · ${made}` : ''}`
+  return `${record.comments ? record.notes === 'open' ? 'Open comments' : 'Comments on, private' : 'Comments off'}${made ? ` · ${made}` : ''}`
 }
 

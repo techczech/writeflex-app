@@ -10,6 +10,7 @@ import { TITLE_PAGE_SET_IN_MANIFEST, isFrontMatterRole } from '../../../shared/f
 import { buildPlanRows, materialisationPreview } from '../plan/plan-view-model'
 import { type FolioAgentPillHandle, FolioAgentInstructionsPill } from './FolioAgentInstructions'
 import { type FolioDetailsCardHandle, FolioDetailsCard } from './FolioDetailsCard'
+import { FolioInsertedFiles } from './FolioInsertedFiles'
 import { FolioFrontMatterSlot, type FrontMatterOffer } from './FolioRail'
 import { PlanAddAllSheet } from './PlanAddAllSheet'
 import { PartHeadingControl, PartRoleControl, planActionFailure, titleFixTargetOf, titleFixUnavailable } from './PlanView'
@@ -229,8 +230,8 @@ export function useFolioPlanTools({ dir, active, model, runningOrder, onStatus, 
 
   const toolbar = (
     <>
-      {runningOrder && addAllRows.length > 0 && <button type="button" ref={addAllButton} className="fr-tb" data-plan-add-all="true" disabled={busy} onClick={openAddAll}><ListPlus aria-hidden="true" />Add all from this folder</button>}
-      {runningOrder && writtenRows > 1 && <button type="button" className="fr-tb" data-plan-sort="true" disabled={busy} onClick={sortByChapter}><ArrowDownAZ aria-hidden="true" />Sort by chapter number</button>}
+      {runningOrder && addAllRows.length > 0 && <button type="button" ref={addAllButton} className="fr-tb" data-plan-add-all="true" title="Add all from this folder" disabled={busy} onClick={openAddAll}><ListPlus aria-hidden="true" />Add all from this folder</button>}
+      {runningOrder && writtenRows > 1 && <button type="button" className="fr-tb" data-plan-sort="true" title="Sort by chapter number" disabled={busy} onClick={sortByChapter}><ArrowDownAZ aria-hidden="true" />Sort by chapter number</button>}
       {titleActions && titleConflicts.length >= 2 && (['heading-to-title', 'title-to-heading'] as const).map((direction) => (
         <button key={direction} type="button" className="fr-tb" data-plan-title-fix-all={direction} disabled={busy} onClick={() => fixAll(direction)}>
           <Heading aria-hidden="true" />{direction === 'heading-to-title' ? `Use headings as titles for all ${titleConflicts.length}` : `Use titles as headings for all ${titleConflicts.length}`}
@@ -262,6 +263,7 @@ export function useFolioPlanTools({ dir, active, model, runningOrder, onStatus, 
     <div className="fr-folio-insp" data-testid="folio-inspector">
       <FolioAgentInstructionsPill ref={agentRef} dir={dir} onOpenPiece={onOpenPiece} onStatus={onStatus} />
       <FolioDetailsCard ref={detailsRef} dir={dir} onLeave={onLeave} onStatus={onStatus} {...(runningOrder ? { write: runningOrder.write } : {})} />
+      <FolioInsertedFiles dir={dir} onStatus={onStatus} />
       <FolioFrontMatterSlot rows={frontRows} selected={null} offers={frontOffers} busy={busy} menuOpen={chooseFrontOpen} onMenuOpen={setChooseFrontOpen}
         onSelect={onSelectPart} takeOutDescription="Take this out of the Folio outline and move its file to the Folio bin" onChoose={(offer) => adoptAt(offer.index, true)}
         onTakeOut={(index) => { const part = plan?.parts[index]; if (part && runningOrder) void run(() => runningOrder.removeToBin(dir, [index], plan!.parts.map((item) => ({ title: item.title, path: item.path, gloss: item.gloss, role: item.role, tags: [...item.tags] })))) }} />

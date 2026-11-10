@@ -11,6 +11,7 @@ import { CREATE_OPERATIONS } from './create-operations'
 import { EXPORT_OPERATIONS } from './export-operation'
 import { ORGANISE_OPERATIONS } from './organise-operations'
 import { VERSION_OPERATIONS } from './version-operations'
+import { FOLIO_VERSION_OPERATIONS } from './folio-version-operations'
 import { REVIEW_OPERATIONS } from './review-operations'
 
 export const BEHAVIOUR_LABELS: Record<Behaviour, string> = { direct: 'direct', 'shown-first': 'shown first', asks: 'asks' }
@@ -24,7 +25,7 @@ export function outcomesOf(op: Operation): Outcome[] {
   const requestable = (REQUEST_OPERATIONS as readonly string[]).includes(op.name) || (READ_REQUEST_OPERATIONS as readonly string[]).includes(op.name)
   const out: Outcome[] =
     op.behaviour === 'shown-first' ? ['filed', 'refused', 'needs-writer', 'sent-not-confirmed', 'not-verified']
-    : op.name === 'save-version' ? ['done', 'refused', 'needs-writer', 'sent-not-confirmed', 'not-verified']
+    : op.name === 'save-version' || op.name === 'save-folio-version' || op.name === 'import-revision' ? ['done', 'refused', 'needs-writer', 'sent-not-confirmed', 'not-verified']
     : requestable ? ['done', 'refused', 'sent-not-confirmed', 'not-verified']
     : ['done', 'refused']
   return [...out, 'usage', 'failed']
@@ -79,7 +80,7 @@ export function describeData(op: Operation): unknown {
 
 /** The full table: the read and write operations, plus help and describe, which read the table itself. */
 export function buildOperationTable(): Operation[] {
-  const table: Operation[] = [...READ_OPERATIONS, ...VERSION_OPERATIONS, ...CREATE_OPERATIONS, ...ORGANISE_OPERATIONS, ...REVIEW_OPERATIONS, ...EXPORT_OPERATIONS]
+  const table: Operation[] = [...READ_OPERATIONS, ...VERSION_OPERATIONS, ...FOLIO_VERSION_OPERATIONS, ...CREATE_OPERATIONS, ...ORGANISE_OPERATIONS, ...REVIEW_OPERATIONS, ...EXPORT_OPERATIONS]
   table.push(
     {
       name: 'help', group: 'Work with the agent', behaviour: 'direct',

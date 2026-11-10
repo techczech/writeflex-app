@@ -226,7 +226,19 @@
     {
       "subgroup": "Versions and compare",
       "rows": [
+        "Open Folio Versions",
+        "Open Folio Version Read-only",
+        "Compare Folio Versions…",
+        "Back to Working Draft",
         "Save Version…",
+        "Save Folio Version…",
+        "Export This Folio Version…",
+        "Import Revision from Word…",
+        "Mark Version as Sent…",
+        "Save Version of This File…",
+        "Compare This File Version with Working Copy",
+        "Restore This File Version…",
+        "Save This File Version as a Copy…",
         "Open Versions"
       ]
     }
@@ -251,7 +263,7 @@
         "Clear document…",
         "Open Files",
         "Quick Open…",
-        "Pin / unpin this workspace [variants: workspace.pin, workspace.unpin]",
+        "Pin / unpin this vault [variants: workspace.pin, workspace.unpin]",
         "Open",
         "Rename",
         "Move to folder…",
@@ -279,9 +291,19 @@
       ]
     },
     {
+      "subgroup": "Sync and backup",
+      "rows": [
+        "Open Sync",
+        "Show sync status",
+        "Sync now",
+        "Check for remote changes",
+        "Open backup history"
+      ]
+    },
+    {
       "subgroup": "Search",
       "rows": [
-        "Search Workspace…",
+        "Search vault…",
         "Search the archive…"
       ]
     }
@@ -300,7 +322,7 @@
         "Undo last offcut, scrap or source step",
         "Move column left",
         "Move column right",
-        "New document",
+        "New piece",
         "Search this collection",
         "Open Collection menu",
         "Filter collection by status",
@@ -333,7 +355,7 @@
         "Add to the running order",
         "Add all to the running order",
         "Undo last running-order or section move",
-        "Folio workspace: Outline",
+        "Folio workspace: Table",
         "Folio workspace: Text",
         "Folio workspace: Cards",
         "Folio workspace: Map",
@@ -494,7 +516,7 @@
       "subgroup": "View and text size",
       "rows": [
         "Show/hide left sidebar",
-        "Show/hide right pane",
+        "Show/hide right sidebar",
         "Show status details",
         "View: Clean",
         "View: Show markup",
@@ -520,6 +542,8 @@
       "subgroup": "Settings and shortcuts",
       "rows": [
         "Command Palette…",
+        "Check for Updates…",
+        "What’s new in WriteFlex",
         "Open Settings…",
         "About WriteFlex",
         "Open the Guide",

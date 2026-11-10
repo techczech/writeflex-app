@@ -1,9 +1,9 @@
 import { declaresSectionPage, sectionMembership } from '../../../shared/folio-sections'
 import { setEvidenceDrag } from '../folio-evidence-transfer'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
-import { BookMarked, BookOpen, ChevronDown, FileText, Lightbulb, ListOrdered, ListPlus, Plus } from 'lucide-react'
+import { BookMarked, BookOpen, ChevronDown, FileText, Lightbulb, ListPlus, Plus } from 'lucide-react'
 import { usePieceDrag } from './folio-piece-drag'
-import { ORDER_IN_PLAN_LINE, addAllTooltip, addName, addTooltip, gripName, putBackWhy, type FocusedFolioRow } from '../../../shared/folio-running-order'
+import { addAllTooltip, addName, addTooltip, gripName, putBackWhy, type FocusedFolioRow } from '../../../shared/folio-running-order'
 import type { FolioOutline, FolioOutlineFile } from '../../../preload'
 import type { OutlineHeading } from '../editor/outline'
 import { alsoLine, filterFolioFile, folderFootLine, folioKeyAction, folioTabStop, limitLevels, openRows, shownHeadings, type FolioKeyRow } from '../../../shared/folio-outline'
@@ -11,6 +11,8 @@ import { partTitle, type PartHeadingMode } from '../../../shared/folio-part-titl
 import { folioHeadingFlow, type FlowPart } from '../../../shared/folio-heading-flow'
 import { TITLE_FIX_LABEL, titleConflictSentence } from '../../../shared/title-conflict'
 import { useTitleConflictContext } from '../app/title-conflict-actions'
+import { useFolioCues } from '../plan/folio-cues-store'
+import { dotLabel } from '../../../shared/folio-version-changes'
 
 /** A heading row of the Folio part. The open file's headings carry their editor offset (`from`); the
  *  others, read from disk, their 1-based line. */
@@ -87,6 +89,9 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
   // A buffer from another file (the snapshot trails a tab switch) is ignored: the open piece then shows its disk headings.
   const fromBuffer = openPath !== null && bufferPath === openPath
   const titleActions = useTitleConflictContext()
+  // Folio versions ticket 06: a dot on the parts changed since the last Folio version (nothing in a Collection with none).
+  const cues = useFolioCues(outline.dir)
+  const dotted = useMemo(() => new Set(cues.state === 'ready' ? cues.dotted : []), [cues])
   const bufferHeadings: readonly OutlineHeading[] = fromBuffer ? rawBufferHeadings : NO_BUFFER
   const [focusKey, setFocusKey] = useState<string | null>(null)
   const open = useMemo(() => openRows(outline, openPath), [outline, openPath])
@@ -283,6 +288,7 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
           </span>
           {front ? <BookOpen className="icon sm fo-fi" aria-hidden="true" /> : kind === 'piece' ? null : <FileText className="icon sm fo-fi" aria-hidden="true" />}
           <span className="fo-t">{kind === 'also' && file.under ? <span className="fo-under" data-fo-under={file.under}>{file.under}/</span> : null}{title}</span>
+          {kind === 'piece' && !front && cues.state === 'ready' && dotted.has(file.path) && <span className="fo-changed" role="img" aria-label={dotLabel(cues, file.path)} title={dotLabel(cues, file.path)} data-testid="binder-change-dot" data-changed-path={file.path} />}
           {kind === 'piece' && sectionOf(index) && !front && <span className="fo-flag fo-section-chip">Section page</span>}
           {front && <span className="fo-flag fo-front-flag" data-fo-flag="not-in-contents" title="Front matter: exported before the contents page and never listed in it. Change it in the Folio outline.">not in contents</span>}
           {file.missing && <span className="fo-flag" title="The bound chapter file is missing.">Missing file</span>}
@@ -402,21 +408,12 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
           </>
         )}
         <div className="fo-sec fo-pin" id="fo-grp-run" role="presentation">
-          <span>Contents · {flow.sections?.length ? `${flow.sections.length} ${flow.sections.length === 1 ? 'section' : 'sections'} · ` : ''}{flow.chapters} {flow.chapters === 1 ? 'chapter' : 'chapters'}</span>
+          <span>Contents · {flow.sections?.length ? `${flow.sections.length} ${flow.sections.length === 1 ? 'section' : 'sections'} · ` : ''}{contentsPieces.length} {contentsPieces.length === 1 ? 'part' : 'parts'} written</span>
           {canChange && !filtering && contentsPieces.length > 1 && <span className="fo-hint" data-fo-hint="true">{movingTitle ? `moving ${titleOf(movingTitle)}` : 'drag to reorder'}</span>}
         </div>
         {/* Each group's rows sit in a labelled group; the sticky headings stay direct children of the scroller. */}
-        {/* Hidden while a filter is on, like the drag hint and Add all: Tab from the Filter box then lands on a row. */}
-        {!canChange && !filtering && (
-          <p className="fo-planonly" data-fo-plan-only="true">
-            <span>{ORDER_IN_PLAN_LINE}</span>
-            <button type="button" className="fo-openplan" data-fo-open-plan="true" title="Open the Folio outline for this Folio" onClick={onOpenPlan}>
-              <ListOrdered className="icon sm" aria-hidden="true" />Folio outline
-            </button>
-          </p>
-        )}
         <div role="group" aria-labelledby="fo-grp-run">
-          {pieceEntries.length === 0 && <p className="ol-empty">{filtering ? 'No matches' : 'No pieces in the running order'}</p>}
+          {pieceEntries.length === 0 && <p className="ol-empty">{filtering ? 'No matches' : 'No parts in the outline'}</p>}
           {pieceEntries.flatMap((entry, at) => [dropLine(at), renderFile(entry)])}
           {dropLine(pieceEntries.length)}
         </div>

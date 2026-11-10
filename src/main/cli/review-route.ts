@@ -3,12 +3,12 @@
  * and 5). The command line writes ONE request file into `.writeflex/inbox/` and nothing else: no
  * document, no journal entry, and never the review ledger, which is the app's store.
  *
- *  - WriteFlex has the Collection open (the owner lock names a live app): the request is sent as any
+ *  - WriteFlex on this computer has the Collection open (its reply key says so): the request is sent as any
  *    other is (request-route.ts) and the command line waits for the app's signed reply, which says the
- *    change is in the review dock, or that the app refused it and closed it with the reason. With a
- *    lock and no usable reply key nothing is sent ("could not be verified"). With no reply inside the
+ *    change is in the review dock, or that the app refused it and closed it with the reason. With no reply inside the
  *    wait the result is "sent, not confirmed": the request stays, and the app adds it when it looks.
- *  - No app has it open: the request is left in the inbox. It does not expire (only direct requests
+ *  - No app on this computer has it open: the request is left in the inbox, addressed to this computer
+ *    (request-address.ts), so the app on another Mac sharing the Collection leaves it alone. It does not expire (only direct requests
  *    do): the app adds it to the review dock when the Collection is next opened.
  *
  * Either way the app checks the request again from scratch when it adds it. What the command line

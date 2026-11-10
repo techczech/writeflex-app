@@ -1,7 +1,14 @@
+import { READER_CLAIM_RELEASE_MS } from '../../sharing-service/share-protocol.ts'
+import { randomUUID } from 'node:crypto'
+import type { Change } from '../engine'
+import { readerNoteOf } from './outside-change-fields'
 // When readers' notes are collected (0.24 ticket 07): for one window's Collection, a look when it is
-// bound, then every minute and whenever a link changes, one look at a time. Only while the window holds
-// the Collection's owner lock (the one writer), so two windows, or two Macs on one synced Collection,
-// never collect into it at once. The links and their owner tokens come from the publisher
+// bound, then every 15 seconds with an app window focused (60 otherwise), and whenever a link
+// changes, one look at a time. Only while the window has
+// the Collection open (one window per Collection per app). There is no Collection lock: two Macs on one
+// synced Collection may both collect all retained items; service item identity and the current
+// service receipt converge their review cards, including sync-created journal copies
+// (docs/plans/2026-11-03-sync-replicas-and-duplicate-reconciliation.md). The links and their owner tokens come from the publisher
 // (sharing-publisher.ts `noteSources`), set once by index.ts; nothing here leaves main.
 //
 // Ticket 08: the same look then sends what readers are owed, the outcome of each note and the writer's
@@ -15,7 +22,12 @@ import { LEGACY_ANSWERS_AT_MOST, sendReaderOutcomes, type LegacyAnswers, type Re
 import type { Workspace } from './workspace'
 
 export type ReaderNotesSource = {
+  refresh?(root: string): Promise<void>
+  claimAccept?(base: string, shareId: string, owner: string, key: string, claim: string): Promise<import('./sharing-client').ServiceAnswer<{ allowed: boolean; status?: string }>>
+  releaseAccept?(base: string, shareId: string, owner: string, key: string, claim: string, force?: boolean, expectedAt?: number): Promise<unknown>
   links(root: string): ReaderLinkSource[]
+  /** The mode shown locally when an owner writes a reply, before any sending or retry. */
+  replyVisibility?(root: string, shareId: string): 'private' | 'open'
   fetchNotes: ReaderNotesPorts['fetchNotes']
   markCollected: ReaderNotesPorts['markCollected']
   /** Ticket 08: outcomes and replies to a link's service. Absent: nothing is sent back. */
@@ -26,11 +38,77 @@ export type ReaderNotesSource = {
 }
 
 let source: ReaderNotesSource | null = null
+const claimsByItem = new Map<string, { at: number; mine: boolean; ready: boolean }>()
+export function rememberReaderClaims(shareId: string, notes: unknown[]): boolean {
+  let changed = false
+  for (const item of notes) {
+    const v = item as { key?: unknown; claim?: { at?: unknown; mine?: unknown } } | null
+    if (typeof v?.key !== 'string') continue
+    const key = `${shareId}/${v.key}`
+    const previous = claimsByItem.get(key)
+    if (Number.isSafeInteger(v.claim?.at) && typeof v.claim?.mine === 'boolean') {
+      const next = { at: v.claim.at as number, mine: v.claim.mine, ready: !v.claim.mine && Date.now() - (v.claim.at as number) > READER_CLAIM_RELEASE_MS }
+      if (JSON.stringify(previous) !== JSON.stringify(next)) changed = true
+      claimsByItem.set(key, next)
+    } else if (claimsByItem.delete(key)) changed = true
+  }
+  return changed
+}
+export function readerClaimFor(change: Change): { at: number; mine: boolean } | null {
+  const fields = readerNoteOf(change)
+  const claim = fields ? claimsByItem.get(`${fields.shareId}/${fields.key}`) : null
+  return claim ? { at: claim.at, mine: claim.mine } : null
+}
+/** The confirmation is a main-owned card. Re-read after it and let the service make the final check. */
+export async function releaseReaderClaim(root: string, change: Change, confirm: () => Promise<boolean>): Promise<boolean> {
+  const fields = readerNoteOf(change), from = source
+  const link = fields && from?.links(root).find((link) => link.shareId === fields.shareId)
+  if (!fields || !from || !link || !from.releaseAccept) return false
+  const read = async () => {
+    const answer = await from.fetchNotes(link.base, link.shareId, link.owner)
+    if (answer.kind !== 'ok') return null
+    rememberReaderClaims(link.shareId, answer.body.notes)
+    return readerClaimFor(change)
+  }
+  const claim = await read()
+  if (!claim || claim.mine || Date.now() - claim.at <= READER_CLAIM_RELEASE_MS || !await confirm()) return false
+  const current = await read()
+  if (!current || current.mine || current.at !== claim.at) return false
+  const answer = await from.releaseAccept(link.base, link.shareId, link.owner, fields.key, randomUUID(), true, claim.at) as { kind?: string }
+  if (answer?.kind !== 'ok') return false
+  claimsByItem.delete(`${link.shareId}/${fields.key}`)
+  readerLinksChanged()
+  return true
+}
+// Only operations whose file-writing callback has never run can reuse a reservation after offline.
+const unstartedClaims = new Map<string, string>()
+/** The file-writing Accept path claims exactly one operation; ambiguous failures keep the claim. */
+export async function guardReaderAcceptance<T extends { applied: boolean }>(root: string, change: Change, act: () => Promise<T>): Promise<T | { applied: false; message: string }> {
+  const fields = readerNoteOf(change), from = source
+  if (!fields || fields.kind !== 'edit' || !from?.claimAccept) return act()
+  const link = from.links(root).find((link) => link.shareId === fields.shareId)
+  if (!link) return { applied: false, message: 'This Mac cannot confirm the reader edit with the sharing service. Check sharing and try again.' }
+  const operation = JSON.stringify([root, fields.shareId, fields.key])
+  const claim = unstartedClaims.get(operation) ?? randomUUID()
+  unstartedClaims.set(operation, claim)
+  const answer = await from.claimAccept(link.base, link.shareId, link.owner, fields.key, claim).catch(() => null)
+  if (answer?.kind !== 'ok') return { applied: false, message: 'The sharing service could not confirm this edit. Nothing was applied; check the connection and try again.' }
+  if (!answer.body.allowed) { unstartedClaims.delete(operation); return { applied: false, message: 'This edit has already been handled, or is being applied, on another Mac. Nothing was applied here.' } }
+  unstartedClaims.delete(operation)
+  // A thrown error can follow a committed write, so it never releases the reservation.
+  const result = await act()
+  if (!result.applied) await from.releaseAccept?.(link.base, link.shareId, link.owner, fields.key, claim).catch(() => {})
+  return result
+}
+
 const listeners = new Set<() => void>()
 /** What each link's service last said it refused from readers (limits), by share id, for the Sharing page. */
 const refusedByShare = new Map<string, NotesRefused>()
 
-export function setReaderNotesSource(next: ReaderNotesSource | null): void { source = next }
+export function setReaderNotesSource(next: ReaderNotesSource | null): void { source = next; if (next === null) { unstartedClaims.clear(); claimsByItem.clear() } }
+export function readerReplyVisibility(root: string, shareId: string): 'private' | 'open' {
+  return source?.replyVisibility?.(root, shareId) === 'open' ? 'open' : 'private'
+}
 /** A link changed (made, turned on or off, removed): what is kept for a removed link goes; every Collection looks again. */
 export function readerLinksChanged(): void {
   pruneReaderNoteMaps()
@@ -70,16 +148,19 @@ export function limitsFor(shareId: string): ShareNoteLimits | null | undefined {
 export function setLimitsFor(shareId: string, limits: ShareNoteLimits | null): void { limitsByShare.set(shareId, limits) }
 
 export const READER_NOTES_INTERVAL_MS = 60_000
+export const READER_NOTES_FOCUSED_INTERVAL_MS = 15_000
 
 export function startReaderNotesCollection(input: {
   workspace: Workspace
   changes: ChangeStore
-  /** Still bound to this Collection, and holding its owner lock. */
+  /** Still bound to this Collection, and the Collection still open here. */
   owns(): boolean
   onCollected(outcome: CollectOutcome): void
   /** Ticket 08: a link's service confirmed outcomes or replies (the cards' "Sent" marks change). */
   onHeard?(): void
   report?(event: string, details: Record<string, unknown>): void
+  onFocusChanged?(changed: () => void): () => void
+  focused?(): boolean
   intervalMs?: number
 }): { dispose(): void; look(): Promise<void> } {
   let running: Promise<void> | null = null
@@ -93,6 +174,8 @@ export function startReaderNotesCollection(input: {
         again = false
         const from = source
         if (!from || !input.owns()) return
+        await from.refresh?.(input.workspace.root).catch(() => {})
+        if (disposed || !input.owns()) return
         const links = from.links(input.workspace.root)
         // A look with no link left still forgets what was kept for links removed (review round 1 of ticket
         // 11, F3); a token read that fails prunes nothing (`pruneReaderNoteMaps`).
@@ -124,13 +207,20 @@ export function startReaderNotesCollection(input: {
     })().finally(() => { running = null })
     return running
   }
-  const timer = setInterval(() => { void look() }, input.intervalMs ?? READER_NOTES_INTERVAL_MS)
-  ;(timer as { unref?: () => void }).unref?.()
+  let timer: ReturnType<typeof setTimeout>
+  const schedule = (): void => {
+    clearTimeout(timer)
+    const delay = input.intervalMs ?? (input.focused?.() ? READER_NOTES_FOCUSED_INTERVAL_MS : READER_NOTES_INTERVAL_MS)
+    timer = setTimeout(() => { void look(); if (!disposed) schedule() }, delay)
+    ;(timer as { unref?: () => void }).unref?.()
+  }
+  schedule()
+  const stopFocus = input.onFocusChanged?.(() => { clearTimeout(timer); if (!disposed) schedule() })
   const listener = (): void => { void look() }
   listeners.add(listener)
   void look()
   return {
     look,
-    dispose() { disposed = true; clearInterval(timer); listeners.delete(listener) },
+    dispose() { disposed = true; clearTimeout(timer); stopFocus?.(); listeners.delete(listener) },
   }
 }

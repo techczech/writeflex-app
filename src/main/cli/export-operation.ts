@@ -21,6 +21,11 @@
  * Collection open, the command line still exports by itself: it reads through the guarded Workspace,
  * takes no lock, and says in its result that it exported what is saved on disk. In that case a target
  * INSIDE the Collection is refused, because that would be a write to a Collection another owner holds.
+ *
+ * With `--version <id>` (Folio versions ticket 11) the Folio is exported from a saved Folio version: its text is read through the shared
+ * reader of Folio versions, not from the working files, and the file's claim, staging and never-replace rules are the same. `--mark-sent-to`
+ * then marks the version "sent to <name>" with the store's own mark, only after the file is in place (a refused or failed export writes
+ * no mark). The mark is a write to the Collection's history, so it is refused up front while the app has the Collection open.
  */
 import { randomBytes } from 'node:crypto'
 import { statSync } from 'node:fs'
@@ -29,6 +34,13 @@ import { lstat, open, realpath, rename, unlink } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep, isAbsolute } from 'node:path'
 import { assertCollectionWritable } from '../collection-write-gate'
 import type { ExportFormat, ExportOutcome } from '../export'
+import { FolioVersionExportRefused, openVersionForExport } from '../folio-version-export'
+import { FolioMarkRefused, markFolioVersionSent } from '../folio-version-mark-sent'
+import { FolioVersionStore } from '../folio-versions'
+import { defaultReaderSources } from '../folio-version-sources'
+import { isFolioVersionId } from '../../shared/folio-version-records'
+import { sentToProblem, normaliseSentTo } from '../../shared/folio-version-export'
+import { folioFolderOf } from './folio-version-operations'
 import { CliError, type Operation } from './operation'
 import { visiblePath } from './paths'
 import { applied, writeAccess } from './write-support'
@@ -70,9 +82,11 @@ const FORMAT_BY_EXTENSION: Record<string, ExportFormat> = { '.html': 'html', '.h
 export const EXPORT_OPERATIONS: Operation[] = [
   {
     name: 'export', group: 'Share and export', behaviour: 'asks', writes: (args) => args.confirm === true,
-    summary: 'Export a document, or a folder as one file, to HTML or Word. Writes outside the Collection, so it needs --confirm.',
+    summary: 'Export a document, or a folder as one file, to HTML or Word; with --version, a saved Folio version, made from its saved text and not the working files. Writes outside the Collection, so it needs --confirm.',
     args: [
-      { name: 'path', type: 'string', required: true, positional: true, description: 'Collection-relative path of a document, or of a folder to export whole.' },
+      { name: 'path', type: 'string', required: true, positional: true, description: 'Collection-relative path of a document, or of a folder to export whole. With --version: the Folio\'s folder or its Index Note.' },
+      { name: 'version', type: 'string', description: 'A Folio version id from "writeflex folio-versions": export that saved version, not the working draft.' },
+      { name: 'mark-sent-to', type: 'string', description: 'With --version: once the file is written, mark that version as sent to this person (a mark in the Folio version history). Not available while WriteFlex has the Collection open.' },
       { name: 'to', type: 'string', required: true, description: 'The file to write. It must not exist yet; its folder must.' },
       { name: 'format', type: 'string', description: 'html or docx. Default: by the target\'s extension.' },
       { name: 'confirm', type: 'boolean', description: 'Required. Never add it without asking the person: this writes a file outside the Collection.' },
@@ -86,9 +100,27 @@ export const EXPORT_OPERATIONS: Operation[] = [
       const typedTarget = resolve(ctx.cwd, String(args.to))
       const format = args.format === undefined ? FORMAT_BY_EXTENSION[extname(typedTarget).toLowerCase()] : (String(args.format).toLowerCase() as ExportFormat)
       if (format !== 'html' && format !== 'docx') throw new CliError('Give --format html or --format docx, or a target ending in .html or .docx.', 'usage')
+      const versionId = args.version === undefined ? null : String(args.version).trim()
+      const markTo = args['mark-sent-to'] === undefined ? null : String(args['mark-sent-to'])
+      if (versionId === null && markTo !== null) throw new CliError('--mark-sent-to marks a saved Folio version, so it goes with --version <id>. Nothing was written.', 'usage')
+      if (versionId !== null && !isFolioVersionId(versionId)) throw new CliError('--version takes a Folio version id (fv_…); "writeflex folio-versions <folio>" lists them. Nothing was written.', 'usage')
+      let markName: string | null = null
+      if (markTo !== null) {
+        const problem = sentToProblem(markTo)
+        if (problem !== null) throw new CliError(`${problem} Nothing was written.`, 'usage')
+        markName = normaliseSentTo(markTo)
+        // The mark is a write to the Collection's history, which the app owns while it is open; the export itself is not.
+        if (ctx.appOwnsCollection) throw new CliError('WriteFlex has this Collection open, so the command line may not write a mark in it. Export without --mark-sent-to and use Mark as sent… on the Versions tab, or close the Collection in WriteFlex first. Nothing was written.', 'refused')
+      }
       let folder = false
-      try { folder = String(args.path) === '.' || statSync(ws.absolute(String(args.path))).isDirectory() } catch { /* a document, or nothing */ }
-      const path = folder ? visiblePath(ws, String(args.path), { allowRoot: true }) : visiblePath(ws, String(args.path), { markdown: true })
+      let folioDir = ''
+      if (versionId !== null) {
+        folder = true
+        try { folioDir = folioFolderOf(ws, String(args.path)) } catch (error) { throw new CliError(error instanceof Error ? error.message : String(error), 'usage') }
+      } else {
+        try { folder = String(args.path) === '.' || statSync(ws.absolute(String(args.path))).isDirectory() } catch { /* a document, or nothing */ }
+      }
+      const path = versionId !== null ? folioDir : folder ? visiblePath(ws, String(args.path), { allowRoot: true }) : visiblePath(ws, String(args.path), { markdown: true })
 
       // The target's folder, links resolved; the file itself must be a free name (a link there counts as taken).
       let targetFolder: string
@@ -109,9 +141,18 @@ export const EXPORT_OPERATIONS: Operation[] = [
       const claim = await claimName(target)
       let outcome: ExportOutcome
       let placed = false
+      let version: { id: string; name: string } | null = null
       try {
         const { exportBundle, exportDocument } = await import('../export')
-        outcome = folder ? await exportBundle(ws, { dir: path, format, target: staged }) : await exportDocument(ws, { path, format, target: staged })
+        if (versionId !== null) {
+          // The saved version, read from the history through the shared reader, laid out in a private folder and exported by the one Folio export.
+          const opened = await openVersionForExport(defaultReaderSources(ws), folioDir, versionId).catch((error: unknown) => {
+            throw error instanceof FolioVersionExportRefused ? new CliError(error.message, 'refused') : error
+          })
+          try { outcome = await opened.export(format, staged); version = { id: opened.version.id, name: opened.version.name } } finally { await opened.close() }
+        } else {
+          outcome = folder ? await exportBundle(ws, { dir: path, format, target: staged }) : await exportDocument(ws, { path, format, target: staged })
+        }
         await exportSeams.beforeRename?.(target)
         // Renamed only over the command's own empty claim: whatever else stands there now is not replaced.
         if (!(await claimStands(target, claim))) throw new CliError(`${target} was replaced by another file while the export was being made, so the export was not written there. That file was left as it is; choose another name.`)
@@ -123,7 +164,25 @@ export const EXPORT_OPERATIONS: Operation[] = [
         await unlink(staged).catch(() => {})
         if (!placed && await claimStands(target, claim)) await unlink(target).catch(() => {})
       }
+      // The mark comes after the file is in place: a refused or failed export writes none. A mark that cannot be written never undoes the file.
+      let sentTo: string | undefined
+      let markRefused: string | undefined
+      if (versionId !== null && markName !== null) {
+        try { sentTo = (await markFolioVersionSent(defaultReaderSources(ws), new FolioVersionStore(ws), folioDir, versionId, markName)).sentTo } catch (error) {
+          markRefused = error instanceof FolioMarkRefused ? error.message : `The mark could not be written (${error instanceof Error ? error.message : String(error)}).`
+        }
+      }
       const pictures = [...outcome.missingImages.map((source) => `picture not found: ${source}`), ...outcome.unreadableImages.map((source) => `picture could not be read: ${source}`)]
+      if (version !== null) {
+        const markLine = markRefused !== undefined ? `\nThe version could not be marked as sent: ${markRefused} The file was written.` : sentTo !== undefined ? `\nMarked as sent to ${sentTo}.` : ''
+        return applied(
+          `Exported Folio version “${version.name}” (${version.id}) of ${path === '' ? 'the Collection' : path} to ${target} (${format === 'html' ? 'HTML' : 'Word'}, ${outcome.pieces} piece${outcome.pieces === 1 ? '' : 's'}). Made from the saved version, not the working files.${pictures.length ? `\n${pictures.map((line) => `  - ${line}`).join('\n')}` : ''}${markLine}`,
+          {
+            target, format, pieces: outcome.pieces, missingImages: outcome.missingImages, unreadableImages: outcome.unreadableImages,
+            source: 'folio-version', version: version.id, ...(sentTo !== undefined ? { sentTo } : {}), ...(markRefused !== undefined ? { markRefused } : {}),
+          },
+        )
+      }
       const fromDisk = ctx.appOwnsCollection ? '\nThis is what is saved on disk. WriteFlex has the Collection open and may hold text it has not saved yet; that text is not in the export.' : ''
       return applied(
         `Exported ${path === '' ? 'the Collection' : path} to ${target} (${format === 'html' ? 'HTML' : 'Word'}, ${outcome.pieces} piece${outcome.pieces === 1 ? '' : 's'}).${pictures.length ? `\n${pictures.map((line) => `  - ${line}`).join('\n')}` : ''}${fromDisk}`,

@@ -21,6 +21,8 @@ export const METADATA_REGISTRY: readonly MetadataEntry[] = [
   field('related', 'Related', 'Related documents, listed in collection metadata and selected exports.', { list: true }),
   field('series', 'Series', 'The series this document belongs to; available to listings and exports.'),
   field('series-order', 'Series order', 'The document’s numeric position within its series.', { type: 'number' }),
+  field('words_written', 'Net words', 'The signed net words recorded in this Day Entry.', { type: 'number', system: true }),
+  field('mins_spent', 'Writing minutes', 'The active minutes recorded in this Day Entry.', { type: 'number', system: true }),
   field('project', 'Project', 'The project used by collection query projections.'),
   field('aliases', 'Aliases', 'Alternate names used by document lookup.', { list: true }),
   field('alias', 'Alias', 'An alternate name used by document lookup.'),

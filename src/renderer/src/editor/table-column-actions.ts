@@ -2,7 +2,7 @@
 // caret: Actions here lists them at the table place, where no cell editor is open to hold them. The
 // cell editor's own column menu (object-editors/table-editor.ts) does the same six things to its
 // model; this does them to the table's markdown, in the column the caret is in.
-import type { EditorState } from '@codemirror/state'
+import { ChangeSet, type EditorState, type Text } from '@codemirror/state'
 import { parseTable, serialiseTable, type TableModel } from '../../../shared/object-markup'
 
 export const TABLE_COLUMN_COMMANDS = ['table.alignLeft', 'table.alignCentre', 'table.alignRight', 'table.insertLeft', 'table.insertRight', 'table.delete'] as const
@@ -65,4 +65,38 @@ export function tableColumnEdit(state: EditorState, command: TableColumnCommand,
   const column = columnAt(line.text, Math.max(0, Math.min(head, line.to) - line.from), model.alignments.length)
   const next = applyColumnCommand(model, command, column)
   return next ? { from: range.from, to: range.to, insert: serialiseTable(next) } : null
+}
+
+/**
+ * A column edit asked for at one state of the document and applied after an asynchronous confirmation (Sol S1):
+ * the writer or an agent may change the document while the card is open. `observe` takes every editor update in
+ * between and composes its changes; `resolve` maps the table's range through them and returns the edit at the
+ * table's new place, or null when the table is no longer there as it was (it was edited, removed, or the editor
+ * now shows another document), so the caller refuses instead of replacing unrelated prose.
+ */
+export type PendingTableEdit = {
+  observe: (update: { startState: EditorState; state: EditorState; changes: ChangeSet; docChanged: boolean }) => void
+  resolve: (current: EditorState) => TableEdit | null
+}
+export function pendingTableEdit(state: EditorState, edit: TableEdit): PendingTableEdit {
+  const table = state.sliceDoc(edit.from, edit.to)
+  let doc: Text = state.doc
+  let changes = ChangeSet.empty(doc.length)
+  let broken = false
+  return {
+    observe(update) {
+      if (broken) return
+      // A state set without a transaction (another tab, a version view, a reload) breaks the chain of changes.
+      if (update.startState.doc !== doc) { broken = true; return }
+      if (update.docChanged) changes = changes.compose(update.changes)
+      doc = update.state.doc
+    },
+    resolve(current) {
+      if (broken || current.doc !== doc) return null
+      const from = changes.mapPos(edit.from, 1)
+      const to = changes.mapPos(edit.to, -1)
+      if (to < from || current.sliceDoc(from, to) !== table) return null
+      return { from, to, insert: edit.insert }
+    },
+  }
 }

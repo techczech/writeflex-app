@@ -1,5 +1,9 @@
+import { DROP_OBSERVED, syncDroppedChips, type DropBar } from './status-bar-drop'
+import { UpdateMarks } from './UpdateNotices'
+import { registerFolioSlot, registerNoticeSlot, registerScratchpadSlot } from './notice-slot'
+import { readingChip } from '../../../shared/folio-versions-view'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, X, ChevronDown, ChevronUp, Files, Glasses, History, MessageSquare, Pause, Pencil, TextCursorInput, Volume2 } from 'lucide-react'
+import { AlertTriangle, Check, X, ChevronDown, ChevronUp, Files, Glasses, History, Lock, MessageSquare, Pause, Pencil, TextCursorInput, Volume2, Sparkles } from 'lucide-react'
 import { countUnits, type UnitCounts } from '../editor/word-count'
 import { activeHeadingIndex } from '../editor/outline'
 import type { EditorSnapshot } from '../hooks/useEditorSnapshot'
@@ -11,6 +15,7 @@ import { goalPercent, isOverdue } from '../../../main/frontmatter'
 import type { PlayerState } from '../editor/read-aloud-player'
 import { StatusBarEvents } from './StatusBarEvents'
 import { StatusBarDisclosure } from './StatusBarDisclosure'
+import { AgentSkillMark } from './AgentSkillOffer'
 import { ReviewCountMenu } from './ReviewCountMenu'
 import { ReviewAskPopover, type ReviewAsk } from './ReviewBulkPopovers'
 import { ElsewherePopover, type ElsewhereControls } from './ReviewElsewherePopover'
@@ -166,6 +171,8 @@ export type StatusBarProps = {
   collectionName?: string | null
   /** Focuses the existing agent composer from the resident agent affordance. */
   onMessageAgent?: () => void
+  /** The one notice slot: setup states (sync) and the update marks; the update answer card is drawn into it too. */
+  noticeSlot?: React.ReactNode
   /** A palette/chord request increments this value to open the disclosure. */
   disclosureOpenRequest?: number
   /** The two status popovers participate in App's shared overlay guard. */
@@ -183,6 +190,10 @@ export type StatusBarProps = {
   place?: { label: string; count: number } | null
   /** Clicking the chip does what ⌘K does at that time. */
   onPlaceChip?: () => void
+  /** The Folio's change chip (Folio versions ticket 06): "2 parts changed since “After pilot numbers”", green when none. null: no Folio version to compare with. Pressing it opens the Versions tab on the latest version. */
+  folioCue?: { text: string; clean: boolean; chord?: string; onOpen: () => void } | null
+  /** Folio versions ticket 07: the name of the saved Folio version open read-only, shown as `Reading “<name>” · read-only`. */
+  readingVersionName?: string | null
   /** The review line (ADR-0046), from the margin model: null shows nothing. */
   review?: ReviewLine | null
   /** The count menu's rows (`countMenu()`), drawn when the count is pressed; a pick runs `onReviewMenuPick`. */
@@ -247,6 +258,7 @@ const EMPTY_LAYOUT: StatusBarLayout = {
  * one window-scoped session source. Neither computation is duplicated for the disclosure.
  */
 export function StatusBar({
+  readingVersionName = null,
   snapshot,
   workspaceRoot,
   saveState = null,
@@ -278,6 +290,7 @@ export function StatusBar({
   version,
   collectionName = null,
   onMessageAgent = () => {},
+  noticeSlot = null,
   disclosureOpenRequest = 0,
   activePopover = null,
   onOpenPopover = () => {},
@@ -305,6 +318,7 @@ export function StatusBar({
   onReviewModeBack,
   onReviewModeAcceptAll,
   onPlaceChip = () => {},
+  folioCue = null,
 }: StatusBarProps): JSX.Element {
   const [unit, setUnit] = useState<Unit>(() => loadUnit(workspaceRoot))
   const [layout, setLayout] = useState(EMPTY_LAYOUT)
@@ -478,7 +492,15 @@ export function StatusBar({
       const versionWidth = outerWidth(bar.querySelector<HTMLElement>(':scope > .sb-version'))
       // The review line (ticket 07): its width counts, so a narrow window gives up the place chip and the rest before it clips.
       const reviewWidth = outerWidth(bar.querySelector<HTMLElement>(':scope > .sb-review[data-testid="status-review-line"]'))
-      const fixedWidths = [collectionWidth, disclosure, instrument, agent, versionWidth, reviewWidth].filter((width) => width > 0)
+      // R2/R1: the notice slot (sync, updates) and the Folio part line are residents too; without them the bar spilled into the right sidebar.
+      // The slot is squeezed to nothing when the bar is full, but its content (the sync dot) still paints: count what it needs, not what it was left, so the chips drop first.
+      const noticeSlot = bar.querySelector<HTMLElement>(':scope > .sb-notice-slot')
+      // What it needs is what its visible children take (scrollWidth also counts hidden text and would over-reserve room).
+      const noticeNeed = noticeSlot ? Array.from(noticeSlot.children).reduce((sum, child) => sum + (child as HTMLElement).getBoundingClientRect().width, 0) : 0
+      const noticeWidth = Math.min(Math.max(outerWidth(noticeSlot), noticeNeed), 150)
+      const folioWidth = outerWidth(bar.querySelector<HTMLElement>(':scope > .sb-folio-slot'))
+      const scratchpadWidth = outerWidth(bar.querySelector<HTMLElement>(':scope > .sb-scratchpad-slot'))
+      const fixedWidths = [collectionWidth, disclosure, instrument, agent, versionWidth, reviewWidth, noticeWidth, folioWidth, scratchpadWidth].filter((width) => width > 0)
       const residentWidth = padding + fixedWidths.reduce((sum, width) => sum + width, 0) + Math.max(0, fixedWidths.length - 1) * gap
       const eventNode = bar.querySelector<HTMLElement>('[data-sb-measure="event"]')
       const eventWidth = events.length > 0 && eventNode ? eventNode.getBoundingClientRect().width + gap : 0
@@ -499,13 +521,16 @@ export function StatusBar({
         agentLabelWidth: Math.max(0, agent - agentIcon),
       }, window.outerWidth >= 960, placeWidths)
       setLayout((current) => JSON.stringify(current) === JSON.stringify(next) ? current : next)
+      // Even when the layout did not change, a chip may have lost its room: keep the dropped ones out of the focus order.
+      syncDroppedChips(bar as unknown as DropBar)
     }
     measure()
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(measure)
     observer.observe(bar)
+    for (const slot of bar.querySelectorAll(DROP_OBSERVED)) observer.observe(slot)
     return () => observer.disconnect()
-  }, [collectionName, workspaceRoot, events, explicitInstrument?.label, explicitInstrument?.reached, goal, label, modeIds, place?.label, place?.count, review, reviewKeys?.next, readAloud?.state.rate, readAloud?.state.paused, readAloud?.voiceName, status, version])
+  }, [collectionName, workspaceRoot, events, explicitInstrument?.label, explicitInstrument?.reached, goal, label, modeIds, place?.label, place?.count, review, reviewKeys?.next, readAloud?.state.rate, readAloud?.state.paused, readAloud?.voiceName, status, version, folioCue?.text])
 
   const absorbed = layout.absorbed
   const eventAbsorbed = absorbed.includes('event')
@@ -513,7 +538,7 @@ export function StatusBar({
     const placeText = place ? placeChipText(place.label, place.count) : null
   const placeLayout = layout.place ?? 'full'
   const absorbedModes = absorbed.reduce<Array<{ id: string; label: string }>>((rows, id) => {
-    if (id === 'reviewing') rows.push({ id, label: 'Reviewing' })
+    if (id === 'reviewing') rows.push({ id, label: 'Track my changes' })
     if (id === 'typewriter') rows.push({ id, label: 'Typewriter' })
     if (id === 'focus' && focusLabel) rows.push({ id, label: focusLabel })
     if (id === 'read-aloud' && readAloud?.state.speaking) rows.push({ id, label: `Read aloud · ${readAloud.voiceName}` })
@@ -549,6 +574,22 @@ export function StatusBar({
           <kbd aria-hidden="true">⌘K</kbd>
         </button>
       )}
+      {folioCue && readingVersionName === null && (
+        <span className="sb-cue-fit"><i className="sb-cue-spacer" aria-hidden="true" />
+        <button
+          type="button"
+          className={`sb-cue${folioCue.clean ? ' clean' : ''}`}
+          data-testid="status-folio-cue"
+          data-state={folioCue.clean ? 'clean' : 'changed'}
+          title={`${folioCue.text}. Open the Folio's versions${folioCue.chord ? ` (${folioCue.chord})` : ''}`}
+          aria-label={`${folioCue.text}. Open the Folio's versions`}
+          onClick={folioCue.onOpen}
+        >
+          <span className="sb-cue-text">{folioCue.text}</span>
+        </button></span>
+      )}
+      <span className="sb-folio-slot" ref={registerFolioSlot} data-sb-resident />
+      <span className="sb-scratchpad-slot" ref={registerScratchpadSlot} data-sb-resident data-testid="scratchpad-chip-slot" />
       <StatusBarDisclosure
         rows={disclosureRows}
         absorbedEvents={eventAbsorbed ? events : []}
@@ -560,8 +601,11 @@ export function StatusBar({
         onRestoreEditorFocus={onRestoreEditorFocus}
       />
       {!eventAbsorbed && <StatusBarEvents events={events} open={activePopover === 'statusEvents'} onOpen={() => onOpenPopover('statusEvents')} onClose={onClosePopover} onRestoreEditorFocus={onRestoreEditorFocus} />}
+      {readingVersionName !== null && (
+        <span className="reading-chip" data-testid="reading-chip" role="status"><Lock className="icon" aria-hidden="true" /><span>{readingChip(readingVersionName)}</span></span>
+      )}
       {writerMode === 'reviewing' && !absorbed.includes('reviewing') && (
-        <span className="reviewing-chip"><Glasses className="icon" aria-hidden="true" /><span>Reviewing</span></span>
+        <span className="reviewing-chip"><Glasses className="icon" aria-hidden="true" /><span>Track my changes</span></span>
       )}
       {typewriterOn && !absorbed.includes('typewriter') && (
         <button
@@ -857,7 +901,7 @@ export function StatusBar({
       )}
       {!layout.typewriterPriority && (
         <button type="button" className={`sb-agent-affordance${layout.agentIconOnly ? ' icon-only' : ''}`} data-sb-resident title="Message the agent…" aria-label="Message the agent" onClick={onMessageAgent}>
-          <MessageSquare aria-hidden="true" />
+          <Sparkles aria-hidden="true" />
           {!layout.agentIconOnly && <span>Message the agent…</span>}
         </button>
       )}
@@ -867,6 +911,8 @@ export function StatusBar({
           {statusAction && <button type="button" className="status-flash-undo" onClick={statusAction.run}>{statusAction.label}</button>}
         </span>
       )}
+      <AgentSkillMark />
+      <span className="sb-notice-slot" ref={registerNoticeSlot} data-testid="status-notice-slot">{noticeSlot}<UpdateMarks /></span>
       {development && version && (
         <span className="sb-version" data-sb-resident title={`WriteFlex ${version}`} aria-label={`WriteFlex version ${version}`}>
           v{version}
@@ -904,12 +950,12 @@ export function StatusBar({
             </span>
           </>
         )}
-        <span className="sb-measure-agent" data-sb-measure="agent-full"><MessageSquare /><span>Message the agent…</span></span>
-        <span className="sb-measure-agent icon-only" data-sb-measure="agent-icon"><MessageSquare /></span>
+        <span className="sb-measure-agent" data-sb-measure="agent-full"><Sparkles /><span>Message the agent…</span></span>
+        <span className="sb-measure-agent icon-only" data-sb-measure="agent-icon"><Sparkles /></span>
         {events.length > 0 && <span className="sb-measure-event" data-sb-measure="event">{events.length === 1 ? events[0].label : `${events.length} attention events`}</span>}
         {modeIds.map((id) => (
           <span className={`sb-measure-mode ${id}`} data-sb-measure={id} key={id}>
-            {id === 'reviewing' ? <><Glasses className="icon" /><span>Reviewing</span></> : id === 'typewriter' ? <><TextCursorInput className="icon" /><span>Typewriter</span></> : id === 'focus' ? <><span className="dot" /><span>{focusLabel}</span></> : <><span className="dot" />{readAloud?.state.paused ? <Pause className="icon" /> : <Volume2 className="icon" />}<span>{readAloud?.voiceName} · {readAloud?.state.rate.toFixed(1)}×{readAloud?.state.paused ? ' · Paused' : ''}</span></>}
+            {id === 'reviewing' ? <><Glasses className="icon" /><span>Track my changes</span></> : id === 'typewriter' ? <><TextCursorInput className="icon" /><span>Typewriter</span></> : id === 'focus' ? <><span className="dot" /><span>{focusLabel}</span></> : <><span className="dot" />{readAloud?.state.paused ? <Pause className="icon" /> : <Volume2 className="icon" />}<span>{readAloud?.voiceName} · {readAloud?.state.rate.toFixed(1)}×{readAloud?.state.paused ? ' · Paused' : ''}</span></>}
           </span>
         ))}
       </span>

@@ -96,18 +96,16 @@ export function materialisationPreview(plan: Plan, folio: Folio | null, index: n
   }
 }
 
-/** `chapters`: the contents' chapter count from the heading flow (ADR-0046); null/absent while it is not known, which keeps the written/jotted counts. Known: the mockup's "N parts · M chapters in the contents" replaces them. */
+/** One unit for a Folio's members: parts (house rule R4). `unwritten` parts are named where the count could be read as fewer ("13 parts, 2 not written yet"). `chapters` is kept for callers and ignored. */
 export function pluralisedSummary(summary: PlanSummary, chapters: number | null = null): string {
-  if (!summary.frontMatter) return contentsSummary(summary, chapters)
+  void chapters
+  if (!summary.frontMatter) return contentsSummary(summary)
   const front = `${summary.frontMatter} front matter`
-  return summary.parts === 0 ? `${front} · nothing in the contents yet` : `${front} · ${contentsSummary(summary, chapters)}`
+  return summary.parts === 0 ? `${front} · nothing in the contents yet` : `${front} · ${contentsSummary(summary)}`
 }
 
-function contentsSummary(summary: PlanSummary, chapters: number | null): string {
+function contentsSummary(summary: PlanSummary): string {
   if (summary.parts === 0) return 'No parts yet'
-  if (chapters !== null) {
-    return `${summary.parts} ${summary.parts === 1 ? 'part' : 'parts'} · ${chapters} ${chapters === 1 ? 'chapter' : 'chapters'} in the contents`
-  }
-  if (summary.written === 0) return `${summary.parts} ${summary.parts === 1 ? 'part' : 'parts'} · none written`
-  return `${summary.parts} ${summary.parts === 1 ? 'part' : 'parts'} · ${summary.written} written · ${summary.unwritten} jotted`
+  const count = `${summary.parts} ${summary.parts === 1 ? 'part' : 'parts'}`
+  return summary.unwritten > 0 ? `${count}, ${summary.unwritten} not written yet` : count
 }

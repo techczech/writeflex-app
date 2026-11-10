@@ -1,8 +1,7 @@
 /**
- * Text piped to the command with `--stdin`: read ONCE, before the Collection's owner lock is taken or
- * a request is filed, and never more than a fixed amount of it. A pipe that never ends, or one that
- * carries more than any document, would otherwise be collected whole in memory while the command
- * held the lock and kept WriteFlex and every other `writeflex` command out.
+ * Text piped to the command with `--stdin`: read ONCE, before anything is written or a request is
+ * filed, and never more than a fixed amount of it. A pipe that never ends, or one that carries more
+ * than any document, would otherwise be collected whole in memory.
  */
 import { CliError } from './operation'
 

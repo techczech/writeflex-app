@@ -43,8 +43,8 @@ describe('switcherList', () => {
 
   test('a vault with no cached count reads —; counts are grouped the British way', () => {
     expect(worksText(null)).toBe('—')
-    expect(worksText(1)).toBe('1 work')
-    expect(worksText(1882)).toBe('1,882 works')
+    expect(worksText(1)).toBe('1 piece')
+    expect(worksText(1882)).toBe('1,882 pieces')
   })
 
   test('names and parent paths', () => {

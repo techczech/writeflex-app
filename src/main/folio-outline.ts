@@ -12,7 +12,7 @@
  * Whether the Outline may change the running order (`orderInPlanOnly`) and which files Add will accept
  * (`addable`) come from `folioOrderFacts`, kept per Folio folder (folio-order-cache.ts): a tab switch inside
  * one unchanged Folio loads no Plan. "Also in this folder" is the folder's direct children plus the files the
- * Plan reports as not in the running order (for a `content_root` Folio they are in that folder), and only
+ * Plan reports as not in the outline (for a `content_root` Folio they are in that folder), and only
  * ever files `listFilesIn(<Folio folder>)` returned.
  */
 

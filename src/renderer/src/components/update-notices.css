@@ -1,0 +1,21 @@
+.wf-update-marks, .apu-updates, .apu-update-pop, .wf-update-note {
+  --app-updates-line: var(--line); --app-updates-panel: var(--bg-elev); --app-updates-muted: var(--ink-3); --app-updates-hover: var(--hover);
+}
+.wf-update-marks { display: inline-flex; align-items: center; flex-shrink: 0; }
+.wf-update-note { position: fixed; z-index: 10000; right: 24px; bottom: 44px; width: min(410px, calc(100vw - 48px)); padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-elev); color: var(--ink); box-shadow: 0 8px 32px #0002; font-size: 13px; }
+.wf-update-note p { color: var(--ink-3); line-height: 1.5; }
+.wf-update-close { float: right; border: none; background: transparent; color: inherit; cursor: pointer; font-size: 20px; }
+.wf-whats-new { max-height: 65vh; overflow: auto; }
+/* The update answer is a dialog anchored above the status bar's notice slot (inline right/bottom/maxWidth set from the slot). */
+.wf-update-note.anchored { left: auto; width: min(410px, calc(100vw - 24px)); }
+.wf-whats-new { right: auto; left: 50%; transform: translateX(-50%); bottom: 48px; }
+.sb-notice-slot { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; position: relative; }
+.sb-notice-slot .wf-update-marks { min-width: 0; overflow: hidden; }
+.sb-notice-slot .apu-update-mark { white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.statusbar .sync-title-status { align-self: center; }
+.statusbar .sync-status-button { padding: 2px 8px; font-size: 11.5px; gap: 6px; }
+.statusbar .sync-popover { top: auto; bottom: calc(100% + 8px); right: auto; left: 0; }
+@media (max-width: 1599px) { .statusbar .sync-status-button .sync-label { display: none; } .statusbar .sync-status-button { padding: 3px 6px; } }
+.sb-notice-slot > * { min-width: 0; flex-shrink: 1; }
+.sb-notice-slot .sync-title-status { flex-shrink: 0; }
+.window:has(.apu-update-mark--updated) .side-version { display: none; }

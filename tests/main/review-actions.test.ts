@@ -30,7 +30,7 @@ test('a resolved file is reconciled before the final inline-change refresh', asy
   expect(order).toEqual(['reconcile', 'refresh-inline'])
 })
 
-for (const message of [undefined, 'Change rejected, but its Agent note failed: unavailable']) {
+for (const message of [undefined, 'Change declined, but its Agent note failed: unavailable']) {
   test(`reject settlement announces ${message ? 'the backend warning' : 'success without a backend message'}`, async () => {
     const events: string[] = []
     let actions: ReviewActions | undefined
@@ -292,7 +292,7 @@ test('bulk Decline: one ledger reject per target, in document order, the same ca
   // The bulk path writes exactly what the single path writes, per change.
   expect(single.calls.filter((call) => call.startsWith('reject:'))).toEqual(['reject:p2'])
   expect(calls.some((call) => call.startsWith('accept:') || call.startsWith('status:'))).toBe(false)
-  expect(calls.at(-1)).toBe('flash:Rejected 2 changes')
+  expect(calls.at(-1)).toBe('flash:Declined 2 changes')
 })
 
 test('nothing to act on writes nothing', async () => {

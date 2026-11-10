@@ -15,46 +15,29 @@
  * settlement cannot race another move in flight. Re-entrant copy saves see the destination hash.
  */
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs'
-import { dirname, join, posix, relative } from 'node:path'
-import { parseVersionLine, sortVersionsNewestFirst, type Version } from '../engine'
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { dirname, join, posix } from 'node:path'
+import { parseVersionLine, type Version } from '../engine'
 import { appendStoreLineSync } from './checked-store-append'
+import { readReplicaRecordsSync, versionOfReplica } from './replica-versions'
 import { assertCollectionWritable } from './collection-write-gate'
 import { isListedPath, realLocation } from './document-path'
-import { MAX_GUARDED_DOCUMENT_BYTES } from './guarded-document-read'
+import { historyPath, ordinary, fileHash, moveEvidence, relativeHistoryPath } from './version-move-evidence'
+import { finishState, projectVersionRows, type Assignment, type Evidence, type MoveRecord, type Finish, type JournalRecord } from '../engine/version-move-projection'
+export { historyPath, relativeHistoryPath } from './version-move-evidence'
 
 const JOURNAL = '.writeflex/versions.jsonl'
-type Assignment = { id: string; from: string; to: string }
-type Evidence = { from: string; to: string; dev: number; ino: number; hash?: string; beforeHash?: string }
-type MoveRecord = { kind: 'version-paths'; id: string; ts?: number; assignments: Assignment[]; destinationIds?: string[]; evidence?: Evidence; undoes?: string; reattachedIds?: string[]; heldBackIds?: string[] }
-type Finish = { kind: 'version-paths-finish'; id: string; state: 'done' | 'cancelled' }
-type JournalRecord = Version | MoveRecord | Finish
+/** A copy of the version journal made by sync (`versions-Example-Mac.jsonl`, `versions (1).jsonl`):
+ *  `.writeflex` is the app's own folder, so a `versions…jsonl` there can only be this journal's copy. */
+const JOURNAL_COPY = /^versions[- ].+\.jsonl$/
 
-export function historyPath(path: string): string {
-  if (!path || path.includes('\\') || path.startsWith('/') || path === '..' || path.startsWith('../') || posix.normalize(path) !== path || path.endsWith('/')) throw new Error('History paths must be normalised workspace-relative paths.')
-  return path
-}
-
-/** Refuse links in every component before reading journal data or move evidence. */
-function ordinary(root: string, path: string): string {
-  historyPath(path)
-  let current = realpathSync(root)
-  const parts = path.split('/')
-  for (let i = 0; i < parts.length; i++) {
-    current = join(current, parts[i])
-    const info = lstatSync(current)
-    if (info.isSymbolicLink() || (i < parts.length - 1 && !info.isDirectory())) throw Object.assign(new Error('History cannot use a linked path.'), { code: 'ELOOP' })
-  }
-  return current
-}
-
-function journal(root: string): JournalRecord[] {
-  let path: string
-  try { path = ordinary(root, JOURNAL) } catch (error) {
+/** Rows of one journal file; [] when absent, a link or not a file. Lines are validated one by one. */
+function journalRows(path: string): JournalRecord[] {
+  let fd: number
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK) } catch (error) {
     if (['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) return []
     throw error
   }
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   try {
     if (!fstatSync(fd).isFile()) return []
     const rows: JournalRecord[] = []
@@ -81,11 +64,56 @@ function journal(root: string): JournalRecord[] {
   } finally { closeSync(fd) }
 }
 
-/** Last finish wins, consistently across reads and every journal lookup. */
-function finishState(rows: JournalRecord[]): Map<string, Finish['state']> {
-  const states = new Map<string, Finish['state']>()
-  for (const row of rows) if ('kind' in row && row.kind === 'version-paths-finish') states.set(row.id, row.state)
-  return states
+/**
+ * The version journal and every copy of it that sync made (contract rule 7: a conflict copy of a store
+ * is read and merged, never discarded, and the copies are never rewritten). The journal's own rows come
+ * first and stay authoritative for every version id they name: rows are appended with the version's
+ * original `ts` (a rename keeps it), so file order is not chronology, and a copy's row must never
+ * replace the name, author or note this Mac shows. From each copy, in order:
+ *  - a row identical to one already read adds nothing (the history both Macs shared);
+ *  - rows for a version this journal does not have, and move records, are added (made on the other Mac);
+ *    the first copy that has such a version is its authority, as the journal is for its own;
+ *  - a different row for a version this journal does have (a rename or note made on the other Mac, or an
+ *    older state of it) is kept beside it as its own entry, `<id>_c<first 8 hex of the SHA-256 of the
+ *    row>` (the same on every read), so both sides' metadata is visible. Once this Mac has written a row
+ *    under that derived id itself (renamed it), the journal's row stands for it too.
+ */
+function journal(root: string): JournalRecord[] {
+  let path: string
+  try { path = ordinary(root, JOURNAL) } catch (error) {
+    if (!['ENOENT', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+    path = ''
+  }
+  const rows = path ? journalRows(path) : []
+  let folder: string
+  try { folder = ordinary(root, '.writeflex') } catch { return rows }
+  let copies: string[] = []
+  try { copies = readdirSync(folder).filter(name => JOURNAL_COPY.test(name)).sort() } catch { return rows }
+  if (!copies.length) return rows
+  const own = new Set(rows.filter(row => !('kind' in row)).map(row => (row as Version).id))
+  const seen = new Set(rows.map(row => JSON.stringify(row)))
+  for (const name of copies) {
+    let copy: string
+    try { copy = ordinary(root, `.writeflex/${name}`) } catch { continue }
+    // A version first met in this copy: this copy's rows for it are its history (in this copy's order).
+    const introduced = new Set<string>()
+    for (const row of journalRows(copy)) {
+      const key = JSON.stringify(row)
+      if (seen.has(key)) continue
+      seen.add(key)
+      if ('kind' in row) { rows.push(row); continue }
+      if (!own.has(row.id)) { introduced.add(row.id); rows.push(row); continue }
+      const derived = `${row.id}_c${createHash('sha256').update(key).digest('hex').slice(0, 8)}`
+      if (own.has(derived)) continue
+      const exposed = { ...row, id: derived }
+      const exposedKey = JSON.stringify(exposed)
+      if (seen.has(exposedKey)) continue
+      seen.add(exposedKey)
+      rows.push(exposed)
+    }
+    for (const id of introduced) own.add(id)
+  }
+  return rows
 }
 
 /** Listed files include dot-named documents; the bin is a recovery source only. */
@@ -93,76 +121,9 @@ export function isHistoryMapPath(path: string, source = false): boolean {
   return isListedPath(path, 'file') || (source && path.startsWith('.folio-bin/') && isListedPath(path.slice('.folio-bin/'.length), 'file'))
 }
 
-/** Only copy evidence needs bytes on reads; bound both allocation and bytes read, even if it grows. */
-function fileHash(path: string): string | undefined {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-  try {
-    const info = fstatSync(fd)
-    if (!info.isFile() || info.size > MAX_GUARDED_DOCUMENT_BYTES) return undefined
-    const digest = createHash('sha256')
-    const chunk = Buffer.alloc(64 * 1024)
-    let total = 0
-    while (total <= MAX_GUARDED_DOCUMENT_BYTES) {
-      const count = readSync(fd, chunk, 0, Math.min(chunk.length, MAX_GUARDED_DOCUMENT_BYTES + 1 - total), null)
-      if (!count) return digest.digest('hex')
-      total += count
-      digest.update(chunk.subarray(0, count))
-    }
-    return undefined
-  } finally { closeSync(fd) }
-}
-
-type MoveState = 'happened' | 'not-happened' | 'held-back'
-function moveEvidence(root: string, e: Evidence): MoveState {
-  let sourceMatches = false
-  let targetMatches = false
-  try {
-    const source = lstatSync(ordinary(root, e.from))
-    sourceMatches = source.dev === e.dev && source.ino === e.ino
-  } catch { /* Missing, linked or unreadable grants no identity. */ }
-  try {
-    const path = ordinary(root, e.to)
-    const target = lstatSync(path)
-    targetMatches = e.hash ? fileHash(path) === e.hash : target.dev === e.dev && target.ino === e.ino
-    if (sourceMatches && targetMatches && !e.hash && e.from.toLowerCase() === e.to.toLowerCase()) {
-      try {
-        const actual = relativeHistoryPath(root, realpathSync.native(path))
-        return actual === e.to ? 'happened' : actual === e.from ? 'not-happened' : 'held-back'
-      } catch { return 'held-back' }
-    }
-  } catch { /* Existence alone never establishes ownership. */ }
-  return targetMatches ? 'happened' : sourceMatches ? 'not-happened' : 'held-back'
-}
-
-function projectMovedVersions(root: string): { visible: Version[]; heldBack: Version[] } {
-  const rows = journal(root)
-  const states = finishState(rows)
-  const versions = new Map<string, Version>()
-  const assignedPaths = new Map<string, string>()
-  const unresolved = new Set<string>()
-  for (const row of rows) {
-    if (!('kind' in row)) {
-      const current = versions.get(row.id)
-      if (!current || row.ts >= current.ts) versions.set(row.id, { ...row, path: assignedPaths.get(row.id) ?? row.path })
-    } else if (row.kind === 'version-paths' && states.get(row.id) !== 'cancelled') {
-      const state = states.get(row.id) === 'done' || !row.evidence ? 'happened' : moveEvidence(root, row.evidence)
-      for (const a of row.assignments) {
-        const version = versions.get(a.id)
-        if (version?.path !== a.from) continue
-        if (state === 'happened') {
-          unresolved.delete(a.id)
-          assignedPaths.set(a.id, a.to)
-          versions.set(a.id, { ...version, path: a.to })
-          if (row.heldBackIds?.includes(a.id)) unresolved.add(a.id)
-        } else if (state === 'held-back') unresolved.add(a.id)
-      }
-    }
-  }
-  return {
-    visible: sortVersionsNewestFirst([...versions.values()].filter(version => !unresolved.has(version.id))),
-    heldBack: sortVersionsNewestFirst([...versions.values()].filter(version => unresolved.has(version.id))),
-  }
-}
+/** Replica versions (replica-versions.ts) come first: they are immutable per-version files that every
+ *  replica writes for itself, and a move recorded later in the journal assigns them by id like any other. */
+function projectMovedVersions(root: string) { return projectVersionRows([...readReplicaRecordsSync(root).map(versionOfReplica), ...journal(root)], e => moveEvidence(root, e)) }
 
 export function readHeldBackVersions(root: string): Version[] { return projectMovedVersions(root).heldBack }
 
@@ -405,8 +366,6 @@ export function undoVersionMap(root: string, id: string): number {
   append(root, { kind: 'version-paths', id: randomUUID(), undoes: id, heldBackIds: record.reattachedIds, assignments: record.assignments.map(a => ({ id: a.id, from: a.to, to: a.from })) })
   return record.assignments.length
 }
-
-export function relativeHistoryPath(root: string, absolute: string): string { return historyPath(relative(realpathSync(root), absolute).split('\\').join('/')) }
 
 /** The latest explicit attachment still available to Undo for this file, including after reload. */
 export function pendingHistoryAttachment(root: string, path: string): { id: string; files: number } | null {
