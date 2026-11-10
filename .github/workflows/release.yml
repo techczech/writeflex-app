@@ -39,7 +39,7 @@ jobs:
         shell: bash
         run: test "${GITHUB_REF_NAME}" = "v$(node -p "require('./package.json').version")"
       - run: bun install --frozen-lockfile
-      - name: Published agent skill equals this release's skill
+      - name: Published agent skill equals the skill built from this release
         run: |
           bun scripts/build-agent-skill.mjs --out "$RUNNER_TEMP/agent-skill"
           bun scripts/check-published-skill.mjs --skill "$RUNNER_TEMP/agent-skill/writeflex"
