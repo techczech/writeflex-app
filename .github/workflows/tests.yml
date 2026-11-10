@@ -49,6 +49,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: node node_modules/playwright/cli.js install chromium-headless-shell
       - run: bun run typecheck
+      # Three backup test files run the built helper (out/backup-helper); the full build comes after the tests.
+      - run: bun run build:backup-helper
       - name: Unit tests
         if: ${{ inputs.scout-diagnostic != true }}
         run: bun test
