@@ -11,7 +11,7 @@ jobs:
   skill-published:
     # The agent skill is published on its own for every release (design element 19). Nothing is built, signed or
     # uploaded until the public copy matches the skill built from this release: same files, same version.
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - name: Verify bootstrap checkout pin
@@ -45,7 +45,7 @@ jobs:
           bun scripts/check-published-skill.mjs --skill "$RUNNER_TEMP/agent-skill/writeflex"
   package-mac:
     needs: skill-published
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - name: Verify bootstrap checkout pin

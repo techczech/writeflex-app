@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   unit:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - name: Verify bootstrap checkout pin
