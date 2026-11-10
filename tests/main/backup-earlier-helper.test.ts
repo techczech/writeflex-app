@@ -12,7 +12,12 @@ import { Workspace } from '../../src/main/workspace'
 import { versionTextReader } from '../../src/main/cli/history-store'
 import { readVersionContent } from '../../src/main/version-content'
 import { earlierFixture } from './backup-earlier-fixture'
-const GIT='/Library/Developer/CommandLineTools/usr/bin/git',GITLEAKS='/opt/homebrew/bin/gitleaks'
+const NODE = Bun.which('node')
+if (!NODE) throw new Error('real Node on PATH required')
+// PATH first; the developer-Mac locations remain the fallback, so a host without gitleaks on PATH
+// fails only the tests that run it, as before.
+const GIT = Bun.which('git') ?? '/Library/Developer/CommandLineTools/usr/bin/git'
+const GITLEAKS = Bun.which('gitleaks') ?? '/opt/homebrew/bin/gitleaks'
 test('built helper preview and ongoing engine capture require exact private authority; all 213 names restore',async()=>{
   const f=earlierFixture(),remote=join(f.base,'remote.git'),file=join(f.base,'private','earlier-locations.jsonl')
   const env={PATH:'/usr/bin:/bin:/usr/sbin:/sbin',HOME:f.base,GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1'}
@@ -22,7 +27,7 @@ test('built helper preview and ongoing engine capture require exact private auth
   const config=join(f.base,'synthetic-config.json')
   writeFileSync(config,JSON.stringify({configVersion:2,machineId:'synthetic',tools:{git:GIT,gitleaks:GITLEAKS},vaults:[{id:'v',path:f.root,include:WRITEFLEX_SCOPE.include,exclude:WRITEFLEX_SCOPE.exclude,history:WRITEFLEX_HISTORY}]}))
   const preview=(approved:boolean)=>{
-    const r=spawnSync('/usr/local/bin/node',[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'preview','--config',config,'--vault','v'],{env:{...env,...(approved?{[HISTORY_APPROVAL_ENV]:file}:{})},timeout:10000,maxBuffer:4*1024*1024})
+    const r=spawnSync(NODE,[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'preview','--config',config,'--vault','v'],{env:{...env,...(approved?{[HISTORY_APPROVAL_ENV]:file}:{})},timeout:10000,maxBuffer:4*1024*1024})
     expect(r.status).toBe(0);return JSON.parse(r.stdout.toString())
   }
   expect(preview(false).history.state).toBe('unavailable')
@@ -34,7 +39,7 @@ test('built helper preview and ongoing engine capture require exact private auth
   appendHistoryApproval(file,f.root,c.earlier,()=>true)
   expect(preview(true).history).toMatchObject({state:'complete',summary:{namedVersions:213}})
   const bridged = await new Promise<any>((resolveResult,reject) => {
-    const child = spawn('/usr/local/bin/node',[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'--github-credentials','preview','--config',config,'--vault','v'],{env:{...env,[HISTORY_APPROVAL_ENV]:file},stdio:['ignore','pipe','pipe','pipe','pipe']})
+    const child = spawn(NODE,[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'--github-credentials','preview','--config',config,'--vault','v'],{env:{...env,[HISTORY_APPROVAL_ENV]:file},stdio:['ignore','pipe','pipe','pipe','pipe']})
     let stdout='',stderr=''
     const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('synthetic bridge timed out'))},10000)
     child.stdout!.on('data',c=>stdout+=c);child.stderr!.on('data',c=>stderr+=c)

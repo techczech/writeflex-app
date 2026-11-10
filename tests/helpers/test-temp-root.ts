@@ -1,5 +1,5 @@
 import { createE2ERunIdentity, finishE2ERun, RUN_ID, RUN_ROOT, type RunIdentity } from './test-run-claims'
-import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, statSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -25,7 +25,9 @@ export interface TestTempRoot {
 }
 
 export function startTestTempRoot(options: { e2e?: boolean } = {}): TestTempRoot {
-  const realTmp = options.e2e ? '/private/tmp' : tmpdir()
+  // App boundaries canonicalise workspace roots. Export the same physical spelling to
+  // every fixture and child, even when the host TMPDIR goes through /var or another alias.
+  const realTmp = options.e2e ? '/private/tmp' : realpathSync(tmpdir())
   const startedAt = Date.now()
   let before = new Set<string>()
   try { before = new Set(readdirSync(realTmp)) } catch { /* unreadable: guard compares against nothing */ }
@@ -43,7 +45,7 @@ export function finishTestTempRoot(run: TestTempRoot): string[] {
       if (run.root !== run.identity.root) throw new Error(`WriteFlex test root retained: ${run.root}; run identity mismatch`)
       finishE2ERun(run.identity, () => rmSync(run.root, { recursive: true, force: true }))
     } else {
-      if (!/\/wf-run-[^/]+$/.test(run.root)) throw new Error(`WriteFlex test root retained: ${run.root}; missing run identity`)
+      if (!/[/\\]wf-run-[^/\\]+$/.test(run.root)) throw new Error(`WriteFlex test root retained: ${run.root}; missing run identity`)
       rmSync(run.root, { recursive: true, force: true })
     }
   } finally { console.info(`[test-temp] run-root removal: ${Math.round(performance.now() - removalStarted)} ms`) }

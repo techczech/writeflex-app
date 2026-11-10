@@ -48,4 +48,6 @@ test('every statically named frontmatter key read in src is registered', () => {
   expect([...hits].filter(([key]) => !registered.has(key))).toEqual([])
   // Ensure the scan covers the previously missed direct, aliased and constant-key reads.
   for (const key of ['pattern', 'diary', 'heading', 'authors', 'year', 'published', 'toc_depth', 'sources']) expect(hits.has(key), key).toBe(true)
-}, 30_000)
+  // This whole-program compiler scan took 34s on the hosted macos-15 runner.
+  // Allow slow hosts to finish the same exhaustive assertions.
+}, 120_000)

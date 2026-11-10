@@ -13,6 +13,12 @@ import { prepareVersionMove, readMovedVersions, followVersionMap, undoVersionMap
 import { versionTextReader } from '../../src/main/cli/history-store'
 import { readVersionContent, restoreVersionContent } from '../../src/main/version-content'
 
+const NODE = Bun.which('node')
+if (!NODE) throw new Error('real Node on PATH required')
+// PATH first; the developer-Mac locations remain the fallback, so a host without gitleaks on PATH
+// fails only the tests that run it, as before.
+const GIT = Bun.which('git') ?? '/Library/Developer/CommandLineTools/usr/bin/git'
+const GITLEAKS = Bun.which('gitleaks') ?? '/opt/homebrew/bin/gitleaks'
 const roots: string[] = []
 afterEach(async () => { delete historySeams.afterFirstRead; while (roots.length) await rm(roots.pop()!, { recursive: true, force: true }) })
 async function fixture(count = 1) {
@@ -53,9 +59,9 @@ test('217 synthetic journal records: chained physical moves preserve all names, 
   const isolated = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: f.root, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', TMPDIR: tmpdir() }
   expect(spawnSync('/usr/bin/git', ['init', '-q', f.root], { env: isolated }).status).toBe(0)
   const config = join(f.root, 'synthetic-preview.json')
-  writeFileSync(config, JSON.stringify({ configVersion: 2, machineId: 'synthetic', tools: { git: '/Library/Developer/CommandLineTools/usr/bin/git', gitleaks: '/opt/homebrew/bin/gitleaks' }, vaults: [{ id: 'v', path: f.root, include: WRITEFLEX_SCOPE.include, exclude: WRITEFLEX_SCOPE.exclude, history: WRITEFLEX_HISTORY }] }))
+  writeFileSync(config, JSON.stringify({ configVersion: 2, machineId: 'synthetic', tools: { git: GIT, gitleaks: GITLEAKS }, vaults: [{ id: 'v', path: f.root, include: WRITEFLEX_SCOPE.include, exclude: WRITEFLEX_SCOPE.exclude, history: WRITEFLEX_HISTORY }] }))
   const sourceBeforePreview = [readFileSync(join(f.root, '.writeflex/versions.jsonl')), readFileSync(join(f.root, '.bridle/journal.jsonl'))]
-  const previewRun = spawnSync('/usr/local/bin/node', [resolve(import.meta.dir, '../../out/backup-helper/writeflex-backup-helper.js'), 'preview', '--config', config, '--vault', 'v'], { env: isolated, maxBuffer: 4 * 1024 * 1024, timeout: 10000 })
+  const previewRun = spawnSync(NODE, [resolve(import.meta.dir, '../../out/backup-helper/writeflex-backup-helper.js'), 'preview', '--config', config, '--vault', 'v'], { env: isolated, maxBuffer: 4 * 1024 * 1024, timeout: 10000 })
   expect(previewRun.status).toBe(0)
   const preview = JSON.parse(previewRun.stdout.toString())
   expect(preview.refused).toBeNull()

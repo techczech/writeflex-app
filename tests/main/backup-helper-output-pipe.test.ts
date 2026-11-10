@@ -5,6 +5,8 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { verifyBackupHelperInputs } from '../../scripts/lib/backup-helper-inputs'
+const NODE = Bun.which('node')
+if (!NODE) throw new Error('real Node on PATH required')
 const roots: string[] = []
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }) })
 for (const bridge of [false, true]) for (const brokenPipe of [false, true]) test(`actual app helper: bridge=${bridge}, broken pipe=${brokenPipe}`, () => {
@@ -21,7 +23,7 @@ child.stderr.on('data',c=>stderr+=c); child.once('exit',code=>exit=code);
 if (${bridge}) {const bytes=Buffer.from(JSON.stringify({version:1,namespace:'writeflex.backup.github.v1',installId:'11111111-1111-4111-8111-111111111111',epoch:1,generation:1,expiresAt:Date.now()+600000,accessToken:'synthetic-placeholder',bindings:[]})); const head=Buffer.alloc(4); head.writeUInt32BE(bytes.length); child.stdio[3].end(Buffer.concat([head,bytes])); child.stdio[3].on('error',()=>{}); child.stdio[4].on('error',()=>{});}
 if (${brokenPipe}) child.stdout.destroy(); else setTimeout(()=>child.stdout.resume(),200);
 child.once('close',close=>{ const bytes=Buffer.concat(chunks); let answer=null; try {answer=JSON.parse(bytes.toString());}catch{} process.stdout.write(JSON.stringify({exit,close,stderr,bytes:bytes.length,answer})); });`)
-  const run = spawnSync('/usr/local/bin/node', [supervisor], { encoding: 'utf8', timeout: 10000, maxBuffer: 4 * 1024 * 1024 })
+  const run = spawnSync(NODE, [supervisor], { encoding: 'utf8', timeout: 10000, maxBuffer: 4 * 1024 * 1024 })
   expect(run.status).toBe(0)
   const result = JSON.parse(run.stdout)
   expect(result.exit).toBe(brokenPipe ? 2 : 0); expect(result.close).toBe(result.exit)
