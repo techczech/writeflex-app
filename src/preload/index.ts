@@ -1,3 +1,4 @@
+import type { MenuCommand, MenuFocus } from '../shared/command-menu'
 import type { PeopleChange, PeopleResult } from '../shared/sharing-people'
 import type { DiaryGlance } from '../shared/diary-glance'
 import type { ReaderLease } from '../shared/reading-room-channel'
@@ -651,7 +652,8 @@ export type SkillMeta = {
 // replaced by @bridle/electron's AuthTransport on the bridle.auth:* channels —
 // the renderer consumes it via useIpcAuthFlow + @bridle/react's AuthFlow.
 
-export type MenuAction = 'check-for-updates' | 'whats-new' | `collection-page:${import('../shared/collection-page-commands').CollectionPageCommand}` | 'save' | 'name-version' | 'save-folio-version' | 'import-folio-revision' | 'export-folio-version' | 'mark-folio-version-sent' | 'save-file-version' | 'compare-file-version' | 'restore-file-version' | 'save-file-version-copy' | 'new-file' | 'new-folder' | 'capture-idea' | 'follow-wikilink' | 'materialise-stub' | 'close-tab' | 'quick-open' | 'command-palette' | 'open-files' | 'open-tabs' | 'open-board' | 'next-tab' | 'previous-tab' | 'next-folder-file' | 'previous-folder-file' | 'search' | 'archive-search' | 'toggle-outline' | 'focus-review-margin' | 'switch-margin-view' | 'toggle-margin' | 'open-versions' | 'open-folio-versions' | 'open-folio-version-read-only' | 'compare-folio-versions' | 'back-to-working-draft' | 'toggle-typewriter' | 'toggle-left-pane' | 'toggle-right-pane' | 'open-dialog' | 'undo' | 'redo' | 'prose-zoom-in' | 'prose-zoom-out' | 'prose-zoom-reset' | 'column-width-in' | 'column-width-out' | 'open-scratchpad' | 'scratchpad-send-copy' | 'scratchpad-cut' | 'scratchpad-insert-copy' | 'scratchpad-compare' | 'scratchpad-search' | 'open-settings' | 'export-document' | 'share-document' | 'theme-light' | 'theme-dark'
+/** What main still sends on `menu:action`: the native-keyed operations (see NATIVE_MENU_COMMANDS). Every other menu item arrives as `menu:command`. */
+export type MenuAction = 'save' | 'close-tab' | 'new-file' | 'new-folder' | 'open-dialog' | 'prose-zoom-in' | 'prose-zoom-out' | 'prose-zoom-reset' | 'column-width-in' | 'column-width-out'
 
 export type RuntimeInfo = { electron: string; chrome: string; node: string; macOS: string }
 
@@ -1509,6 +1511,9 @@ export type WriteFlexApi = {
   /** The background agent boot finished for the bound Workspace: re-pull agent state (restored
    *  transcript, models) — binding no longer waits for the agent, so this replaces "ready at bind". */
   onAgentReady: (fn: () => void) => () => void
+  publishCommandMenu: (commands: MenuCommand[], focus?: MenuFocus) => Promise<void>
+  onMenuCommand: (fn: (id: string) => void) => () => void
+  runNativeMenuCommand: (id: string) => Promise<void>
   onMenuAction: (fn: (a: MenuAction) => void) => () => void
   /** A queued file-open focus; `line` (1-based) when a writeflex:// link named one. */
   onFocusFile: (fn: (path: string, line?: number) => void) => () => void
@@ -2182,6 +2187,9 @@ const api: WriteFlexApi = {
   onAgentReady: on('agent:ready'),
   onApproval: on('agent:approval'),
   onSuggestions: on('agent:suggestions'),
+  publishCommandMenu: (commands, focus: MenuFocus = 'other') => ipcRenderer.invoke('menu:model', commands, focus),
+  onMenuCommand: on<string>('menu:command'),
+  runNativeMenuCommand: id => ipcRenderer.invoke('menu:native-command', id),
   onMenuAction: subscribeMenuAction,
   onFocusFile: (fn) => {
     // The payload is the bare relative path, or { path, line } when a link named a line.

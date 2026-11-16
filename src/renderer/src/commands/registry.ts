@@ -1,3 +1,4 @@
+import { NATIVE_MENU_COMMANDS } from '../../../shared/native-menu-commands'
 import { COLLECTION_PAGE_COMMANDS } from '../components/collection-page-commands'
 import { commandAnnotations, type CommandAnnotation } from './registry-annotations'
 import { TASK_GROUPS, taskGroupOf, type TaskGroup } from './command-task-groups'
@@ -71,11 +72,23 @@ export const COMMAND_GROUPS = [
 export type CommandGroup = typeof COMMAND_GROUPS[number]
 export type CommandSurface = 'palette' | 'sheet' | 'menu'
 export type SheetSource = { kind: 'command'; commandId: string } | { kind: 'literal' }
-type CommandDefinition = { id: string; label: string; keywords?: string[]; hint?: string; leadsFor?: string[]; keys?: string | string[]; group: CommandGroup; surfaces: CommandSurface[]; when?: (state: EditorState) => boolean; run?: StateCommand | EditorViewCommand; future?: 'ship2' | 'build'; sheetColumn?: 0 | 1 | 2; claimsChord?: boolean; sheetSource?: SheetSource }
+type CommandDefinition = { keyAliases?: readonly string[]; noMenu?: string; id: string; label: string; labelWhenOn?: string; labelWhenOff?: string; labelNamed?: { on: string; off: string }; keysPlaceBound?: boolean; keywords?: string[]; hint?: string; leadsFor?: string[]; keys?: string | string[]; group: CommandGroup; surfaces: CommandSurface[]; when?: (state: EditorState) => boolean; run?: StateCommand | EditorViewCommand; future?: 'ship2' | 'build'; sheetColumn?: 0 | 1 | 2; claimsChord?: boolean; sheetSource?: SheetSource }
 
 /** `group` (the old twelve) is internal ordering data only; every list the writer sees uses `task`. */
 /** `places` is where Actions here offers the command (command-places.ts); a sheet row that mirrors a
  *  command carries its source command's declaration and is never listed beside it. */
+/**
+ * The ONE place a toggle's name is resolved, for the palette and the menu alike. `label` is the neutral name
+ * (used when the state is not known); `labelWhenOn` / `labelWhenOff` say what running the command will do in
+ * each state; `labelNamed` is the same with `{name}` filled in from a parameter the live row supplies (a folder).
+ */
+export function commandLabel(command: Pick<CommandDefinition, 'label' | 'labelWhenOn' | 'labelWhenOff' | 'labelNamed'>, live?: { checked?: boolean; name?: string }): string {
+  if (live?.checked === undefined) return command.label
+  const on = live.checked
+  if (live.name && command.labelNamed) return (on ? command.labelNamed.on : command.labelNamed.off).replace('{name}', live.name)
+  return (on ? command.labelWhenOn : command.labelWhenOff) ?? command.label
+}
+
 export type Command = CommandDefinition & CommandAnnotation & { task: TaskGroup; subgroup: string; places: PlaceDeclaration }
 
 type SheetSeed =
@@ -118,6 +131,7 @@ const sheet = (idNamespace: string, group: CommandGroup, column: 0 | 1 | 2, rows
       ...(row.kind === 'literal' && row.keys ? { keys: row.keys } : {}),
       group: row.group ?? group,
       surfaces: ['sheet'] as CommandSurface[],
+      noMenu: row.kind === 'command' ? `Cheat-sheet mirror of ${row.commandId}; the source command owns the menu item.` : 'Cheat-sheet documentation of a contextual gesture; no standalone command runner.',
       sheetColumn: row.sheetColumn ?? column,
       claimsChord: false,
       sheetSource: (row.kind === 'command' ? { kind: 'command', commandId: row.commandId } : { kind: 'literal' }) as SheetSource,
@@ -181,27 +195,33 @@ const sheetCommands: CommandDefinition[] = [
   ...sheet('App', 'App', 2, [sheetCommand('app.settings', 'Settings'), sheetLiteral('Open Library', '⇧⌘L', 'ship2')]),
 ]
 
+const sameActionMenuReasons: Readonly<Record<string, string>> = {
+  'insert.reference': 'Same action as citation.insertReference in Collect > Sources and Reading Room',
+  'file.export': 'Same action as export.document in Share > Export and presets',
+  'folder.clearFocus': 'Same action as view.clearFolderFocus in File > Files and quick open',
+}
 const menuCommands: CommandDefinition[] = [
   ['file.open','Open','↵','Files and versions'],['file.rename','Rename','F2','Files and versions'],['file.move','Move to folder…','M','Files and versions'],['file.duplicate','Duplicate','⌘D','Files and versions'],['file.pin','Pin favourite',undefined,'Files and versions'],['file.export','Export…',undefined,'Files and versions'],['file.reveal','Reveal in Finder',undefined,'Files and versions'],['file.copyPath','Copy file path',undefined,'Files and versions'],['file.trash','Move to Bin…','⌘⌫','Files and versions'],
   ['folder.newFile','New file here','⌘N','Files and versions'],['folder.newFolder','New subfolder…',undefined,'Files and versions'],['folder.rename','Rename folder','F2','Files and versions'],['folder.reveal','Reveal in Finder',undefined,'Files and versions'],['folder.trash','Delete folder…',undefined,'Files and versions'],['folder.focus','Focus',undefined,'Navigation'],['folder.clearFocus','Clear focus',undefined,'Navigation'],['folder.helpWithReport','Help with this report',undefined,'Skills'],
   ['insert.reference','Reference…',undefined,'Capture and ideas'],['insert.metadata','Metadata',undefined,'Writing'],['insert.image','Image…',undefined,'Writing'],['insert.widget','Insert widget…',undefined,'Writing',{ surfaces: ['palette', 'menu'], keywords: ['widget', 'simulation', 'interactive', 'embed', 'html', 'insert'] }],['insert.code','Code block',undefined,'Writing'],['insert.mermaid','Flow diagram',undefined,'Writing'],['insert.markmap','Mind map',undefined,'Writing'],['insert.svg','SVG',undefined,'Writing'],['insert.divider','Divider',undefined,'Writing'],['insert.footnote','Footnote',undefined,'Writing'],
-  ['block.edit','Edit','↵','Writing'],['block.copy','Copy source',undefined,'Writing'],['block.delete','Delete block…',undefined,'Writing'],
+  ['block.edit','Edit','↵','Writing'],['block.copy','Copy source',undefined,'Writing'],['block.delete','Delete block',undefined,'Writing'],
   ['table.alignLeft',TABLE_COMMAND_LABELS.alignLeft,undefined,'Writing'],['table.alignCentre',TABLE_COMMAND_LABELS.alignCentre,undefined,'Writing'],['table.alignRight',TABLE_COMMAND_LABELS.alignRight,undefined,'Writing'],['table.insertLeft',TABLE_COMMAND_LABELS.insertLeft,undefined,'Writing'],['table.insertRight',TABLE_COMMAND_LABELS.insertRight,undefined,'Writing'],['table.delete',TABLE_COMMAND_LABELS.delete,undefined,'Writing'],
-].map(([id,label,keys,group,extra]) => ({ id: id as string, label: label as string, ...(keys ? { keys: keys as string } : {}), group: group as CommandGroup, surfaces: ['menu'] as CommandSurface[], ...(extra as Partial<CommandDefinition> | undefined) }))
+].map(([id,label,keys,group,extra]) => ({ id: id as string, label: label as string, ...(keys ? { keys: keys as string } : {}), group: group as CommandGroup, surfaces: ['menu'] as CommandSurface[], keysPlaceBound: Boolean(keys), ...(sameActionMenuReasons[id as string] ? { noMenu: sameActionMenuReasons[id as string] } : {}), ...(extra as Partial<CommandDefinition> | undefined) }))
 
 const commandDefinitions: CommandDefinition[] = [
+  // keyboard-sheet.ts lists every palette command; the legacy column export stays unchanged.
   ...sheetCommands,
-  { id: 'skill.run.copy-edit', label: 'Run Copy-edit on the document', keys: '⌥⌘1', group: 'Skills', surfaces: ['sheet'], sheetColumn: 2 },
-  { id: 'skill.run.review', label: 'Run Review on the document', keys: '⌥⌘2', group: 'Skills', surfaces: ['sheet'], sheetColumn: 2 },
-  { id: 'skill.run.clean-up', label: 'Run Clean-up on the document', keys: '⌥⌘3', group: 'Skills', surfaces: ['sheet'], sheetColumn: 2 },
+  { id: 'skill.run.copy-edit', label: 'Run Copy-edit on the document', keys: '⌥⌘1', group: 'Skills', surfaces: ['sheet', 'menu'], sheetColumn: 2 },
+  { id: 'skill.run.review', label: 'Run Review on the document', keys: '⌥⌘2', group: 'Skills', surfaces: ['sheet', 'menu'], sheetColumn: 2 },
+  { id: 'skill.run.clean-up', label: 'Run Clean-up on the document', keys: '⌥⌘3', group: 'Skills', surfaces: ['sheet', 'menu'], sheetColumn: 2 },
   // Ticket 10: the report skill on the focused folder (the Plan pane and folder menu name their own).
   { id: 'skill.run.report-structure', label: 'Help with this report', group: 'Skills', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
-  { id: 'skills.openThread', label: 'Open a skill thread', keys: ['⇧⌥⌘1', '⇧⌥⌘2', '⇧⌥⌘3'], group: 'Skills', surfaces: ['sheet'], sheetColumn: 2 },
+  { id: 'skills.openThread', label: 'Open a skill thread', keys: ['⇧⌥⌘1', '⇧⌥⌘2', '⇧⌥⌘3'], group: 'Skills', surfaces: ['sheet', 'menu'], sheetColumn: 2 },
   { id: 'threads.new', label: 'Start a new conversation', group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   { id: 'threads.switcher', label: 'Show conversations', keys: '⌃⌘T', group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   { id: 'threads.closeCurrent', label: 'Close the current conversation', group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   { id: 'agent.manageAccounts', label: 'Manage assistant accounts', group: 'Agent', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
-  { id: 'skills.manage', label: 'Manage skills…', group: 'Skills', surfaces: ['sheet'], sheetColumn: 2 },
+  { id: 'skills.manage', label: 'Manage skills…', group: 'Skills', surfaces: ['sheet', 'menu'], sheetColumn: 2 },
   ...editorCommands.map((command) => {
     const isFoldCommand = command.id.startsWith('fold.') || command.id === 'edit.flagSelection' || command.id === 'edit.clearFlag'
     return {
@@ -229,16 +249,16 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'navigation.previousBlock', label: 'Previous rendered block', keys: '⌃⌘↑', group: 'Navigation', surfaces: ['palette'] },
   { id: 'navigation.linkTrailBack', label: 'Back along link trail', keys: '⌃⌘←', group: 'Navigation', surfaces: ['palette'] },
   { id: 'navigation.linkTrailForward', label: 'Forward along link trail', keys: '⌃⌘→', group: 'Navigation', surfaces: ['palette'] },
-  { id: 'tab.pin', label: 'Pin to strip / Unpin from strip', keys: '⌥⌘P', group: 'Navigation', surfaces: ['palette'] },
+  { id: 'tab.pin', label: 'Pin to strip / Unpin from strip', labelWhenOn: 'Unpin from strip', labelWhenOff: 'Pin to strip', keys: '⌥⌘P', group: 'Navigation', surfaces: ['palette'] },
   // Focus a folder (ticket 03): a view state that narrows the tree and scopes search. Keyless, like
   // every new command: chords are assigned in the one app-wide sweep before release.
   { id: 'view.focusFolder', label: 'Focus on the open file’s Collection', keywords: ['focus', 'folder', 'folio', 'collection', 'narrow', 'scope', 'project', 'tree'], group: 'Navigation', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'view.clearFolderFocus', label: 'Clear folder focus', keywords: ['focus', 'folder', 'whole archive', 'everywhere', 'unfocus'], group: 'Navigation', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'files.filter', label: 'Filter files…', group: 'Navigation', surfaces: ['palette'] },
-  { id: 'sheet.FileSearch.0', label: 'Move through file search suggestions', keys: ['↑', '↓'], group: 'Navigation', surfaces: ['sheet'], claimsChord: false, sheetSource: { kind: 'literal' } },
-  { id: 'sheet.FileSearch.1', label: 'Complete a file search prefix or folder', keys: ['↵', '⇥'], group: 'Navigation', surfaces: ['sheet'], claimsChord: false, sheetSource: { kind: 'literal' } },
-  { id: 'sheet.FileSearch.2', label: 'Open the first file search result', keys: '↵', group: 'Navigation', surfaces: ['sheet'], claimsChord: false, sheetSource: { kind: 'literal' } },
-  { id: 'sheet.FileSearch.3', label: 'Clear file search / close the empty search box', keys: 'Esc', group: 'Navigation', surfaces: ['sheet'], claimsChord: false, sheetSource: { kind: 'literal' } },
+  { id: 'sheet.FileSearch.0', label: 'Move through file search suggestions', keys: ['↑', '↓'], group: 'Navigation', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', claimsChord: false, sheetSource: { kind: 'literal' } },
+  { id: 'sheet.FileSearch.1', label: 'Complete a file search prefix or folder', keys: ['↵', '⇥'], group: 'Navigation', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', claimsChord: false, sheetSource: { kind: 'literal' } },
+  { id: 'sheet.FileSearch.2', label: 'Open the first file search result', keys: '↵', group: 'Navigation', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', claimsChord: false, sheetSource: { kind: 'literal' } },
+  { id: 'sheet.FileSearch.3', label: 'Clear file search / close the empty search box', keys: 'Esc', group: 'Navigation', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', claimsChord: false, sheetSource: { kind: 'literal' } },
   { id: 'writer.newSession', label: 'Start a new review session', group: 'Review', surfaces: ['palette'] },
   // Diary Session Starter (0.18): one free default outside the estate-reserved map; End and target
   // adjustment are live-gated by App while an explicit session runs.
@@ -280,7 +300,7 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'review.toggleMargin', label: 'Show or hide the margin', keys: '⇧⌥⌘M', group: 'Review', surfaces: ['palette', 'sheet'], sheetColumn: 2, keywords: ['review', 'margin', 'hide', 'show', 'cards'] },
   { id: 'review.settledToday', label: 'Settled today', hint: 'Reopen anything settled today', leadsFor: ['review'], group: 'Review', surfaces: ['palette'], keywords: ['review', 'settled', 'reopen', 'return to review', 'accepted', 'declined', 'today'] },
   { id: 'review.myEdits', label: 'My edits', hint: 'Your recorded edits in this piece', leadsFor: ['review'], group: 'Review', surfaces: ['palette'], keywords: ['review', 'mine', 'yours', 'recorded', 'accept session'] },
-  { id: 'review.showQuietFixes', label: 'Show quiet fixes', hint: 'Small fixes applied without a card', leadsFor: ['review'], group: 'Review', surfaces: ['palette'], keywords: ['review', 'quiet', 'typo', 'copy', 'fixes', 'hide'] },
+  { id: 'review.showQuietFixes', label: 'Show quiet fixes', labelWhenOn: 'Hide quiet fixes', labelWhenOff: 'Show quiet fixes', hint: 'Small fixes applied without a card', leadsFor: ['review'], group: 'Review', surfaces: ['palette'], keywords: ['review', 'quiet', 'typo', 'copy', 'fixes', 'hide'] },
   { id: 'review.acceptAndNext', label: 'Accept and next', keys: '⌥⌘↵', group: 'Review', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   { id: 'view.toggleLeftPane', label: 'Show/hide left sidebar', keys: '⌘[', group: 'View', surfaces: ['palette'] },
   { id: 'view.toggleRightPane', label: 'Show/hide right sidebar', keys: '⌘]', group: 'View', surfaces: ['palette'] },
@@ -432,7 +452,7 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'folio.linkFiles', label: "Link this Folio's chapters to their files", keywords: ['folio', 'chapter', 'file', 'identity', 'links'], group: 'Collections', surfaces: ['palette'] },
   { id: 'folio.open', label: 'Open Folio', keys: '⌘↵', keywords: ['folio', 'outline', 'open at', 'first part'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0, claimsChord: false },
   // ⇧⌘↵ on the Folio's page opens the Open at… menu (FolioOpenButton.tsx); the page owns the chord, so it only documents it here.
-  { id: 'folio.openAt', label: 'Open Folio at another part', keys: '⇧⌘↵', keywords: ['folio', 'open at', 'part', 'menu'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
+  { id: 'folio.openAt', label: 'Open Folio at another part', keys: '⇧⌘↵', keywords: ['folio', 'open at', 'part', 'menu'], group: 'Collections', surfaces: ['sheet', 'menu'], sheetColumn: 0, claimsChord: false },
   { id: 'folio.previousPiece', label: 'Previous piece in Folio', group: 'Collections', surfaces: ['palette'] },
   { id: 'folio.nextPiece', label: 'Next piece in Folio', group: 'Collections', surfaces: ['palette'] },
   // Running order from the Outline (2026-10-14): palette-only, keyless, Collections.
@@ -447,14 +467,14 @@ const commandDefinitions: CommandDefinition[] = [
   // six view keys in another order (Cards ⌥1, Outline ⌥2, Map ⌥3, Flags ⌥4, Text ⌥5, Evidence ⌥6): the ids stay, the keys follow the tabs.
   // ADR-0011 (universal keymap) reserves only ⌘-chords, so ⌥1-⌥7 and ⌥⌘I clash with nothing in it; the one clash is Electron's own
   // View > Toggle Developer Tools (⌥⌘I), which main/menu.ts moves to ⇧⌥⌘I so the inspector key reaches the renderer.
-  { id: 'folio.room.outline', label: 'Folio workspace: Table', keys: '⌥1', keywords: ['folio', 'workspace', 'room', 'view', 'tab', 'outline', 'headings', 'table', 'rows'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
-  { id: 'folio.room.text', label: 'Folio workspace: Text', keys: '⌥2', keywords: ['folio', 'workspace', 'room', 'view', 'tab', 'text', 'part', 'editor'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
-  { id: 'folio.room.cards', label: 'Folio workspace: Cards', keys: '⌥3', keywords: ['folio', 'workspace', 'room', 'view', 'tab', 'cards', 'board', 'status'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
-  { id: 'folio.room.map', label: 'Folio workspace: Map', keys: '⌥4', keywords: ['folio', 'workspace', 'tab', 'map', 'canvas', 'path'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
-  { id: 'folio.room.flags', label: 'Folio workspace: Flags', keys: '⌥5', keywords: ['folio', 'workspace', 'tab', 'flags', 'citation', 'rewrite'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
-  { id: 'folio.room.evidence', label: 'Folio workspace: Evidence', keys: '⌥6', keywords: ['folio', 'workspace', 'tab', 'evidence', 'sources'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
-  { id: 'folio.room.files', label: 'Folio workspace: Files', keys: '⌥7', keywords: ['folio', 'workspace', 'tab', 'files', 'folder', 'collection', 'list'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
-  { id: 'folio.room.versions', label: 'Open Folio Versions', keys: '⌥8', keywords: ['folio', 'workspace', 'tab', 'versions', 'history', 'saved', 'draft', 'timeline', 'whole'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.outline', label: 'Folio workspace: Table', keysPlaceBound: true, keys: '⌥1', keywords: ['folio', 'workspace', 'room', 'view', 'tab', 'outline', 'headings', 'table', 'rows'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.text', label: 'Folio workspace: Text', keysPlaceBound: true, keys: '⌥2', keywords: ['folio', 'workspace', 'room', 'view', 'tab', 'text', 'part', 'editor'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.cards', label: 'Folio workspace: Cards', keysPlaceBound: true, keys: '⌥3', keywords: ['folio', 'workspace', 'room', 'view', 'tab', 'cards', 'board', 'status'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.map', label: 'Folio workspace: Map', keysPlaceBound: true, keys: '⌥4', keywords: ['folio', 'workspace', 'tab', 'map', 'canvas', 'path'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.flags', label: 'Folio workspace: Flags', keysPlaceBound: true, keys: '⌥5', keywords: ['folio', 'workspace', 'tab', 'flags', 'citation', 'rewrite'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.evidence', label: 'Folio workspace: Evidence', keysPlaceBound: true, keys: '⌥6', keywords: ['folio', 'workspace', 'tab', 'evidence', 'sources'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.files', label: 'Folio workspace: Files', keysPlaceBound: true, keys: '⌥7', keywords: ['folio', 'workspace', 'tab', 'files', 'folder', 'collection', 'list'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'folio.room.versions', label: 'Open Folio Versions', keysPlaceBound: true, keys: '⌥8', keywords: ['folio', 'workspace', 'tab', 'versions', 'history', 'saved', 'draft', 'timeline', 'whole'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   // Folio versions ticket 07. Keyless (palette-listed, rebindable, in View): the Versions tab's Open read-only button and a double click reach the first; Esc and the banner's button reach the second.
   { id: 'folio.versions.openReadOnly', label: 'Open Folio Version Read-only', keywords: ['folio', 'version', 'read', 'only', 'old', 'earlier', 'draft', 'view', 'saved'], group: 'Collections', surfaces: ['palette'] },
   // Ticket 08. Keyless (palette-listed, rebindable, in View): the Versions tab's Compare with working draft button reaches it too.
@@ -462,12 +482,12 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'folio.versions.backToWorking', label: 'Back to Working Draft', keywords: ['folio', 'version', 'read', 'only', 'leave', 'return', 'close', 'working', 'draft'], group: 'Collections', surfaces: ['palette'] },
   { id: 'folio.room.split', label: 'Folio workspace: Text beside the cards', keys: '⌥S', keywords: ['folio', 'room', 'split', 'text', 'beside', 'cards'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'folio.room.inspector', label: 'Folio workspace: Show or hide the inspector', keys: '⌥⌘I', keywords: ['folio', 'workspace', 'inspector', 'sidebar', 'binder', 'details'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
-  { id: 'folio.room.toggleHeadings', label: 'Expand or collapse a part’s headings (disclosure focused)', keys: ['↵', 'Space'], keywords: ['folio', 'outline', 'headings'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
-  { id: 'folio.room.openHeading', label: 'Open a focused Outline heading in the Text tab', keys: '↵', keywords: ['folio', 'outline', 'heading', 'text'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
-  { id: 'folio.room.openSelected', label: 'Open the selected part in the Text tab', keys: '⇧↵', keywords: ['folio', 'workspace', 'open', 'text', 'part'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
-  { id: 'folio.room.laneLeft', label: 'Move the card to the lane on the left', keys: '⌥←', keywords: ['folio', 'workspace', 'board', 'lane', 'status', 'card'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
-  { id: 'folio.room.laneRight', label: 'Move the card to the lane on the right', keys: '⌥→', keywords: ['folio', 'workspace', 'board', 'lane', 'status', 'card'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
-  { id: 'folio.room.removeKey', label: 'Move the selected part to the Folio bin', keys: 'Delete', keywords: ['folio', 'workspace', 'delete', 'remove', 'bin', 'part'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.toggleHeadings', label: 'Expand or collapse a part’s headings (disclosure focused)', keys: ['↵', 'Space'], keywords: ['folio', 'outline', 'headings'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.openHeading', label: 'Open a focused Outline heading in the Text tab', keys: '↵', keywords: ['folio', 'outline', 'heading', 'text'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.openSelected', label: 'Open the selected part in the Text tab', keys: '⇧↵', keywords: ['folio', 'workspace', 'open', 'text', 'part'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.laneLeft', label: 'Move the card to the lane on the left', keys: '⌥←', keywords: ['folio', 'workspace', 'board', 'lane', 'status', 'card'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.laneRight', label: 'Move the card to the lane on the right', keys: '⌥→', keywords: ['folio', 'workspace', 'board', 'lane', 'status', 'card'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 0, claimsChord: false },
+  { id: 'folio.room.removeKey', label: 'Move the selected part to the Folio bin', keys: 'Delete', keywords: ['folio', 'workspace', 'delete', 'remove', 'bin', 'part'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 0, claimsChord: false },
   { id: 'plan.addPart', label: 'Add a Folio outline part', keys: 'N', group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'plan.adoptPart', label: 'Add existing part to Folio outline', keys: 'A', group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'plan.adoptAsFrontMatter', label: 'Add existing part to Folio outline as front matter', keys: 'F', keywords: ['title page', 'cover', 'front matter'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
@@ -496,14 +516,14 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'title.dismissConflictBar', label: 'Hide the title-differs bar for this document', keywords: ['title', 'dismiss', 'bar'], keys: '⌃⌥⌘X', group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'title.undoLastChange', label: 'Undo last title change', keywords: ['title', 'heading', 'undo'], keys: '⌃⌥⌘Z', group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   // The Not in the outline section (0.26 ticket 7): Enter on a selected file there opens it. ↵ is the running order's own key too, so this row only documents it.
-  { id: 'plan.openFile', label: 'Open the file', keys: '↵', keywords: ['not in the outline', 'unlisted', 'open'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 0, claimsChord: false },
+  { id: 'plan.openFile', label: 'Open the file', keys: '↵', keywords: ['not in the outline', 'unlisted', 'open'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 0, claimsChord: false },
   // The Details card and its pickers (0.26 tickets 4 and 5). Each key belongs to the card's own fields, so these rows document them.
-  { id: 'plan.details.nextField', label: 'Next field', keys: '⇥', keywords: ['details', 'tab'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 1, claimsChord: false },
-  { id: 'plan.details.openPicker', label: 'Open a picker', keys: ['↓', 'Space'], keywords: ['details', 'status', 'date', 'author', 'audience', 'language'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 1, claimsChord: false },
-  { id: 'plan.details.choose', label: 'Choose in a picker', keys: ['↑', '↓', '↵'], keywords: ['details', 'picker'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 1, claimsChord: false },
-  { id: 'plan.details.calendar', label: 'Move in the calendar', keys: ['←', '→', '⇞', '⇟'], keywords: ['details', 'date', 'calendar', 'day', 'week', 'month'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 1, claimsChord: false },
-  { id: 'plan.details.today', label: 'Calendar: today', keys: 'T', keywords: ['details', 'date', 'calendar'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 1, claimsChord: false },
-  { id: 'plan.details.undo', label: 'Undo the last change in the Details', keys: '⌘Z', keywords: ['details', 'undo'], group: 'Collections', surfaces: ['sheet'], sheetColumn: 1, claimsChord: false },
+  { id: 'plan.details.nextField', label: 'Next field', keys: '⇥', keywords: ['details', 'tab'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 1, claimsChord: false },
+  { id: 'plan.details.openPicker', label: 'Open a picker', keys: ['↓', 'Space'], keywords: ['details', 'status', 'date', 'author', 'audience', 'language'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 1, claimsChord: false },
+  { id: 'plan.details.choose', label: 'Choose in a picker', keys: ['↑', '↓', '↵'], keywords: ['details', 'picker'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 1, claimsChord: false },
+  { id: 'plan.details.calendar', label: 'Move in the calendar', keys: ['←', '→', '⇞', '⇟'], keywords: ['details', 'date', 'calendar', 'day', 'week', 'month'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 1, claimsChord: false },
+  { id: 'plan.details.today', label: 'Calendar: today', keys: 'T', keywords: ['details', 'date', 'calendar'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 1, claimsChord: false },
+  { id: 'plan.details.undo', label: 'Undo the last change in the Details', keys: '⌘Z', keywords: ['details', 'undo'], group: 'Collections', surfaces: ['sheet'], noMenu: 'Contextual keyboard action owned by this surface; no standalone app command runner.', sheetColumn: 1, claimsChord: false },
   // Parcel 3 (ADR-0023/0036): the Rail is summoned, never resident. The mockup's ⌥⌘R and ⌘Q
   // placeholders are occupied, so these free defaults are recorded here for the pre-release sweep.
   { id: 'collection.toggleRail', label: 'Summon Rail', keys: '⌃⌘L', group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
@@ -511,16 +531,16 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'collection.insertAsQuery', label: 'Insert as query', keys: '⌃⌥⌘Q', group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   // Palette-only by design: this rare shape correction deliberately has no default chord; the
   // pre-v1 shortcut sweep can see that decision through `keys: undefined` in the registry.
-  { id: 'collection.toggleFolderPiece', label: 'Treat folder as one piece / many pieces', group: 'Collections', surfaces: ['palette'] },
-  { id: 'collection.toggleCounted', label: 'Count toward diary / Stop counting toward diary', group: 'Collections', surfaces: ['palette'] },
+  { id: 'collection.toggleFolderPiece', label: 'Choose a folder to treat as one or separate pieces…', labelNamed: { on: 'Treat "{name}" as separate pieces', off: 'Treat "{name}" as one piece' }, group: 'Collections', surfaces: ['palette'] },
+  { id: 'collection.toggleCounted', label: 'Count toward diary / Stop counting toward diary', labelWhenOn: 'Stop counting toward diary', labelWhenOff: 'Count toward diary', group: 'Collections', surfaces: ['palette'] },
   { id: 'statusbar.disclosure', label: 'Show status details', keys: '⌃⌘I', group: 'View', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   { id: 'idea.capture', label: 'Capture an idea', keys: '⇧⌘N', group: 'Capture and ideas', surfaces: ['palette', 'sheet'], sheetColumn: 1 },
   { id: 'idea.materialise', label: 'Materialise dead wikilink', keys: '⌘↵', group: 'Capture and ideas', surfaces: ['palette', 'sheet'], sheetColumn: 1, when: canMaterialiseAtCaret },
   { id: 'navigation.followWikilink', label: 'Follow wikilink', keys: '⌥↵', group: 'Capture and ideas', surfaces: ['palette', 'sheet'], sheetColumn: 1 },
-  { id: 'idea.insertWikilink', label: 'Insert wikilink', keys: '[[', group: 'Capture and ideas', surfaces: ['sheet'], sheetColumn: 1 },
+  { id: 'idea.insertWikilink', label: 'Insert wikilink', keys: '[[', group: 'Capture and ideas', surfaces: ['sheet', 'menu'], sheetColumn: 1 },
   { id: 'view.hideStrikes', label: 'Hide strikes', group: 'Review', surfaces: ['palette'] },
   { id: 'view.hideInserts', label: 'Hide inserts', group: 'Review', surfaces: ['palette'] },
-  { id: 'readingRoom.toggle', label: 'Open Reading Room', keys: '⌃⌘R', group: 'Reading room', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
+  { id: 'readingRoom.toggle', label: 'Open Reading Room', labelWhenOn: 'Close Reading Room', keys: '⌃⌘R', group: 'Reading room', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   { id: 'readingRoom.document', label: 'Reading Room: Document view', group: 'Reading room', surfaces: ['palette', 'sheet'], sheetColumn: 2 },
   // ⇧⌘H was assigned in T6 for a view that did not exist yet; building it proved macOS swallows that
   // chord above the web contents (a correctly-armed probe saw NOTHING reach the renderer). Moved into the
@@ -603,6 +623,9 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'app.versions', label: 'Open Versions', keys: '⌘3', group: 'Files and versions', surfaces: ['palette'] },
   { id: 'app.settings', label: 'Open Settings…', keys: '⌘,', group: 'App', surfaces: ['palette'] },
   { id: 'app.about', label: 'About WriteFlex', group: 'App', surfaces: ['palette'] },
+  { id: 'app.actionsHere', label: 'Actions here', group: 'App', surfaces: ['palette'] },
+  // Registered after the commands whose sub-groups the Guide names first, so the chapters keep their order.
+  ...NATIVE_MENU_COMMANDS.map(c => ({ ...c, group: 'App' as const, surfaces: ['palette'] as CommandSurface[] })),
   // Get started (ADR-0043, ticket 10): the two buttons of Settings → Get started, as commands.
   { id: 'guide.open', label: 'Open the Guide', group: 'App', surfaces: ['palette'] },
   // Sharing (0.24 ticket 02): the set-up steps, also reached from Settings › Sharing.
@@ -655,6 +678,8 @@ const commandDefinitions: CommandDefinition[] = [
 export const commandRegistry: Command[] = commandDefinitions.map((command) => ({
   ...command,
   ...commandAnnotations[command.id],
+  // Running-order and Details keys belong to the Folio surface, including when rebound.
+  keysPlaceBound: command.keysPlaceBound || command.id.startsWith('plan.'),
   ...taskGroupOf(command.id),
   places: placesOf(command.sheetSource?.kind === 'command' ? command.sheetSource.commandId : command.id),
 }))

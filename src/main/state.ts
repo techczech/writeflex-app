@@ -138,6 +138,12 @@ export function trackPendingDisposal(pending: Promise<void>): void {
   pendingAgentDisposals.add(tracked)
 }
 
+/** A closed window's work (its assistant's record, its checkpoints, its diary, its sync copies) is still being
+ *  written: an update's restart waits for it (ADR-0054) as will-quit does. */
+export function agentDisposalsPending(): boolean {
+  return pendingAgentDisposals.size > 0
+}
+
 /** Electron's closed event cannot await; will-quit uses this to let Bridle finish its async flush.
  *  Loops rather than snapshotting once: a late boot's tracked teardown can join AFTER the wait
  *  began (review finding B1 round 2), and quit must cover it too. Bounded — teardowns never spawn unboundedly. */
@@ -150,8 +156,17 @@ export async function waitForAgentDisposals(): Promise<void> {
 /** App-wide quit intent (set on before-quit): lets window-all-closed resume a ⌘Q that the dirty-close
  *  guard paused for its sheet. Reset when a close is cancelled so a stale intent can't quit later. */
 let quitting = false
+const quitCancelledListeners = new Set<() => void>()
 export function setQuitting(value: boolean): void {
+  const was = quitting
   quitting = value
+  // A ⌘Q that a close guard called off (a save failed): what waited for the quit to finish runs now (ADR-0054 item 7).
+  if (was && !value) for (const listener of [...quitCancelledListeners]) { try { listener() } catch { /* one listener's fault */ } }
+}
+/** Told when quit intent is withdrawn (a guarded close was cancelled), so work skipped for the quit can be reconciled. */
+export function onQuitCancelled(listener: () => void): () => void {
+  quitCancelledListeners.add(listener)
+  return () => { quitCancelledListeners.delete(listener) }
 }
 export function isQuitting(): boolean {
   return quitting

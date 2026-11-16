@@ -1,3 +1,5 @@
+import { NATIVE_EDIT_ROLE_CHORDS } from '../../../shared/native-menu-commands'
+
 export type ShortcutLike = Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'key' | 'code'>
 
 export function isWriterModeToggleShortcut(e: ShortcutLike): boolean {
@@ -98,7 +100,8 @@ export function canonicalChord(chord: string): string {
 
 /** Normalise CodeMirror registry keys for palette and cheat-sheet display. */
 export function formatShortcutKey(keySpec: string): string {
-  if (!keySpec.includes('-')) return keySpec
+  // Display chords can contain a literal minus; only CodeMirror specs use '-' as a separator.
+  if (/^[⌃⌥⇧⌘]/.test(keySpec) || !keySpec.includes('-')) return keySpec
   const parts = keySpec.split('-')
   let key = parts.pop() ?? ''
   const mods = parts.map((part) => part.toLowerCase())
@@ -111,4 +114,16 @@ export function formatShortcutKey(keySpec: string): string {
     mods.includes('mod') ? '⌘' : '',
   ].join('')
   return `${glyphs}${key.length === 1 && /[a-z]/i.test(key) ? key.toUpperCase() : key}`
+}
+
+
+/** Native Edit owns these chords outside CodeMirror, even if a registry command uses the same key. */
+export function nativeEditRoleChord(chord: string | null | undefined): boolean {
+  return Boolean(chord && Object.values(NATIVE_EDIT_ROLE_CHORDS).some(key => canonicalChord(key) === canonicalChord(chord)))
+}
+
+/** Bare control keys use the same glyphs as the registry, though none is a menu accelerator. */
+export function menuInputChord(e: ShortcutLike): string {
+  const glyph = ({ Enter: '↵', Tab: '⇥', Escape: 'Esc' } as Record<string, string>)[e.key] ?? e.key.toUpperCase()
+  return eventToChord(e) ?? backspaceChord(e) ?? `${e.shiftKey ? '⇧' : ''}${glyph}`
 }

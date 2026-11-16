@@ -70,7 +70,9 @@ export function ActionsHere({ x, y, place, startView = 'here', runHere, insertEx
   // beside it, stack[1] the opener row of that list whose list stands beside the second (Insert object → Flow diagram).
   // `the user's[n]` is the highlighted row of list n; `objQuery` the Insert object list's own filter. The Format strip's cell
   // that has the keyboard is `stripHi`.
-  const [stack, setStack] = useState<ActionRow[]>(() => (startView === 'insert' ? [INSERT_OPENER] : []))
+  const [stack, setStack] = useState<ActionRow[]>(() => startView === 'diagram'
+    ? [INSERT_OPENER, insertObjectRows(api.overrides).find(row => row.id === 'insert.mermaid')!]
+    : startView === 'insert' ? [INSERT_OPENER] : [])
   const [his, setHis] = useState<number[]>([0, 0])
   const [objQuery, setObjQuery] = useState('')
   const [places, setPlaces] = useState<Array<{ left: number; top: number }>>([])

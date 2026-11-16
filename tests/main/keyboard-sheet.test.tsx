@@ -87,7 +87,8 @@ describe('the tasks list the registry once', () => {
 
   test('keys with no command stay as the sheet has them, and menu-only commands Here offers are listed', () => {
     const ids = new Set(allRows().map((row) => row.id))
-    const repeats = ['New file', 'Rename file or folder', 'Move to folder', 'Duplicate file', 'Move to Bin']
+    // The key-only rows a registered command in the same sub-group now shows with the same key (the menu's own commands, registered 2026-11-10).
+    const repeats = ['New file', 'Rename file or folder', 'Move to folder', 'Duplicate file', 'Move to Bin', 'Open folder or file', 'New folder', 'New window', 'Close tab', 'Reset zoom']
     const literals = commandRegistry.filter((command) => command.sheetSource?.kind === 'literal')
     for (const literal of literals) expect(ids.has(literal.id), literal.label).toBe(!repeats.includes(literal.label))
     for (const id of ['folder.newFile', 'file.rename', 'file.move', 'file.duplicate', 'file.trash']) expect(ids.has(id)).toBe(true)

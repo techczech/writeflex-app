@@ -89,3 +89,25 @@ export function installSmokeDialogGuard(
     }
   }
 }
+
+/** The update-test flavour's user data: `<folder holding the .app>/WriteFlex Update Test data`, from the running
+ *  executable `<X.app>/Contents/MacOS/<name>` (string work only: this file imports nothing). */
+export function updateTestUserData(execPath: string): string {
+  const parts = execPath.split('/')
+  return `${parts.slice(0, -4).join('/')}/WriteFlex Update Test data`
+}
+
+/**
+ * The update-test flavour (src/main/update-test-build.ts) always runs as the hidden harness: no window shown, no Dock
+ * icon, mock keychain, no Documents, no external links, its user data next to the app. bootstrap.ts calls this only
+ * when the build defines __WF_UPDATE_TEST__ true.
+ */
+export function enterUpdateTestHarness(env: Record<string, string | undefined>, execPath: string): void {
+  const userData = updateTestUserData(execPath)
+  env.WRITEFLEX_E2E = '1'
+  env.WRITEFLEX_E2E_USER_DATA = userData
+  env.WRITEFLEX_E2E_SOURCE_HOME = userData
+  delete env.WRITEFLEX_E2E_DOCUMENTS
+  delete env.WRITEFLEX_OPEN_FOLDER
+  delete env.WRITEFLEX_E2E_SMOKE
+}

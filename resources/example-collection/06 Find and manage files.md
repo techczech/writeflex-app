@@ -2,7 +2,7 @@
 
 The piece about the walk is spread over the files of this folder. This file is the list of what is where. Many of the commands here act on the Files pane or the tabs, not on this text, so each instruction says where to be. Where a command has no key, its name is in bold: press <kbd>⇧⌘P</kbd>, type the name and press <kbd>↵</kbd>.
 
-> **Tabs.** Open two of the files listed under **What is where**, so that three tabs are open. <kbd>⇧⌘]</kbd> goes to the next tab and <kbd>⇧⌘[</kbd> to the previous one. <kbd>⌘2</kbd> lists the open tabs. <kbd>⌥⌘P</kbd> pins this tab to the tab strip, and unpins it again. <kbd>⌃⌘⇥</kbd> and <kbd>⌃⇧⌘⇥</kbd> go to the next and the previous tab of the right-hand pane.
+> **Tabs.** Open two of the files listed under **What is where**, so that three tabs are open. <kbd>⇧⌘]</kbd> goes to the next tab and <kbd>⇧⌘[</kbd> to the previous one. <kbd>⌘2</kbd> lists the open tabs. <kbd>⌥⌘P</kbd> pins this tab to the tab strip, and unpins it again. <kbd>⌘W</kbd> closes this tab. <kbd>⌃⌘⇥</kbd> and <kbd>⌃⇧⌘⇥</kbd> go to the next and the previous tab of the right-hand pane.
 
 ## What is where
 
@@ -12,7 +12,7 @@ The piece about the walk is spread over the files of this folder. This file is t
 - The plan for the magazine is in [[07 Collect and plan]].
 - The second stile needs a file of its own: [[The notch for the dog]].
 
-> **Files and quick open.** <kbd>⇧⌘K</kbd> opens Quick Open: type a few letters of a file's name, in any order, and press <kbd>↵</kbd>. <kbd>⌥⌘]</kbd> and <kbd>⌥⌘[</kbd> open the next and the previous file in the folder. <kbd>⇧⌘E</kbd> opens the Files pane on the left, and **Filter files…** narrows its list as you type. **Clear document…** empties the file you have open, after asking. **Pin this vault** keeps this folder on the start screen, and **Unpin this vault** takes it off.
+> **Files and quick open.** <kbd>⌘O</kbd> opens a folder or a Markdown file, and **Open Recent** lists the folders you opened lately. <kbd>⌘N</kbd> makes a new file, <kbd>⌃⌘N</kbd> a new folder and <kbd>⌥⌘N</kbd> a new window. <kbd>⌘S</kbd> makes a checkpoint of the file you have open, though saving is automatic. <kbd>⇧⌘K</kbd> opens Quick Open: type a few letters of a file's name, in any order, and press <kbd>↵</kbd>. <kbd>⌥⌘]</kbd> and <kbd>⌥⌘[</kbd> open the next and the previous file in the folder. <kbd>⇧⌘E</kbd> opens the Files pane on the left, and **Filter files…** narrows its list as you type. **Clear document…** empties the file you have open, after asking. **Pin this vault** keeps this folder on the start screen, and **Unpin this vault** takes it off.
 
 > **A file's row.** These work in the Files pane, with a file's row selected. <kbd>↵</kbd> opens the file, <kbd>F2</kbd> renames it, <kbd>M</kbd> moves it to another folder, <kbd>⌘D</kbd> makes a copy and <kbd>⌘⌫</kbd> moves it to the Bin. <kbd>⌘K</kbd> on the row lists these with **Pin favourite**, which keeps the file under Favourites in the pane, **Reveal in Finder** and **Copy file path**. Try them on the copy you made, not on a lesson.
 

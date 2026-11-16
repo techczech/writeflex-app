@@ -1,3 +1,4 @@
+import { NATIVE_MENU_COMMANDS } from '../../../shared/native-menu-commands'
 import { COLLECTION_PAGE_COMMANDS, type CollectionPageCommand } from '../components/collection-page-commands'
 // Pure annotations for the command registry. Main imports this data without loading CodeMirror.
 // Audit: docs/design/2026-08-24-agent-parity-audit/audit.md. TODOs retain its verb ids.
@@ -23,6 +24,11 @@ function collectionPageAnnotation(name: CollectionPageCommand): CommandAnnotatio
 }
 
 export const commandAnnotations: Readonly<Record<string, CommandAnnotation>> = {
+  ...Object.fromEntries(NATIVE_MENU_COMMANDS.map(c => [c.id, { class: 'chrome', exclude: 'chrome-only' } as const])),
+  'file.new': { class: 'content', verb: 'housekeeping.create_file' },
+  'folder.new': { class: 'content', verb: 'folder.create', exclude: 'not-yet-projected', todo: 'TODO audit Content parity: File/folder create/rename/move/duplicate/trash' },
+  'file.checkpoint': { class: 'content', verb: 'version.save', exclude: 'not-yet-projected', todo: 'TODO audit priority 10' },
+  'app.actionsHere': { class: 'chrome', exclude: 'chrome-only' },
   "sheet.Files.0": {"class": "chrome", "exclude": "chrome-only"},
   "sheet.Files.1": {"class": "content", "verb": "version.save", "exclude": "not-yet-projected", "todo": "TODO audit priority 10"},
   "sheet.Files.2": {"class": "content", "verb": "housekeeping.create_file"},

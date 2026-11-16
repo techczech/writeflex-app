@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, BookOpen, ChevronDown } from 'lucide-react'
 import type { Folio, Plan } from '../../../preload'
+import { useMenuCommandChecks } from '../commands/use-menu-command-state'
 import { folioRoomEscapeGoesBack } from './BackControl'
 
 /** One running-order part the Folio can open at: a file on disk, with the title the Plan shows. */
@@ -50,6 +51,14 @@ export function FolioOpenButton({ parts, onOpen, returnPath, roomEscape }: { par
   const root = useRef<HTMLDivElement>(null)
   const caret = useRef<HTMLButtonElement>(null)
   const first = returnPath && parts.some(part => part.path === returnPath) ? returnPath : folioOpenTarget(parts)
+
+  useMenuCommandChecks({ 'folio.openAt.available': first !== null })
+  useEffect(() => {
+    if (first === null) return
+    const openAt = () => setMenuOpen(true)
+    window.addEventListener('writeflex:folio-open-at', openAt)
+    return () => window.removeEventListener('writeflex:folio-open-at', openAt)
+  }, [first])
 
   useEffect(() => {
     if (first === null) return

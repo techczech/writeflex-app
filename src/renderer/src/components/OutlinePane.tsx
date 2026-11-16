@@ -1,3 +1,4 @@
+import { useMenuCommandChecks } from '../commands/use-menu-command-state'
 import {
   Fragment,
   useCallback,
@@ -313,6 +314,7 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
     // On by default (the approved frame 4); '0' is the writer's choice to turn them off.
     try { return localStorage.getItem(WORD_COUNTS_KEY) !== '0' } catch { return true }
   })
+  useMenuCommandChecks({ 'outline.toggleWordCounts': showCounts })
   const [selected, setSelected] = useState<ReadonlySet<number>>(() => new Set())
   const [anchorFrom, setAnchorFrom] = useState<number | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; from: number } | null>(null)

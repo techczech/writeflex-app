@@ -1,286 +1,182 @@
-import { COLLECTION_PAGE_COMMANDS } from '../shared/collection-page-commands'
-import { BrowserWindow, Menu, dialog, type MenuItemConstructorOptions } from 'electron'
+import { BrowserWindow, Menu, dialog, type MenuItemConstructorOptions, type WebContents } from 'electron'
+import { recentMenuLabels } from './recent-menu-labels'
 import { statSync } from 'node:fs'
 import { allStates, type WindowState } from './state'
 import type { WindowManager } from './windows'
 import type { SettingsStore } from './settings'
 import { startScreenLists } from './start-screen-model'
-import type { MenuAction } from '../preload'
+import { buildCommandMenu, toAccelerator, type MenuCommand, type MenuFocus } from '../shared/command-menu'
+import { MAIN_MENU_KEY_IDS, MENU_FALLBACK_ENABLED, NATIVE_MENU_COMMANDS, SEED_MENU_COMMANDS } from '../shared/native-menu-commands'
+import { commandPlaces } from '../renderer/src/commands/command-places'
+import { buildMenuTemplate } from './menu-template'
+import { canonicalChord, menuInputChord, nativeEditRoleChord } from '../renderer/src/app/shortcuts'
 
+const models = new WeakMap<WebContents, MenuCommand[]>()
+const editorFocus = new WeakMap<WebContents, MenuFocus>()
+const pendingWindowCommands = new WeakMap<WebContents, string>()
+const observedSenders = new WeakSet<WebContents>()
+let lastModel: MenuCommand[] = []
+let lastModelSender: WebContents | undefined
+/** A withdrawn model must not outlive its window as the cached menu; the fixed seed shows instead. */
+function withdraw(sender: WebContents): void {
+  models.delete(sender)
+  editorFocus.delete(sender)
+  if (lastModelSender === sender) { lastModel = []; lastModelSender = undefined }
+}
+let refresh: (() => void) | undefined
+/** Hidden e2e windows cannot take native focus. Normal runs require an actual focused window. */
+let lastFocusedWindow: BrowserWindow | undefined
+export function noteFocusedWindow(window: BrowserWindow): void { lastFocusedWindow = window }
+function menuWindow(): BrowserWindow | null {
+  const focused = BrowserWindow.getFocusedWindow()
+  if (focused && !focused.isDestroyed() && !focused.isMinimized()) return focused
+  if (process.env.WRITEFLEX_E2E !== '1') return null
+  if (lastFocusedWindow && !lastFocusedWindow.isDestroyed() && !lastFocusedWindow.isMinimized()) return lastFocusedWindow
+  return allStates().find(state => !state.window.isDestroyed() && !state.window.isMinimized())?.window ?? null
+}
 function focusedState(): WindowState | null {
   const window = BrowserWindow.getFocusedWindow()
-  if (!window) return null
-  return allStates().find((state) => state.window === window) ?? null
+  return allStates().find(state => state.window === window) ?? null
 }
 
-/** Menu commands the renderer owns (they touch the editor buffer) go to the focused window. */
-function sendMenuAction(action: MenuAction): void {
-  BrowserWindow.getFocusedWindow()?.webContents.send('menu:action', action)
+/** The menu bar shows the focused window's model; a change elsewhere is stored but never rebuilds it. */
+function showsFor(sender: WebContents): boolean {
+  const focused = BrowserWindow.getFocusedWindow()
+  return !focused || focused.isDestroyed() || focused.webContents === sender
 }
+const LABEL_LIMIT = 200
 
-/** With no focused window, answer in an existing editor (including a hidden test window). */
-function sendUpdateAction(action: 'check-for-updates' | 'whats-new'): void {
-  const target = BrowserWindow.getFocusedWindow() ?? allStates()[0]?.window
-  target?.webContents.send('menu:action', action)
-}
-
-export function updateCollectionMenu(): void {
-  const item = Menu.getApplicationMenu()?.getMenuItemById('collection-page')
-  const enabled = focusedState()?.collectionPageActive === true
-  for (const child of item?.submenu?.items ?? []) {
-    child.enabled = enabled
-    child.visible = (child.id !== 'collection-page:bulk-folio' || focusedState()?.collectionPageFolio === true)
-      && (child.id !== 'collection-page:make-folio' || focusedState()?.collectionPageCanStartFolio !== false)
+/** Models contain data only; per-window storage prevents background editors replacing the active menu. */
+export function receiveCommandMenu(sender: WebContents, commands: MenuCommand[], focus: MenuFocus = 'other'): void {
+  if (!['editor', 'plain-text-field', 'other'].includes(focus)) throw new Error('Invalid menu focus')
+  if (!Array.isArray(commands) || commands.length > 2000) throw new Error('Invalid command menu')
+  if (commands.length === 0) { withdraw(sender); if (showsFor(sender)) refresh?.(); return }
+  const ids = new Set<string>()
+  const known: MenuCommand[] = []
+  for (const c of commands) {
+    if (!c || typeof c.id !== 'string' || ids.has(c.id) || typeof c.label !== 'string' || c.label.length > LABEL_LIMIT || typeof c.task !== 'string' || typeof c.subgroup !== 'string' || typeof c.enabled !== 'boolean'
+      || (c.chord !== undefined && typeof c.chord !== 'string') || (c.checked !== undefined && typeof c.checked !== 'boolean')
+      || (c.nativeAccelerator !== undefined && typeof c.nativeAccelerator !== 'boolean') || (c.nativeAccelerator === true && !MAIN_MENU_KEY_IDS.has(c.id))
+      || (c.noMenu !== undefined && (typeof c.noMenu !== 'string' || !c.noMenu.trim()))) throw new Error('Invalid command menu entry')
+    ids.add(c.id)
+    // commandPlaces holds every registry id and is pure data, so main can tell a real command from an invented one.
+    if (Object.hasOwn(commandPlaces, c.id)) known.push(c)
   }
+  if (!observedSenders.has(sender)) {
+    observedSenders.add(sender)
+    // registerAccelerator:false is Linux/Windows-only in Electron. On macOS, let
+    // registry chords reach the renderer and leave native roles (including Quit) alone.
+    sender.on('before-input-event', (_event, input) => {
+      const event = { key: input.key, code: input.code, metaKey: input.meta, ctrlKey: input.control, altKey: input.alt, shiftKey: input.shift }
+      const chord = menuInputChord(event)
+      const physical = (key: string) => canonicalChord(key.replace(/\+$/, '=').replace(/^(.*)⇧(.*=)$/, '$1$2'))
+      const registryOwns = (editorFocus.get(sender) === 'editor' || !nativeEditRoleChord(chord))
+        && (models.get(sender) ?? []).some(command => toAccelerator(command.chord) && command.chord && physical(command.chord) === physical(chord))
+      sender.setIgnoreMenuShortcuts(registryOwns)
+    })
+    const retire = () => { withdraw(sender); refresh?.() }
+    sender.on('did-start-loading', retire)
+    sender.on('render-process-gone', retire)
+    sender.once('destroyed', retire)
+  }
+  editorFocus.set(sender, focus)
+  models.set(sender, known)
+  lastModel = known
+  lastModelSender = sender
+  if (showsFor(sender)) refresh?.()
+  const pending = pendingWindowCommands.get(sender)
+  if (pending) { pendingWindowCommands.delete(sender); sender.send('menu:command', pending) }
 }
 
-/** Same dialog as the renderer's workspace:open-dialog, but routed straight through the manager. */
+export function updateCollectionMenu(): void { refresh?.() }
+
 async function promptOpen(manager: WindowManager): Promise<void> {
   const from = focusedState()
   const options: Electron.OpenDialogOptions = {
-    title: 'Open Folder or Markdown File',
-    properties: ['openFile', 'openDirectory'],
-    filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'mdx'] }]
+    title: 'Open Folder or Markdown File', properties: ['openFile', 'openDirectory'],
+    filters: [{ name: 'Markdown', extensions: ['md', 'markdown', 'mdx'] }],
   }
   const result = from ? await dialog.showOpenDialog(from.window, options) : await dialog.showOpenDialog(options)
-  if (result.canceled || result.filePaths.length === 0) return
+  if (result.canceled || !result.filePaths.length) return
   const picked = result.filePaths[0]
   if (statSync(picked).isDirectory()) await manager.openFolder(from, picked)
   else await manager.openFile(from, picked)
 }
 
-/** Display-chord glyphs → Electron accelerator tokens (Round A T6 effective-chord labels). */
-const ACCELERATOR_GLYPHS: Record<string, string> = { '⌃': 'Ctrl', '⌥': 'Alt', '⇧': 'Shift', '⌘': 'CmdOrCtrl' }
+/** The newly registered commands reuse the existing main/renderer operations. */
+function runNativeMenuCommand(id: string, target: BrowserWindow, manager?: WindowManager): void {
+  const command = NATIVE_MENU_COMMANDS.find(c => c.id === id)
+  if (!command) throw new Error(`Not a native menu command: ${id}`)
+  if (id === 'window.new') { manager?.createWindow(); return }
+  if (id === 'view.developerTools') { target.webContents.toggleDevTools(); return }
+  if (id === 'view.fullScreen') { target.setFullScreen(!target.isFullScreen()); return }
+  if ('action' in command) target.webContents.send('menu:action', command.action)
+}
+let windowManager: WindowManager | undefined
+export function invokeNativeMenuCommand(id: string, target: BrowserWindow): void { runNativeMenuCommand(id, target, windowManager) }
 
-/** '⌥⌘D' → 'Alt+CmdOrCtrl+D'; null when the chord has no accelerator-expressible key. */
-function chordToAccelerator(chord: string): string | null {
-  const parts: string[] = []
-  let rest = chord
-  while (rest.length > 1 && ACCELERATOR_GLYPHS[rest[0]]) {
-    parts.push(ACCELERATOR_GLYPHS[rest[0]])
-    rest = rest.slice(1)
-  }
-  if (!rest) return null
-  parts.push(rest.length === 1 ? rest.toUpperCase() : rest)
-  return parts.join('+')
+function updateWindow(): BrowserWindow | undefined {
+  return allStates().find(state => !state.window.isDestroyed() && models.has(state.window.webContents))?.window
 }
 
-/**
- * The accelerator a menu item should DISPLAY for a bindable command (Round A T6): the writer's
- * override when one exists ('' = unassigned → no accelerator shown), else the shipped fallback.
- * All mapped items are registerAccelerator:false, so this is honest labelling, never key claiming.
- */
-function effectiveAccelerator(settings: SettingsStore, commandId: string, fallback: string): { accelerator: string } | Record<string, never> {
-  let overrides: Record<string, unknown> = {}
-  try {
-    const raw = settings.get('shortcuts.overrides')
-    if (typeof raw === 'string' && raw !== '') {
-      const parsed: unknown = JSON.parse(raw)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) overrides = parsed as Record<string, unknown>
+/** A menu click: to the focused window's model when it has one, otherwise the few things main can do alone. */
+export function runMenuClick(id: string, manager: WindowManager): void {
+  const focused = menuWindow()
+  if (focused && models.has(focused.webContents)) focused.webContents.send('menu:command', id)
+  else if (id === 'window.new') manager.createWindow()
+  else if (id === 'app.open') void promptOpen(manager)
+  else if (focused && (MENU_FALLBACK_ENABLED.withWindow as readonly string[]).includes(id)) invokeNativeMenuCommand(id, focused)
+  // The renderer's own handler is mounted before its first model reaches main, and rechecks the command itself.
+  else if (focused && (MENU_FALLBACK_ENABLED.update as readonly string[]).includes(id)) focused.webContents.send('menu:command', id)
+  // Preserve the previous update-menu fallback, including hidden editor windows.
+  else if (!focused && noFocusIds.has(id)) {
+    const window = updateWindow() ?? manager.createWindow().window
+    if (process.env.WRITEFLEX_E2E !== '1') {
+      if (window.isMinimized()) window.restore()
+      window.show()
+      window.focus()
     }
-  } catch {
-    /* malformed overrides read as none */
+    if (models.has(window.webContents)) window.webContents.send('menu:command', id)
+    else pendingWindowCommands.set(window.webContents, id)
   }
-  const override = overrides[commandId]
-  if (typeof override !== 'string') return fallback === '' ? {} : { accelerator: fallback }
-  if (override === '') return {}
-  const accelerator = chordToAccelerator(override)
-  return accelerator ? { accelerator } : {}
 }
 
-/**
- * Build the application menu (ADR-0007). File owns ⌘N/⌃⌘N/⌘O/⌘S/⌘W now that the renderer keydown
- * handler no longer does; Reload is deliberately omitted so ⌘R stays the renderer's Rename shortcut.
- */
-export function buildAppMenu(manager: WindowManager, settings: SettingsStore): Menu {
-  const isMac = process.platform === 'darwin'
-  const accel = (commandId: string, fallback: string) => effectiveAccelerator(settings, commandId, fallback)
-  // Pinned folders first (in the user's order), then recents that are not pinned.
-  // The same lists the start screen shows (the Example collection, while shown, is in neither).
-  const { pinned, recents } = startScreenLists(settings)
-  const open = (root: string): MenuItemConstructorOptions => ({ label: root, click: () => void manager.openFolder(focusedState(), root) })
-  const recentRoots = recents.map((recent) => recent.root)
-  const recentItems: MenuItemConstructorOptions[] = pinned.length || recentRoots.length
-    ? [
-        ...pinned.map(open),
-        ...(pinned.length && recentRoots.length ? [{ type: 'separator' as const }] : []),
-        ...recentRoots.map(open),
-      ]
-    : [{ label: 'No Recent Vaults', enabled: false }]
+const noFocusIds = new Set<string>(['app.settings', ...MENU_FALLBACK_ENABLED.update, 'guide.open', 'app.shortcuts', 'app.commandPalette', 'app.actionsHere', 'example.restore'])
+let cachedMenu: Menu | undefined
+let serialisedMenu: string | undefined
 
-  const template: MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ label: 'WriteFlex', submenu: [
-      { role: 'about' as const },
-      { label: 'Check for Updates…', click: () => sendUpdateAction('check-for-updates') },
-      { type: 'separator' as const },
-      // R14: Settings… belongs in the app menu. ⌘, is owned by the renderer, so the item only shows it.
-      { label: 'Settings…', accelerator: 'CmdOrCtrl+,', registerAccelerator: false, click: () => sendMenuAction('open-settings') },
-      { type: 'separator' as const }, { role: 'services' as const },
-      { type: 'separator' as const }, { role: 'hide' as const }, { role: 'hideOthers' as const }, { role: 'unhide' as const },
-      { type: 'separator' as const }, { role: 'quit' as const },
-    ] }] : []),
-    {
-      label: 'File',
-      submenu: [
-        { label: 'New File', accelerator: 'CmdOrCtrl+N', click: () => sendMenuAction('new-file') },
-        { label: 'New Folder', accelerator: 'Ctrl+CmdOrCtrl+N', click: () => sendMenuAction('new-folder') },
-        { label: 'New Window', accelerator: 'Alt+CmdOrCtrl+N', click: () => { manager.createWindow() } },
-        { label: 'Capture an Idea…', ...accel('idea.capture', 'Shift+CmdOrCtrl+N'), registerAccelerator: false, click: () => sendMenuAction('capture-idea') },
-        // ⌘O routes to the focused renderer's own open flow (onMenuAction → workspace:open-dialog),
-        // so binding into a start-screen window refreshes that window's view — a main-driven dialog
-        // would bind the Workspace but leave the renderer showing the start screen (T3 precedent).
-        // With no window focused (macOS app menu, all windows closed) fall back to the main-driven
-        // dialog, which creates the first window itself.
-        { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => (BrowserWindow.getFocusedWindow() ? sendMenuAction('open-dialog') : void promptOpen(manager)) },
-        { label: 'Open Recent', submenu: recentItems },
-        { type: 'separator' },
-        // registerAccelerator: false — same discoverable-but-not-native-owner pattern as the View
-        // menu's Toggle Outline/Typewriter (Task 13/14): the renderer's own keydown handler is the
-        // sole owner of ⇧⌘K, so a native registration here would double-fire the toggle.
-        { label: 'Quick Open…', ...accel('app.quickOpen', 'Shift+CmdOrCtrl+K'), registerAccelerator: false, click: () => sendMenuAction('quick-open') },
-        // Same registerAccelerator: false pattern as Quick Open above — the renderer's own keydown
-        // handler is the sole owner of ⌘K (Task 13), so a native registration here would double-fire.
-        { label: 'Command Palette…', accelerator: 'Shift+CmdOrCtrl+P', registerAccelerator: false, click: () => sendMenuAction('command-palette') },
-        // Same registerAccelerator: false pattern as Quick Open above (Task 17) — the renderer's
-        // own keydown handler is the sole owner of ⇧⌘F (Task 18), so a native registration here
-        // would double-fire the panel toggle.
-        { label: 'Show/Hide Left Sidebar', ...accel('view.toggleLeftPane', 'CmdOrCtrl+['), registerAccelerator: false, click: () => sendMenuAction('toggle-left-pane') },
-        { label: 'Show/Hide Right Sidebar', ...accel('view.toggleRightPane', 'CmdOrCtrl+]'), registerAccelerator: false, click: () => sendMenuAction('toggle-right-pane') },
-        { label: 'Open Files', ...accel('view.files', 'Shift+CmdOrCtrl+E'), registerAccelerator: false, click: () => sendMenuAction('open-files') },
-        { label: 'Search Files…', ...accel('app.search', 'Shift+CmdOrCtrl+F'), registerAccelerator: false, click: () => sendMenuAction('search') },
-        // The archive search dock (WF-4B); the renderer owns ⌃⌘F, so the menu only shows it.
-        { label: 'Search the Archive…', ...accel('archive.search', 'Ctrl+CmdOrCtrl+F'), registerAccelerator: false, click: () => sendMenuAction('archive-search') },
-        // Saving is automatic (ADR-0013); ⌘S makes a tier-2 CHECKPOINT — a returnable point in history.
-        { label: 'Checkpoint', accelerator: 'CmdOrCtrl+S', click: () => sendMenuAction('save') },
-        { label: 'Save Version…', ...accel('file.nameVersion', 'Shift+CmdOrCtrl+S'), registerAccelerator: false, click: () => sendMenuAction('name-version') },
-        // Folio versions (ticket 04): keyless by default (⇧⌘S in a Folio asks whole Folio or this part); the effective chord shows if the writer binds one.
-        { label: 'Save Folio Version…', ...accel('file.saveFolioVersion', ''), registerAccelerator: false, click: () => sendMenuAction('save-folio-version') },
-        // Ticket 11: keyless by default; both act on the version the Versions tab shows (or the one open read-only).
-        { label: 'Export This Folio Version…', ...accel('file.exportFolioVersion', ''), registerAccelerator: false, click: () => sendMenuAction('export-folio-version') },
-        // Ticket 14: keyless by default; opens Import in the Versions tab.
-        { label: 'Import Revision from Word…', ...accel('file.importFolioRevision', ''), registerAccelerator: false, click: () => sendMenuAction('import-folio-revision') },
-        { label: 'Mark Version as Sent…', ...accel('file.markFolioVersionSent', ''), registerAccelerator: false, click: () => sendMenuAction('mark-folio-version-sent') },
-        // Ticket 19: keyless by default; each acts on the table, widget or image the cursor is on, or the file chosen in the Folio's Inspector.
-        { label: 'Save Version of This File…', ...accel('file.saveFileVersion', ''), registerAccelerator: false, click: () => sendMenuAction('save-file-version') },
-        { label: 'Compare This File Version with Working Copy', ...accel('file.compareFileVersion', ''), registerAccelerator: false, click: () => sendMenuAction('compare-file-version') },
-        { label: 'Restore This File Version…', ...accel('file.restoreFileVersion', ''), registerAccelerator: false, click: () => sendMenuAction('restore-file-version') },
-        { label: 'Save This File Version as a Copy…', ...accel('file.saveFileVersionCopy', ''), registerAccelerator: false, click: () => sendMenuAction('save-file-version-copy') },
-        // R14: Export… and Share… are in File. Both chords belong to the renderer, so the items only show them.
-        { label: 'Export…', ...accel('export.document', 'Alt+CmdOrCtrl+E'), registerAccelerator: false, click: () => sendMenuAction('export-document') },
-        { label: 'Share…', ...accel('sharing.share', 'Alt+CmdOrCtrl+S'), registerAccelerator: false, click: () => sendMenuAction('share-document') },
-        { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => sendMenuAction('close-tab') },
-        ...(isMac ? [] : [{ type: 'separator' as const }, { role: 'quit' as const }])
-      ]
-    },
-    {
-    // Explicit Edit submenu instead of role:'editMenu' for ONE reason: the role registers Redo's
-    // ⇧⌘Z natively, which would swallow the key before the renderer ever sees it — and ⇧⌘Z is
-    // context-sensitive by design (ADR-0009 cheat-sheet: Undo agent turn). registerAccelerator:
-    // false keeps the item discoverable while the renderer owns the keydown (the Toggle Outline
-    // pattern): agent-panel focus undoes the agent's last turn; the editor redoes via CM6's own
-    // historyKeymap; the menu CLICK routes as a 'redo' action for the mouse path.
-    label: 'Edit',
-    submenu: [
-      // Undo follows the Redo pattern: a native role would claim ⌘Z before the Folio outline's Details card (which
-      // undoes its own change by token) could see it. The renderer owns the key; the click routes as 'undo'.
-      { label: 'Undo', accelerator: 'CmdOrCtrl+Z', registerAccelerator: false, click: () => sendMenuAction('undo') },
-      { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', registerAccelerator: false, click: () => sendMenuAction('redo') },
-      { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      ...(isMac
-        ? [{ role: 'pasteAndMatchStyle' as const }, { role: 'delete' as const }, { role: 'selectAll' as const }]
-        : [{ role: 'delete' as const }, { type: 'separator' as const }, { role: 'selectAll' as const }]),
-      { type: 'separator' },
-      { label: 'Follow Wikilink', accelerator: 'Alt+Enter', registerAccelerator: false, click: () => sendMenuAction('follow-wikilink') },
-      { label: 'Materialise Dead Wikilink', accelerator: 'CmdOrCtrl+Enter', registerAccelerator: false, click: () => sendMenuAction('materialise-stub') },
-      { type: 'separator' },
-      // The floating Scratchpad (ADR-0050, ticket 04): the same registered commands the palette
-      // runs. registerAccelerator: false throughout — ⇧⌘J and ⌘⇧X stay the renderer's keys, and
-      // the keyless commands show no chord until the writer binds one (the cheat sheet and the
-      // palette resolve the effective chord from the registry then).
-      { label: 'Open Scratchpad', ...accel('app.scratchpad', 'Shift+CmdOrCtrl+J'), registerAccelerator: false, click: () => sendMenuAction('open-scratchpad') },
-      { label: 'Send a Copy to Scratchpad', registerAccelerator: false, click: () => sendMenuAction('scratchpad-send-copy') },
-      { label: 'Cut to Scratchpad', accelerator: 'Shift+CmdOrCtrl+X', registerAccelerator: false, click: () => sendMenuAction('scratchpad-cut') },
-      { label: 'Insert a Copy from the Scratchpad', registerAccelerator: false, click: () => sendMenuAction('scratchpad-insert-copy') },
-      { label: 'Compare Ticked Scratchpad Items', registerAccelerator: false, click: () => sendMenuAction('scratchpad-compare') },
-      { label: 'Search the Scratchpad', registerAccelerator: false, click: () => sendMenuAction('scratchpad-search') }
-    ]
-  },
-    {
-      label: 'View',
-      submenu: [
-        // registerAccelerator: false shows the shortcut for discoverability without Electron
-        // claiming it natively — the renderer's own keydown handler is the sole owner of ⇧⌘O
-        // (Task 13), so a native registration here would double-fire the toggle.
-        { label: 'Open Outline', ...accel('view.outline', 'Shift+CmdOrCtrl+O'), registerAccelerator: false, click: () => sendMenuAction('toggle-outline') },
-        { label: 'Open Board', ...accel('collection.openBoard', 'Shift+CmdOrCtrl+B'), registerAccelerator: false, click: () => sendMenuAction('open-board') },
-        { label: 'Open Tabs', ...accel('view.openTabs', 'CmdOrCtrl+2'), registerAccelerator: false, click: () => sendMenuAction('open-tabs') },
-        { label: 'Next Tab', ...accel('navigation.nextTab', 'Shift+CmdOrCtrl+]'), registerAccelerator: false, click: () => sendMenuAction('next-tab') },
-        { label: 'Previous Tab', ...accel('navigation.previousTab', 'Shift+CmdOrCtrl+['), registerAccelerator: false, click: () => sendMenuAction('previous-tab') },
-        { label: 'Next File in Folder', ...accel('navigation.nextFolderFile', 'Alt+CmdOrCtrl+]'), registerAccelerator: false, click: () => sendMenuAction('next-folder-file') },
-        { label: 'Previous File in Folder', ...accel('navigation.previousFolderFile', 'Alt+CmdOrCtrl+['), registerAccelerator: false, click: () => sendMenuAction('previous-folder-file') },
-        { label: 'Focus Review Margin', ...accel('review.focusMargin', 'Shift+CmdOrCtrl+C'), registerAccelerator: false, click: () => sendMenuAction('focus-review-margin') },
-        { label: 'Switch Margin / Inline', ...accel('review.switchMarginView', 'Shift+Alt+CmdOrCtrl+V'), registerAccelerator: false, click: () => sendMenuAction('switch-margin-view') },
-        { label: 'Show or Hide Margin', ...accel('review.toggleMargin', 'Shift+Alt+CmdOrCtrl+M'), registerAccelerator: false, click: () => sendMenuAction('toggle-margin') },
-        { label: 'Open Versions', ...accel('app.versions', 'CmdOrCtrl+3'), registerAccelerator: false, click: () => sendMenuAction('open-versions') },
-        // The Folio workspace's Versions tab (ADR-0052). Display only: the renderer's chord handler owns ⌥8.
-        { label: 'Open Folio Versions', ...accel('folio.room.versions', 'Alt+8'), registerAccelerator: false, click: () => sendMenuAction('open-folio-versions') },
-        // Folio versions ticket 07: keyless by default; the effective chord shows if the writer binds one.
-        { label: 'Open Folio Version Read-only', ...accel('folio.versions.openReadOnly', ''), registerAccelerator: false, click: () => sendMenuAction('open-folio-version-read-only') },
-        // Ticket 08: keyless by default; opens a comparison of the version the Versions tab shows with the working draft.
-        { label: 'Compare Folio Versions…', ...accel('folio.versions.compare', ''), registerAccelerator: false, click: () => sendMenuAction('compare-folio-versions') },
-        { label: 'Back to Working Draft', ...accel('folio.versions.backToWorking', ''), registerAccelerator: false, click: () => sendMenuAction('back-to-working-draft') },
-        // Same registerAccelerator: false pattern as Toggle Outline above — the renderer's keydown
-        // handler is the sole owner of ⌘T (Task 14), so a native registration here would double-fire.
-        { label: 'Toggle Typewriter', ...accel('view.typewriter', 'CmdOrCtrl+T'), registerAccelerator: false, click: () => sendMenuAction('toggle-typewriter') },
-        { type: 'separator' },
-        // The native zoom ROLES stay absent (Task 17): the locked design gives ⌘+/⌘− to prose size,
-        // ⌥⌘+/⌥⌘− to column width and ⌥⌘0 to reset (mockup
-        // cheat-sheet, View + Navigation groups) — a role would swallow those keydowns before the
-        // renderer's handlers saw them. But the actions are discoverable here the same way Toggle
-        // Outline/Typewriter are: registerAccelerator:false shows the shortcut without Electron
-        // claiming it, and the CLICK routes as a menu action to the renderer's own handlers.
-        { label: 'Increase Prose Size', accelerator: 'CmdOrCtrl+Plus', registerAccelerator: false, click: () => sendMenuAction('prose-zoom-in') },
-        { label: 'Decrease Prose Size', accelerator: 'CmdOrCtrl+-', registerAccelerator: false, click: () => sendMenuAction('prose-zoom-out') },
-        { label: 'Reset Prose Size', accelerator: 'Alt+CmdOrCtrl+0', registerAccelerator: false, click: () => sendMenuAction('prose-zoom-reset') },
-        // Column width has renderer-owned keys too (⌥⌘+/⌥⌘−), so mirror them — same discoverable,
-        // non-native pattern. Width has no dedicated reset item: ⌥⌘0 / Reset Prose Size resets both.
-        { label: 'Increase Column Width', accelerator: 'Alt+CmdOrCtrl+Plus', registerAccelerator: false, click: () => sendMenuAction('column-width-in') },
-        { label: 'Decrease Column Width', accelerator: 'Alt+CmdOrCtrl+-', registerAccelerator: false, click: () => sendMenuAction('column-width-out') },
-        { type: 'separator' },
-        // R14: the theme commands were palette-only.
-        { label: 'Use Light Theme', click: () => sendMenuAction('theme-light') },
-        { label: 'Use Dark Theme', click: () => sendMenuAction('theme-dark') },
-        { type: 'separator' },
-        // ⌥⌘I is the Folio workspace's inspector key (registry: folio.room.inspector), and a menu accelerator is taken before the
-        // renderer sees the keydown, so the role's own accelerator moves to ⇧⌥⌘I (ADR-0049; the menu still shows it).
-        { label: 'Toggle Developer Tools', accelerator: 'Alt+CmdOrCtrl+Shift+I', click: (_item, window) => { if (window instanceof BrowserWindow) window.webContents.toggleDevTools() } },
-        { type: 'separator' },
-        // Full Screen keeps its menu item but not the ⌃⌘F accelerator the role would register: that
-        // chord opens the archive search (WF-4B). fn-F and the green window button still toggle it.
-        { label: 'Toggle Full Screen', click: (_item, window) => { if (window instanceof BrowserWindow) window.setFullScreen(!window.isFullScreen()) } }
-      ]
-    },
-    {
-      id: 'collection-page',
-      label: 'Collection',
-      submenu: COLLECTION_PAGE_COMMANDS.map(([name, label]) => ({ id: `collection-page:${name}`, label, enabled: focusedState()?.collectionPageActive === true, visible: (name !== 'bulk-folio' || focusedState()?.collectionPageFolio === true) && (name !== 'make-folio' || focusedState()?.collectionPageCanStartFolio !== false), click: () => sendMenuAction(`collection-page:${name}`) }))
-    },
-    {
-      label: 'Window',
-      submenu: [
-        { role: 'minimize' },
-        { role: 'zoom' },
-        ...(isMac ? [{ type: 'separator' as const }, { role: 'front' as const }] : [])
-      ]
-    },
-    // R14: Help is last.
-    { role: 'help', submenu: [
-      ...(!isMac ? [{ label: 'Settings…', accelerator: 'CmdOrCtrl+,', registerAccelerator: false, click: () => sendMenuAction('open-settings') }, { label: 'Check for Updates…', click: () => sendUpdateAction('check-for-updates') }] : []),
-      { label: 'What’s new in WriteFlex', click: () => sendUpdateAction('whats-new') },
-    ] },
+export function buildAppMenu(manager: WindowManager, settings: SettingsStore): Menu {
+  windowManager = manager
+  refresh = () => {
+    const previous = cachedMenu
+    const next = buildAppMenu(manager, settings)
+    if (next !== previous) Menu.setApplicationMenu(next)
+  }
+  const target = menuWindow()
+  const focus = target ? editorFocus.get(target.webContents) ?? 'other' : 'other'
+  const live = target ? models.get(target.webContents) : undefined
+  const commands = (live ?? (lastModel.length ? lastModel : SEED_MENU_COMMANDS)).map(c => ({ ...c,
+    chord: focus !== 'editor' && nativeEditRoleChord(c.chord) ? undefined : c.chord,
+    nativeAccelerator: live ? c.nativeAccelerator : MAIN_MENU_KEY_IDS.has(c.id),
+    enabled: live ? c.enabled : (MENU_FALLBACK_ENABLED.always as readonly string[]).includes(c.id)
+      || Boolean(target && (MENU_FALLBACK_ENABLED.withWindow as readonly string[]).includes(c.id))
+      || noFocusIds.has(c.id),
+    ...(c.id === 'view.fullScreen' ? { checked: target?.isFullScreen() ?? false } : {}),
+  }))
+  const { pinned, recents } = startScreenLists(settings)
+  const recentRoots = [...pinned, ...recents.map(recent => recent.root)]
+  const labels = recentMenuLabels(recentRoots)
+  const open = (root: string): MenuItemConstructorOptions => ({ label: labels.get(root), click: () => void manager.openFolder(focusedState(), root) })
+  const recentItems: MenuItemConstructorOptions[] = [
+    ...pinned.map(open),
+    ...(pinned.length && recents.length ? [{ type: 'separator' as const }] : []),
+    ...recents.map(recent => open(recent.root)),
   ]
-  return Menu.buildFromTemplate(template)
+  const run = (id: string): void => runMenuClick(id, manager)
+  const model = buildCommandMenu(commands)
+  const next = JSON.stringify({ model, recents: { pinned, roots: recents.map(recent => recent.root) }, focus })
+  if (cachedMenu && serialisedMenu === next) return cachedMenu
+  serialisedMenu = next
+  cachedMenu = Menu.buildFromTemplate(buildMenuTemplate(model, run, recentItems, focus))
+  return cachedMenu
 }

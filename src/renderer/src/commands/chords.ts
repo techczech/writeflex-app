@@ -65,6 +65,13 @@ export function resolveChord(commandId: string, overrides: OverrideMap): string 
   return command ? (defaultChords(command)[0] ?? null) : null
 }
 
+/** Physical aliases of a displayed chord (zoom's + also accepts the Equal key). Overrides
+ * retire these together with the advertised default; they are claims, not extra display hints. */
+function claimsChord(command: Command, chord: string, overrides: OverrideMap): boolean {
+  const aliases = overrides[command.id] === undefined ? command.keyAliases ?? [] : []
+  return [...effectiveChords(command, overrides), ...aliases].includes(chord)
+}
+
 /** Labels of OTHER dispatchable commands whose EFFECTIVE chord equals `chord` — the ledger's
  *  conflict gate. Generated cheat-sheet rows document chords but never claim them. */
 export function conflictsFor(chord: string, commandId: string, overrides: OverrideMap): string[] {
@@ -72,7 +79,7 @@ export function conflictsFor(chord: string, commandId: string, overrides: Overri
   for (const command of commandRegistry) {
     if (command.id === commandId) continue
     if (command.claimsChord === false) continue
-    if (!effectiveChords(command, overrides).includes(chord)) continue
+    if (!claimsChord(command, chord, overrides)) continue
     if (!labels.includes(command.label)) labels.push(command.label)
   }
   return labels
@@ -81,7 +88,7 @@ export function conflictsFor(chord: string, commandId: string, overrides: Overri
 /** Ids of BINDABLE commands whose effective chord equals `chord` (the move-it-here targets). */
 export function conflictingBindableIds(chord: string, commandId: string, overrides: OverrideMap): string[] {
   return allBindableCommands()
-    .filter((command) => command.id !== commandId && effectiveChords(command, overrides).includes(chord))
+    .filter((command) => command.id !== commandId && claimsChord(command, chord, overrides))
     .map((command) => command.id)
 }
 
@@ -175,7 +182,21 @@ export function setEditorChords(view: EditorView, overrides: OverrideMap): void 
 /** True while the Keycap Ledger's capture popover is recording a chord: App's overlay-raising
  *  capture-phase keys (⇧⌘K/⇧⌘P/⌘,/? — the ones that deliberately act OVER open sheets) stand down
  *  so the popover alone hears the keystroke. */
-export const shortcutCaptureActive = { current: false }
+const captureListeners = new Set<() => void>()
+let captureActive = false
+export const shortcutCaptureActive = {
+  get current(): boolean { return captureActive },
+  set current(active: boolean) {
+    if (captureActive === active) return
+    captureActive = active
+    for (const listener of captureListeners) listener()
+  },
+}
+/** Native app-command keys must also stand down while the ledger records a chord. */
+export function subscribeShortcutCapture(listener: () => void): () => void {
+  captureListeners.add(listener)
+  return () => { captureListeners.delete(listener) }
+}
 
 /** Changelog copy for a `shortcuts.overrides` value: the chord the entry's command holds in `raw`
  *  (`null` = the stored map before this key ever existed → that command's default). */

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.29.0-alpha.1] — 2026-11-16
+
+An alpha: early, and it can break.
+
+### Added
+- Update WriteFlex in place on a Mac. Nothing downloads until you press Update; WriteFlex then checks the download and restarts into it, waiting while a restart would interrupt your work.
+- Get early versions (alpha) in Settings › About.
+
+### Changed
+- The menu bar lists WriteFlex's commands, grouped by task.
+
 ## [0.28.0] — 2026-11-10
 
 <!-- The date is set at publication. -->

@@ -1,3 +1,4 @@
+import { useMenuCommandChecks } from '../commands/use-menu-command-state'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import { BackControl } from './BackControl'
 import { ArrowRight, Sparkles, Check, Clock3, Columns3, Eye, FilePlus2, Flame, Folder, ListOrdered, ListPlus, ListTree, MoreHorizontal } from 'lucide-react'
@@ -64,6 +65,7 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
   // The Sources rail (frames 1, 4, 7, 8): shown or collapsed per collection; a source being dragged,
   // the card under it, and a source picked up with the keyboard (⌥←) waiting for a card and ⏎.
   const [sourcesShown, setSourcesShown] = useState(() => !sourcesCollapsed(dir))
+  useMenuCommandChecks({ 'board.toggleOffcuts': showOffcuts, 'board.toggleSources': sourcesShown })
   const [dragSource, setDragSource] = useState<BoardSource | null>(null)
   const [overCard, setOverCard] = useState<string | null>(null)
   const [carrying, setCarrying] = useState<BoardSource | null>(null)

@@ -284,7 +284,7 @@ describe('actionsAt: the drawn lists', () => {
       'Write: Numbered list',
       'Write: Turn into a task list',
       'Write: Turn into a table',
-      'Write: Delete block…',
+      'Write: Delete block',
       'Shape the document: Move this block up',
       'Shape the document: Move this block down',
       'Shape the document: Make this line a heading at the surrounding level',

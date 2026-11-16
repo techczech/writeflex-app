@@ -75,6 +75,7 @@ import { scrapsPathFor, type ScrapStore } from './scraps'
 import { taskOnLine } from './tasks'
 import { readTaskLines } from '../shared/markdown/task-lines'
 import type { PlanAcceptEdits, PlanAcceptResult, PlanProposalView, PlanUndoResult } from '../shared/plan-proposal'
+import { holdRestart } from './restart-holds'
 
 export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high'
 export type TurnExecution = {
@@ -1687,6 +1688,12 @@ export class WorkspaceAgent {
   }
 
   async prompt(text: string, activeFile?: string | null, activeCollectionDir = ''): Promise<{ messages: ChatMessage[]; suggestions: Suggestion[] }> {
+    // An update's restart waits while a turn runs and while its proposals are written into the ledger (ADR-0054).
+    const release = holdRestart('agent')
+    try { return await this.promptHeld(text, activeFile, activeCollectionDir) } finally { release() }
+  }
+
+  private async promptHeld(text: string, activeFile: string | null | undefined, activeCollectionDir: string): Promise<{ messages: ChatMessage[]; suggestions: Suggestion[] }> {
     // Capture before awaiting the Digest so every field belongs to the same UI instant.
     const snapshot = this.ambient.get()
     activeCollectionDir = snapshot.activeFile?.collection ?? activeCollectionDir

@@ -101,6 +101,9 @@ export type SidebarProps = {
   version: string | null
   focusFilterTick: number
   fileOps: SidebarFileOps
+  /** Native menu requests use the active document's explicit row; context menus retain their own target. */
+  menuTargetRequest?: { id: string; key: string; kind: 'file' | 'folder' } | null
+  onMenuTargetHandled?: () => void
   /** App-driven creation (⌘N / ⌃⌘N): bump tick to start a ghost row of `kind` in `directory`. */
   createRequest: { tick: number; kind: 'file' | 'folder'; directory: string } | null
   /** App-owned request to focus the active/first row, or reveal one exact file/folder row. */
@@ -120,7 +123,7 @@ export type SidebarProps = {
 }
 
 export type SidebarFocusedRow = { key: string; kind: 'file' | 'folder' }
-export type SidebarTreeFocusRequest = { tick: number; target: SidebarFocusedRow | null }
+export type SidebarTreeFocusRequest = { tick: number; target: SidebarFocusedRow | null; focus?: boolean }
 type RowRef = SidebarFocusedRow
 type Renaming = { key: string; kind: 'file' | 'folder'; isNew: boolean; directory: string }
 type Anchored = { key: string; kind: 'file' | 'folder'; x: number; y: number }
@@ -243,6 +246,8 @@ function SidebarView({
   focusFilterTick,
   fileOps,
   createRequest,
+  menuTargetRequest,
+  onMenuTargetHandled,
   focusTreeRequest = { tick: 0, target: null },
   focusPath = null,
   onFocusFolder,
@@ -544,7 +549,12 @@ function SidebarView({
       })
       setFocusKey(requested.key)
       onFocusedRowChange(requested)
-      requestAnimationFrame(() => requestAnimationFrame(() => rowElement(requested.key)?.focus()))
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const row = rowElement(requested.key)
+        // A native menu's rename field, picker or confirmation owns focus after the row is revealed.
+        if (focusTreeRequest.focus === false) row?.scrollIntoView({ block: 'nearest' })
+        else row?.focus()
+      }))
       return
     }
     const target = (focusKey && visibleRows.some((r) => r.key === focusKey) ? focusKey : null)
@@ -650,9 +660,9 @@ function SidebarView({
   }, [focusKey, focusRow])
 
   const runMenuAction = useCallback(
-    (id: string) => {
-      if (!menu) return
-      const { key, kind } = menu
+    (id: string, target: Pick<Anchored, 'key' | 'kind'> | null = menu) => {
+      if (!target) return
+      const { key, kind } = target
       setMenu(null)
       if (kind === 'file') {
         if (id === 'open') onOpen(key)
@@ -681,6 +691,13 @@ function SidebarView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [menu, onOpen, startRename, openMovePicker, onToggleFavourite, fileOps, openBinAsk, setFolderCollapsed, onFocusFolder, onHelpWithReport],
   )
+
+  useEffect(() => {
+    if (!menuTargetRequest) return
+    const action = ROW_ACTION_OF[menuTargetRequest.id]
+    onMenuTargetHandled?.()
+    if (action) runMenuAction(action, menuTargetRequest)
+  }, [menuTargetRequest, onMenuTargetHandled, runMenuAction])
 
   /** A row of Actions here at a file or folder: what the old menu did for it. False for a row App runs. */
   const runRowCommand = useCallback((commandId: string): boolean => {

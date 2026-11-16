@@ -163,6 +163,8 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
   }
   let records = readRecords(ports.records.read()).map((r) => ({ ...r, root: canonicalSharingRoot(r.root) }))
   const chains = new Map<string, Promise<void>>()
+  /** Links being made now, from the call until it settles (before a link has an id there is no chain to count). */
+  let making = 0
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const publishing = new Set<string>()
   /** Service settings observed by the read-only Opened query; never written to local records. */
@@ -518,7 +520,58 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
 
   const failFor = (record: ShareRecord, problem: { reason: string; fix: string }): SharingLinkResult => ({ ok: false, view: view(record.root, record.path, record.kind), problem })
 
+  /** Makes a link (`make`, which counts it while it runs). */
+  async function makeNow(root: string, path: string, input: { name: unknown; comments: unknown; notes?: unknown }, kind: ShareKind): Promise<SharingLinkResult> {
+    root = canonicalSharingRoot(root)
+    const fail = (where: string, at: string, problem: { reason: string; fix: string }): SharingLinkResult => ({ ok: false, view: view(where, at, kind), problem })
+    const access = ports.access()
+    if (!access) return fail(root, path, NOT_SET_UP_PROBLEM)
+    await sync.refresh(root)
+    if (sync.conflict(root)) return fail(root, path, { reason: 'Two folders share an identity.', fix: 'Choose the shared original on the Sharing page.' })
+    const created = await ports.client.createShare(access)
+    if (created.kind !== 'ok') return fail(root, path, MAKE_FAILED)
+    const { shareId, ownerToken } = created.body
+    if (!keepToken(shareId, ownerToken)) {
+      // The link exists at the service but this Mac cannot keep its key: take it down again.
+      await ports.client.turnOff(access.base, shareId, ownerToken).catch(() => null)
+      return fail(root, path, TOKENS_NOT_SAVED)
+    }
+    const notes = input.comments === true && input.notes === 'open' ? 'open' : 'private'
+    if (notes === 'open') {
+      const setting = await ports.client.setNotes(access.base, shareId, ownerToken, 'open')
+      if (setting.kind !== 'ok' || setting.body.notes !== 'open') {
+        await ports.client.turnOff(access.base, shareId, ownerToken).catch(() => null)
+        forgetToken(shareId)
+        return fail(root, path, { reason: 'The open-comments link could not be made.', fix: 'Update the sharing service in Settings › Sharing, check the connection, then try again.' })
+      }
+    }
+    const record: ShareRecord = {
+      shareId, kind, root, path, name: cleanLinkName(input.name), comments: input.comments === true, notes, on: true, madeAt: now(),
+      revision: 0, publishedAt: null, publishedSavedAt: null, images: [], problem: null, note: null, partKeys: {}, parts: [], queuedAt: null, ended: null,
+      // R13: the file the share is on, from the moment it is made.
+      fileId: idOf({ root, path, kind }), generation: 0, publishedHash: null, lost: null,
+    }
+    // The record is what lets the writer find and turn off this link later (after a restart too), so
+    // it is saved, and read back, before anything is published. When it is not, the link is taken
+    // down again and nothing is published.
+    const before = records
+    const kept = save([...records, record]) && readRecords(ports.records.read()).some((entry) => entry.shareId === shareId)
+    if (!kept) {
+      records = before
+      await ports.client.turnOff(access.base, shareId, ownerToken).catch(() => null)
+      forgetToken(shareId)
+      return fail(root, path, LINK_NOT_SAVED)
+    }
+    changed()
+    await sync.register(record).catch(() => false)
+    pending.add(shareId)
+    await enqueue(shareId, async () => { if (pending.delete(shareId)) await publishNow(shareId) })
+    return { ok: true, view: view(root, path, kind), shareId }
+  }
+
   return {
+    /** An operation on a link (a publish, an end, a change of its settings) is running now: an update's restart waits (ADR-0054). */
+    inFlight: (): boolean => chains.size > 0 || making > 0,
     async people(shareId: string, change?: PeopleChange) {
       const record = find(shareId), access = ports.access(), owner = record ? tokenFor(record.shareId) : null
       if (!record || !access || !owner) return { kind: 'unreachable' as const }
@@ -666,52 +719,12 @@ export function createSharingPublisher(ports: SharingPublisherPorts) {
 
     /** Make a link for the piece at `path`, or (kind 'folio') for the Folio whose folder is `path`. */
     async make(root: string, path: string, input: { name: unknown; comments: unknown; notes?: unknown }, kind: ShareKind = 'piece'): Promise<SharingLinkResult> {
-    root = canonicalSharingRoot(root)
-      const fail = (where: string, at: string, problem: { reason: string; fix: string }): SharingLinkResult => ({ ok: false, view: view(where, at, kind), problem })
-      const access = ports.access()
-      if (!access) return fail(root, path, NOT_SET_UP_PROBLEM)
-      await sync.refresh(root)
-      if (sync.conflict(root)) return fail(root, path, { reason: 'Two folders share an identity.', fix: 'Choose the shared original on the Sharing page.' })
-      const created = await ports.client.createShare(access)
-      if (created.kind !== 'ok') return fail(root, path, MAKE_FAILED)
-      const { shareId, ownerToken } = created.body
-      if (!keepToken(shareId, ownerToken)) {
-        // The link exists at the service but this Mac cannot keep its key: take it down again.
-        await ports.client.turnOff(access.base, shareId, ownerToken).catch(() => null)
-        return fail(root, path, TOKENS_NOT_SAVED)
-      }
-      const notes = input.comments === true && input.notes === 'open' ? 'open' : 'private'
-      if (notes === 'open') {
-        const setting = await ports.client.setNotes(access.base, shareId, ownerToken, 'open')
-        if (setting.kind !== 'ok' || setting.body.notes !== 'open') {
-          await ports.client.turnOff(access.base, shareId, ownerToken).catch(() => null)
-          forgetToken(shareId)
-          return fail(root, path, { reason: 'The open-comments link could not be made.', fix: 'Update the sharing service in Settings › Sharing, check the connection, then try again.' })
-        }
-      }
-      const record: ShareRecord = {
-        shareId, kind, root, path, name: cleanLinkName(input.name), comments: input.comments === true, notes, on: true, madeAt: now(),
-        revision: 0, publishedAt: null, publishedSavedAt: null, images: [], problem: null, note: null, partKeys: {}, parts: [], queuedAt: null, ended: null,
-        // R13: the file the share is on, from the moment it is made.
-        fileId: idOf({ root, path, kind }), generation: 0, publishedHash: null, lost: null,
-      }
-      // The record is what lets the writer find and turn off this link later (after a restart too), so
-      // it is saved, and read back, before anything is published. When it is not, the link is taken
-      // down again and nothing is published.
-      const before = records
-      const kept = save([...records, record]) && readRecords(ports.records.read()).some((entry) => entry.shareId === shareId)
-      if (!kept) {
-        records = before
-        await ports.client.turnOff(access.base, shareId, ownerToken).catch(() => null)
-        forgetToken(shareId)
-        return fail(root, path, LINK_NOT_SAVED)
-      }
-      changed()
-      await sync.register(record).catch(() => false)
-      pending.add(shareId)
-      await enqueue(shareId, async () => { if (pending.delete(shareId)) await publishNow(shareId) })
-      return { ok: true, view: view(root, path, kind), shareId }
+      // The whole making of a link holds an update's restart (ADR-0054), from here until it settles, however it ends:
+      // the service may already hold a link this Mac has not yet recorded.
+      making += 1
+      try { return await makeNow(root, path, input, kind) } finally { making -= 1 }
     },
+
 
     async rename(shareId: unknown, name: unknown): Promise<SharingLinkResult | null> {
       const record = find(shareId)

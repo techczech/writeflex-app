@@ -158,7 +158,7 @@ describe('⌘K instructions name rows the menu shows', () => {
   }
 
   test('the renamed set is not empty, so the check can fail', () => {
-    expect(RENAMED.has('Delete block…')).toBe(true)
+    expect(MENU_LABELS.has('Delete block')).toBe(true)
     expect(RENAMED.has('Transform to UPPERCASE')).toBe(true)
   })
 })

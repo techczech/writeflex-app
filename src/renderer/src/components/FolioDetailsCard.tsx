@@ -171,8 +171,8 @@ export const FolioDetailsCard = forwardRef<FolioDetailsCardHandle, FolioDetailsC
   // Edit ▸ Undo (a click: the key is the renderer's, see menu.ts) acts here only while focus is inside the card, and by
   // the same "typing in a field" check as the physical ⌘Z: a picker's filter box or uncommitted typing takes the
   // field's own text undo; anywhere else the app handles it.
-  useEffect(() => window.writeflex.onMenuAction((action) => {
-    if (action !== 'undo' || !cardRef.current?.contains(document.activeElement)) return
+  useEffect(() => window.writeflex.onMenuCommand((id) => {
+    if (id !== 'edit.undo' || !cardRef.current?.contains(document.activeElement)) return
     if (typingInDetails(document.activeElement as HTMLElement | null, draftsRef.current)) document.execCommand('undo')
     else undo()
   }), [undo])

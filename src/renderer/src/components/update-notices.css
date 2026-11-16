@@ -19,3 +19,10 @@
 .sb-notice-slot > * { min-width: 0; flex-shrink: 1; }
 .sb-notice-slot .sync-title-status { flex-shrink: 0; }
 .window:has(.apu-update-mark--updated) .side-version { display: none; }
+/* Updating in place (ADR-0054): the download's progress in the popover, and a failed update's mark. */
+.wf-update-progress { height: 6px; border-radius: 3px; background: var(--hover); overflow: hidden; margin: 8px 0 6px; }
+.wf-update-progress > span { display: block; height: 100%; background: var(--app-updates-green, #177a3a); transition: width 200ms linear; }
+@media (prefers-reduced-motion: reduce) { .wf-update-progress > span { transition: none; } }
+.apu-update-mark.wf-update-mark--failed { color: var(--amber, #a15c00); }
+.apu-update-pop .apu-update-btn[disabled], .wf-update-note .apu-update-btn[disabled], .apu-updates .apu-update-btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+.apu-update-pop .apu-update-btn:focus-visible, .wf-update-note .apu-update-btn:focus-visible, .apu-update-mark:focus-visible { outline: 2px solid var(--accent, #0b3a6b); outline-offset: 2px; }

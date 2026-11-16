@@ -10,8 +10,13 @@ import { onDocumentsChanged, onDocumentsChangedOutside, onSharingIdentityChanged
 import { installUpdateNotices } from './update-notices'
 import { SettingsStore } from './settings'
 import { WindowManager } from './windows'
-import { buildAppMenu, updateCollectionMenu } from './menu'
-import { allStates, isQuitting, setQuitting, stateForSender, waitForAgentDisposals, type WindowState } from './state'
+import { buildAppMenu, noteFocusedWindow, updateCollectionMenu } from './menu'
+import { agentDisposalsPending, allStates, isQuitting, onQuitCancelled, setQuitting, stateForSender, waitForAgentDisposals, type WindowState } from './state'
+import { duringRestartHold, restartHeld } from './restart-holds'
+import { UPDATE_TEST_BUILD, updateTestHeld } from './update-test-build'
+import { restartBlockers } from '../shared/update-install'
+import { createBackupRestartActivity, type BackupRestartActivity } from './backup-restart-activity'
+import { createRestartClose } from './restart-windows'
 import { registerAssetProtocol } from './wf-asset'
 import { configureMainProcessDiagnostics, recordMainProcessDiagnostic, waitForCleanupWithTimeout } from './shutdown'
 import { classifyOpenPath, parseWriteflexUrl } from './writeflex-url'
@@ -78,7 +83,8 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'wf-asset', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ])
 // Smoke mode must not re-register the protocol handler with the system.
-if (!(app.isPackaged && packagedSmoke)) void app.setAsDefaultProtocolClient('writeflex')
+// The update-test flavour never claims the writeflex: scheme (it would take it from the installed WriteFlex).
+if (!(app.isPackaged && packagedSmoke) && !UPDATE_TEST_BUILD) void app.setAsDefaultProtocolClient('writeflex')
 
 // Playwright already supplies a private Chromium user-data directory. Electron does not derive
 // app.getPath('userData') from that switch, so bind the main-process stores to the same directory
@@ -341,28 +347,95 @@ if (!app.requestSingleInstanceLock()) {
       readerNotesGone: async (senderId, shareId, keys) => stateForSender(senderId).changes?.markReaderNotesGone(shareId, keys, Date.now(), READER_CLOSED_KEPT),
     })
     const protectedWriters = new Set<number>()
-    const updates = installUpdateNotices({
+    // What each window holds that a restart would cost (ADR-0054): text whose last save failed, and a document that
+    // changed on disk with the person's choice not made yet. Only the renderer knows these; it reports two flags.
+    const windowHolds = new Map<number, { unsaved: boolean; diskChoice: boolean }>()
+    const anyWindowHolds = (key: 'unsaved' | 'diskChoice'): boolean => [...windowHolds.values()].some(h => h[key])
+    // The backup helper's own cycles (scheduled ones too), read from the helper; set once its supervisor exists
+    // below. Before that no helper process exists, so none can be cycling.
+    let backupActivity: BackupRestartActivity | null = null
+    // The restart's last step stops the helper (as a quit does): set with the supervisor, with how to start it again.
+    let backupForRestart: { stop(): Promise<boolean>; resume(): void } | null = null
+    // The app's side of the commit (restart-windows.ts): close every window, wait for their work, stop the helper
+    // last, but only while the attempt is live; on call-off abandon what can be recalled and recover (idempotent).
+    const restartClose = createRestartClose({
+      closeEach: () => manager?.closeAllForRestart() ?? [],
+      finishWork: () => waitForCleanupWithTimeout(waitForAgentDisposals(), 10_000, () => {
+        recordMainProcessDiagnostic('update.restart.cleanup-timeout', { timeoutMs: 10_000 })
+      }).then(() => {}),
+      backup: () => backupForRestart,
+      windowCount: () => BrowserWindow.getAllWindows().length,
+      openWindow: () => { manager?.createWindow() },
+      quitting: () => isQuitting(),
+      log: (message) => console.log(`[updates] ${message}`),
+    })
+    onQuitCancelled(() => restartClose.quitCancelled())
+    const updateNotices = installUpdateNotices({
       editorWindows: () => allStates().map(state => state.window),
       isProtectedNow: () => protectedWriters.size > 0,
-      readConfig: () => ({ updateNotices: readySettings.updateNotices(), updatesCheckForNewVersions: readySettings.get('updates.checkForNewVersions'), hadConfiguration: hadUpdateConfiguration }),
+      // Read at the moment of asking: before the hand-over to Squirrel.Mac and in the same turn as the native quit.
+      restartBlockers: () => {
+        const backupHold = backupActivity?.hold() ?? 'none'
+        return restartBlockers({
+          focus: protectedWriters.size > 0,
+          unsaved: anyWindowHolds('unsaved'),
+          diskChoice: anyWindowHolds('diskChoice'),
+          agent: restartHeld('agent'),
+          // updateTestHeld: the update-test flavour's test hold (always false in a production build).
+          exporting: restartHeld('exporting') || updateTestHeld(),
+          sharing: sharingPublisher.inFlight(),
+          // A Sync now (held while it runs), or a cycle the helper reports; not readable: held all the same.
+          backup: restartHeld('backup') || backupHold === 'cycling',
+          backupUnknown: backupHold === 'unknown',
+          finishing: agentDisposalsPending(),
+        })
+      },
+      refreshRestartBlockers: (maxAgeMs) => backupActivity?.refresh(maxAgeMs) ?? Promise.resolve(),
+      // The restart's commit (ADR-0054): every window closes through its own close route (each writes its documents;
+      // a failed write keeps it open and ends the restart), the closed windows' work is written, and the backup
+      // helper stops last, as on a quit, so no new scheduled cycle begins before the install.
+      closeWindowsForRestart: (restart) => (manager ? restartClose.close(restart) : Promise.resolve(false)),
+      openWindows: () => BrowserWindow.getAllWindows().length,
+      // Called when the attempt ends and again once what could not be called off has settled: backup resumed (after
+      // a stop under way), and a window if none is left.
+      restartAbandoned: () => restartClose.recover(),
+      readConfig: () => ({
+        updateNotices: readySettings.updateNotices(),
+        updatesCheckForNewVersions: readySettings.get('updates.checkForNewVersions'),
+        updatesAlphaVersions: readySettings.get('updates.alphaVersions'),
+        hadConfiguration: hadUpdateConfiguration,
+      }),
       writeConfig: patch => {
         if (patch.updateNotices) readySettings.setUpdateNotices(patch.updateNotices)
       },
-      e2e: !app.isPackaged && process.env.WRITEFLEX_E2E === '1',
+      e2e: (!app.isPackaged || UPDATE_TEST_BUILD) && process.env.WRITEFLEX_E2E === '1',
     })
+    const updates = updateNotices.checker
     ipcMain.handle('updates:protected', (event, active: unknown) => {
       if (!allStates().some(state => state.window.webContents.id === event.sender.id)) return
       if (active === true) protectedWriters.add(event.sender.id)
       else protectedWriters.delete(event.sender.id)
       updates.busyChanged()
     })
+    // Two booleans, nothing else: a window can only say whether it holds unsaved text or an open disk choice.
+    ipcMain.handle('updates:holds', (event, holds: unknown) => {
+      if (!allStates().some(state => state.window.webContents.id === event.sender.id)) return
+      const h = (typeof holds === 'object' && holds !== null ? holds : {}) as Record<string, unknown>
+      const next = { unsaved: h.unsaved === true, diskChoice: h.diskChoice === true }
+      if (next.unsaved || next.diskChoice) windowHolds.set(event.sender.id, next)
+      else windowHolds.delete(event.sender.id)
+      updateNotices.blockersChanged()
+    })
     app.on('web-contents-created', (_event, contents) => {
-      const clear = () => { if (protectedWriters.delete(contents.id)) updates.busyChanged() }
+      const clear = () => {
+        if (protectedWriters.delete(contents.id)) updates.busyChanged()
+        if (windowHolds.delete(contents.id)) updateNotices.blockersChanged()
+      }
       contents.once('destroyed', clear)
       contents.on('render-process-gone', clear)
       contents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) clear() })
     })
-    const stopUpdateSettings = readySettings.onChange(key => { if (key === 'updates.checkForNewVersions') updates.settingChanged() })
+    const stopUpdateSettings = readySettings.onChange(key => { if (key === 'updates.checkForNewVersions' || key === 'updates.alphaVersions') updates.settingChanged() })
     app.once('will-quit', () => { updates.stop(); stopUpdateSettings() })
 
     const ipc = registerIpc(manager.router(), readySettings, skills, {
@@ -391,7 +464,8 @@ if (!app.requestSingleInstanceLock()) {
       onChanged: () => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send(BACKUP_ENROLMENT_CHANNELS.changed) },
     })
     const backupHelper = backupServices.helper
-    registerBackupHelperIpc(ipcMain, backupHelper)
+    // A Sync now holds an update's restart until its cycle answers (ADR-0054).
+    registerBackupHelperIpc(ipcMain, { ...backupHelper, syncNow: (senderId) => duringRestartHold('backup', () => backupHelper.syncNow(senderId)) })
     const backupReceipts = backupServices.receipts
     // The helper runs as a child of this app only (supervisor.ts): this app's binary in Node mode on the
     // helper's packaged bin.js, never inside this process and never after quit.
@@ -424,6 +498,34 @@ if (!app.requestSingleInstanceLock()) {
       },
     })
     const githubSupervisor = createHelperSupervisor({ command: process.execPath, entry: helperEntry, historyApprovalFile: join(realpathSync(app.getPath('userData')), 'backup-helper', HISTORY_APPROVAL_BASENAME), credentials: args => githubAuth.credentials(args), exposure: githubAuth.exposure })
+    // An update's restart reads the helper's own cycles (ADR-0054): any helper of this app that runs, or may start
+    // again on its own, is asked; its answer counts for 15 s; an answer it cannot give holds the restart.
+    backupActivity = createBackupRestartActivity({
+      helperMayRun: () => githubSupervisor.ownedChildren().some((child) => child.status === 'live') || (githubSupervisor.state().state !== 'stopped' && githubSupervisor.state().state !== 'failed'),
+      read: () => backupHelper.activity?.() ?? Promise.resolve('unknown' as const),
+      now: () => Date.now(),
+    })
+    backupForRestart = {
+      // Stopped means the helper exited; an overdue stop ('stop-overdue') may still capture, so the restart is called
+      // off. Its process handle is let go a moment after the exit: wait (up to 2 s) until no child of ours is live.
+      stop: async () => {
+        if ((await githubSupervisor.stop()).state !== 'stopped') return false
+        const live = (): boolean => githubSupervisor.ownedChildren().some((child) => child.status === 'live')
+        for (let i = 0; i < 40 && live(); i++) await new Promise((done) => setTimeout(done, 50))
+        return !live()
+      },
+      // Fenced against a quit: never started once quitting, and a start already under way when the quit came is stopped.
+      resume: () => {
+        if (isQuitting()) return
+        void backupEnrolment.startup()
+          .then(() => {
+            if (!isQuitting()) return
+            void githubSupervisor.stop().catch(() => {})
+            restartClose.backupStoppedForQuit()
+          })
+          .catch(() => recordMainProcessDiagnostic('backup-restart-resume', { message: 'Backup could not start again after an update restart was called off' }))
+      },
+    }
     registerGitHubIpc(ipcMain, githubAuth, event => {
       try { return trustedGitHubBinding(event.sender.id) !== null && stateForSender(event.sender.id).window.webContents === event.sender } catch { return false }
     })
@@ -453,15 +555,22 @@ if (!app.requestSingleInstanceLock()) {
     manager.onWindowClosed = (webContentsId) => { ipc.evictWindow(webContentsId); backupHelper.disposeWindow(webContentsId); backupReceipts.retireSender(webContentsId); backupEnrolment.retireSender(webContentsId); retireGitHubSender(webContentsId) }
     // The menu lists pins and recents. Whether the example's entry for its fixed path is hidden
     // there follows one asynchronous look at that path; the menu is rebuilt if the answer changed.
-    const buildMenu = (): void => Menu.setApplicationMenu(buildAppMenu(manager!, readySettings))
+    const buildMenu = (): void => {
+      const next = buildAppMenu(manager!, readySettings)
+      if (Menu.getApplicationMenu() !== next) Menu.setApplicationMenu(next)
+    }
     manager.refreshMenu = () => {
       buildMenu()
       const before = exampleCollection.shownRoot()
       void exampleCollection.current().then((now) => { if (now !== before) buildMenu() })
     }
     manager.refreshMenu()
-    app.on('browser-window-focus', updateCollectionMenu)
+    app.on('browser-window-focus', (_event, window) => { noteFocusedWindow(window); updateCollectionMenu() })
     app.on('browser-window-blur', updateCollectionMenu)
+    app.on('browser-window-created', (_event, window) => {
+      window.on('enter-full-screen', updateCollectionMenu)
+      window.on('leave-full-screen', updateCollectionMenu)
+    })
 
     const launchPaths = pathsFromArgv(process.argv)
     const envFolder = process.env.WRITEFLEX_OPEN_FOLDER?.trim()
@@ -605,6 +714,7 @@ function focusedState(): WindowState | null {
 }
 
 function focusAnyWindow(): void {
+  if (process.env.WRITEFLEX_E2E === '1') return
   const [window] = BrowserWindow.getAllWindows()
   if (!window) return
   if (window.isMinimized()) window.restore()
