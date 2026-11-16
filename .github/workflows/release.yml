@@ -1,7 +1,22 @@
 name: Release
+# A version tag (v0.29.0) builds signed and notarised installers into a DRAFT release; review it, then publish.
+# An alpha is tagged the same way (v0.29.0-alpha.1) and its draft is a GitHub PRERELEASE, never "latest", so
+# releases/latest and the site's download page stay on the last release (ADR-0054; docs/PUBLISHING.md).
+# Notarisation is on by default. In a rush only: cancel the tag's run and start this workflow by hand on the tag
+# with skip_notarisation (gh workflow run release.yml --ref v0.29.0-alpha.1 -f skip_notarisation=true). Developer ID
+# signing and its checks stay; stapling and the Gatekeeper assessment are skipped (they need notarisation), the
+# release gets NOT-NOTARISED.txt and its notes say so first. A website download of that version then needs
+# System Settings > Privacy & Security > Open Anyway; an in-place update of it works (Squirrel.Mac checks the
+# Developer ID signature, not notarisation).
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      skip_notarisation:
+        description: 'Skip Apple notarisation (in a rush only; signing stays). See docs/PUBLISHING.md.'
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -40,7 +55,10 @@ jobs:
         run: test "${GITHUB_REF_NAME}" = "v$(node -p "require('./package.json').version")"
       - run: bun install --frozen-lockfile
       - name: Published agent skill equals the skill built from this release
+        shell: bash
         run: |
+          # A prerelease (alpha) does not republish the public skill: the published skill tracks releases only (ADR-0054).
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then echo "Prerelease ${GITHUB_REF_NAME}: public agent skill check skipped; it tracks releases only."; exit 0; fi
           bun scripts/build-agent-skill.mjs --out "$RUNNER_TEMP/agent-skill"
           bun scripts/check-published-skill.mjs --skill "$RUNNER_TEMP/agent-skill/writeflex"
   package-mac:
@@ -74,11 +92,18 @@ jobs:
         run: test "${GITHUB_REF_NAME}" = "v$(node -p "require('./package.json').version")"
       - run: bun install --frozen-lockfile
       - run: bun run build
+      # The zip is also the file the app downloads to update itself in place (ADR-0054). Its name carries no
+      # version (build.mac.artifactName), so the feed's releases/download/v<version>/WriteFlex-mac-arm64.zip holds.
       - name: Signed and notarised Mac dmg and zip
         shell: bash
         run: |
           set -euo pipefail
-          bunx electron-builder --mac --publish never
+          if [ "$SKIP_NOTARISATION" = true ]; then
+            echo "::warning::skip_notarisation: Apple notarisation is SKIPPED for this run. Developer ID signing, Team ID and hardened runtime are still verified; stapling and the Gatekeeper assessment are skipped because they need notarisation."
+            bunx electron-builder --mac --publish never -c.mac.notarize=false
+          else
+            bunx electron-builder --mac --publish never
+          fi
           # The Zotero plugin the build made rides with the installers: its update feed
           # (zotero-plugin/updates.json) links to it on the latest release.
           cp zotero-plugin/dist/writeflex-zotero-*.xpi release/
@@ -94,8 +119,12 @@ jobs:
             printf '%s\n' "$details" | grep -F "TeamIdentifier=$APPLE_TEAM_ID"
             printf '%s\n' "$details" | grep -E 'flags=.*\(runtime\)'
             printf '%s\n' "$details" | grep 'Authority=Developer ID Application:'
-            xcrun stapler validate "$1"
-            spctl -a -vv -t exec "$1"
+            if [ "$SKIP_NOTARISATION" = true ]; then
+              echo "::warning::Not notarised (skip_notarisation): stapler validate and spctl skipped for $1; signature, Team ID and hardened runtime verified above."
+            else
+              xcrun stapler validate "$1"
+              spctl -a -vv -t exec "$1"
+            fi
           }
           validate_app "$app"
           mount=$(mktemp -d)
@@ -122,7 +151,10 @@ jobs:
             validate_app "$extracted/WriteFlex.app"
             rm -rf "$extracted/WriteFlex.app"
           done
+          # The update feed names this exact file at every version; a renamed zip would leave updates unfound.
+          test -f release/WriteFlex-mac-arm64.zip || { echo "Missing release/WriteFlex-mac-arm64.zip: the in-place update file must keep this name (build.mac.artifactName)" >&2; exit 1; }
         env:
+          SKIP_NOTARISATION: ${{ inputs.skip_notarisation == true && 'true' || 'false' }}
           CSC_LINK: ${{ secrets.APPLE_DEVID_P12_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_DEVID_P12_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -166,7 +198,7 @@ jobs:
       - name: Check version tag
         shell: bash
         run: test "${GITHUB_REF_NAME}" = "v$(node -p "require('./package.json').version")"
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # refs/heads/stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # refs/heads/stable
         with:
           toolchain: 1.90.0
           targets: x86_64-pc-windows-msvc
@@ -211,16 +243,30 @@ jobs:
       - name: Create draft and attach installers
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKIP_NOTARISATION: ${{ inputs.skip_notarisation == true && 'true' || 'false' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
+          # Any version with a pre-release part (v0.29.0-alpha.1) is a GitHub prerelease and never "latest".
+          prerelease=false
+          kind=version
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=true; fi
+          if [[ "$GITHUB_REF_NAME" =~ -alpha\.[0-9]+$ ]]; then kind=alpha; fi
+          gh_release_as_kind() { if [ "$prerelease" = true ]; then gh release "$@" --prerelease --latest=false; else gh release "$@"; fi; }
+          # skip_notarisation: the marker the feed tools read, and the warning a person reads first (ADR-0044 section 5).
+          : > release-notes.txt
+          if [ "${SKIP_NOTARISATION:-false}" = true ]; then
+            line="This $kind is not notarised: after downloading it from the website, macOS asks you to allow it in System Settings."
+            printf '%s\n' "$line" > installers/NOT-NOTARISED.txt
+            printf '%s\n\n' "$line" >> release-notes.txt
+          fi
           dmgs=(installers/*.dmg)
           zips=(installers/*.zip)
           win=(installers/*.exe)
           xpis=(installers/*.xpi)
-          assets=(installers/*.dmg installers/*.zip installers/*.exe installers/*.xpi)
+          assets=(installers/*.dmg installers/*.zip installers/*.exe installers/NOT-NOTARISED.tx[t] installers/*.xpi)
           [ -n "${dmgs[*]:-}" ] && [ -n "${zips[*]:-}" ] || { echo "Missing Mac installers" >&2; exit 1; }
-          printf '%s\n' 'Attached: macOS Apple Silicon.' > release-notes.txt
+          printf '%s\n' 'Attached: macOS Apple Silicon.' >> release-notes.txt
           if [ -n "${win[*]:-}" ]; then
             printf '%s\n' 'Attached: Windows x64.' >> release-notes.txt
           else
@@ -228,6 +274,9 @@ jobs:
           fi
           if [ -n "${xpis[*]:-}" ]; then
             printf '%s\n' 'Attached: WriteFlex for Zotero (install in Zotero from Tools > Plugins).' >> release-notes.txt
+          fi
+          if [ "$prerelease" = true ]; then
+            printf '\n%s\n' 'This is a prerelease and does not replace the latest release.' >> release-notes.txt
           fi
           # GitHub has no conditional draft-only mutation API. Recheck before
           # every mutation to minimise the remaining check-to-request race.
@@ -250,11 +299,11 @@ jobs:
               cat release-error.txt >&2
               exit 1
             fi
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "WriteFlex $GITHUB_REF_NAME" --notes-file release-notes.txt
+            gh_release_as_kind create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "WriteFlex $GITHUB_REF_NAME" --notes-file release-notes.txt
           fi
           if [ "$existing" = true ]; then
             require_draft
-            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.txt
+            gh_release_as_kind edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.txt
           fi
           require_draft
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "${assets[@]}"

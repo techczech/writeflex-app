@@ -1,3 +1,5 @@
+import { receiveCommandMenu, invokeNativeMenuCommand } from './menu'
+import type { MenuCommand, MenuFocus } from '../shared/command-menu'
 import { readDiaryGlance } from './diary-views'
 import { askConfirm, registerConfirmIpc } from './confirm-ask'
 import { createFolioManifest } from './folio-manifest-create'
@@ -21,6 +23,7 @@ import { BridleAuth, createModelService, scriptedSessionFactory, sweepSnapshots,
 import { registerWriteFlexAuth } from './auth'
 import { fetchLinkTitle } from './fetch-title'
 import { allStates, notifyWindowReleased, onWindowReleased, stateForSender, setQuitting, trackPendingDisposal, type WindowState } from './state'
+import { duringRestartHold } from './restart-holds'
 import { saveReceiptPort } from './backup-helper/save-port'
 import type { MainSaveReceipt } from './backup-helper/receipt-service'
 import { basisAllows, isSaveBasis } from '../shared/save-basis'
@@ -1452,14 +1455,14 @@ export function registerIpc(
   }
   ipcMain.handle('export:document', async (event, input: unknown) => {
     const state = stateForSender(event.sender.id)
-    const outcome = await exportDocument(requireWorkspace(state), exportDocumentRequest(input))
+    const outcome = await duringRestartHold('exporting', () => exportDocument(requireWorkspace(state), exportDocumentRequest(input)))
     lastExport.set(event.sender.id, outcome.target)
     announceTocDepthSave(state, outcome)
     return outcome
   })
   ipcMain.handle('export:bundle', async (event, input: unknown) => {
     const state = stateForSender(event.sender.id)
-    const outcome = await exportBundle(requireWorkspace(state), exportBundleRequest(input))
+    const outcome = await duringRestartHold('exporting', () => exportBundle(requireWorkspace(state), exportBundleRequest(input)))
     lastExport.set(event.sender.id, outcome.target)
     announceTocDepthSave(state, outcome)
     return outcome
@@ -1912,6 +1915,13 @@ export function registerIpc(
     if (dir !== '') assertRelativeWorkspacePath(dir)
     return dir
   }
+  ipcMain.handle('menu:model', (event, commands: MenuCommand[], focus: MenuFocus = 'other') => {
+    stateForSender(event.sender.id)
+    receiveCommandMenu(event.sender, commands, focus)
+  })
+  ipcMain.handle('menu:native-command', (event, id: string) => {
+    invokeNativeMenuCommand(id, stateForSender(event.sender.id).window)
+  })
   ipcMain.handle('menu:collection-active', (event, input: { active: boolean; folio?: boolean; canStart?: boolean }) => {
     const state = stateForSender(event.sender.id)
     state.collectionPageActive = input?.active === true

@@ -56,7 +56,7 @@ test('every listening command is bindable and generated into the cheat sheet fro
 test('Folder Piece shape can be flipped from the command palette', () => {
   const command = allCommands().find((entry) => entry.id === 'collection.toggleFolderPiece')
   expect(command).toMatchObject({
-    label: 'Treat folder as one piece / many pieces',
+    label: 'Choose a folder to treat as one or separate pieces…',
     group: 'Collections',
   })
   expect(command?.surfaces).toContain('palette')

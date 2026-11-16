@@ -16,6 +16,7 @@ import { FolioVersionStore } from './folio-versions'
 import { defaultReaderSources } from './folio-version-sources'
 import type { VersionReaderSources } from './folio-version-reader'
 import { collectionDir } from './plan-ipc'
+import { duringRestartHold } from './restart-holds'
 import type { Workspace } from './workspace'
 import { isFolioVersionId } from '../shared/folio-version-records'
 import { sentToProblem, normaliseSentTo, type FolioVersionExportAnswer, type FolioVersionExportRequest, type FolioVersionMarkAnswer } from '../shared/folio-version-export'
@@ -75,7 +76,8 @@ export function registerFolioVersionExportIpc<State>(ipc: FolioVersionExportIpcR
     try {
       const target = await dependencies.chooseTarget(event, await opened.suggestedName(request.format), request.format)
       if (target === null) return { status: 'cancelled' }
-      const outcome = await opened.export(request.format, target, request.html)
+      // An update's restart waits while the file is written (ADR-0054).
+      const outcome = await duringRestartHold('exporting', () => opened.export(request.format, target, request.html))
       dependencies.exported(event, target)
       // The mark comes after the file: a failed export writes none. A mark that cannot be written never undoes the file.
       let sentTo: string | undefined

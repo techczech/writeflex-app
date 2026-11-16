@@ -3,7 +3,17 @@
 // reaches Electron's own error dialog.
 import { writeSync } from 'node:fs'
 import { app, crashReporter, dialog } from 'electron'
-import { installSmokeDialogGuard, installSmokeFatalHandlers, isSmokeMode, loadMain, type BootstrapDependencies } from './bootstrap-core'
+import { enterUpdateTestHarness, installSmokeDialogGuard, installSmokeFatalHandlers, isSmokeMode, loadMain, type BootstrapDependencies } from './bootstrap-core'
+
+declare const __WF_UPDATE_TEST__: boolean | undefined
+// The unpublished update-test flavour only (src/main/update-test-build.ts): the production build defines the flag
+// false, so this is dead code there. It enters the hidden harness before anything reads the environment, also when
+// Squirrel.Mac relaunches the flavour after an install with none of the driver's environment.
+if (typeof __WF_UPDATE_TEST__ === 'boolean' && __WF_UPDATE_TEST__) {
+  enterUpdateTestHarness(process.env, process.execPath)
+  // Before the crash reporter below: its folder follows userData, which must never be the default one.
+  app.setPath('userData', process.env.WRITEFLEX_E2E_USER_DATA!)
+}
 
 const smoke = isSmokeMode(process.env)
 // First action in automated mode (smoke or e2e): Chromium's mock keychain, so the macOS Keychain is never reached

@@ -819,3 +819,32 @@ describe('repair r1: only a Git worktree root can be registered', () => {
     } finally { await done() }
   })
 })
+
+// Updating in place (ADR-0054), review round 1 finding 4: main asks the helper itself whether any vault is cycling,
+// so a scheduled cycle (which no window asked for) holds an update's restart too.
+describe('the helper\'s activity, for an update\'s restart', () => {
+  const answer = (states: Record<string, string>) => (call: Call) => ok(statusResult(vaultView({ vault: call.vault, helper: { state: states[call.vault] ?? 'idle', cycleStartedAt: null, nextDueAt: NOW + 55_000, lastCycle: cycle({ vault: call.vault }) } })))
+
+  test('every served vault is asked; any cycling (or stopping) vault is activity', async () => {
+    const idle = setup(answer({}))
+    expect(await (await idle.make()).activity!()).toBe('idle')
+    expect(idle.helper.calls.map((c) => `${c.method}:${c.vault}`).sort()).toEqual(['status:vault-a', 'status:vault-b'])
+    const scheduled = setup(answer({ 'vault-b': 'cycling' }))
+    expect(await (await scheduled.make()).activity!()).toBe('cycling')
+    const stopping = setup(answer({ 'vault-a': 'stopping' }))
+    expect(await (await stopping.make()).activity!()).toBe('cycling')
+    const stopped = setup(answer({ 'vault-a': 'stopped', 'vault-b': 'stopped' }))
+    expect(await (await stopped.make()).activity!()).toBe('idle')
+  })
+
+  test('an answer that is missing, refused or malformed is unknown, never idle', async () => {
+    const refused = setup(() => ({ id: 1, ok: false, error: { code: 'unknown-vault', message: 'no registered vault has this id' } }))
+    expect(await (await refused.make()).activity!()).toBe('unknown')
+    const malformed = setup(() => ok({ helper: 'nonsense' }))
+    expect(await (await malformed.make()).activity!()).toBe('unknown')
+    const down = setup(answer({}))
+    down.helper.failNextConnects(new Error('ENOENT'))
+    expect(await (await down.make()).activity!()).toBe('unknown')
+    expect(await createBackupHelperService({ windowRoot: () => null }).activity!()).toBe('unknown')
+  })
+})

@@ -1,5 +1,6 @@
 import { normaliseTableMarkup, parseTable, serialiseTable, type TableModel } from '../../../../shared/object-markup'
 import { askConfirm } from '../../components/confirm-bus'
+import { isTableColumnCommand } from '../table-column-actions'
 import { TABLE_COMMAND_LABELS } from '../../commands/table-command-labels'
 export { normaliseTableMarkup, parseTable, repairTable, serialiseTable, type TableAlignment, type TableModel } from '../../../../shared/object-markup'
 
@@ -21,6 +22,14 @@ export function moveRow(table: TableModel, row: number, delta: -1 | 1): TableMod
   if (row === 0 || target < 1 || target >= table.cells.length) return table
   const cells = table.cells.map((item) => [...item]); [cells[row], cells[target]] = [cells[target], cells[row]]
   return { ...table, cells }
+}
+
+// The native menu addresses the mounted cell editor through its existing columnAction runner.
+const menuTargets = new WeakMap<Element, (id: string, run: boolean) => boolean>()
+export function tableMenuTarget(root: Element, id: string, run = false): boolean | undefined {
+  const editor = root.querySelector('.tge-wrap')
+  if (editor && !editor.contains(editor.ownerDocument.activeElement)) return false
+  return editor ? menuTargets.get(editor)?.(id, run) : undefined
 }
 
 export function mountTableEditor(source: string): import('./shell').MountedEditor {
@@ -100,6 +109,13 @@ export function mountTableEditor(source: string): import('./shell').MountedEdito
     }); return }
     render()
   }
+  menuTargets.set(host, (id, run) => {
+    if (!isTableColumnCommand(id) || controller.signal.aborted) return false
+    if (id === 'table.delete' && model.alignments.length <= 1) return false
+    const action = { 'table.alignLeft': 'left', 'table.alignCentre': 'center', 'table.alignRight': 'right', 'table.insertLeft': 'insert-left', 'table.insertRight': 'insert-right', 'table.delete': 'delete' }[id]
+    if (run) columnAction(Math.min(current.column, model.alignments.length - 1), action)
+    return true
+  })
   const onCellKey = (event: KeyboardEvent, row: number, column: number): void => {
     const modMove = event.shiftKey && event.metaKey
     if (modMove && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) { event.preventDefault(); const delta = event.key === 'ArrowLeft' ? -1 : 1; model = moveColumn(model, column, delta); current.column = Math.max(0, Math.min(model.alignments.length - 1, column + delta)); render(); focusCell(row, current.column); return }

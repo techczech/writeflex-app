@@ -1,6 +1,6 @@
 {
   "name": "writeflex-app",
-  "version": "0.28.0",
+  "version": "0.29.0-alpha.1",
   "private": true,
   "type": "module",
   "main": "./out/main/bootstrap.js",
@@ -44,6 +44,7 @@
     "@readflex/zotero-paths": "file:./packages/readflex/zotero-paths",
     "docx": "9.7.1",
     "dompurify": "^3.4.17",
+    "electron-updater": "6.8.12",
     "fflate": "0.8.3",
     "lucide-react": "^1.21.0",
     "markmap-lib": "^0.18.12",
@@ -192,7 +193,11 @@
           }
         ]
       },
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "artifactName": "${productName}-mac-${arch}.${ext}"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "win": {
       "icon": "build/icon.png",

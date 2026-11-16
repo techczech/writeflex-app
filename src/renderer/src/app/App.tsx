@@ -1,3 +1,9 @@
+import { nativeEditRoleChord } from './shortcuts'
+import { useLiveMenuChecks } from '../commands/use-menu-command-state'
+import { menuCommands, dispatchMenuCommand, sameMenuModel } from '../commands/menu-model'
+import { createDebouncedPublisher } from '../commands/menu-command-state'
+import type { MenuCommand, MenuFocus } from '../../../shared/command-menu'
+import { NATIVE_MENU_COMMANDS } from '../../../shared/native-menu-commands'
 import { SyncPanel, SyncTitleStatus, SyncTabStatus } from '../sync/SyncStatus'
 import { useSyncStatus } from '../sync/use-sync-status'
 import { createHelperSyncAdapter } from '../sync/helper-sync-adapter'
@@ -9,7 +15,7 @@ import { ROOM_ON_SCREEN_EVENT, roomOnScreen } from '../plan/room-on-screen'
 import { flushRoomPending } from '../folio-room-pending'
 import { addCollectionBatchToFolio, runCollectionBatch } from './collection-bulk'
 import { setPieceStatusFlushed } from './piece-status'
-import { COLLECTION_PAGE_COMMANDS, collectionPageMenuCommand, dispatchCollectionPageCommand } from '../components/collection-page-commands'
+import { COLLECTION_PAGE_COMMANDS, dispatchCollectionPageCommand } from '../components/collection-page-commands'
 import { flushUntilClean, type CloseFlushResult } from './close-flush'
 import { researchCaptureTarget } from './research-capture-target'
 import { reportRendererError } from './RendererErrorBoundary'
@@ -148,7 +154,7 @@ import { runFileVersionsCommand, type FileVersionsAction } from '../plan/file-ve
 import { OPEN_COMPARE_EVENT, OPEN_EXPORT_EVENT, OPEN_IMPORT_EVENT, OPEN_MARK_SENT_EVENT, OPEN_READ_ONLY_EVENT, requestImportOnNextVersionsTab } from '../components/FolioRoomVersions'
 import { OPEN_VERSION_NUDGE_EVENT, OPEN_VERSION_REQUEST_EVENT, anyVersionRead, setWaitingOpenVersion, useAnyReadingVersion, useAnyVersionRead, type OpenVersionRequest } from '../plan/folio-reading'
 import { registerVersionSendHost, sendVersionSelectionFromCommand } from '../scratchpad/version-send'
-import { ROOM_VIEWS, WORKSPACE_TAB_CHORDS } from '../../../shared/folio-room'
+import { ROOM_VIEWS } from '../../../shared/folio-room'
 import { folderIsFolio } from './folio-routing'
 import { dispatchSidebar } from '../plan/folio-sidebar'
 import { exportPlaceFor } from './export-collection-dir'
@@ -210,13 +216,14 @@ import type { SessionSummary } from './session-history'
 import { useEditorSnapshot } from '../hooks/useEditorSnapshot'
 import { paneRowFromElement, pressCommandK, SHOW_PLACE_KEY, usePlace } from '../hooks/usePlace'
 import { useOverlayGuard } from '../hooks/useOverlayGuard'
-import { commandRegistry, LEDGER_EXCLUDED, registryCommand } from '../commands/registry'
-import { commandRan, MENU_ACTION_COMMANDS, onCommandRan } from '../commands/command-ran'
+import { commandLabel, commandRegistry, LEDGER_EXCLUDED, registryCommand } from '../commands/registry'
+import { commandRan, onCommandRan } from '../commands/command-ran'
 import { placeAt, placeOfRow, type Place } from '../commands/place'
+import { offeredAt } from '../commands/command-places'
 import { askComposerText, askContextAt } from '../commands/ask-context'
 import { runThemeCommand } from '../commands/theme-commands'
 import { runRefreshModelsCommand } from '../commands/model-refresh-command'
-import { APP_DISPATCHED_EDITOR_IDS, parseOverrides, resolveChord, SHORTCUT_OVERRIDES_KEY, shortcutCaptureActive } from '../commands/chords'
+import { APP_DISPATCHED_EDITOR_IDS, parseOverrides, resolveChord, SHORTCUT_OVERRIDES_KEY, shortcutCaptureActive, subscribeShortcutCapture } from '../commands/chords'
 import { suggestionAnchors, uniqueRange } from '../editor/suggestion-anchor'
 import { flashApplied, minimisedAppliedRange } from '../editor/applied-flash'
 import { closeRefusalMessage, diskNoticeRefusalMessage, keepMineWrites, mayWriteUnderDiskNotice, minimalReplace, noticeAfterRefusal, refusalMayReload, removedTabDiscardQuestion, sameDiskNotice, type ExternalDiskNotice } from '../editor/reconcile'
@@ -285,6 +292,8 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   'text.lowerCase': CaseLower,
   'text.titleCase': CaseSensitive,
 }
+
+
 
 const SHORTCUTS_COMMAND = registryCommand('app.shortcuts')
 const NEXT_TAB_COMMAND = registryCommand('navigation.nextTab')
@@ -422,6 +431,249 @@ async function statusBarCollectionDirFor(path: string, resolvedCollectionDir: st
 
 /** Commands the app chord table dispatches on a modified ⌫ (eventToChord produces no ⌫ chord). */
 const BACKSPACE_APP_CHORDS = new Set(['review.declineAll'])
+
+Object.assign(COMMAND_ICONS, {
+  ...Object.fromEntries([1, 2, 3, 4, 5, 6].map(level => [`outline.showLevel${level}`, List])),
+  ...Object.fromEntries(COLLECTION_PAGE_COMMANDS.map(([name]) => [`collection.page.${name}`, FolderOpen])),
+  ...Object.fromEntries(ROOM_VIEWS.map(view => [`folio.room.${view}`, view === 'text' ? FileText : view === 'cards' ? LayoutGrid : view === 'versions' ? History : ListTree])),
+  ...Object.fromEntries(Object.keys(READ_ALOUD_PRESETS).map(preset => [`readAloudHighlight.${preset}`, AudioLines])),
+['metadata.show']: Command,
+['metadata.collapse']: Command,
+['metadata.edit']: Command,
+[NEXT_TAB_COMMAND.id]: ChevronRight,
+[PREVIOUS_TAB_COMMAND.id]: ChevronLeft,
+[NEXT_PANEL_TAB_COMMAND.id]: ChevronRight,
+[PREVIOUS_PANEL_TAB_COMMAND.id]: ChevronLeft,
+[NEXT_FOLDER_FILE_COMMAND.id]: ChevronRight,
+[PREVIOUS_FOLDER_FILE_COMMAND.id]: ChevronLeft,
+['outline.rowMenu']: List,
+['outline.expandAll']: List,
+['outline.collapseAll']: List,
+['outline.showAllLevels']: List,
+['outline.toggleWordCounts']: List,
+['navigation.linkTrailBack']: ChevronLeft,
+['navigation.linkTrailForward']: ChevronRight,
+['navigation.nextBlock']: ChevronRight,
+['navigation.previousBlock']: ChevronLeft,
+[HIDE_STRIKES_COMMAND.id]: Highlighter,
+[HIDE_INSERTS_COMMAND.id]: Highlighter,
+['sync.open']: RefreshCw,
+['sync.status']: RefreshCw,
+['sync.now']: RefreshCw,
+['sync.check']: RefreshCw,
+['sync.history']: RefreshCw,
+['view.toggleLeftPane']: LayoutPanelLeft,
+['view.toggleRightPane']: Columns3,
+['view.files']: LayoutPanelLeft,
+[ACTION_BAR_COMMAND.id]: PanelTop,
+[CONFIGURE_ACTION_BAR_COMMAND.id]: SlidersHorizontal,
+['app.quickOpen']: Search,
+['app.commandPalette']: Command,
+[FILTER_FILES_COMMAND.id]: ListFilter,
+['writer.newSession']: GitCommitHorizontal,
+[ACCEPT_SESSION_COMMAND.id]: Check,
+[REVERT_TO_ACTIVE_COMMAND.id]: RotateCcw,
+[SEND_ORIGINAL_TO_SCRATCHPAD_COMMAND.id]: StickyNote,
+['view.outline']: List,
+[OPEN_BOARD_COMMAND.id]: Columns3,
+['collection.openDashboard']: FolderOpen,
+['vault.make']: Library,
+['vault.switch']: ChevronsUpDown,
+['vault.writingOnly']: ListFilter,
+['vault.showTitles']: Heading,
+['plan.open']: ListOrdered,
+['folio.linkFiles']: BookOpen,
+['folio.open']: BookOpen,
+['research.capture']: BookOpenCheck,
+['folio.movePieceUp']: ArrowUp,
+['folio.movePieceDown']: ArrowDown,
+['folio.addToRunningOrder']: Plus,
+['folio.addAllToRunningOrder']: ListPlus,
+['folio.undoLastChange']: Undo2,
+['folio.previousPiece']: ChevronLeft,
+['folio.nextPiece']: ChevronRight,
+['board.makeIdeaFromOffcut']: Lightbulb,
+['board.toggleOffcuts']: Columns3,
+['board.undoMaterialStep']: Undo2,
+['board.moveColumnLeft']: ChevronLeft,
+['board.moveColumnRight']: ChevronRight,
+['collection.newDocument']: FilePlus2,
+['collection.startFolio']: BookOpen,
+['folio.turnBack']: FolderOpen,
+['board.toggleSources']: PanelRightOpen,
+['piece.listSources']: Link,
+['board.attachSource']: Link,
+['skill.run.report-structure']: AGENT_ICON,
+['folio.room.inspector']: ListTree,
+['folio.room.split']: Columns2,
+['plan.addPart']: Plus,
+['plan.adoptPart']: Plus,
+['plan.adoptAsFrontMatter']: Plus,
+['plan.addAllFromFolder']: ListPlus,
+['plan.sortByChapter']: ListOrdered,
+['plan.moveUp']: ChevronLeft,
+['plan.moveDown']: ChevronRight,
+['plan.materialise']: FilePlus2,
+['plan.removePart']: X,
+['plan.role']: ListOrdered,
+['plan.writeAgentInstructions']: AGENT_ICON,
+['plan.writeAgentsFile']: AGENT_ICON,
+['plan.writeClaudeFile']: AGENT_ICON,
+['plan.chooseFrontMatter']: BookOpen,
+['plan.toggleNotInOutline']: ListOrdered,
+['plan.details']: Info,
+['title.useHeadingAsTitle']: Heading,
+['title.useTitleAsHeading']: Heading,
+['title.useHeadingsAsTitlesAll']: Heading,
+['title.useTitlesAsHeadingsAll']: Heading,
+['title.dismissConflictBar']: X,
+['title.undoLastChange']: Undo2,
+['collection.toggleRail']: PanelRightOpen,
+['collection.focusRail']: PanelRightOpen,
+['collection.insertAsQuery']: ListPlus,
+['collection.toggleFolderPiece']: Folder,
+['collection.toggleCounted']: BookOpen,
+[START_SESSION_COMMAND.id]: Timer,
+[END_SESSION_COMMAND.id]: Square,
+[ADJUST_SESSION_TARGET_COMMAND.id]: Target,
+['tab.pin']: Star,
+[OPEN_TABS_COMMAND.id]: LayoutPanelLeft,
+['view.focusFolder']: Folder,
+['view.clearFolderFocus']: X,
+['view.distractionFree']: Maximize2,
+['statusbar.disclosure']: AlignCenterVertical,
+[READING_ROOM_TOGGLE_COMMAND.id]: BookOpen,
+[READING_ROOM_DOCUMENT_COMMAND.id]: BookOpen,
+[INSERT_WIDGET_COMMAND.id]: AppWindow,
+['widget.newRecordBrowser']: AppWindow,
+['widget.editRecordBrowser']: AppWindow,
+['widget.undoStep']: Undo2,
+[INSERT_REFERENCE_COMMAND.id]: Quote,
+[READING_ROOM_SHELF_COMMAND.id]: Search,
+[READING_ROOM_HIGHLIGHTS_COMMAND.id]: Highlighter,
+[READING_ROOM_SYNC_COMMAND.id]: RefreshCw,
+['focus.open']: Focus,
+['focus.fade']: Text,
+['focus.sentence']: Highlighter,
+['focus.segment']: Scan,
+['focus.breakup']: ListOrdered,
+['focus.anchored']: Anchor,
+['focus.lineFocus']: Scan,
+['focus.ruler']: Minus,
+['lineFocus.size1']: Scan,
+['lineFocus.size3']: Scan,
+['lineFocus.size5']: Scan,
+['ruler.covers.thin']: Minus,
+['ruler.covers.1']: Minus,
+['ruler.covers.3']: Minus,
+['ruler.covers.5']: Minus,
+['ruler.covers.below']: Minus,
+['ruler.opacity.lighter']: Minus,
+['ruler.opacity.darker']: Minus,
+['lineOverlay.followByHand']: Scan,
+['lineOverlay.followTypewriter']: Scan,
+['readAloud.start']: Volume2,
+['readAloud.pauseResume']: Pause,
+['readAloud.stop']: Square,
+['readAloud.faster']: Plus,
+['readAloud.slower']: Minus,
+['readAloud.nextSentence']: ChevronRight,
+['readAloud.previousSentence']: ChevronLeft,
+['readAloud.nextParagraph']: ChevronsRight,
+['readAloud.previousParagraph']: ChevronsLeft,
+['readAloud.returnToReading']: LocateFixed,
+['readAloud.chooseVoice']: AudioLines,
+['fixedLine.topThird']: AlignCenterVertical,
+['fixedLine.middle']: AlignCenterVertical,
+['fixedLine.lowerThird']: AlignCenterVertical,
+['sounds.typing']: Volume2,
+['sounds.ambient']: AudioLines,
+['appearance.darkTheme']: Moon,
+['appearance.lightTheme']: Sun,
+['goal.set']: Target,
+['copy.rich']: ClipboardCopy,
+['copy.markdown']: FileCode,
+['copy.plain']: ClipboardType,
+['file.clearDocument']: Eraser,
+['export.document']: Download,
+['exportPresets.apply']: Download,
+['exportPresets.update']: Download,
+['exportPresets.saveAs']: Download,
+['exportPresets.manage']: Settings,
+['exportPresets.rename']: SquarePen,
+['exportPresets.delete']: X,
+['exportPresets.moveUp']: ChevronLeft,
+['exportPresets.moveDown']: ChevronRight,
+['file.nameVersion']: GitCommitHorizontal,
+['folio.versions.openReadOnly']: Eye,
+['folio.versions.compare']: GitCompare,
+['folio.versions.backToWorking']: Undo2,
+['file.exportFolioVersion']: Upload,
+['file.importFolioRevision']: FileDown,
+['file.markFolioVersionSent']: Send,
+['file.saveFileVersion']: History,
+['file.compareFileVersion']: GitCompare,
+['file.restoreFileVersion']: RotateCcw,
+['file.saveFileVersionCopy']: CopyPlus,
+['file.saveFolioVersion']: History,
+['app.settings']: Settings,
+['app.checkForUpdates']: RefreshCw,
+['app.whatsNew']: Info,
+['app.about']: Info,
+['guide.open']: Compass,
+['sharing.setUp']: Link,
+['sharing.share']: Link,
+['sharing.sharesList']: Link,
+['example.restore']: RotateCcw,
+['workspace.unpin']: PinOff,
+['workspace.pin']: Pin,
+[SHORTCUTS_COMMAND.id]: Keyboard,
+['app.search']: Search,
+['archive.search']: Library,
+['idea.capture']: Plus,
+['idea.materialise']: Plus,
+['navigation.followWikilink']: Link,
+['app.scratchpad']: StickyNote,
+['scratchpad.sendCopy']: StickyNote,
+['scratchpad.cut']: StickyNote,
+['scratchpad.insertCopy']: StickyNote,
+['scratchpad.putBack']: StickyNote,
+['scratchpad.compare']: StickyNote,
+['scratchpad.preview']: StickyNote,
+['scratchpad.reject']: StickyNote,
+['scratchpad.moveBack']: StickyNote,
+['scratchpad.markDone']: StickyNote,
+['scratchpad.focusSearch']: StickyNote,
+['app.agent']: Sparkles,
+['agent.askHere']: Sparkles,
+['threads.new']: Sparkles,
+['threads.switcher']: Sparkles,
+['threads.closeCurrent']: X,
+['agent.switchModel']: Sparkles,
+['agent.setMode']: Sparkles,
+['agent.setThinking']: AlignCenterVertical,
+['agent.refreshModels']: RefreshCw,
+['agent.manageAccounts']: Settings,
+['review.focusMargin']: Rows3,
+['review.switchMarginView']: Rows3,
+['review.toggleMargin']: Rows3,
+['review.acceptAll']: Check,
+['review.declineAll']: X,
+['review.sendBack']: Send,
+['review.acceptAllFromSource']: Check,
+['review.declineAllFromSource']: X,
+['review.nextChange']: ChevronRight,
+['review.nextPieceWaiting']: ChevronRight,
+['review.previousChange']: ChevronLeft,
+['review.showAll']: Rows3,
+['review.showComments']: MessageSquare,
+['review.showEdits']: SquarePen,
+['review.settledToday']: History,
+['review.myEdits']: Pencil,
+['review.showQuietFixes']: Highlighter,
+['review.acceptAndNext']: Check,
+['app.versions']: GitCommitHorizontal,
+})
 
 export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {}): JSX.Element {
   const [readingRoomOpen, setReadingRoomOpen] = useState(false)
@@ -943,6 +1195,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [externalDiskNotices, setExternalDiskNotices] = useState<Map<string, ExternalDiskNotice>>(
     () => new Map(),
   )
+  // An update's restart waits while this window holds text whose last save failed, or a document that changed on
+  // disk with the writer's choice not made yet (ADR-0054). Main reads only these two flags.
+  const restartHoldUnsaved = saveFailures.size > 0
+  const restartHoldDiskChoice = externalDiskNotices.size > 0
+  useEffect(() => {
+    window.writeflex.updates?.setHolds?.({ unsaved: restartHoldUnsaved, diskChoice: restartHoldDiskChoice })?.catch(() => {})
+  }, [restartHoldUnsaved, restartHoldDiskChoice])
   // The dirty set is the owner's, exact between renders (owner.isDirty). activeRef only picks how a buffer
   // is read when saving, so a one-render lag there is harmless.
   const activeRef = useRef(active)
@@ -3184,14 +3443,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if ((await sendVersionSelectionFromCommand()) === 'not-reading') await scratchpadApi.current?.sendCopy()
   }, [])
   // The native menu's Scratchpad items run the same registered commands as the palette (ticket 04).
-  useEffect(() => window.writeflex.onMenuAction((action) => {
-    if (action === 'open-scratchpad') scratchpadApi.current?.toggle()
-    else if (action === 'scratchpad-send-copy') void sendCopyToScratchpad()
-    else if (action === 'scratchpad-cut') void scratchpadApi.current?.cut()
-    else if (action === 'scratchpad-insert-copy') scratchpadApi.current?.insertSelected()
-    else if (action === 'scratchpad-compare') scratchpadApi.current?.compareTicked()
-    else if (action === 'scratchpad-search') scratchpadApi.current?.focusSearch()
-  }), [sendCopyToScratchpad])
   const cutSelectionToScrap = handleCutToScrap
   // A scrap dropped into the document (the editor already inserted its text): remove it from the store.
   // A floating Scratchpad item (p_…) is never removed: the editor left its text out and the Scratchpad
@@ -3290,12 +3541,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     revealFilesTab()
     setSidebarFilterFocusTick((tick) => tick + 1)
   }, [revealFilesTab])
-  const revealTreeRow = useCallback((target: SidebarFocusedRow) => {
+  const revealTreeRow = useCallback((target: SidebarFocusedRow, focus = true) => {
     revealFilesTab()
     // A reveal outside the focused folder would land on a row the narrowed tree does not hold:
     // widen to the whole archive first so "Reveal in Files" is never a dead action.
     if (folderFocus && !isInFocus(target.key, folderFocus.path)) setFolderFocus(null)
-    setTreeFocusRequest((request) => ({ tick: request.tick + 1, target }))
+    setTreeFocusRequest((request) => ({ tick: request.tick + 1, target, focus }))
   }, [revealFilesTab, folderFocus, setFolderFocus])
   /** Focus a folder from the palette or Quick Open, and show the narrowed tree. */
   const focusFolder = useCallback((path: string) => {
@@ -3303,7 +3554,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     revealFilesTab()
   }, [setFolderFocus, revealFilesTab])
   const toggleSidebar = useCallback(() => toggleLeftPane(), [toggleLeftPane])
-  const toggleOutline = useCallback(() => openOutlineTab(), [openOutlineTab])
 
   // Typewriter mode (PRD S12): centres the cursor line as you type. The editor owns the mode (a
   // per-view CM compartment reapplied on every tab switch), so App just flips it and reports the
@@ -3904,10 +4154,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // The Guide's ticks: every route that runs a registry command reports it (commands/command-ran.ts), and
   // this window forwards it to main, which keeps the one record for every window.
   useEffect(() => onCommandRan((id) => window.writeflex.commandRan(id)), [])
-  useEffect(() => window.writeflex.onMenuAction((action) => {
-    const id = MENU_ACTION_COMMANDS[action]
-    if (id) commandRan(id)
-  }), [])
   const shortcutOverridesRef = useRef(shortcutOverrides)
   shortcutOverridesRef.current = shortcutOverrides
   // The action bar (ADR-0040). Visibility is ONE GLOBAL setting, not per window: this window reads
@@ -4628,10 +4874,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if (playerRef.current?.state().speaking) playerRef.current.stop()
   }, [active])
 
-  // ⇧⌘B (Open Board) is dispatched by the T6 chord table; the menu click routes here as before.
-  useEffect(() => window.writeflex.onMenuAction((action) => {
-    if (action === 'open-board') openBoard()
-  }), [openBoard])
 
   const [materialiseLink, setMaterialiseLink] = useState<{ target: string; gist: string } | null>(null)
   const captureSelection = useRef<{ from: number; to: number } | null>(null)
@@ -4720,12 +4962,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     else open(path)
   }, [closeOverlay, open, flash])
 
-  // ⇧⌘N (Capture an idea) is dispatched by the T6 chord table; the menu click routes here.
-  useEffect(() => window.writeflex.onMenuAction((action) => {
-    if (action === 'capture-idea') openCapture()
-    else if (action === 'follow-wikilink') followWikilink()
-    else if (action === 'materialise-stub') runMaterialiseCommand()
-  }), [openCapture, followWikilink, runMaterialiseCommand])
 
   // The per-part Save Version sheet, unchanged (⇧⌘S outside a Folio; "This part only" in one; the Versions pane's own button).
   const openPartVersionSheet = useCallback(() => {
@@ -5501,145 +5737,143 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     dispatchPlanCommand(command)
   }, [openLeftTab])
 
+  const historyCommandRef = useRef<(action: 'undo' | 'redo') => void>(() => {})
   const paletteCommandList = useMemo<AppCommand[]>(() => {
     const editorState = editorRef.current?.view()?.state
     const editorRows: AppCommand[] = commandRegistry.filter((command) => command.surfaces.includes('palette') && command.run && (!command.when || (editorState && command.when(editorState)))).map((pc) => ({
       id: pc.id,
+      checked: pc.id === 'view.typewriter' ? typewriterOn : VIEW_MODE_COMMANDS[pc.id] ? viewMode === VIEW_MODE_COMMANDS[pc.id] : undefined,
       label: pc.label,
       group: pc.task,
       subgroup: pc.subgroup,
       keywords: pc.keywords,
       icon: COMMAND_ICONS[pc.id] ?? Command,
       keys: typeof pc.keys === 'string' ? formatShortcutKey(pc.keys) : pc.keys?.map(formatShortcutKey).join('  '),
-      run: pc.id === 'view.typewriter'
+      run: pc.id === 'edit.undo' || pc.id === 'edit.redo'
+        ? () => { historyCommandRef.current(pc.id === 'edit.undo' ? 'undo' : 'redo'); commandRan(pc.id) }
+        : pc.id === 'view.typewriter'
         ? () => { toggleTypewriter(); commandRan(pc.id) }
         : VIEW_MODE_COMMANDS[pc.id]
           ? () => { selectViewMode(VIEW_MODE_COMMANDS[pc.id]); commandRan(pc.id) }
           : () => runEditorCommand(pc.run!, pc.id),
     }))
-    const appRows: Array<Omit<AppCommand, 'group'>> = [
-      { id: 'metadata.show', label: 'Show metadata', icon: Command, run: () => { editorRef.current?.setMetadataCollapsed(false) } },
-      { id: 'metadata.collapse', label: 'Collapse metadata', icon: Command, run: () => editorRef.current?.setMetadataCollapsed(true) },
-      { id: 'metadata.edit', label: 'Edit metadata', icon: Command, run: () => editorRef.current?.editMetadata() },
-      { id: NEXT_TAB_COMMAND.id, label: NEXT_TAB_COMMAND.label, icon: ChevronRight, keys: NEXT_TAB_COMMAND.keys as string, run: () => cycle(1) },
-      { id: PREVIOUS_TAB_COMMAND.id, label: PREVIOUS_TAB_COMMAND.label, icon: ChevronLeft, keys: PREVIOUS_TAB_COMMAND.keys as string, run: () => cycle(-1) },
-      { id: NEXT_PANEL_TAB_COMMAND.id, label: NEXT_PANEL_TAB_COMMAND.label, icon: ChevronRight, keys: NEXT_PANEL_TAB_COMMAND.keys as string, run: () => cycleRightTab(1, rightPaneTabsFor(guideInRow, scratchpadMode === 'docked')) },
-      { id: PREVIOUS_PANEL_TAB_COMMAND.id, label: PREVIOUS_PANEL_TAB_COMMAND.label, icon: ChevronLeft, keys: PREVIOUS_PANEL_TAB_COMMAND.keys as string, run: () => cycleRightTab(-1, rightPaneTabsFor(guideInRow, scratchpadMode === 'docked')) },
-      { id: NEXT_FOLDER_FILE_COMMAND.id, label: NEXT_FOLDER_FILE_COMMAND.label, icon: ChevronRight, keys: NEXT_FOLDER_FILE_COMMAND.keys as string, run: () => void browseFolderFile(1) },
-      { id: PREVIOUS_FOLDER_FILE_COMMAND.id, label: PREVIOUS_FOLDER_FILE_COMMAND.label, icon: ChevronLeft, keys: PREVIOUS_FOLDER_FILE_COMMAND.keys as string, run: () => void browseFolderFile(-1) },
-      { id: 'outline.rowMenu', label: registryCommand('outline.rowMenu').label, icon: List, run: () => requestOutline('rowMenu') },
-      { id: 'outline.expandAll', label: registryCommand('outline.expandAll').label, icon: List, run: () => requestOutline('expandAll') },
-      { id: 'outline.collapseAll', label: registryCommand('outline.collapseAll').label, icon: List, run: () => requestOutline('collapseAll') },
-      ...([1, 2, 3, 4, 5, 6] as const).map((level) => ({ id: `outline.showLevel${level}`, label: registryCommand(`outline.showLevel${level}`).label, icon: List, run: () => requestOutline({ levels: level }) })),
-      { id: 'outline.showAllLevels', label: registryCommand('outline.showAllLevels').label, icon: List, run: () => requestOutline({ levels: null }) },
-      { id: 'outline.toggleWordCounts', label: registryCommand('outline.toggleWordCounts').label, icon: List, run: () => requestOutline('toggleWordCounts') },
-      { id: 'navigation.linkTrailBack', label: 'Back along link trail', icon: ChevronLeft, keys: '⌃⌘←', run: () => walkLinkTrail(-1) },
-      { id: 'navigation.linkTrailForward', label: 'Forward along link trail', icon: ChevronRight, keys: '⌃⌘→', run: () => walkLinkTrail(1) },
-      { id: 'navigation.nextBlock', label: 'Next rendered block', icon: ChevronRight, keys: '⌃⌘↓', run: () => { const view = editorRef.current?.view(); if (view) jumpToBlock(view, 1) } },
-      { id: 'navigation.previousBlock', label: 'Previous rendered block', icon: ChevronLeft, keys: '⌃⌘↑', run: () => { const view = editorRef.current?.view(); if (view) jumpToBlock(view, -1) } },
-      { id: HIDE_STRIKES_COMMAND.id, label: HIDE_STRIKES_COMMAND.label, icon: Highlighter, run: toggleHideStrikes },
-      { id: HIDE_INSERTS_COMMAND.id, label: HIDE_INSERTS_COMMAND.label, icon: Highlighter, run: toggleHideInserts },
-      { id: 'sync.open', label: registryCommand('sync.open').label, icon: RefreshCw, run: openSyncTab },
-      { id: 'sync.status', label: registryCommand('sync.status').label, icon: RefreshCw, run: () => setSyncPopoverOpen(true) },
-      { id: 'sync.now', label: registryCommand('sync.now').label, icon: RefreshCw, disabled: syncStatus.reason('syncNow') !== null, disabledReason: syncStatus.reason('syncNow') ?? undefined, run: () => { void syncStatus.run('syncNow') } },
-      { id: 'sync.check', label: registryCommand('sync.check').label, icon: RefreshCw, disabled: syncStatus.reason('check') !== null, disabledReason: syncStatus.reason('check') ?? undefined, run: () => { void syncStatus.run('check') } },
-      { id: 'sync.history', label: registryCommand('sync.history').label, icon: RefreshCw, disabled: syncStatus.reason('history') !== null, disabledReason: syncStatus.reason('history') ?? undefined, run: () => { void syncStatus.run('history') } },
-      { id: 'view.toggleLeftPane', label: 'Show/hide left sidebar', icon: LayoutPanelLeft, keys: '⌘[', run: toggleLeftPane },
-      { id: 'view.toggleRightPane', label: 'Show/hide right sidebar', icon: Columns3, keys: '⌘]', run: toggleRightPane },
-      { id: 'view.files', label: 'Open Files', icon: LayoutPanelLeft, keys: '⇧⌘E', run: openFilesTab },
-      { id: ACTION_BAR_COMMAND.id, label: ACTION_BAR_COMMAND.label, icon: PanelTop, run: toggleActionBar },
-      { id: CONFIGURE_ACTION_BAR_COMMAND.id, label: CONFIGURE_ACTION_BAR_COMMAND.label, icon: SlidersHorizontal, run: () => setConfigureActionBarOpen(true) },
-      { id: 'app.quickOpen', label: 'Quick Open…', icon: Search, keys: '⇧⌘K', run: () => overlayActive === 'files' ? closePalette() : openPalette('files') },
-      { id: 'app.commandPalette', label: 'Command Palette…', icon: Command, keys: '⇧⌘P', run: () => overlayActive === 'commands' ? closePalette() : openPalette('commands') },
+    const appRows: Array<Pick<AppCommand, 'id' | 'run' | 'disabled' | 'disabledReason' | 'checked'> & { labelName?: string }> = [
+      { id: 'metadata.show', run: () => { editorRef.current?.setMetadataCollapsed(false) } },
+      { id: 'metadata.collapse', run: () => editorRef.current?.setMetadataCollapsed(true) },
+      { id: 'metadata.edit', run: () => editorRef.current?.editMetadata() },
+      { id: NEXT_TAB_COMMAND.id, run: () => cycle(1) },
+      { id: PREVIOUS_TAB_COMMAND.id, run: () => cycle(-1) },
+      { id: NEXT_PANEL_TAB_COMMAND.id, run: () => cycleRightTab(1, rightPaneTabsFor(guideInRow, scratchpadMode === 'docked')) },
+      { id: PREVIOUS_PANEL_TAB_COMMAND.id, run: () => cycleRightTab(-1, rightPaneTabsFor(guideInRow, scratchpadMode === 'docked')) },
+      { id: NEXT_FOLDER_FILE_COMMAND.id, run: () => void browseFolderFile(1) },
+      { id: PREVIOUS_FOLDER_FILE_COMMAND.id, run: () => void browseFolderFile(-1) },
+      { id: 'outline.rowMenu', run: () => requestOutline('rowMenu') },
+      { id: 'outline.expandAll', run: () => requestOutline('expandAll') },
+      { id: 'outline.collapseAll', run: () => requestOutline('collapseAll') },
+      ...([1, 2, 3, 4, 5, 6] as const).map((level) => ({ id: `outline.showLevel${level}`, run: () => requestOutline({ levels: level }) })),
+      { id: 'outline.showAllLevels', run: () => requestOutline({ levels: null }) },
+      { id: 'outline.toggleWordCounts', run: () => requestOutline('toggleWordCounts') },
+      { id: 'navigation.linkTrailBack', run: () => walkLinkTrail(-1) },
+      { id: 'navigation.linkTrailForward', run: () => walkLinkTrail(1) },
+      { id: 'navigation.nextBlock', run: () => { const view = editorRef.current?.view(); if (view) jumpToBlock(view, 1) } },
+      { id: 'navigation.previousBlock', run: () => { const view = editorRef.current?.view(); if (view) jumpToBlock(view, -1) } },
+      { id: HIDE_STRIKES_COMMAND.id, checked: hideStrikes, run: toggleHideStrikes },
+      { id: HIDE_INSERTS_COMMAND.id, checked: hideInserts, run: toggleHideInserts },
+      { id: 'sync.open', run: openSyncTab },
+      { id: 'sync.status', run: () => setSyncPopoverOpen(true) },
+      { id: 'sync.now',   disabled: syncStatus.reason('syncNow') !== null, disabledReason: syncStatus.reason('syncNow') ?? undefined, run: () => { void syncStatus.run('syncNow') } },
+      { id: 'sync.check',   disabled: syncStatus.reason('check') !== null, disabledReason: syncStatus.reason('check') ?? undefined, run: () => { void syncStatus.run('check') } },
+      { id: 'sync.history',   disabled: syncStatus.reason('history') !== null, disabledReason: syncStatus.reason('history') ?? undefined, run: () => { void syncStatus.run('history') } },
+      { id: 'view.toggleLeftPane', checked: !leftPaneCollapsed, run: toggleLeftPane },
+      { id: 'view.toggleRightPane', checked: !rightPaneCollapsed, run: toggleRightPane },
+      { id: 'view.files', run: openFilesTab },
+      { id: ACTION_BAR_COMMAND.id, checked: actionBarVisible, run: toggleActionBar },
+      { id: CONFIGURE_ACTION_BAR_COMMAND.id, run: () => setConfigureActionBarOpen(true) },
+      { id: 'app.quickOpen', run: () => overlayActive === 'files' ? closePalette() : openPalette('files') },
+      { id: 'app.commandPalette', run: () => overlayActive === 'commands' ? closePalette() : openPalette('commands') },
       // ⌥⌘F now discloses Replace in Find (S5), so the Files filter keeps its discoverable path here
       // in the palette rather than a global chord (its previous ⌥⌘F was reassigned).
-      { id: FILTER_FILES_COMMAND.id, label: FILTER_FILES_COMMAND.label, icon: ListFilter, run: focusSidebarFilter },
-      { id: 'writer.newSession', label: registryCommand('writer.newSession').label, icon: GitCommitHorizontal, run: () => { if (active) { startNewSession(active); flash('New review session started') } } },
-      { id: ACCEPT_SESSION_COMMAND.id, label: ACCEPT_SESSION_COMMAND.label, icon: Check, run: () => void acceptWriterSession() },
-      { id: REVERT_TO_ACTIVE_COMMAND.id, label: REVERT_TO_ACTIVE_COMMAND.label, icon: RotateCcw, run: revertSelectedToActive },
-      { id: SEND_ORIGINAL_TO_SCRATCHPAD_COMMAND.id, label: SEND_ORIGINAL_TO_SCRATCHPAD_COMMAND.label, icon: StickyNote, run: sendSelectedOriginalToScratchpad },
-      { id: 'view.outline', label: 'Open Outline', icon: List, keys: '⇧⌘O', run: openOutlineTab },
-      { id: OPEN_BOARD_COMMAND.id, label: OPEN_BOARD_COMMAND.label, icon: Columns3, keys: OPEN_BOARD_COMMAND.keys as string, run: openBoard },
-      { id: 'collection.openDashboard', label: registryCommand('collection.openDashboard').label, icon: FolderOpen, run: openFolderDashboard },
-      { id: 'vault.make', label: registryCommand('vault.make').label, icon: Library, disabled: rootIsVault !== false, disabledReason: rootIsVault ? 'This folder is already a vault' : 'Open a folder first', run: openMakeVault },
-      { id: 'vault.switch', label: registryCommand('vault.switch').label, icon: ChevronsUpDown, run: openSwitcher },
-      { id: 'vault.writingOnly', label: registryCommand('vault.writingOnly').label, icon: ListFilter, checked: rootIsVault === true ? vaultPrefs.writingOnly : undefined, disabled: rootIsVault !== true, disabledReason: 'This folder is not a vault', run: () => chooseVaultPrefs({ writingOnly: !vaultPrefs.writingOnly }) },
-      { id: 'vault.showTitles', label: registryCommand('vault.showTitles').label, icon: Heading, checked: rootIsVault === true ? vaultPrefs.titles : undefined, disabled: rootIsVault !== true, disabledReason: 'This folder is not a vault', run: () => chooseVaultPrefs({ titles: !vaultPrefs.titles }) },
-      { id: 'plan.open', label: 'Open Folio outline', icon: ListOrdered, run: openPlan },
-      { id: 'folio.linkFiles', label: registryCommand('folio.linkFiles').label, icon: BookOpen, disabled: openFolioDir === null, disabledReason: 'Open a Folio first', run: () => { if (openFolioDir !== null) void requestIdentityLinks.current(openFolioDir, true) } },
-      { id: 'folio.open', label: registryCommand('folio.open').label, icon: BookOpen, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: openFolio },
-      { id: 'research.capture', label: registryCommand('research.capture').label, icon: BookOpenCheck, disabled: researchProject == null, disabledReason: 'Open a Piece or a Folio first', run: openResearchCapture },
-      { id: 'folio.movePieceUp', label: registryCommand('folio.movePieceUp').label, icon: ArrowUp, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('up') } },
-      { id: 'folio.movePieceDown', label: registryCommand('folio.movePieceDown').label, icon: ArrowDown, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('down') } },
-      { id: 'folio.addToRunningOrder', label: registryCommand('folio.addToRunningOrder').label, icon: Plus, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('add') } },
-      { id: 'folio.addAllToRunningOrder', label: registryCommand('folio.addAllToRunningOrder').label, icon: ListPlus, disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('addAll') } },
-      { id: 'folio.undoLastChange', label: registryCommand('folio.undoLastChange').label, icon: Undo2, disabled: !folioRunningOrder.canUndo || versionRead, disabledReason: versionRead ? 'A saved version is open read-only. Go back to the working draft first.' : 'There is no running-order change to undo', run: () => { if (anyVersionRead()) return; void folioRunningOrder.undo() } },
-      { id: 'folio.previousPiece', label: 'Previous piece in Folio', icon: ChevronLeft, disabled: !folioPlace?.previous, disabledReason: 'This file has no previous piece in a Folio', run: () => { if (folioPlace?.previous) open(folioPlace.previous.path) } },
-      { id: 'folio.nextPiece', label: 'Next piece in Folio', icon: ChevronRight, disabled: !folioPlace?.next, disabledReason: 'This file has no next piece in a Folio', run: () => { if (folioPlace?.next) open(folioPlace.next.path) } },
-      { id: 'board.makeIdeaFromOffcut', label: 'Make idea from offcut', icon: Lightbulb, disabled: !boardCommandsOn, disabledReason: 'Open the Board and select an offcut first', run: () => dispatchBoardCommand('make-idea') },
-      { id: 'board.toggleOffcuts', label: 'Show / Hide offcuts', icon: Columns3, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-offcuts') },
-      { id: 'board.undoMaterialStep', label: 'Undo last offcut, scrap or source step', icon: Undo2, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('undo-step') },
-      { id: 'board.moveColumnLeft', label: 'Move column left', icon: ChevronLeft, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-left') },
-      { id: 'board.moveColumnRight', label: 'Move column right', icon: ChevronRight, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-right') },
-      ...COLLECTION_PAGE_COMMANDS.filter(([name]) => (name !== 'bulk-folio' || (collectionDir !== null && canTurnBack)) && (name !== 'make-folio' || canStartCollectionFolio)).map(([name, label]) => ({ id: `collection.page.${name}`, label, icon: FolderOpen, disabled: collectionDir === null, disabledReason: 'Open a collection first', run: () => dispatchCollectionPageCommand(name) })),
-      { id: 'collection.newDocument', label: 'New piece', icon: FilePlus2, disabled: !root, disabledReason: 'Open a folder first', run: () => { void newPiece(collectionDir ?? (boardActive ? boardDir : activeCollectionDir)) } },
-      { id: 'collection.startFolio', label: 'Start a Folio outline', icon: BookOpen, disabled: !canStartCollectionFolio, disabledReason: collectionDir !== null ? "Folios can't contain another Folio from here." : 'Open a collection first', run: () => { if (collectionDir !== null) startNestedFolio(collectionDir) } },
-      { id: 'folio.turnBack', label: 'Turn back into a collection', icon: FolderOpen, disabled: !canTurnBack, disabledReason: 'Open a Folio first', run: turnBackFolio },
-      { id: 'board.toggleSources', label: 'Show / Hide sources', icon: PanelRightOpen, disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-sources') },
-      { id: 'piece.listSources', label: 'List this piece\'s sources', icon: Link, disabled: !boardCommandsOn && !active, disabledReason: 'Open a piece or the Board first', run: () => { if (boardCommandsOn) dispatchBoardCommand('list-sources'); else if (active) setPieceSourcesRequest({ path: active }) } },
-      { id: 'board.attachSource', label: 'Attach source…', icon: Link, disabled: !boardCommandsOn, disabledReason: 'Open the Board and select a source first', run: () => dispatchBoardCommand('attach-source') },
+      { id: FILTER_FILES_COMMAND.id, run: focusSidebarFilter },
+      { id: 'writer.newSession', run: () => { if (active) { startNewSession(active); flash('New review session started') } } },
+      { id: ACCEPT_SESSION_COMMAND.id, run: () => void acceptWriterSession() },
+      { id: REVERT_TO_ACTIVE_COMMAND.id, run: revertSelectedToActive },
+      { id: SEND_ORIGINAL_TO_SCRATCHPAD_COMMAND.id, run: sendSelectedOriginalToScratchpad },
+      { id: 'view.outline', run: openOutlineTab },
+      { id: OPEN_BOARD_COMMAND.id, run: openBoard },
+      { id: 'collection.openDashboard', run: openFolderDashboard },
+      { id: 'vault.make',   disabled: rootIsVault !== false, disabledReason: rootIsVault ? 'This folder is already a vault' : 'Open a folder first', run: openMakeVault },
+      { id: 'vault.switch', run: openSwitcher },
+      { id: 'vault.writingOnly',   checked: rootIsVault === true ? vaultPrefs.writingOnly : undefined, disabled: rootIsVault !== true, disabledReason: 'This folder is not a vault', run: () => chooseVaultPrefs({ writingOnly: !vaultPrefs.writingOnly }) },
+      { id: 'vault.showTitles',   checked: rootIsVault === true ? vaultPrefs.titles : undefined, disabled: rootIsVault !== true, disabledReason: 'This folder is not a vault', run: () => chooseVaultPrefs({ titles: !vaultPrefs.titles }) },
+      { id: 'plan.open', run: openPlan },
+      { id: 'folio.linkFiles',   disabled: openFolioDir === null, disabledReason: 'Open a Folio first', run: () => { if (openFolioDir !== null) void requestIdentityLinks.current(openFolioDir, true) } },
+      { id: 'folio.open',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: openFolio },
+      { id: 'research.capture',   disabled: researchProject == null, disabledReason: 'Open a Piece or a Folio first', run: openResearchCapture },
+      { id: 'folio.movePieceUp',   disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('up') } },
+      { id: 'folio.movePieceDown',   disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('down') } },
+      { id: 'folio.addToRunningOrder',   disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('add') } },
+      { id: 'folio.addAllToRunningOrder',   disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('addAll') } },
+      { id: 'folio.undoLastChange',   disabled: !folioRunningOrder.canUndo || versionRead, disabledReason: versionRead ? 'A saved version is open read-only. Go back to the working draft first.' : 'There is no running-order change to undo', run: () => { if (anyVersionRead()) return; void folioRunningOrder.undo() } },
+      { id: 'folio.previousPiece',   disabled: !folioPlace?.previous, disabledReason: 'This file has no previous piece in a Folio', run: () => { if (folioPlace?.previous) open(folioPlace.previous.path) } },
+      { id: 'folio.nextPiece',   disabled: !folioPlace?.next, disabledReason: 'This file has no next piece in a Folio', run: () => { if (folioPlace?.next) open(folioPlace.next.path) } },
+      { id: 'board.makeIdeaFromOffcut',   disabled: !boardCommandsOn, disabledReason: 'Open the Board and select an offcut first', run: () => dispatchBoardCommand('make-idea') },
+      { id: 'board.toggleOffcuts',   disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-offcuts') },
+      { id: 'board.undoMaterialStep',   disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('undo-step') },
+      { id: 'board.moveColumnLeft',   disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-left') },
+      { id: 'board.moveColumnRight',   disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('move-column-right') },
+      ...COLLECTION_PAGE_COMMANDS.filter(([name]) => (name !== 'bulk-folio' || (collectionDir !== null && canTurnBack)) && (name !== 'make-folio' || canStartCollectionFolio)).map(([name]) => ({ id: `collection.page.${name}`, disabled: collectionDir === null, disabledReason: 'Open a collection first', run: () => dispatchCollectionPageCommand(name) })),
+      { id: 'collection.newDocument',   disabled: !root, disabledReason: 'Open a folder first', run: () => { void newPiece(collectionDir ?? (boardActive ? boardDir : activeCollectionDir)) } },
+      { id: 'collection.startFolio',   disabled: !canStartCollectionFolio, disabledReason: collectionDir !== null ? "Folios can't contain another Folio from here." : 'Open a collection first', run: () => { if (collectionDir !== null) startNestedFolio(collectionDir) } },
+      { id: 'folio.turnBack',   disabled: !canTurnBack, disabledReason: 'Open a Folio first', run: turnBackFolio },
+      { id: 'board.toggleSources',   disabled: !boardCommandsOn, disabledReason: 'Open the Board first', run: () => dispatchBoardCommand('toggle-sources') },
+      { id: 'piece.listSources',   disabled: !boardCommandsOn && !active, disabledReason: 'Open a piece or the Board first', run: () => { if (boardCommandsOn) dispatchBoardCommand('list-sources'); else if (active) setPieceSourcesRequest({ path: active }) } },
+      { id: 'board.attachSource',   disabled: !boardCommandsOn, disabledReason: 'Open the Board and select a source first', run: () => dispatchBoardCommand('attach-source') },
       {
         id: 'skill.run.report-structure',
-        label: registryCommand(REPORT_SKILL_COMMAND).label,
-        icon: AGENT_ICON,
+        
         disabled: folderFocus === null,
         disabledReason: 'Focus a folder first',
         run: () => { if (folderFocus) helpWithReport(folderFocus.path) },
       },
-      ...ROOM_VIEWS.map((view) => ({ id: `folio.room.${view}`, label: registryCommand(`folio.room.${view}`).label, icon: view === 'text' ? FileText : view === 'cards' ? LayoutGrid : view === 'versions' ? History : ListTree, keys: WORKSPACE_TAB_CHORDS[view], disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: view })) })),
-      { id: 'folio.room.inspector', label: registryCommand('folio.room.inspector').label, icon: ListTree, keys: '⌥⌘I', disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => { openLeftTab('outline'); dispatchSidebar('toggle-inspector') } },
-      { id: 'folio.room.split', label: 'Folio room: Text beside the cards', icon: Columns2, keys: '⌥S', disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'split' })) },
-      { id: 'plan.addPart', label: 'Add a Folio outline part', icon: Plus, keys: 'N', disabled: collectionDir === null, disabledReason: 'Open a Collection first', run: () => runFolioPlanCommand('add') },
-      { id: 'plan.adoptPart', label: 'Add existing part to Folio outline', icon: Plus, keys: 'A', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('adopt') },
-      { id: 'plan.adoptAsFrontMatter', label: 'Add existing part to Folio outline as front matter', icon: Plus, keys: 'F', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('adopt-front-matter') },
-      { id: 'plan.addAllFromFolder', label: registryCommand('plan.addAllFromFolder').label, icon: ListPlus, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('add-all') },
-      { id: 'plan.sortByChapter', label: registryCommand('plan.sortByChapter').label, icon: ListOrdered, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('sort') },
-      { id: 'plan.moveUp', label: 'Move Folio outline part up', icon: ChevronLeft, keys: '⌥↑', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('move-up') },
-      { id: 'plan.moveDown', label: 'Move Folio outline part down', icon: ChevronRight, keys: '⌥↓', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('move-down') },
-      { id: 'plan.materialise', label: 'Open or write Folio outline part', icon: FilePlus2, keys: '↵', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('open-part') },
-      { id: 'plan.removePart', label: 'Remove part from Folio outline', icon: X, keys: '⌘⌫', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('remove') },
-      { id: 'plan.role', label: registryCommand('plan.role').label, icon: ListOrdered, keys: 'R', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('role') },
-      { id: 'plan.writeAgentInstructions', label: registryCommand('plan.writeAgentInstructions').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('agents-both') },
-      { id: 'plan.writeAgentsFile', label: registryCommand('plan.writeAgentsFile').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('agents-agents') },
-      { id: 'plan.writeClaudeFile', label: registryCommand('plan.writeClaudeFile').label, icon: AGENT_ICON, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('agents-claude') },
-      { id: 'plan.chooseFrontMatter', label: registryCommand('plan.chooseFrontMatter').label, icon: BookOpen, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('front-matter-choose') },
-      { id: 'plan.toggleNotInOutline', label: registryCommand('plan.toggleNotInOutline').label, icon: ListOrdered, disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('not-in-outline-toggle') },
-      { id: 'plan.details', label: registryCommand('plan.details').label, icon: Info, keys: 'D', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('details') },
+      ...ROOM_VIEWS.map((view) => ({ id: `folio.room.${view}`,    disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: view })) })),
+      { id: 'folio.room.inspector',    disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => { openLeftTab('outline'); dispatchSidebar('toggle-inspector') } },
+      { id: 'folio.room.split',    disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'split' })) },
+      { id: 'plan.addPart',    disabled: collectionDir === null, disabledReason: 'Open a Collection first', run: () => runFolioPlanCommand('add') },
+      { id: 'plan.adoptPart',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('adopt') },
+      { id: 'plan.adoptAsFrontMatter',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('adopt-front-matter') },
+      { id: 'plan.addAllFromFolder',   disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('add-all') },
+      { id: 'plan.sortByChapter',   disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('sort') },
+      { id: 'plan.moveUp',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('move-up') },
+      { id: 'plan.moveDown',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('move-down') },
+      { id: 'plan.materialise',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('open-part') },
+      { id: 'plan.removePart',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('remove') },
+      { id: 'plan.role',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('role') },
+      { id: 'plan.writeAgentInstructions',   disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('agents-both') },
+      { id: 'plan.writeAgentsFile',   disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('agents-agents') },
+      { id: 'plan.writeClaudeFile',   disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('agents-claude') },
+      { id: 'plan.chooseFrontMatter',   disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('front-matter-choose') },
+      { id: 'plan.toggleNotInOutline',   disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('not-in-outline-toggle') },
+      { id: 'plan.details',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('details') },
       // Title-conflict buttons: on the Plan, the selected part (or every part); elsewhere, the open document's bar.
-      { id: 'title.useHeadingAsTitle', label: registryCommand('title.useHeadingAsTitle').label, icon: Heading, keys: '⌃⌥⌘H', disabled: collectionDir === null && !shownTitleConflict, disabledReason: 'The title and the heading already match', run: () => { if (collectionDir !== null) runFolioPlanCommand('title-heading-to-title'); else fixOpenDocumentTitle('heading-to-title') } },
-      { id: 'title.useTitleAsHeading', label: registryCommand('title.useTitleAsHeading').label, icon: Heading, keys: '⌃⌥⌘T', disabled: collectionDir === null && !shownTitleConflict && !titleHeadingCanBeInserted, disabledReason: openDocumentIsPart ? 'The title and the heading already match, or this part does not start with a heading (the change that adds one is in the Changes)' : 'The title and the heading already match, or there is no title to add as the heading', run: () => { if (collectionDir !== null) runFolioPlanCommand('title-title-to-heading'); else fixOpenDocumentTitle('title-to-heading') } },
-      { id: 'title.useHeadingsAsTitlesAll', label: registryCommand('title.useHeadingsAsTitlesAll').label, icon: Heading, keys: '⌃⌥⇧⌘H', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('titles-heading-to-title') },
-      { id: 'title.useTitlesAsHeadingsAll', label: registryCommand('title.useTitlesAsHeadingsAll').label, icon: Heading, keys: '⌃⌥⇧⌘T', disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('titles-title-to-heading') },
-      { id: 'title.dismissConflictBar', label: registryCommand('title.dismissConflictBar').label, icon: X, keys: '⌃⌥⌘X', disabled: !shownTitleConflict, disabledReason: 'There is no title-differs bar on this document', run: dismissOpenTitleConflict },
-      { id: 'title.undoLastChange', label: registryCommand('title.undoLastChange').label, icon: Undo2, keys: '⌃⌥⌘Z', disabled: !titleConflictActions.canUndo || versionRead, disabledReason: versionRead ? 'A saved version is open read-only. Go back to the working draft first.' : 'There is no title change from the Folio outline or the Outline to undo (in the document, ⌘Z undoes it)', run: () => { if (anyVersionRead()) return; void titleConflictActions.undo() } },
+      { id: 'title.useHeadingAsTitle',    disabled: collectionDir === null && !shownTitleConflict, disabledReason: 'The title and the heading already match', run: () => { if (collectionDir !== null) runFolioPlanCommand('title-heading-to-title'); else fixOpenDocumentTitle('heading-to-title') } },
+      { id: 'title.useTitleAsHeading',    disabled: collectionDir === null && !shownTitleConflict && !titleHeadingCanBeInserted, disabledReason: openDocumentIsPart ? 'The title and the heading already match, or this part does not start with a heading (the change that adds one is in the Changes)' : 'The title and the heading already match, or there is no title to add as the heading', run: () => { if (collectionDir !== null) runFolioPlanCommand('title-title-to-heading'); else fixOpenDocumentTitle('title-to-heading') } },
+      { id: 'title.useHeadingsAsTitlesAll',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('titles-heading-to-title') },
+      { id: 'title.useTitlesAsHeadingsAll',    disabled: collectionDir === null, disabledReason: 'Open a Folio outline first', run: () => runFolioPlanCommand('titles-title-to-heading') },
+      { id: 'title.dismissConflictBar',    disabled: !shownTitleConflict, disabledReason: 'There is no title-differs bar on this document', run: dismissOpenTitleConflict },
+      { id: 'title.undoLastChange',    disabled: !titleConflictActions.canUndo || versionRead, disabledReason: versionRead ? 'A saved version is open read-only. Go back to the working draft first.' : 'There is no title change from the Folio outline or the Outline to undo (in the document, ⌘Z undoes it)', run: () => { if (anyVersionRead()) return; void titleConflictActions.undo() } },
       {
-        id: 'collection.toggleRail',
-        label: 'Summon Rail',
-        icon: PanelRightOpen,
-        keys: '⌃⌘L',
+        id: 'collection.toggleRail', checked: railOpen,
+        
         run: runRailChord,
       },
       {
         id: 'collection.focusRail',
-        label: 'Focus rail',
-        icon: PanelRightOpen,
+        
         run: focusRail,
       },
       {
         id: 'collection.insertAsQuery',
-        label: 'Insert as query',
-        icon: ListPlus,
-        keys: '⌃⌥⌘Q',
+        
         disabled: !canInsertQuery || (!railOpen && !boardActive) || queryInsertionContext === null,
         disabledReason: !canInsertQuery
           ? queryInsertionDisabledReason ?? undefined
@@ -5650,264 +5884,249 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         },
       },
       {
-        id: 'collection.toggleFolderPiece',
-        label: selectedFolderPiece
-          ? `Treat "${selectedFolderPiece.folderPath.split('/').at(-1) ?? selectedFolderPiece.folderPath}" as ${selectedFolderPiece.mode === 'one' ? 'separate pieces' : 'one piece'}`
-          : 'Choose a folder to treat as one or separate pieces…',
-        icon: Folder,
+        id: 'collection.toggleFolderPiece', checked: selectedFolderPiece ? selectedFolderPiece.mode === 'one' : undefined,
+        labelName: selectedFolderPiece ? selectedFolderPiece.folderPath.split('/').at(-1) ?? selectedFolderPiece.folderPath : undefined,
+        
         disabled: folderPieceContextDir === null,
         disabledReason: 'Open a Collection or Board first',
         run: runFolderPieceCommand,
       },
       {
-        id: 'collection.toggleCounted',
-        label: contextCounted ? 'Stop counting toward diary' : 'Count toward diary',
-        icon: BookOpen,
+        id: 'collection.toggleCounted', checked: contextCounted,
+        
         disabled: folderPieceContextDir === null,
         disabledReason: 'Open a Collection or Board first',
         run: toggleCountedCollection,
       },
       {
         id: START_SESSION_COMMAND.id,
-        label: START_SESSION_COMMAND.label,
-        icon: Timer,
-        keys: START_SESSION_COMMAND.keys as string,
+        
         run: openSessionStarter,
       },
       ...(explicitSession?.status === 'running' ? [
-        { id: END_SESSION_COMMAND.id, label: END_SESSION_COMMAND.label, icon: Square, run: endExplicitSession },
-        { id: ADJUST_SESSION_TARGET_COMMAND.id, label: ADJUST_SESSION_TARGET_COMMAND.label, icon: Target, run: () => setSessionMenuRequest((request) => request + 1) },
-      ] satisfies Array<Omit<AppCommand, 'group'>> : []),
+        { id: END_SESSION_COMMAND.id, run: endExplicitSession },
+        { id: ADJUST_SESSION_TARGET_COMMAND.id, run: () => setSessionMenuRequest((request) => request + 1) },
+      ] satisfies Array<Pick<AppCommand, 'id' | 'run' | 'disabled' | 'disabledReason' | 'checked'>> : []),
       {
-        id: 'tab.pin',
-        label: active && pinnedTabs.includes(active) ? 'Unpin from strip' : 'Pin to strip',
-        icon: Star,
-        keys: '⌥⌘P',
+        id: 'tab.pin', checked: Boolean(active && pinnedTabs.includes(active)),
+        
         run: () => {
           if (active) pinTab(active, !pinnedTabs.includes(active))
         },
       },
-      { id: OPEN_TABS_COMMAND.id, label: OPEN_TABS_COMMAND.label, icon: LayoutPanelLeft, keys: OPEN_TABS_COMMAND.keys as string, run: openOpenTabs },
+      { id: OPEN_TABS_COMMAND.id, run: openOpenTabs },
       {
         id: 'view.focusFolder',
-        label: registryCommand('view.focusFolder').label,
-        icon: Folder,
+        
         disabled: activeCollectionFolder === null,
         disabledReason: 'Open a file inside a folder first',
         run: () => { if (activeCollectionFolder !== null) focusFolder(activeCollectionFolder) },
       },
       {
         id: 'view.clearFolderFocus',
-        label: registryCommand('view.clearFolderFocus').label,
-        icon: X,
+        
         disabled: folderFocus === null,
         disabledReason: 'No folder is focused',
         run: () => setFolderFocus(null),
       },
-      { id: 'view.distractionFree', label: 'View: Distraction-free', icon: Maximize2, keys: '⌥⌘D', run: toggleDistractionFree },
-      { id: 'statusbar.disclosure', label: 'Show status details', icon: AlignCenterVertical, keys: '⌃⌘I', run: () => setStatusDisclosureRequest((request) => request + 1) },
+      { id: 'view.distractionFree', checked: distractionFree, run: toggleDistractionFree },
+      { id: 'statusbar.disclosure', run: () => setStatusDisclosureRequest((request) => request + 1) },
       {
-        id: READING_ROOM_TOGGLE_COMMAND.id,
-        label: readingRoomOpen ? 'Close Reading Room' : READING_ROOM_TOGGLE_COMMAND.label,
-        icon: BookOpen,
-        keys: READING_ROOM_TOGGLE_COMMAND.keys as string,
+        id: READING_ROOM_TOGGLE_COMMAND.id, checked: readingRoomOpen,
+        
         run: () => setReadingRoomVisibility(!readingRoomVisibility.current),
       },
       {
         id: READING_ROOM_DOCUMENT_COMMAND.id,
-        label: READING_ROOM_DOCUMENT_COMMAND.label,
-        icon: BookOpen,
+        
         run: () => setReadingRoomVisibility(true),
       },
-      { id: INSERT_WIDGET_COMMAND.id, label: INSERT_WIDGET_COMMAND.label, icon: AppWindow, keywords: INSERT_WIDGET_COMMAND.keywords, run: insertWidget },
-      { id: 'widget.newRecordBrowser', label: registryCommand('widget.newRecordBrowser').label, icon: AppWindow, keywords: registryCommand('widget.newRecordBrowser').keywords, disabled: !active, disabledReason: 'Open a document first', run: newRecordBrowser },
-      { id: 'widget.editRecordBrowser', label: registryCommand('widget.editRecordBrowser').label, icon: AppWindow, keywords: registryCommand('widget.editRecordBrowser').keywords, disabled: !active, disabledReason: 'Open a document first', run: () => editRecordBrowser() },
-      { id: 'widget.undoStep', label: registryCommand('widget.undoStep').label, icon: Undo2, keywords: registryCommand('widget.undoStep').keywords, disabled: lastWidgetStep === null, disabledReason: 'There is no widget step to undo', run: () => { void undoWidgetStep() } },
+      { id: INSERT_WIDGET_COMMAND.id, run: insertWidget },
+      { id: 'widget.newRecordBrowser',    disabled: !active, disabledReason: 'Open a document first', run: newRecordBrowser },
+      { id: 'widget.editRecordBrowser',    disabled: !active, disabledReason: 'Open a document first', run: () => editRecordBrowser() },
+      { id: 'widget.undoStep',    disabled: lastWidgetStep === null, disabledReason: 'There is no widget step to undo', run: () => { void undoWidgetStep() } },
       {
         id: INSERT_REFERENCE_COMMAND.id,
-        label: INSERT_REFERENCE_COMMAND.label,
-        icon: Quote,
+        
         run: insertReference,
       },
       {
         id: READING_ROOM_SHELF_COMMAND.id,
-        label: READING_ROOM_SHELF_COMMAND.label,
-        icon: Search,
-        keys: READING_ROOM_SHELF_COMMAND.keys as string,
+        
         run: searchTheShelf,
       },
       {
         id: READING_ROOM_HIGHLIGHTS_COMMAND.id,
-        label: READING_ROOM_HIGHLIGHTS_COMMAND.label,
-        icon: Highlighter,
-        keys: READING_ROOM_HIGHLIGHTS_COMMAND.keys as string,
+        
         run: openHighlights,
       },
       {
         id: READING_ROOM_SYNC_COMMAND.id,
-        label: READING_ROOM_SYNC_COMMAND.label,
-        icon: RefreshCw,
+        
         disabled: outboxWaiting === 0,
         run: syncHighlightsToZotero,
       },
       // Round A focus family (ADR-0028): "Focus and readability…" raises the transient picker; each mode is also
       // its own direct toggle so any mode can be chord-bound without the picker. All keyless.
-      { id: 'focus.open', label: 'Focus and readability…', icon: Focus, run: () => openOverlay('focus') },
-      { id: 'focus.fade', label: 'Fade other paragraphs', icon: Text, run: () => toggleFocusMode('fade') },
-      { id: 'focus.sentence', label: 'Highlight sentence', icon: Highlighter, run: () => toggleFocusMode('sentence') },
-      { id: 'focus.segment', label: 'Segment focus', icon: Scan, run: () => toggleFocusMode('segment') },
-      { id: 'focus.breakup', label: 'Sentence breakup', icon: ListOrdered, run: () => toggleFocusMode('breakup') },
-      { id: 'focus.anchored', label: 'Anchored reading', icon: Anchor, run: () => toggleFocusMode('anchored') },
+      { id: 'focus.open', run: () => openOverlay('focus') },
+      { id: 'focus.fade', checked: focusMode === 'fade', run: () => toggleFocusMode('fade') },
+      { id: 'focus.sentence', checked: focusMode === 'sentence', run: () => toggleFocusMode('sentence') },
+      { id: 'focus.segment', checked: focusMode === 'segment', run: () => toggleFocusMode('segment') },
+      { id: 'focus.breakup', checked: focusMode === 'breakup', run: () => toggleFocusMode('breakup') },
+      { id: 'focus.anchored', checked: focusMode === 'anchored', run: () => toggleFocusMode('anchored') },
       // Line focus and Ruler are overlays: they toggle beside the exclusive mode, never replace it, and exclude each other.
-      { id: 'focus.lineFocus', label: 'Focus: Line focus', icon: Scan, run: toggleLineFocus },
-      { id: 'focus.ruler', label: 'Focus: Ruler', icon: Minus, run: toggleRuler },
-      { id: 'lineFocus.size1', label: 'Line focus: 1 line', icon: Scan, run: () => chooseLineFocusSize(1) },
-      { id: 'lineFocus.size3', label: 'Line focus: 3 lines', icon: Scan, run: () => chooseLineFocusSize(3) },
-      { id: 'lineFocus.size5', label: 'Line focus: 5 lines', icon: Scan, run: () => chooseLineFocusSize(5) },
-      { id: 'ruler.covers.thin', label: 'Ruler: thin rule', icon: Minus, run: () => chooseRulerCovers('thin') },
-      { id: 'ruler.covers.1', label: 'Ruler: 1 line', icon: Minus, run: () => chooseRulerCovers('1') },
-      { id: 'ruler.covers.3', label: 'Ruler: 3 lines', icon: Minus, run: () => chooseRulerCovers('3') },
-      { id: 'ruler.covers.5', label: 'Ruler: 5 lines', icon: Minus, run: () => chooseRulerCovers('5') },
-      { id: 'ruler.covers.below', label: 'Ruler: all below', icon: Minus, run: () => chooseRulerCovers('below') },
-      { id: 'ruler.opacity.lighter', label: 'Ruler opacity: lighter', icon: Minus, run: () => nudgeRulerOpacity(-1) },
-      { id: 'ruler.opacity.darker', label: 'Ruler opacity: darker', icon: Minus, run: () => nudgeRulerOpacity(1) },
-      { id: 'lineOverlay.followByHand', label: 'Line focus / Ruler: follow by hand', icon: Scan, run: toggleOverlayFollowByHand },
-      { id: 'lineOverlay.followTypewriter', label: 'Line focus / Ruler: follow typewriter', icon: Scan, run: toggleOverlayFollowTypewriter },
+      { id: 'focus.lineFocus', checked: lineOverlay.lineFocus.on, run: toggleLineFocus },
+      { id: 'focus.ruler', checked: lineOverlay.ruler.on, run: toggleRuler },
+      { id: 'lineFocus.size1', checked: lineOverlay.lineFocus.size === 1, run: () => chooseLineFocusSize(1) },
+      { id: 'lineFocus.size3', checked: lineOverlay.lineFocus.size === 3, run: () => chooseLineFocusSize(3) },
+      { id: 'lineFocus.size5', checked: lineOverlay.lineFocus.size === 5, run: () => chooseLineFocusSize(5) },
+      { id: 'ruler.covers.thin', checked: lineOverlay.ruler.covers === 'thin', run: () => chooseRulerCovers('thin') },
+      { id: 'ruler.covers.1', checked: lineOverlay.ruler.covers === '1', run: () => chooseRulerCovers('1') },
+      { id: 'ruler.covers.3', checked: lineOverlay.ruler.covers === '3', run: () => chooseRulerCovers('3') },
+      { id: 'ruler.covers.5', checked: lineOverlay.ruler.covers === '5', run: () => chooseRulerCovers('5') },
+      { id: 'ruler.covers.below', checked: lineOverlay.ruler.covers === 'below', run: () => chooseRulerCovers('below') },
+      { id: 'ruler.opacity.lighter', run: () => nudgeRulerOpacity(-1) },
+      { id: 'ruler.opacity.darker', run: () => nudgeRulerOpacity(1) },
+      { id: 'lineOverlay.followByHand', checked: (lineOverlay.lineFocus.on ? lineOverlay.lineFocus.follow : lineOverlay.ruler.follow) === 'by-hand', run: toggleOverlayFollowByHand },
+      { id: 'lineOverlay.followTypewriter', checked: (lineOverlay.lineFocus.on ? lineOverlay.lineFocus.follow : lineOverlay.ruler.follow) === 'typewriter', run: toggleOverlayFollowTypewriter },
       // Read-aloud defaults are registry-owned, so the same rows drive palette display, overrides,
       // the window-level editor chord table and the generated cheat sheet.
-      { id: 'readAloud.start', label: 'Read aloud', icon: Volume2, run: () => startReadAloud() },
-      { id: 'readAloud.pauseResume', label: 'Read aloud — start, pause, or carry on', icon: Pause, run: pauseResumeReadAloud },
-      { id: 'readAloud.stop', label: 'Stop reading', icon: Square, run: stopReadAloud },
-      { id: 'readAloud.faster', label: 'Read faster', icon: Plus, run: () => nudgeReadAloudRate(0.1) },
-      { id: 'readAloud.slower', label: 'Read slower', icon: Minus, run: () => nudgeReadAloudRate(-0.1) },
-      { id: 'readAloud.nextSentence', label: 'Next sentence', icon: ChevronRight, run: () => skipReadAloudSentence(1) },
-      { id: 'readAloud.previousSentence', label: 'Previous sentence', icon: ChevronLeft, run: () => skipReadAloudSentence(-1) },
-      { id: 'readAloud.nextParagraph', label: 'Next paragraph', icon: ChevronsRight, run: () => skipReadAloudParagraph(1) },
-      { id: 'readAloud.previousParagraph', label: 'Previous paragraph', icon: ChevronsLeft, run: () => skipReadAloudParagraph(-1) },
-      { id: 'readAloud.returnToReading', label: 'Return to the reading', icon: LocateFixed, run: returnToReading },
-      { id: 'readAloud.chooseVoice', label: 'Read aloud settings…', icon: AudioLines, run: openReadAloudSettings },
+      { id: 'readAloud.start', run: () => startReadAloud() },
+      { id: 'readAloud.pauseResume', run: pauseResumeReadAloud },
+      { id: 'readAloud.stop', run: stopReadAloud },
+      { id: 'readAloud.faster', run: () => nudgeReadAloudRate(0.1) },
+      { id: 'readAloud.slower', run: () => nudgeReadAloudRate(-0.1) },
+      { id: 'readAloud.nextSentence', run: () => skipReadAloudSentence(1) },
+      { id: 'readAloud.previousSentence', run: () => skipReadAloudSentence(-1) },
+      { id: 'readAloud.nextParagraph', run: () => skipReadAloudParagraph(1) },
+      { id: 'readAloud.previousParagraph', run: () => skipReadAloudParagraph(-1) },
+      { id: 'readAloud.returnToReading', run: returnToReading },
+      { id: 'readAloud.chooseVoice', run: openReadAloudSettings },
       ...(Object.keys(READ_ALOUD_PRESETS) as ReadAloudPreset[]).map((preset) => ({
-        id: `readAloudHighlight.${preset}`,
-        label: `Read-aloud highlight: ${preset}`,
-        icon: AudioLines,
+        id: `readAloudHighlight.${preset}`, checked: readAloudColourRef.current === preset,
+        
         run: () => chooseReadAloudHighlight(preset),
       })),
-      { id: 'fixedLine.topThird', label: 'Fixed line: top third', icon: AlignCenterVertical, run: () => chooseFixedLine('top') },
-      { id: 'fixedLine.middle', label: 'Fixed line: middle', icon: AlignCenterVertical, run: () => chooseFixedLine('middle') },
-      { id: 'fixedLine.lowerThird', label: 'Fixed line: lower third', icon: AlignCenterVertical, run: () => chooseFixedLine('lower') },
+      { id: 'fixedLine.topThird', checked: fixedLine === FIXED_LINE_PRESETS.top, run: () => chooseFixedLine('top') },
+      { id: 'fixedLine.middle', checked: fixedLine === FIXED_LINE_PRESETS.middle, run: () => chooseFixedLine('middle') },
+      { id: 'fixedLine.lowerThird', checked: fixedLine === FIXED_LINE_PRESETS.lower, run: () => chooseFixedLine('lower') },
       // Round A sounds (Task 4): channel toggles; scheme/loop/volume live in Settings → Sounds.
-      { id: 'sounds.typing', label: 'Toggle typing sounds', icon: Volume2, run: toggleTypingSounds },
-      { id: 'sounds.ambient', label: 'Toggle ambient sound', icon: AudioLines, run: toggleAmbientSound },
+      { id: 'sounds.typing', checked: soundPrefsRef.current.typingOn, run: toggleTypingSounds },
+      { id: 'sounds.ambient', checked: soundPrefsRef.current.ambientOn, run: toggleAmbientSound },
       // Theme (2026-09-13): each writes appearance.theme through setSetting — the same path Settings uses.
-      { id: 'appearance.darkTheme', label: 'Use dark theme', icon: Moon, run: () => { runThemeCommand('appearance.darkTheme', setSetting) } },
-      { id: 'appearance.lightTheme', label: 'Use light theme', icon: Sun, run: () => { runThemeCommand('appearance.lightTheme', setSetting) } },
+      { id: 'appearance.darkTheme', checked: settingValues['appearance.theme'] === 'dark', run: () => { runThemeCommand('appearance.darkTheme', setSetting) } },
+      { id: 'appearance.lightTheme', checked: settingValues['appearance.theme'] !== 'dark', run: () => { runThemeCommand('appearance.lightTheme', setSetting) } },
       // Round A goals (Task 5): the Goal Gauge's keyboard path — the gauge click opens the same dialog.
-      { id: 'goal.set', label: 'Set writing goal…', icon: Target, run: openGoalDialog },
+      { id: 'goal.set', run: openGoalDialog },
       // Round B copy (T5): keyless by the pre-v1 ruling, palette + cheat-sheet only. A flash names
       // both the flavour and the scope, so the writer knows what landed on the clipboard.
-      { id: 'copy.rich', label: 'Copy as rich text', icon: ClipboardCopy, run: () => void copyOut('rich') },
-      { id: 'copy.markdown', label: 'Copy as Markdown', icon: FileCode, run: () => void copyOut('markdown') },
-      { id: 'copy.plain', label: 'Copy as plain text', icon: ClipboardType, run: () => void copyOut('plain') },
-      { id: 'file.clearDocument', label: 'Clear document…', icon: Eraser, run: clearDocument },
+      { id: 'copy.rich', run: () => void copyOut('rich') },
+      { id: 'copy.markdown', run: () => void copyOut('markdown') },
+      { id: 'copy.plain', run: () => void copyOut('plain') },
+      { id: 'file.clearDocument', run: clearDocument },
       // Round B export (T6/T7, ADR-0029): the round's ONE designed surface. Keyless like every
       // Round A command — the pre-v1 sweep assigns chords across the app at once.
-      { id: 'export.document', label: 'Export…', icon: Download, run: () => void openExportSheet() },
-      { id: 'exportPresets.apply', label: 'Apply export preset', icon: Download, run: () => void openExportSheet(undefined, 'apply') },
-      { id: 'exportPresets.update', label: 'Update export preset', icon: Download, run: () => void openExportSheet(undefined, 'update') },
-      { id: 'exportPresets.saveAs', label: 'Save export preset as…', icon: Download, run: () => void openExportSheet(undefined, 'save-as') },
-      { id: 'exportPresets.manage', label: 'Manage export presets', icon: Settings, run: () => void openExportSheet(undefined, 'manage') },
-      { id: 'exportPresets.rename', label: 'Rename export preset', icon: SquarePen, run: () => void openExportSheet(undefined, 'rename') },
-      { id: 'exportPresets.delete', label: 'Delete export preset', icon: X, run: () => void openExportSheet(undefined, 'delete') },
-      { id: 'exportPresets.moveUp', label: 'Move export preset up', icon: ChevronLeft, run: () => void openExportSheet(undefined, 'move-up') },
-      { id: 'exportPresets.moveDown', label: 'Move export preset down', icon: ChevronRight, run: () => void openExportSheet(undefined, 'move-down') },
+      { id: 'export.document', run: () => void openExportSheet() },
+      { id: 'exportPresets.apply', run: () => void openExportSheet(undefined, 'apply') },
+      { id: 'exportPresets.update', run: () => void openExportSheet(undefined, 'update') },
+      { id: 'exportPresets.saveAs', run: () => void openExportSheet(undefined, 'save-as') },
+      { id: 'exportPresets.manage', run: () => void openExportSheet(undefined, 'manage') },
+      { id: 'exportPresets.rename', run: () => void openExportSheet(undefined, 'rename') },
+      { id: 'exportPresets.delete', run: () => void openExportSheet(undefined, 'delete') },
+      { id: 'exportPresets.moveUp', run: () => void openExportSheet(undefined, 'move-up') },
+      { id: 'exportPresets.moveDown', run: () => void openExportSheet(undefined, 'move-down') },
       // Real overlay opens (Task 17): runPaletteCommand closes the palette first, then these raise
       // the settings / cheat-sheet sheet through the same overlay guard.
-      { id: 'file.nameVersion', label: 'Save Version…', icon: GitCommitHorizontal, keys: '⇧⌘S', run: requestNameVersion },
-      { id: 'folio.versions.openReadOnly', label: registryCommand('folio.versions.openReadOnly').label, icon: Eye, disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is already open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioVersionReadOnly },
-      { id: 'folio.versions.compare', label: registryCommand('folio.versions.compare').label, icon: GitCompare, disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioVersionCompare },
-      { id: 'folio.versions.backToWorking', label: registryCommand('folio.versions.backToWorking').label, icon: Undo2, disabled: !versionRead, disabledReason: 'No saved version is open', run: () => window.dispatchEvent(new CustomEvent(FOLIO_VERSION_COMMAND_EVENT, { detail: 'back-to-working-draft' })) },
-      { id: 'file.exportFolioVersion', label: registryCommand('file.exportFolioVersion').label, icon: Upload, disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: openFolioVersionExport },
-      { id: 'file.importFolioRevision', label: registryCommand('file.importFolioRevision').label, icon: FileDown, disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioRevisionImport },
-      { id: 'file.markFolioVersionSent', label: registryCommand('file.markFolioVersionSent').label, icon: Send, disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: openFolioVersionMarkSent },
-      { id: 'file.saveFileVersion', label: registryCommand('file.saveFileVersion').label, icon: History, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('save') },
-      { id: 'file.compareFileVersion', label: registryCommand('file.compareFileVersion').label, icon: GitCompare, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('compare') },
-      { id: 'file.restoreFileVersion', label: registryCommand('file.restoreFileVersion').label, icon: RotateCcw, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('restore') },
-      { id: 'file.saveFileVersionCopy', label: registryCommand('file.saveFileVersionCopy').label, icon: CopyPlus, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('copy') },
-      { id: 'file.saveFolioVersion', label: registryCommand('file.saveFolioVersion').label, icon: History, disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: requestSaveFolioVersion },
-      { id: 'app.settings', label: 'Open Settings…', icon: Settings, keys: '⌘,', run: () => openSettings() },
-      { id: 'app.checkForUpdates', label: 'Check for Updates…', icon: RefreshCw, run: runCheckForUpdates },
-      { id: 'app.whatsNew', label: 'What’s new in WriteFlex', icon: Info, run: showWhatsNew },
-      { id: 'app.about', label: 'About WriteFlex', icon: Info, run: () => openSettings('sec-about') },
-      { id: 'guide.open', label: registryCommand('guide.open').label, icon: Compass, run: openTheGuide },
-      { id: 'sharing.setUp', label: registryCommand('sharing.setUp').label, icon: Link, run: openSharingSetup },
-      { id: 'sharing.share', label: registryCommand('sharing.share').label, icon: Link, keys: '⌥⌘S', run: openSharingPage },
-      { id: 'sharing.sharesList', label: registryCommand('sharing.sharesList').label, icon: Link, run: openSharesList },
-      { id: 'example.restore', label: registryCommand('example.restore').label, icon: RotateCcw, run: restoreExampleOrSay },
+      { id: 'file.nameVersion', run: requestNameVersion },
+      { id: 'folio.versions.openReadOnly',   disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is already open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioVersionReadOnly },
+      { id: 'folio.versions.compare',   disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioVersionCompare },
+      { id: 'folio.versions.backToWorking',   disabled: !versionRead, disabledReason: 'No saved version is open', run: () => window.dispatchEvent(new CustomEvent(FOLIO_VERSION_COMMAND_EVENT, { detail: 'back-to-working-draft' })) },
+      { id: 'file.exportFolioVersion',   disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: openFolioVersionExport },
+      { id: 'file.importFolioRevision',   disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioRevisionImport },
+      { id: 'file.markFolioVersionSent',   disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: openFolioVersionMarkSent },
+      { id: 'file.saveFileVersion',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('save') },
+      { id: 'file.compareFileVersion',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('compare') },
+      { id: 'file.restoreFileVersion',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('restore') },
+      { id: 'file.saveFileVersionCopy',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: () => runFileVersion('copy') },
+      { id: 'file.saveFolioVersion',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: requestSaveFolioVersion },
+      { id: 'app.settings', run: () => openSettings() },
+      { id: 'app.checkForUpdates', run: runCheckForUpdates },
+      { id: 'app.whatsNew', run: showWhatsNew },
+      { id: 'app.about', run: () => openSettings('sec-about') },
+      { id: 'guide.open', run: openTheGuide },
+      { id: 'sharing.setUp', run: openSharingSetup },
+      { id: 'sharing.share', run: openSharingPage },
+      { id: 'sharing.sharesList', run: openSharesList },
+      { id: 'example.restore', run: restoreExampleOrSay },
       workspacePinned
-        ? { id: 'workspace.unpin', label: 'Unpin this vault', icon: PinOff, run: togglePinWorkspace }
-        : { id: 'workspace.pin', label: 'Pin this vault', icon: Pin, run: togglePinWorkspace },
-      { id: SHORTCUTS_COMMAND.id, label: SHORTCUTS_COMMAND.label, icon: Keyboard, keys: (SHORTCUTS_COMMAND.keys as string[]).map(formatShortcutKey).join('  '), run: () => openCheatSheet() },
-      { id: 'app.search', label: 'Search vault…', icon: Search, keys: '⇧⌘F', run: openSearch },
-      { id: 'archive.search', label: registryCommand('archive.search').label, icon: Library, keys: '⌃⌘F', run: toggleArchiveSearch },
-      { id: 'idea.capture', label: 'Capture an idea', icon: Plus, keys: '⇧⌘N', run: openCapture },
-      { id: 'idea.materialise', label: 'Materialise dead wikilink', icon: Plus, keys: '⌘↵', run: runMaterialiseCommand },
-      { id: 'navigation.followWikilink', label: 'Follow wikilink', icon: Link, keys: '⌥↵', run: followWikilink },
-      { id: 'app.scratchpad', label: 'Open Scratchpad', icon: StickyNote, keys: '⇧⌘J', run: () => scratchpadApi.current?.toggle() },
-      { id: 'scratchpad.sendCopy', label: registryCommand('scratchpad.sendCopy').label, icon: StickyNote, run: () => { void sendCopyToScratchpad() } },
-      { id: 'scratchpad.cut', label: registryCommand('scratchpad.cut').label, icon: StickyNote, run: () => { void scratchpadApi.current?.cut() } },
-      { id: 'scratchpad.insertCopy', label: registryCommand('scratchpad.insertCopy').label, icon: StickyNote, run: () => scratchpadApi.current?.insertSelected() },
-      { id: 'scratchpad.putBack', label: registryCommand('scratchpad.putBack').label, icon: StickyNote, run: () => scratchpadApi.current?.putBackSelected() },
-      { id: 'scratchpad.compare', label: registryCommand('scratchpad.compare').label, icon: StickyNote, run: () => scratchpadApi.current?.compareTicked() },
-      { id: 'scratchpad.preview', label: registryCommand('scratchpad.preview').label, icon: StickyNote, run: () => scratchpadApi.current?.previewSelected() },
-      { id: 'scratchpad.reject', label: registryCommand('scratchpad.reject').label, icon: StickyNote, run: () => scratchpadApi.current?.rejectSelected() },
-      { id: 'scratchpad.moveBack', label: registryCommand('scratchpad.moveBack').label, icon: StickyNote, run: () => scratchpadApi.current?.moveBackSelected() },
-      { id: 'scratchpad.markDone', label: registryCommand('scratchpad.markDone').label, icon: StickyNote, run: () => scratchpadApi.current?.toggleDoneSelected() },
-      { id: 'scratchpad.focusSearch', label: registryCommand('scratchpad.focusSearch').label, icon: StickyNote, run: () => scratchpadApi.current?.focusSearch() },
-      { id: 'app.agent', label: 'Open Agent', icon: Sparkles, keys: '⌘J', run: () => focusComposer() },
-      { id: 'agent.askHere', label: 'Ask the agent about this…', icon: Sparkles, run: askHere },
-      { id: 'threads.new', label: 'Start a new conversation', icon: Sparkles, run: () => requestAgentAction('new-conversation') },
-      { id: 'threads.switcher', label: 'Show conversations', icon: Sparkles, run: () => requestAgentAction('show-conversations') },
-      { id: 'threads.closeCurrent', label: 'Close the current conversation', icon: X, run: () => requestAgentAction('close-current-conversation') },
-      { id: 'agent.switchModel', label: 'Switch the model for this chat', icon: Sparkles, run: () => openAgentConfiguration('model') },
-      { id: 'agent.setMode', label: 'Set assistant mode', icon: Sparkles, run: () => openAgentConfiguration('mode') },
-      { id: 'agent.setThinking', label: 'Set the reasoning level for this chat', icon: AlignCenterVertical, run: () => openAgentConfiguration('thinking') },
-      { id: 'agent.refreshModels', label: 'Refresh models', icon: RefreshCw, run: () => { void runRefreshModelsCommand(window.writeflex.refreshModels, flash) } },
-      { id: 'agent.manageAccounts', label: 'Manage assistant accounts', icon: Settings, run: () => openSettings('sec-account') },
-      { id: 'review.focusMargin', label: 'Focus the review margin', icon: Rows3, keys: '⇧⌘C', run: () => runMarginCommand('focus') },
-      { id: 'review.switchMarginView', label: 'Switch Margin / Inline', icon: Rows3, keys: '⇧⌥⌘V', run: () => switchMarginView() },
-      { id: 'review.toggleMargin', label: 'Show or hide the margin', icon: Rows3, keys: '⇧⌥⌘M', run: () => toggleMargin() },
-      { id: 'review.acceptAll', label: 'Accept all shown, or the selected', icon: Check, keys: '⇧⌘A', run: () => runMarginCommand('accept') },
-      { id: 'review.declineAll', label: 'Decline all shown, or the selected', icon: X, keys: '⇧⌘⌫', run: () => runMarginCommand('decline') },
-      { id: 'review.sendBack', label: 'Send the review back to the agent', icon: Send, keys: '⇧⌘R', run: () => runMarginCommand('send-back') },
-      { id: 'review.acceptAllFromSource', label: 'Accept all from one agent…', icon: Check, run: () => outsideSourceBulkRef.current('accept') },
-      { id: 'review.declineAllFromSource', label: 'Decline all from one agent…', icon: X, run: () => outsideSourceBulkRef.current('decline') },
-      { id: 'review.nextChange', label: 'Next change', icon: ChevronRight, run: () => { stepReview(1) } },
-      { id: 'review.nextPieceWaiting', label: 'Next piece with items waiting', icon: ChevronRight, keys: '⌃⌥⌘G', run: () => nextPieceWithItems() },
-      { id: 'review.previousChange', label: 'Previous change', icon: ChevronLeft, run: () => { stepReview(-1) } },
-      { id: 'review.showAll', label: 'Show all in the margin', icon: Rows3, keys: '⌃⌥⌘1', run: () => setReviewKind('all', false) },
-      { id: 'review.showComments', label: 'Show comments only', icon: MessageSquare, keys: '⌃⌥⌘2', run: () => setReviewKind('comments', false) },
-      { id: 'review.showEdits', label: 'Show edits only', icon: SquarePen, keys: '⌃⌥⌘3', run: () => setReviewKind('edits', false) },
+        ? { id: 'workspace.unpin', run: togglePinWorkspace }
+        : { id: 'workspace.pin', run: togglePinWorkspace },
+      { id: SHORTCUTS_COMMAND.id, run: () => openCheatSheet() },
+      { id: 'app.search', run: openSearch },
+      { id: 'archive.search', run: toggleArchiveSearch },
+      { id: 'idea.capture', run: openCapture },
+      { id: 'idea.materialise', run: runMaterialiseCommand },
+      { id: 'navigation.followWikilink', run: followWikilink },
+      { id: 'app.scratchpad', run: () => scratchpadApi.current?.toggle() },
+      { id: 'scratchpad.sendCopy', run: () => { void sendCopyToScratchpad() } },
+      { id: 'scratchpad.cut', run: () => { void scratchpadApi.current?.cut() } },
+      { id: 'scratchpad.insertCopy', run: () => scratchpadApi.current?.insertSelected() },
+      { id: 'scratchpad.putBack', run: () => scratchpadApi.current?.putBackSelected() },
+      { id: 'scratchpad.compare', run: () => scratchpadApi.current?.compareTicked() },
+      { id: 'scratchpad.preview', run: () => scratchpadApi.current?.previewSelected() },
+      { id: 'scratchpad.reject', run: () => scratchpadApi.current?.rejectSelected() },
+      { id: 'scratchpad.moveBack', run: () => scratchpadApi.current?.moveBackSelected() },
+      { id: 'scratchpad.markDone', run: () => scratchpadApi.current?.toggleDoneSelected() },
+      { id: 'scratchpad.focusSearch', run: () => scratchpadApi.current?.focusSearch() },
+      { id: 'app.agent', run: () => focusComposer() },
+      { id: 'agent.askHere', run: askHere },
+      { id: 'threads.new', run: () => requestAgentAction('new-conversation') },
+      { id: 'threads.switcher', run: () => requestAgentAction('show-conversations') },
+      { id: 'threads.closeCurrent', run: () => requestAgentAction('close-current-conversation') },
+      { id: 'agent.switchModel', run: () => openAgentConfiguration('model') },
+      { id: 'agent.setMode', run: () => openAgentConfiguration('mode') },
+      { id: 'agent.setThinking', run: () => openAgentConfiguration('thinking') },
+      { id: 'agent.refreshModels', run: () => { void runRefreshModelsCommand(window.writeflex.refreshModels, flash) } },
+      { id: 'agent.manageAccounts', run: () => openSettings('sec-account') },
+      { id: 'review.focusMargin', run: () => runMarginCommand('focus') },
+      { id: 'review.switchMarginView', run: () => switchMarginView() },
+      { id: 'review.toggleMargin', checked: !marginHidden, run: () => toggleMargin() },
+      { id: 'review.acceptAll', run: () => runMarginCommand('accept') },
+      { id: 'review.declineAll', run: () => runMarginCommand('decline') },
+      { id: 'review.sendBack', run: () => runMarginCommand('send-back') },
+      { id: 'review.acceptAllFromSource', run: () => outsideSourceBulkRef.current('accept') },
+      { id: 'review.declineAllFromSource', run: () => outsideSourceBulkRef.current('decline') },
+      { id: 'review.nextChange', run: () => { stepReview(1) } },
+      { id: 'review.nextPieceWaiting', run: () => nextPieceWithItems() },
+      { id: 'review.previousChange', run: () => { stepReview(-1) } },
+      { id: 'review.showAll', run: () => setReviewKind('all', false) },
+      { id: 'review.showComments', run: () => setReviewKind('comments', false) },
+      { id: 'review.showEdits', run: () => setReviewKind('edits', false) },
       // Ticket 08: the modes and the quiet-fix switch, reachable with nothing waiting (frame `none`).
-      { id: 'review.settledToday', label: 'Settled today', icon: History, run: () => switchReviewMode('settled') },
-      { id: 'review.myEdits', label: 'My edits', icon: Pencil, run: () => switchReviewMode('mine') },
-      { id: 'review.showQuietFixes', label: marginFilterState.showQuiet ? 'Hide quiet fixes' : 'Show quiet fixes', icon: Highlighter, run: toggleQuietFixes },
-      { id: 'review.acceptAndNext', label: 'Accept and next', icon: Check, run: () => { const id = reviewCursorRef.current?.currentId; if (id) void acceptAndNextRef.current(id) } },
-      { id: 'app.versions', label: 'Open Versions', icon: GitCommitHorizontal, keys: '⌘3', run: () => openRightTab('versions') },
+      { id: 'review.settledToday', run: () => switchReviewMode('settled') },
+      { id: 'review.myEdits', run: () => switchReviewMode('mine') },
+      { id: 'review.showQuietFixes', checked: marginFilterState.showQuiet, run: toggleQuietFixes },
+      { id: 'review.acceptAndNext', run: () => { const id = reviewCursorRef.current?.currentId; if (id) void acceptAndNextRef.current(id) } },
+      { id: 'app.versions', run: () => openRightTab('versions') },
+      ...NATIVE_MENU_COMMANDS.map(command => ({ id: command.id, disabled: ['file.new', 'folder.new', 'file.checkpoint'].includes(command.id) && !root, run: command.id === 'app.openRecent' ? openSwitcher : () => { void window.writeflex.runNativeMenuCommand(command.id) } })),
+      { id: 'app.actionsHere', disabled: !active || (collectionDir !== null && roomTextRef.current === null), run: () => { closeOverlay(); requestAnimationFrame(() => editorRef.current?.openActionsHere()) } },
     ]
     // T6 honesty rule: a row whose chord the writer overrode shows the EFFECTIVE chord (or none),
     // never the retired default — the palette and the Keycap Ledger must agree.
     // An app row reports its own run through the one notifier; an editor row reports from
     // runEditorCommand, which knows whether the command took effect.
-    const reporting = appRows.map((row): Omit<AppCommand, 'group'> => ({ ...row, run: () => { row.run(); commandRan(row.id) } }))
+    const reporting = appRows.map((row) => ({ ...row, run: () => { row.run(); commandRan(row.id) } }))
     return [...editorRows, ...reporting].map((row): AppCommand => {
       const registered = registryCommand(row.id)
       const keywords = registered.keywords
       const override = shortcutOverrides[row.id]
-      const presented = { ...row, group: registered.task, subgroup: registered.subgroup, ...(keywords ? { keywords } : {}), ...(registered.hint ? { hint: registered.hint } : {}), ...(registered.leadsFor ? { leadsFor: registered.leadsFor } : {}) }
+      const presented = { ...row, label: commandLabel(registered, { checked: row.checked, name: 'labelName' in row ? row.labelName : undefined }), keys: typeof registered.keys === 'string' ? formatShortcutKey(registered.keys) : registered.keys?.map(formatShortcutKey).join('  '), icon: COMMAND_ICONS[row.id] ?? Command, group: registered.task, subgroup: registered.subgroup, ...(keywords ? { keywords } : {}), ...(registered.hint ? { hint: registered.hint } : {}), ...(registered.leadsFor ? { leadsFor: registered.leadsFor } : {}) }
       if (override === undefined) return presented
       return { ...presented, keys: override === '' ? undefined : override }
     })
   }, [
+    settingValues, fixedLine, roomTextPath, root, active, typewriterOn, viewMode, focusMode, lineOverlay, distractionFree, hideStrikes, hideInserts,
+    leftPaneCollapsed, rightPaneCollapsed, actionBarVisible, marginHidden, contextCounted,
     shownTitleConflict,
     titleHeadingCanBeInserted,
     openDocumentIsPart,
@@ -6091,7 +6310,86 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     },
     [recordRecent, closePalette],
   )
-  useEffect(() => window.writeflex.onMenuAction(action => { const command = collectionPageMenuCommand(action); if (collectionDir !== null && command) dispatchCollectionPageCommand(command) }), [collectionDir])
+  const [menuTargetRequest, setMenuTargetRequest] = useState<{ id: string; key: string; kind: 'file' | 'folder' } | null>(null)
+  const menuTargetHandled = useCallback(() => setMenuTargetRequest(null), [])
+  const liveMenuChecks = useLiveMenuChecks()
+  // Menu-only rows keep contextual keys out of app dispatch. Context menus still supply their own target.
+  const targetMenuRows = () => commandRegistry.filter(command => command.surfaces.includes('menu') && !command.surfaces.includes('palette') && !command.noMenu).map(command => {
+    const id = command.id
+    const documentOpen = Boolean(active && loadedPath.current === active && editorRef.current?.path() === active && (collectionDir === null || roomTextRef.current !== null))
+    const folder = active?.includes('/') ? active.slice(0, active.lastIndexOf('/')) : ''
+    let enabled = documentOpen && !versionRead
+    let run = () => editorRef.current?.runMenuTarget(id)
+    if (id.startsWith('file.') || id.startsWith('folder.')) {
+      const kind = id.startsWith('file.') ? 'file' as const : 'folder' as const
+      const targetPlace: Place = kind === 'file' ? 'file' : folderFocus?.path === folder ? 'focused-folder' : 'folder'
+      // Root creation/report actions exist, but row rename/bin/reveal and narrowing focus exclude the workspace root.
+      enabled = enabled && offeredAt(command.places, targetPlace) && (kind === 'file' ? files.some(file => file.path === active) : (folder === '' ? !['folder.rename', 'folder.trash', 'folder.reveal', 'folder.focus'].includes(id) : folders.includes(folder)))
+      run = () => { if (!active) return; revealTreeRow({ key: kind === 'file' ? active : folder, kind }, false); setMenuTargetRequest({ id, key: kind === 'file' ? active : folder, kind }) }
+    } else if (id.startsWith('skill.run.')) {
+      const name = id.slice('skill.run.'.length)
+      enabled = documentOpen && paletteSkills.some(skill => skill.name === name)
+      run = () => runPaletteSkill(name)
+    } else if (id === 'skills.openThread') {
+      enabled = documentOpen
+      run = () => requestAgentAction('show-conversations')
+    } else if (id === 'skills.manage') {
+      enabled = documentOpen
+      run = manageSkillsFromPalette
+    } else if (id === 'folio.openAt') {
+      enabled = Boolean(liveMenuChecks['folio.openAt.available'])
+      run = () => { window.dispatchEvent(new Event('writeflex:folio-open-at')) }
+    } else enabled = enabled && Boolean(editorRef.current?.canRunMenuTarget(id))
+    return { id, disabled: !enabled, run }
+  })
+
+  const lastMenuModel = useRef<MenuCommand[] | null>(null)
+  const lastMenuEditorFocus = useRef<MenuFocus>('other')
+  const menuMounted = useRef(true)
+  const publishMenuRef = useRef<() => void>(() => {})
+  publishMenuRef.current = () => {
+    if (!menuMounted.current) return
+    const state = editorRef.current?.view()?.state
+    const commands = menuCommands([...paletteCommandList, ...targetMenuRows()], shortcutOverrides, state, Boolean(active && (collectionDir === null || roomTextRef.current !== null)), liveMenuChecks)
+    const activeElement = document.activeElement
+    const focus: MenuFocus = activeElement?.closest('.cm-content[contenteditable="true"]') ? 'editor'
+      : activeElement instanceof HTMLElement && (activeElement.matches('input, textarea') || activeElement.isContentEditable) ? 'plain-text-field' : 'other'
+    if (lastMenuModel.current && lastMenuEditorFocus.current === focus && sameMenuModel(lastMenuModel.current, commands)) return
+    lastMenuEditorFocus.current = focus
+    lastMenuModel.current = commands
+    void window.writeflex.publishCommandMenu(commands, focus)
+  }
+  // Renders and editor updates are frequent; the menu only needs the settled answer, so publishing trails by 150 ms.
+  const menuPublisher = useMemo(() => createDebouncedPublisher(() => publishMenuRef.current(), 150), [])
+  useEffect(() => {
+    menuMounted.current = true
+    const flush = () => menuPublisher.flush()
+    const focusChanged = () => queueMicrotask(flush)
+    window.addEventListener('focus', flush)
+    document.addEventListener('focusin', focusChanged)
+    document.addEventListener('focusout', focusChanged)
+    return () => {
+      window.removeEventListener('focus', flush)
+      document.removeEventListener('focusin', focusChanged)
+      document.removeEventListener('focusout', focusChanged)
+      menuPublisher.cancel()
+      menuMounted.current = false
+      lastMenuModel.current = null
+      void window.writeflex.publishCommandMenu([])
+    }
+  }, [menuPublisher])
+  useEffect(() => subscribeShortcutCapture(() => publishMenuRef.current()), [])
+  useEffect(() => { menuPublisher.schedule() })
+  const menuDispatchRef = useRef<(id: string) => void>(() => {})
+  menuDispatchRef.current = id => {
+    // A menu or native-key run is not a palette run: it never touches the palette's Recent list.
+    dispatchMenuCommand(id, [...paletteCommandList, ...targetMenuRows()], editorRef.current?.view()?.state, Boolean(active && (collectionDir === null || roomTextRef.current !== null)), row => row.run(), command => runEditorCommand(command.run!, command.id))
+    // A native checkbox toggles before its click; restore live state even if a final guard refused.
+    lastMenuModel.current = null
+    publishMenuRef.current()
+  }
+  useEffect(() => window.writeflex.onMenuCommand(id => menuDispatchRef.current(id)), [])
+
   const collectionChordsRef = useRef(new Set<string>())
   // Actions here (⌘K, ticket 03) runs a row through the palette's own dispatch: the AppCommand the palette
   // lists, run by runPaletteCommand. A command the list has not caught up with (its `when` changed since the
@@ -6158,6 +6456,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     const collectionChords = new Set<string>()
     for (const row of paletteCommandList) {
       if (LEDGER_EXCLUDED.has(row.id)) continue
+      // Existing physical zoom keys also accept unshifted = and Option-produced characters.
+      if (NATIVE_MENU_COMMANDS.some(c => c.id === row.id && 'keyAliases' in c) && shortcutOverrides[row.id] === undefined) continue
       if (row.disabled) continue
       const registryEntry = commandRegistry.find((command) => command.id === row.id)
       if (registryEntry?.run && !APP_DISPATCHED_EDITOR_IDS.has(row.id)) continue // editor keymap owns it
@@ -6179,6 +6479,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       const backspace = backspaceChord(e)
       const chord = eventToChord(e) ?? (backspace && backspaceChordIndexRef.current.has(backspace) ? backspace : null)
       if (!chord) return
+      if (nativeEditRoleChord(chord) && !(e.target as Element | null)?.matches?.('.cm-content')) return
       const disclosureChord = resolveChord('statusbar.disclosure', shortcutOverrides)
       const paneChord = ['view.toggleLeftPane', 'view.toggleRightPane'].some(id => chord === resolveChord(id, shortcutOverrides))
       const paletteChord = chord === resolveChord('app.quickOpen', shortcutOverrides) || chord === resolveChord('app.commandPalette', shortcutOverrides)
@@ -6197,7 +6498,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       if (chord === resolveChord('plan.removePart', shortcutOverrides) && (e.target as Element | null)?.closest?.('input, textarea, select, [contenteditable="true"], .cm-editor')) return
       e.preventDefault()
       // Pane chords belong to the shell, before editor or room event containment.
-      if (paneChord) e.stopImmediatePropagation()
+      if (paneChord || NATIVE_MENU_COMMANDS.some(c => resolveChord(c.id, shortcutOverrides) === chord)) e.stopImmediatePropagation()
       runAsPlanShortcut(run)
     }
     window.addEventListener('keydown', onKeyDown, true)
@@ -6211,7 +6512,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const runReaderChord = useCallback((chord: ShortcutLike): void => {
     if (overlayOpenRef.current) return // an open sheet owns the keyboard (useOverlayGuard)
     const resolved = eventToChord(chord)
-    if (!resolved) return
+    if (!resolved || nativeEditRoleChord(resolved)) return
     appChordIndexRef.current.get(resolved)?.()
   }, [overlayOpenRef])
 
@@ -6584,55 +6885,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     else open(path)
   }), [open])
 
-  // The View menu's Toggle Outline item routes here on click.
-  useEffect(
-    () =>
-      window.writeflex.onMenuAction((action) => {
-        if (action === 'toggle-left-pane') toggleLeftPane()
-        else if (action === 'toggle-right-pane') toggleRightPane()
-        else if (action === 'open-files') openFilesTab()
-        else if (action === 'toggle-outline') toggleOutline()
-        else if (action === 'focus-review-margin') runMarginCommand('focus')
-        else if (action === 'switch-margin-view') switchMarginView()
-        else if (action === 'toggle-margin') toggleMargin()
-        else if (action === 'open-versions') openRightTab('versions')
-        else if (action === 'open-folio-versions') window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' }))
-        else if (action === 'open-folio-version-read-only') openFolioVersionReadOnly()
-        else if (action === 'compare-folio-versions') openFolioVersionCompare()
-        else if (action === 'export-folio-version') openFolioVersionExport()
-        else if (action === 'mark-folio-version-sent') openFolioVersionMarkSent()
-        else if (action === 'import-folio-revision') openFolioRevisionImport()
-        else if (action === 'save-file-version') runFileVersion('save')
-        else if (action === 'compare-file-version') runFileVersion('compare')
-        else if (action === 'restore-file-version') runFileVersion('restore')
-        else if (action === 'save-file-version-copy') runFileVersion('copy')
-        else if (action === 'back-to-working-draft') window.dispatchEvent(new CustomEvent(FOLIO_VERSION_COMMAND_EVENT, { detail: 'back-to-working-draft' }))
-      }),
-    [toggleLeftPane, toggleRightPane, openFilesTab, toggleOutline, openRightTab, runMarginCommand, switchMarginView, toggleMargin, openFolioVersionReadOnly, openFolioVersionCompare, openFolioVersionExport, openFolioVersionMarkSent, openFolioRevisionImport, runFileVersion],
-  )
-
-  // The View menu's Toggle Typewriter item (⌘T, registerAccelerator:false) routes here on click.
-  useEffect(
-    () =>
-      window.writeflex.onMenuAction((action) => {
-        if (action === 'toggle-typewriter') toggleTypewriter()
-      }),
-    [toggleTypewriter],
-  )
-
-  // R14: the menu's Settings…, Export…, Share… and theme items.
-  useEffect(
-    () =>
-      window.writeflex.onMenuAction((action) => {
-        if (action === 'open-settings') openSettings()
-        else if (action === 'export-document') void openExportSheet()
-        else if (action === 'share-document') openSharingPage()
-        else if (action === 'theme-light') runThemeCommand('appearance.lightTheme', setSetting)
-        else if (action === 'theme-dark') runThemeCommand('appearance.darkTheme', setSetting)
-      }),
-    [openSettings, openExportSheet, openSharingPage, setSetting],
-  )
-
   // ⇧⌘E / ⇧⌘O (Open Files / Open Outline) are dispatched by the T6 chord table. They remain
   // OPEN + SWITCH + ACTIVATE commands: repeat presses never close; only ⌘[ collapses the left pane.
 
@@ -6742,12 +6994,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
 
   // ⌘⇧Z is context-sensitive by design (ADR-0009 cheat-sheet: Undo agent turn): with focus inside
   // the agent panel it undoes the agent's last turn; anywhere else the keystroke falls through to
-  // CM6's own historyKeymap (editor redo). menu.ts registers Edit ▸ Redo with
-  // registerAccelerator:false so the native item never swallows the key before this handler.
+  // CM6's historyKeymap (editor redo). Native Redo owns the key in plain fields; the main menu
+  // lets registry chords through only while CodeMirror holds focus.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       if (overlayOpenRef.current) return // an open sheet owns the keyboard (useOverlayGuard)
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
+        if (document.activeElement?.closest('input, textarea, [contenteditable="true"]') && !document.activeElement?.matches('.cm-content')) return
         if (!document.querySelector('.agent')?.contains(document.activeElement)) return
         e.preventDefault()
         agent.undoTurn()
@@ -6757,8 +7010,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [agent.undoTurn, overlayOpenRef])
 
-  // ⌘Z in a plain text field: Edit ▸ Undo no longer owns the key natively (menu.ts), so the field's own text undo
-  // is run here. The editor (CodeMirror's historyKeymap) and the Details card (which undoes by token and has
+  // A renderer-delivered ⌘Z in a plain field uses that field's text history. The native role owns
+  // real menu key dispatch there. CodeMirror and the Details card (which undoes by token and has
   // already handled the key) are left alone.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
@@ -6773,26 +7026,20 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  // The Edit-menu Redo item routes here on click (its ⇧⌘Z key is renderer-owned above): agent-panel
-  // focus undoes the turn, otherwise it redoes in the live editor view.
-  useEffect(
-    () =>
-      window.writeflex.onMenuAction((action) => {
-        // Edit ▸ Undo is not a native role (menu.ts): the Details card undoes by its own token and handles its own
-        // click; anywhere else the click is the browser's own text undo, as the role was.
-        if (action === 'undo') {
-          if (turnBackUndo.current && turnBackUndo.current.root === root && collectionDir === turnBackUndo.current.dir && !document.activeElement?.closest('input, textarea, [contenteditable="true"], .cm-editor')) { undoTurnBack(); return }
-          if (document.activeElement?.closest('[data-folio-details]')) return
-          if (document.activeElement?.closest('.cm-editor')) runEditorCommand(undo)
-          else document.execCommand('undo')
-          return
-        }
-        if (action !== 'redo') return
-        if (document.querySelector('.agent')?.contains(document.activeElement)) agent.undoTurn()
-        else runEditorCommand(redo)
-      }),
-    [agent.undoTurn, runEditorCommand, turnBackUndo, root, collectionDir, undoTurnBack],
-  )
+  // Menu and palette history commands share the existing focus-sensitive click behaviour.
+  // The palette restores editor focus before running; a menu click keeps its current surface.
+  historyCommandRef.current = action => {
+    if (action === 'undo') {
+      if (turnBackUndo.current && turnBackUndo.current.root === root && collectionDir === turnBackUndo.current.dir && !document.activeElement?.closest('input, textarea, [contenteditable="true"], .cm-editor')) { undoTurnBack(); return }
+      if (document.activeElement?.closest('[data-folio-details]')) return
+      if (document.activeElement?.closest('.cm-editor')) runEditorCommand(undo)
+      else document.execCommand('undo')
+      return
+    }
+    if (document.activeElement?.closest('input, textarea, [contenteditable="true"]') && !document.activeElement?.closest('.cm-editor')) document.execCommand('redo')
+    else if (document.querySelector('.agent')?.contains(document.activeElement)) agent.undoTurn()
+    else runEditorCommand(redo)
+  }
 
   // ⌘T (Toggle Typewriter) is dispatched by the T6 chord table — menu.ts keeps the item at
   // registerAccelerator:false (discoverable, not natively bound), so the renderer stays the owner.
@@ -6927,23 +7174,23 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     function onKeyDown(e: KeyboardEvent): void {
       if (overlayOpenRef.current) return // an open sheet owns the keyboard (useOverlayGuard)
       if (!(e.metaKey || e.ctrlKey) || (e.metaKey && e.ctrlKey)) return
-      if (e.code === 'Digit0' && e.altKey && !e.shiftKey) {
+      if (e.code === 'Digit0' && e.altKey && !e.shiftKey && shortcutOverrides['view.proseReset'] === undefined) {
         e.preventDefault()
         resetProseZoom()
       } else if (e.code === 'Digit1' && !e.altKey && !e.shiftKey) {
         e.preventDefault()
         focusEditor()
-      } else if (e.code === 'Equal') {
+      } else if (e.code === 'Equal' && shortcutOverrides[e.altKey ? 'view.columnIncrease' : 'view.proseIncrease'] === undefined) {
         e.preventDefault() // plain ⌘= and shifted ⌘+ both step up (the zoomIn convention)
         e.altKey ? stepLineWidth(1) : stepProseSize(1)
-      } else if (e.code === 'Minus') {
+      } else if (e.code === 'Minus' && shortcutOverrides[e.altKey ? 'view.columnDecrease' : 'view.proseDecrease'] === undefined) {
         e.preventDefault()
         e.altKey ? stepLineWidth(-1) : stepProseSize(-1)
       }
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [toggleSidebar, focusEditor, stepProseSize, stepLineWidth, resetProseZoom, overlayOpenRef])
+  }, [toggleSidebar, focusEditor, stepProseSize, stepLineWidth, resetProseZoom, overlayOpenRef, shortcutOverrides])
 
   // The View menu's prose-size / column-width items route their CLICK here (their keys are
   // renderer-owned above; the menu items are registerAccelerator:false — discoverable, not
@@ -7427,31 +7674,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [cycle, overlayOpenRef])
 
-  useEffect(
-    () =>
-      window.writeflex.onMenuAction((action) => {
-        if (action === 'open-tabs') openOpenTabs()
-        else if (action === 'next-tab') cycle(1)
-        else if (action === 'previous-tab') cycle(-1)
-        else if (action === 'next-folder-file') void browseFolderFile(1)
-        else if (action === 'previous-folder-file') void browseFolderFile(-1)
-      }),
-    [browseFolderFile, cycle, openOpenTabs],
-  )
 
   // ⌥⌘P (Pin to strip / Unpin from strip, ADR-0026) is dispatched by the T6 chord table; Option-click and the
   // context menu share the durable state; pins cap at four and carry no close control.
-
-  // The File-menu Quick Open… and Command Palette… items route to the same registry-backed overlay
-  // actions as their assignable chords; this covers a mouse click of either menu item.
-  useEffect(
-    () =>
-      window.writeflex.onMenuAction((action) => {
-        if (action === 'quick-open') openPalette('files')
-        else if (action === 'command-palette') openPalette('commands')
-      }),
-    [openPalette],
-  )
 
   // A folder-scope outline jump (Task 10): land the caret on `line` of `file`. If that file is already
   // the loaded active buffer, jump in-editor now; otherwise queue the line and open the file — the
@@ -8057,29 +8282,11 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       holdOverlay(false)
     }
   }, [holdOverlay, cancelPendingFlush, flushWriterChangesNow, flushPaths, documentsUnder, clearFileWriterState, reconcileAppliedFile, reloadChanges, reloadVersions, closePalette, flash, setFolioSave])
-  useEffect(
-    () =>
-      window.writeflex.onMenuAction((action) => {
-        if (action === 'name-version') requestNameVersion()
-        else if (action === 'save-folio-version') requestSaveFolioVersion()
-      }),
-    [requestNameVersion, requestSaveFolioVersion],
-  )
   // ⇧⌘S (Save Version…) is dispatched by the T6 chord table; the menu item stays the mouse path.
   // Revise hands off to the agent: open the composer for a fresh instruction on this change.
 
   // ⇧⌘F (Search Workspace, the toggleSearch contract — keyboard lands in the query field) is
   // dispatched by the T6 chord table; menu.ts keeps Search Files… at registerAccelerator:false.
-
-  // The File-menu Search Files… item routes here when clicked (the shortcut itself is renderer-owned above).
-  useEffect(
-    () =>
-      window.writeflex.onMenuAction((action) => {
-        if (action === 'search') toggleSearch()
-        else if (action === 'archive-search') toggleArchiveSearch()
-      }),
-    [toggleSearch, toggleArchiveSearch],
-  )
 
   // The + button / ⌘N create-file flow belongs to a later task; the affordance renders now so the
   // tab strip matches the locked design, and gets wired when file creation lands.
@@ -8340,6 +8547,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                     version={appVersion}
                     focusFilterTick={sidebarFilterFocusTick}
                     fileOps={stableSidebarFileOps}
+                    menuTargetRequest={menuTargetRequest}
+                    onMenuTargetHandled={menuTargetHandled}
                     createRequest={createRequest}
                     focusTreeRequest={treeFocusRequest}
                     focusPath={folderFocus?.path ?? null}
@@ -8621,6 +8830,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             workspaceRoot={root}
             assetBaseUrl={assetBaseUrl}
             onDocChanged={handleDocChanged}
+            onCommandStateChange={() => menuPublisher.schedule()}
             onDocumentTransaction={pauseReadAloudAtCaret}
             onDocumentPointerDown={pauseReadAloudAtCaret}
             onManualReadAloudScroll={pauseReadAloudOnManualScroll}

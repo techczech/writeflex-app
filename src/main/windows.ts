@@ -23,6 +23,8 @@ import { GuideProgressStore } from './guide-progress-store'
 import { lessonFileFor } from '../renderer/src/commands/guide-chapters'
 import type { TaskGroup } from '../renderer/src/commands/command-task-groups'
 import { REPLY_KEY_FOLDER } from './reply-key'
+import type { RecallableClose } from './restart-windows'
+import { updateTestKeepsWindow } from './update-test-build'
 import { OpenCollections } from './open-collections'
 import { createWindowSwitch, routeToExistingWindow, whenRendererReady, type CloseAttempt, type WindowSwitch, type WindowSwitchOutcome } from './window-switch'
 
@@ -86,7 +88,7 @@ export class WindowManager {
   createWindow(placement?: WindowPlacement): WindowState {
     // A test run must never take over the screen (AGENTS.md): under the e2e harness the window is
     // created hidden and nothing ever shows it — Playwright's firstWindow() attaches to a hidden
-    // BrowserWindow perfectly well, and Electron's focus() is a no-op on an invisible window.
+    // BrowserWindow perfectly well. Native show, restore and focus calls are suppressed in this mode.
     //
     // backgroundThrottling:false is not optional here. A hidden or occluded window has its timers
     // and rAF throttled, which would make a spec flaky or — the worse outcome — falsely GREEN
@@ -272,6 +274,15 @@ export class WindowManager {
     })
     state.closing = closing
     window.on('close', (event) => {
+      // The update-test flavour's kept window (update-test-build.ts; always false in a production build): this close
+      // ends as a close whose write failed ends (window:cancel-close), so the window stays open.
+      if (updateTestKeepsWindow()) {
+        event.preventDefault()
+        console.log('[updates] update-test: a window was kept open (its close reported a failed write)')
+        setQuitting(false)
+        state.onCloseCancelled?.()
+        return
+      }
       if (closing.onNativeClose() === 'hold') event.preventDefault()
     })
     // A renderer that dies during a close has no text left to write: the window goes at once.
@@ -331,7 +342,7 @@ export class WindowManager {
       if (this.#switchingInto(existing, canonicalRoot)) return null
       this.#recordRecent(canonicalRoot)
       this.#recordGuideStep(canonicalRoot)
-      if (!existing.window.isDestroyed()) existing.window.focus()
+      if (process.env.WRITEFLEX_E2E !== '1' && !existing.window.isDestroyed()) existing.window.focus()
       return existing
     }
     await this.openCollections.open(canonicalRoot)
@@ -342,7 +353,7 @@ export class WindowManager {
       void this.openCollections.close(canonicalRoot)
       if (this.#switchingInto(opened, canonicalRoot)) return null
       this.#recordRecent(canonicalRoot)
-      if (!opened.window.isDestroyed()) opened.window.focus()
+      if (process.env.WRITEFLEX_E2E !== '1' && !opened.window.isDestroyed()) opened.window.focus()
       return opened
     }
     let target: WindowState | null = null
@@ -392,7 +403,7 @@ export class WindowManager {
     const source = route.source
     void recordMainProcessDiagnostic('workspace.open.switching', { root })
     if (source && !source.window.isDestroyed()) {
-      source.window.focus()
+      if (process.env.WRITEFLEX_E2E !== '1') source.window.focus()
       source.window.webContents.send('window:status', `Switching to ${basename(root)}…`)
     }
     return true
@@ -426,7 +437,7 @@ export class WindowManager {
       const shown = this.windowForRoot(candidate)
       return shown && shown !== except ? shown : undefined
     },
-    focus: (shown) => { if (!shown.window.isDestroyed()) shown.window.focus() },
+    focus: (shown) => { if (process.env.WRITEFLEX_E2E !== '1' && !shown.window.isDestroyed()) shown.window.focus() },
     placement: (state) => {
       const { window } = state
       const fullScreen = window.isFullScreen()
@@ -624,7 +635,7 @@ export class WindowManager {
     state.pendingFocusLine = null
     if (alreadyMounted) flushPendingFocus(state)
     this.#wantGuideTab(state)
-    if (!state.window.isDestroyed()) state.window.focus()
+    if (process.env.WRITEFLEX_E2E !== '1' && !state.window.isDestroyed()) state.window.focus()
     return state
   }
 
@@ -689,6 +700,16 @@ export class WindowManager {
     const canonical = normaliseRoot(root)
     const pending = [...this.#releasing.entries()].filter(([held]) => held === canonical || held.startsWith(canonical + sep)).map(([, done]) => done)
     await Promise.all(pending)
+  }
+
+  /**
+   * An update's restart (ADR-0054, update-engine.ts commit; restart-windows.ts createRestartClose): starts closing
+   * every window as the red light closes it, so each writes its documents first and one whose write fails stays
+   * open. One recallable close per window: no time limit here, the engine's watchdog bounds the restart, and when
+   * it calls the restart off every close still recallable is abandoned (the window stays).
+   */
+  closeAllForRestart(): RecallableClose[] {
+    return allStates().filter((state) => !state.window.isDestroyed()).map((state) => this.#closeAttempt(state))
   }
 
   /** One window closed as the red light closes it. True once it has closed; false on a refusal or no close in time. */

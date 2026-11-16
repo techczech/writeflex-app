@@ -31,6 +31,12 @@ import { BACKUP_HELPER_TRIAL_DISABLED, type BackupHelperTrial } from './trial-co
 export type BackupHelperService = {
   status(senderId: number): Promise<BackupHelperStatusAnswer>
   syncNow(senderId: number): Promise<BackupHelperSyncAnswer>
+  /**
+   * Main only, for an update's restart (ADR-0054): whether a backup cycle is running in any vault the helper serves.
+   * 'cycling' while a Sync now is on the connection or any vault's worker is not idle; 'unknown' when any answer is
+   * missing. Optional: a service that cannot say leaves it out, which counts as 'unknown'.
+   */
+  activity?(): Promise<'idle' | 'cycling' | 'unknown'>
   /** The window closed: drop its waiting requests and answers; close the connection when no window is left. */
   disposeWindow(senderId: number): void
   dispose(): void
@@ -61,7 +67,8 @@ export function createBackupHelperService(options: BackupHelperServiceOptions): 
   const trial = options.trial ?? BACKUP_HELPER_TRIAL_DISABLED
   if (!trial.enabled) {
     const off = async () => ({ state: 'disabled' as const })
-    return { status: off, syncNow: off, disposeWindow: () => undefined, dispose: () => undefined }
+    // Nothing is served, so nothing can be said about a helper that may still run (its activity is asked only then).
+    return { status: off, syncNow: off, activity: async () => 'unknown' as const, disposeWindow: () => undefined, dispose: () => undefined }
   }
   const resolveReal = options.resolveReal ?? realpath
   const now = options.now ?? Date.now
@@ -190,6 +197,20 @@ export function createBackupHelperService(options: BackupHelperServiceOptions): 
         return { state: 'unavailable', reason: answer.reason, message: answer.message, observedAt: now(), ...limits() }
       }
       return { state: 'cycle', observedAt: answer.receivedAt, cycle: answer.value, ...limits() }
+    },
+
+    async activity() {
+      if (disposed || !trial.enabled) return 'unknown'
+      if (unsettled.size > 0) return 'cycling'
+      let cycling = false
+      for (const vault of new Set(trial.vaults.values())) {
+        const answer = await connection.request('status', vault, trial.statusTimeoutMs, (result, receivedAt) => checkStatusResult(result, vault, receivedAt))
+        if (!answer.ok) return 'unknown'
+        // 'stopped' is a worker that no longer schedules; 'cycling' and 'stopping' may still be writing.
+        const state = answer.value.vault.helper.state
+        if (state === 'cycling' || state === 'stopping') cycling = true
+      }
+      return cycling || unsettled.size > 0 ? 'cycling' : 'idle'
     },
 
     disposeWindow(senderId) {

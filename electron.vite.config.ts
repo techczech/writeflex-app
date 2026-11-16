@@ -12,6 +12,9 @@ export default defineConfig(({ command }) => ({
     // @app-patterns/vault-sync is bundled, not shipped: main uses its reviewed socket client and read-only history validation;
     // bundling leaves the helper's server and backup engine out of the app (_TASK-LOG/2026-10-25-vault-sync-bridge.md).
     plugins: [externalizeDepsPlugin({ exclude: ['@app-patterns/vault-sync'] }), ...(command === 'serve' ? [readerHostDevelopment(__dirname)] : [])],
+    // The update-test flavour's switch (src/main/update-test-build.ts): false here, so its branches are dead code in
+    // every production bundle. Only electron.vite.update-test.config.ts sets it true.
+    define: { __WF_UPDATE_TEST__: 'false' },
     // writeflex-cli.js is the command line the installed `writeflex` shim runs in Node mode
     // (ELECTRON_RUN_AS_NODE=1), as TodoScout's refresh-cli does. It must import nothing from Electron.
     build: {

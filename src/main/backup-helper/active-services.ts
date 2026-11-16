@@ -119,6 +119,8 @@ export function createActiveBackupServices(options: ActiveServicesOptions): Acti
   const helper: BackupHelperService = {
     status: (senderId) => current.pair.helper.status(senderId),
     syncNow: (senderId) => current.pair.helper.syncNow(senderId),
+    // The current instance's answer; one that cannot say (or a holding instance while reconfiguring) is 'unknown'.
+    activity: () => current.pair.helper.activity?.() ?? Promise.resolve('unknown' as const),
     disposeWindow: (senderId) => current.pair.helper.disposeWindow(senderId),
     dispose: () => { void dispose() },
   }

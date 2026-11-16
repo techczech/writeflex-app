@@ -60,7 +60,7 @@
         "Divider",
         "Footnote",
         "Edit",
-        "Delete block…"
+        "Delete block"
       ]
     },
     {
@@ -250,7 +250,8 @@
         "Next / previous open tab [pair: navigation.nextTab, navigation.previousTab]",
         "Next / previous panel tab [pair: navigation.nextPanelTab, navigation.previousPanelTab]",
         "Open tabs",
-        "Pin to strip / Unpin from strip"
+        "Pin to strip / Unpin from strip",
+        "Close Tab"
       ]
     },
     {
@@ -263,6 +264,12 @@
         "Clear document…",
         "Open Files",
         "Quick Open…",
+        "New File",
+        "New Folder",
+        "New Window",
+        "Open…",
+        "Open Recent",
+        "Checkpoint",
         "Pin / unpin this vault [variants: workspace.pin, workspace.unpin]",
         "Open",
         "Rename",
@@ -401,7 +408,7 @@
         "Summon Rail",
         "Focus rail",
         "Insert as query",
-        "Treat folder as one piece / many pieces",
+        "Choose a folder to treat as one or separate pieces…",
         "Count toward diary / Stop counting toward diary"
       ]
     },
@@ -518,6 +525,13 @@
         "Show/hide left sidebar",
         "Show/hide right sidebar",
         "Show status details",
+        "Increase Prose Size",
+        "Decrease Prose Size",
+        "Reset Prose Size",
+        "Increase Column Width",
+        "Decrease Column Width",
+        "Toggle Developer Tools",
+        "Toggle Full Screen",
         "View: Clean",
         "View: Show markup",
         "View: Show raw"
@@ -546,6 +560,7 @@
         "What’s new in WriteFlex",
         "Open Settings…",
         "About WriteFlex",
+        "Actions here",
         "Open the Guide",
         "Show the example on the start screen again",
         "Keyboard Shortcuts"

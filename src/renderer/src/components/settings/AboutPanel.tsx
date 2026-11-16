@@ -86,7 +86,10 @@ export function AboutPanel({ onFlash, onSet }: AboutPanelProps): JSX.Element {
           </button>
         </div>
       </div>
-      <AboutUpdates setEnabled={on => onSet('updates.checkForNewVersions', on, 'Check for new versions')} />
+      <AboutUpdates
+        setEnabled={on => onSet('updates.checkForNewVersions', on, 'Check for new versions')}
+        setAlpha={on => onSet('updates.alphaVersions', on, 'Get early versions (alpha)')}
+      />
       <div className="card about-releases">
         <button type="button" className="crow about-release-toggle" aria-expanded={readerNoticesOpen} aria-controls="reader-legal-notices" onClick={() => {
           setReaderNoticesOpen(open => !open)

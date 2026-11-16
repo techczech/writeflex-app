@@ -1,3 +1,4 @@
+import { useMenuCommandChecks } from '../commands/use-menu-command-state'
 import { visibleSectionRange } from '../../../shared/folio-sections'
 import { samePlanCard } from '../../../shared/folio-running-order'
 import { AMBIGUOUS_DRAG_MESSAGE, OUTLINE_DRAG_CHANGED_MESSAGE } from './folio-outline-drag'
@@ -889,6 +890,7 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
     runOwn(command)
   }
   const sidebar = useSidebarState(dir)
+  useMenuCommandChecks({ 'folio.room.inspector': sidebar.mode === 'inspector', 'folio.room.split': state?.split === true, 'plan.toggleNotInOutline': looseOpen })
   const textSlot = useSidebarSlot(dir, 'text')
   const inspectorSlot = useSidebarSlot(dir, 'inspector')
   // The inspector stays mounted once it has been shown: closing it hides it, so a field's unsaved draft is never discarded.

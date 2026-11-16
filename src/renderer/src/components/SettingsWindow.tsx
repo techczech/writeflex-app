@@ -248,6 +248,7 @@ const DEFAULT_DISPLAY: Record<string, string> = {
   'sounds.ambient.loop': 'Warm noise',
   'sounds.ambient.volume': '35%',
   'updates.checkForNewVersions': 'On',
+  'updates.alphaVersions': 'Off',
   'readAloud.voiceURI': 'System default',
   'readAloud.rate': '1.0×',
   'readAloud.scrollMode': 'Typewriter',

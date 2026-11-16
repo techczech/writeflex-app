@@ -1,3 +1,4 @@
+import { useMenuCommandChecks } from '../../commands/use-menu-command-state'
 // The floating Scratchpad panel (ADR-0050, ticket 01): set-aside text to read, sort and reuse. Floating
 // over the text (the header drags it, the corner resizes it), docked as the right rail's Scratchpad tab,
 // or collapsed to a pill. The geometry and list mechanics follow TalkWeaver's Slide Scratchpad (994e5981);
@@ -289,6 +290,7 @@ export function ScratchpadPanel({
     </button>,
     chipSlot,
   ) : null
+  useMenuCommandChecks({ 'scratchpad.markDone': Boolean(single && byId.get(single)?.done), 'app.scratchpad': layout.layout.mode !== 'collapsed' })
   if (layout.layout.mode === 'collapsed') return chip
 
   const box = layout.layout.box

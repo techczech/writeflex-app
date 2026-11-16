@@ -52,7 +52,7 @@ import {
   shouldTurnReadAloudPage,
   type ReadAloudScrollMode,
 } from '../editor/read-aloud'
-import { setEditorChords } from '../commands/chords'
+import { resolveChord, setEditorChords } from '../commands/chords'
 import { isTypewriterOn } from '../editor/commands'
 import { scrollCursorToTypewriterLine } from '../editor/typewriter-follow'
 import { loadCursor, saveCursor } from '../editor/cursor-memory'
@@ -65,6 +65,8 @@ import { buildCodeBlock, buildMarkmap, buildMermaid, buildSvg, insertFootnote, i
 import { insertBlockObject } from '../editor/insert-block-object'
 import { insertWidgetLine, setWidgetDrop, widgetDropIndicator, widgetDropPoint, widgetDropPosition } from '../editor/insert-widget'
 import { ActionsHere } from './ActionsHere'
+import { tableMenuTarget } from '../editor/object-editors/table-editor'
+import { INSERT_OBJECT_ROW } from '../commands/command-places'
 import { actionsAt, placeAt, type Place } from '../commands/place'
 import type { ActionRow } from '../commands/actions-here'
 import { isTableColumnCommand, pendingTableEdit, tableColumnEdit } from '../editor/table-column-actions'
@@ -182,6 +184,7 @@ const DETACHED = [EditorState.readOnly.of(true), EditorView.editable.of(false)]
  * reapplied on every switch) and per-file cursor persistence across relaunches land here (Task 11).
  */
 export type EditorHandle = {
+  openActionsHere(): void
   view(): EditorView | null
   /** The file the live view holds right now (null when none); read together with `view()` so a snapshot knows whose text it is. */
   path(): string | null
@@ -277,6 +280,8 @@ export type EditorHandle = {
   /** Refresh live/dead wikilink classification without rebuilding the editor state. */
   setWikilinks(links: WikilinkResolution[]): void
   activateWikilink(): boolean
+  canRunMenuTarget(id: string): boolean
+  runMenuTarget(id: string): void
 }
 
 function searchMatches(query: SearchQuery, state: EditorState): FindMatch[] {
@@ -304,6 +309,7 @@ function showFindMatch(view: EditorView, matches: FindMatch[], index: number): {
 
 type EditorPaneProps = {
   onDocChanged: (path: string, doc: string, beforeDoc: string) => void
+  onCommandStateChange?: () => void
   onDocumentTransaction: () => void
   onDocumentPointerDown: () => void
   onManualReadAloudScroll: () => void
@@ -397,7 +403,7 @@ type EditorPaneProps = {
  * what makes cursor/undo/scroll survive the round trip.
  */
 export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function EditorPane(
-  { citationForText, onInsertReference, onInsertWidget, onDocChanged, onDocumentTransaction, onDocumentPointerDown, onManualReadAloudScroll, onReadAloudPositionVisibilityChange, onSuggestionResolutionReplay, onSave, hasDocument, folioPlace = null, onOpenFolioPlan, onOpenFolioPiece, hideStrikes, hideInserts, workspaceRoot, assetBaseUrl, onCutToScrap, onScratchpadAnchors, onScrapDropped, getScrapExpansions, onChangeMarkClick, onInlineAction, onInlineSelect, margin = null, onWikilinkActivate, wikilinkPieces, writerMode, viewMode, focus, lineOverlay, readAloudPosition, readAloudWord, fixedLine, typewriterOn, onFixedLineChange, onFixedLineCommit, readAloudScrollMode, onWriterReviewChanged, compareToActive = false, overlayOpenRef, onStatus, onReadingRoomAreaPrepared, onReadingRoomAreaInserted },
+  { onCommandStateChange, citationForText, onInsertReference, onInsertWidget, onDocChanged, onDocumentTransaction, onDocumentPointerDown, onManualReadAloudScroll, onReadAloudPositionVisibilityChange, onSuggestionResolutionReplay, onSave, hasDocument, folioPlace = null, onOpenFolioPlan, onOpenFolioPiece, hideStrikes, hideInserts, workspaceRoot, assetBaseUrl, onCutToScrap, onScratchpadAnchors, onScrapDropped, getScrapExpansions, onChangeMarkClick, onInlineAction, onInlineSelect, margin = null, onWikilinkActivate, wikilinkPieces, writerMode, viewMode, focus, lineOverlay, readAloudPosition, readAloudWord, fixedLine, typewriterOn, onFixedLineChange, onFixedLineCommit, readAloudScrollMode, onWriterReviewChanged, compareToActive = false, overlayOpenRef, onStatus, onReadingRoomAreaPrepared, onReadingRoomAreaInserted },
   ref,
 ): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -452,8 +458,8 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   const readAloudScrollGuardRef = useRef<ReturnType<typeof createReadAloudScrollGuard> | null>(null)
   readAloudScrollGuardRef.current ??= createReadAloudScrollGuard()
   const readAloudVisibilityFrameRef = useRef<number | null>(null)
-  const [objectMenu, setObjectMenu] = useState<(LivePreviewCommand & { place: Place }) | null>(null)
-  const objectMenuRef = useRef<(LivePreviewCommand & { place: Place }) | null>(null)
+  const [objectMenu, setObjectMenu] = useState<(LivePreviewCommand & { place: Place; diagram?: true }) | null>(null)
+  const objectMenuRef = useRef<(LivePreviewCommand & { place: Place; diagram?: true }) | null>(null)
   objectMenuRef.current = objectMenu
   const onStatusRef = useRef(onStatus)
   // An archive citation's writeflex:// link opens the piece at its line through main's link parser;
@@ -477,6 +483,22 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       onStatusRef.current('Pending agent suggestion on this block — review it in the panel')
     }
   }, [])
+
+  const menuTargetRunner = useRef<(id: string) => void>(() => {})
+  const canRunMenuTarget = (id: string): boolean => {
+    const view = viewRef.current
+    if (!hasDocument || !view || view.state.readOnly) return false
+    if (isTableColumnCommand(id)) {
+      const mounted = tableMenuTarget(view.dom, id)
+      if (mounted !== undefined) return mounted
+    }
+    if (document.activeElement !== view.contentDOM) return false
+    if (id === 'idea.insertWikilink') return true
+    return actionsAt(placeAt(view.state), view.state).some(command => command.id === id)
+      || (id.startsWith('insert.') && actionsAt(placeAt(view.state), view.state).some(command => command.id === INSERT_OBJECT_ROW))
+  }
+  const menuTargetAvailable = useRef(canRunMenuTarget)
+  menuTargetAvailable.current = canRunMenuTarget
 
   const closeObjectMenu = useCallback(() => {
     setObjectMenu(null)
@@ -527,6 +549,8 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
 
   // Extensions are built once per state, so route through refs to always call the latest props.
   const onDocChangedRef = useRef(onDocChanged)
+  const onCommandStateChangeRef = useRef(onCommandStateChange)
+  onCommandStateChangeRef.current = onCommandStateChange
   const onDocumentTransactionRef = useRef(onDocumentTransaction)
   const citationForTextRef = useRef(citationForText)
   const onDocumentPointerDownRef = useRef(onDocumentPointerDown)
@@ -649,11 +673,11 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
           ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
           detachedCompartment.of([]),
           citationUpgradeField,
-          EditorView.updateListener.of((update) => { for (const listener of marginListenersRef.current) listener(update) }),
+          EditorView.updateListener.of((update) => { onCommandStateChangeRef.current?.(); for (const listener of marginListenersRef.current) listener(update) }),
           // Save from within the editor. ⌘S is natively owned by the File menu (menu.ts) and
           // usually arrives as the 'save' menu action; this binding covers synthetic key events
           // (tests) and platforms where the event reaches the renderer instead.
-          keymap.of([{ key: 'Mod-s', preventDefault: true, run: () => (onSaveRef.current(), true) }]),
+          keymap.of([{ key: 'Mod-s', preventDefault: true, run: () => { if (resolveChord('file.checkpoint', chordOverridesRef.current) !== '⌘S') return false; onSaveRef.current(); return true } }]),
           ...baseExtensions({
             initialViewMode: viewModeRef.current,
             onDocumentTransaction: () => onDocumentTransactionRef.current(),
@@ -1147,6 +1171,15 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   useImperativeHandle(
     ref,
     (): EditorHandle => ({
+      canRunMenuTarget: id => menuTargetAvailable.current(id),
+      runMenuTarget: id => menuTargetRunner.current(id),
+      openActionsHere: () => {
+        const view = viewRef.current
+        if (!view) return
+        const block = activeBlock(view) ?? null
+        const coords = view.coordsAtPos(block?.from ?? view.state.selection.main.head)
+        if (coords) setObjectMenu({ x: coords.left, y: coords.bottom + 4, block, place: placeAt(view.state) })
+      },
       view: () => viewRef.current,
       path: () => activePathRef.current,
       insertionPoint: () => {
@@ -1721,11 +1754,11 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
    * the objects of Insert object…, and the table's column commands. True when it ran one (the panel
    * is closed here). Every other row is run by App as the palette runs it.
    */
-  const runEditorRow = (id: string): boolean => {
+  const runEditorRow = (id: string, target = objectMenuRef.current): boolean => {
     const view = viewRef.current
-    const menu = objectMenuRef.current
+    const menu = target
     if (!view || !menu) return false
-    // Delete block at a paragraph, quotation or list item: no confirmation, undo restores it. Objects and metadata keep theirs.
+    // Delete block is immediate for prose, objects and metadata; Undo restores it. Prose uses the structural block command.
     if (id === 'block.delete' && ['paragraph', 'quotation', 'list-item', 'task-item'].includes(menu.place)) {
       setObjectMenu(null)
       if (deleteBlock(view)) commandRan(id)
@@ -1785,6 +1818,23 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       return true
     }
     return false
+  }
+
+  menuTargetRunner.current = id => {
+    const view = viewRef.current
+    if (!view || !menuTargetAvailable.current(id)) return
+    if (isTableColumnCommand(id) && tableMenuTarget(view.dom, id, true)) return
+    if (id === 'idea.insertWikilink') {
+      // Feed the same completion extension as typing [[; it owns the picker and link insertion.
+      view.dispatch(view.state.replaceSelection('[['), { userEvent: 'input.type' })
+      view.focus()
+      return
+    }
+    const block = activeBlock(view) ?? null
+    const coords = view.coordsAtPos(view.state.selection.main.head)
+    const target = { x: coords?.left ?? 0, y: coords?.bottom ?? 0, block, place: placeAt(view.state) }
+    if (id === 'insert.mermaid') { setObjectMenu({ ...target, objects: true, diagram: true }); return }
+    runEditorRow(id, target)
   }
 
   /** Convert to mind map stays in Insert object… where the place does not list it. */
@@ -1849,7 +1899,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
           x={objectMenu.x}
           y={objectMenu.y}
           place={objectMenu.place}
-          startView={objectMenu.objects ? 'insert' : 'here'}
+          startView={objectMenu.diagram ? 'diagram' : objectMenu.objects ? 'insert' : 'here'}
           insertExtras={insertExtras(objectMenu)}
           runHere={runEditorRow}
           onClose={(reason) => { if (reason === 'dismiss') closeObjectMenu(); else setObjectMenu(null) }}

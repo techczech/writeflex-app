@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { formatShortcutKey, isCheatSheetShortcut, isThreadsSwitcherShortcut, isWriterModeToggleShortcut, skillChordIntent } from '../../src/renderer/src/app/shortcuts'
+import { menuInputChord, nativeEditRoleChord, formatShortcutKey, isCheatSheetShortcut, isThreadsSwitcherShortcut, isWriterModeToggleShortcut, skillChordIntent } from '../../src/renderer/src/app/shortcuts'
 
 test('writer mode toggle matches physical KeyM under macOS Option remapping', () => {
   expect(isWriterModeToggleShortcut({
@@ -49,4 +49,14 @@ test('threads switcher uses the collision-free Control-Command-T chord', () => {
   expect(isThreadsSwitcherShortcut({ metaKey: true, ctrlKey: true, altKey: false, shiftKey: false, key: 't', code: 'KeyT' })).toBe(true)
   expect(isThreadsSwitcherShortcut({ metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, key: 't', code: 'KeyT' })).toBe(false)
   expect(isThreadsSwitcherShortcut({ metaKey: true, ctrlKey: true, altKey: false, shiftKey: true, key: 'T', code: 'KeyT' })).toBe(false)
+})
+
+
+test('native menu ownership normalises bare controls to registry glyphs', () => {
+  for (const [key, code, expected] of [['Enter', 'Enter', '↵'], ['Tab', 'Tab', '⇥'], ['Escape', 'Escape', 'Esc']]) {
+    expect(menuInputChord({ key, code, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false })).toBe(expected)
+  }
+  expect(menuInputChord({ key: 'Tab', code: 'Tab', metaKey: false, ctrlKey: false, altKey: false, shiftKey: true })).toBe('⇧⇥')
+  for (const chord of ['⌘A', '⌘X', '⌘C', '⌘V', '⇧⌥⌘V', '⌘Z', '⇧⌘Z']) expect(nativeEditRoleChord(chord), chord).toBe(true)
+  for (const chord of ['⌘B', '↵', '⇥', 'Esc']) expect(nativeEditRoleChord(chord), chord).toBe(false)
 })

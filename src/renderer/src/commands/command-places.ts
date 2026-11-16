@@ -1,3 +1,4 @@
+import { NATIVE_MENU_COMMANDS } from '../../../shared/native-menu-commands'
 import { COLLECTION_PAGE_COMMANDS } from '../components/collection-page-commands'
 // Where each command is offered: the Place data (ADR-0043; terms in CONTEXT.md). It sits beside the
 // task groups (command-task-groups.ts) and is read the same way: the status-bar chip, Actions here
@@ -112,6 +113,8 @@ export const DRAWN_ORDER: Readonly<Partial<Record<Place, readonly string[]>>> = 
 export const DELETING_COMMANDS: ReadonlySet<string> = new Set(['outline.deleteCurrentSection', 'block.delete', 'table.delete', 'file.trash', 'folder.trash'])
 
 export const commandPlaces: Readonly<Record<string, PlaceDeclaration>> = {
+  ...Object.fromEntries(NATIVE_MENU_COMMANDS.map(c => [c.id, NOT_BY_PLACE])),
+  'app.actionsHere': NOT_BY_PLACE,
   // 1 Write
   'edit.strikethrough': [...PROSE, 'selection'],
   'sheet.Editing.4': NOT_BY_PLACE,

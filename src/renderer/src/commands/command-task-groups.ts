@@ -1,3 +1,4 @@
+import { NATIVE_MENU_COMMANDS } from '../../../shared/native-menu-commands'
 import { COLLECTION_PAGE_COMMANDS } from '../components/collection-page-commands'
 // The ten task groups every command belongs to, and the sub-group inside each (ADR-0043; terms in
 // CONTEXT.md). This file is the single source: the palette's row label, the keyboard sheet and
@@ -32,6 +33,8 @@ export const SUBGROUP_ORDER: Readonly<Partial<Record<TaskGroup, readonly string[
 }
 
 export const commandTaskGroups: Readonly<Record<string, readonly [TaskGroup, string]>> = {
+  ...Object.fromEntries(NATIVE_MENU_COMMANDS.map(c => [c.id, [c.task, c.subgroup] as const])),
+  'app.actionsHere': ['Set up WriteFlex', 'Settings and shortcuts'],
   // 1 Write
   'sheet.Editing.0': ['Write', 'Edit lines'],
   'sheet.Editing.1': ['Write', 'Format text'],
