@@ -1,9 +1,12 @@
 import { invalidateFolioDeclarations, watchFolioDeclarations } from './folio-declaration'
 import { lstatSync, watch, type FSWatcher } from 'node:fs'
 import { isAbsolute, posix } from 'node:path'
+import type { MarkdownFile } from './workspace'
 
 export const OWN_WRITE_DEDUPE_MS = 5_000
 export const WATCH_BURST_DEBOUNCE_MS = 220
+// A native watch handle can be returned before its initial events are delivered.
+const WATCH_STARTUP_CATCH_UP_MS = 1_000
 /**
  * How long a path the watcher saw vanish is waited for before it counts as gone (sharing ticket 04:
  * a shared piece deleted outside WriteFlex). Several bursts long, so a move another program makes as
@@ -96,6 +99,27 @@ export type WatchableWorkspace = {
 }
 
 export type WorkspaceWatcher = { dispose: () => void }
+
+type StartupListing = {
+  files: readonly Pick<MarkdownFile, 'path' | 'modifiedAt' | 'size'>[]
+  folders: readonly string[]
+}
+
+/** The same visible paths and file facts the first workspace listing gives the editor. */
+function changedDuringStartup(before: StartupListing, after: StartupListing): Set<string> {
+  const changed = new Set(before.folders)
+  for (const folder of after.folders) {
+    if (!changed.delete(folder)) changed.add(folder)
+  }
+  const previous = new Map(before.files.map(file => [file.path, file]))
+  for (const file of after.files) {
+    const old = previous.get(file.path)
+    if (!old || old.modifiedAt !== file.modifiedAt || old.size !== file.size) changed.add(file.path)
+    previous.delete(file.path)
+  }
+  for (const removed of previous.keys()) changed.add(removed)
+  return changed
+}
 
 /**
  * A file of the replica version store that sync delivers from another computer: a record
@@ -194,7 +218,7 @@ export function createWatchRouter(
 
 /** Native macOS recursive watcher. Bursts collapse into one sorted workspace-relative path payload. */
 export function createWorkspaceWatcher(
-  workspace: WatchableWorkspace,
+  workspace: WatchableWorkspace & { listFilesAndFolders(): Promise<StartupListing> },
   onChanged: (paths: string[]) => void,
   debounceMs = WATCH_BURST_DEBOUNCE_MS,
   history?: HistoryRoute,
@@ -234,12 +258,29 @@ export function createWorkspaceWatcher(
       }
     })
   }
+  const startupListing = () => workspace.listFilesAndFolders().catch((error: unknown) => {
+    console.warn('Could not list the Collection for watcher startup reconciliation.', error)
+    return null
+  })
+  const baseline = startupListing()
   start()
+
+  const catchUp = async (): Promise<void> => {
+    const before = await baseline
+    if (!before || !router) return
+    const after = await startupListing()
+    if (!after || !router) return
+    // Send missed paths through the normal debounce, cache invalidation and own-write rules.
+    for (const path of changedDuringStartup(before, after)) router.take(path)
+  }
+  const catchUpTimer = setTimeout(() => { void catchUp() }, WATCH_STARTUP_CATCH_UP_MS)
+  catchUpTimer.unref()
 
   return {
     dispose: () => {
       if (disposed) return
       disposed = true
+      clearTimeout(catchUpTimer)
       router?.dispose()
       router = null
       watcher?.close()

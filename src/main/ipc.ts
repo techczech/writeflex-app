@@ -1,3 +1,4 @@
+import { requireSettingsPagePreference } from './main-window-settings'
 import { receiveCommandMenu, invokeNativeMenuCommand } from './menu'
 import type { MenuCommand, MenuFocus } from '../shared/command-menu'
 import { readDiaryGlance } from './diary-views'
@@ -13,14 +14,17 @@ import { ASSISTANT_MODE_KEY } from '../shared/assistant-turns'
 import { gatedSnapshots } from './gated-snapshots'
 import { CollectionChangeBatches } from './collection-change-batch'
 import { workspaceMetadataValues } from './metadata-vocabulary'
+import { writeMainWindowPreference, requireMainWindowPreference } from './main-window-settings'
+import { focusWindow } from './window-presentation'
 import { AmbientState, type AmbientSnapshot } from './ambient'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { basename, dirname, extname, isAbsolute, join, posix, resolve } from 'node:path'
-import { existsSync, statSync, watch } from 'node:fs'
+import { existsSync, lstatSync, statSync, watch } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { readFile, writeFile } from 'node:fs/promises'
+import { lstat, readFile, writeFile } from 'node:fs/promises'
 import { BridleAuth, createModelService, scriptedSessionFactory, sweepSnapshots, SnapshotStore, type BridleModelService } from '@bridle/core'
 import { registerWriteFlexAuth } from './auth'
+import { settingsWindowOnlyAuth } from './auth-guard'
 import { fetchLinkTitle } from './fetch-title'
 import { allStates, notifyWindowReleased, onWindowReleased, stateForSender, setQuitting, trackPendingDisposal, type WindowState } from './state'
 import { duringRestartHold } from './restart-holds'
@@ -34,7 +38,7 @@ import { listingEntryOf, type CollectionChanged } from '../shared/listing-patch'
 import { RestoreNotCompletedError } from './restore-failure'
 import { toggleAgentNoteTask } from './tasks'
 import { parseFrontmatter } from './frontmatter'
-import { collectionMoveFolderPieces, assertCollectionMove, addCollectionPieceTags, collectionPattern, collectionStatus, createIndexNote, listCollection, createPiece, unresolvedFolderPieces, setCollectionPieceMode, setCollectionPieceStatus } from './collection'
+import { collectionMoveFolderPieces, assertCollectionMove, addCollectionPieceTags, collectionPattern, collectionStatus, createIndexNote, listCollection, localCalendarDate, createPiece, unresolvedFolderPieces, setCollectionPieceMode, setCollectionPieceStatus } from './collection'
 import { countedCollections, countedSettingKey, diaryCaptureRoot, DIARY_FOLDER_SETTING, invalidateCountedCollectionCache, isCountedCollection, isInsideDiaryRoot, parseCountedSettingKey, persistDiarySession, setCollectionCounted } from './diary'
 import { DiaryCaptureTracker, DIARY_IDLE_MS } from './diary-capture'
 import { ExplicitSessionRecorder, shouldIdleCloseExplicitSession, type ExplicitSessionOptions } from './explicit-session'
@@ -81,6 +85,11 @@ import { setAppSyncGrantStore, SyncGrantStore } from './standard-widgets/sync-gr
 import { readPieceSources } from './piece-sources'
 import { BoardMaterialDesk } from './board-material-desk'
 import { applyRenameRepair, failedRenameRepairResult, planRenameRepair, type RenameRepairResult } from './rename-repair'
+import { readDocumentBytesGuarded } from './guarded-document-read'
+import type { PathIdentity } from './guarded-document-move'
+import type { CommitTarget } from './guarded-document-write'
+import { collectionNamingTitle, hasNewCollectionTitle, planCollectionName, preferredCollectionTitle, type AutoNameSave } from './collection-auto-name'
+import { isUntitledPiece } from '../shared/collection-naming-title'
 import { applyFolderRenameRepair, planFolderRenameRepair } from './folder-rename-repair'
 import { ScrapStore } from './scraps'
 import { ScratchpadStore } from './scratchpad-store'
@@ -139,6 +148,8 @@ import { readBytes } from './cli/guarded-fs'
 import type { CapabilityServices } from './verbs/verb-support'
 import { readerClaimFor, releaseReaderClaim, readerReplyVisibility, repliesNeedServiceUpdate, startReaderNotesCollection } from './sharing-reader-notes-run'
 import { outsideSummary, readerNoteOf } from './outside-change-fields'
+import { batchTargets, orderOutsideBatch } from './outside-batch-review'
+import { missingOutsideDocument } from './outside-batch-target'
 import { readerReplyFor } from './sharing-reader-replies'
 import { MAX_UNDECIDED_OUTSIDE_CHANGES, MAX_UNDECIDED_PER_SOURCE } from './cli/review-format'
 import { OUTSIDE_SOURCES, type OutsideBulkAccept, type OutsideLook, type OutsideSource, type OutsideSummary } from '../shared/outside-source'
@@ -149,6 +160,7 @@ import { queueThenTurn, readyBeforeTurn, REQUEST_READINESS_WAIT_MS } from './col
 import { removeStaleTemporaryFiles } from './cli/stale-temporary-files'
 import { normaliseRoot, resolveWorkspaceRoot, WorkspaceRootError } from './root-resolution'
 import { isMarkdownPath } from './writeflex-url'
+import { openDocumentLocation, type DocumentLocationRequest } from './document-location'
 import { registerSwitcherIpcHandlers } from './vault-switcher-ipc'
 import { rootPresences } from './vault-presence'
 import type { WindowSwitchOutcome } from './window-switch'
@@ -632,8 +644,22 @@ export function registerIpc(
   router: OpenPathRouter,
   settings: SettingsStore,
   skills: SkillsRegistry,
-  hooks?: { appVersionLabel?: string; onSettingChanged?: (key: string) => void; soundPackDir?: string; guide?: GuideProgressStore; /** The Guide's Zotero row: is Zotero's database on this Mac (index.ts supplies the probe). */ zoteroFound?: () => boolean },
-): { evictWindow: (webContentsId: number) => void; dispose: () => void } {
+  hooks?: {
+    appVersionLabel?: string; onSettingChanged?: (key: string) => void; soundPackDir?: string; guide?: GuideProgressStore; /** The Guide's Zotero row: is Zotero's database on this Mac (index.ts supplies the probe). */ zoteroFound?: () => boolean
+    /** Whether an IPC event comes from the Settings window's own page (settings-host.ts); the whole event, never just its sender. */
+    isSettingsSender?: (event: Electron.IpcMainInvokeEvent) => boolean
+    /** The Settings window's page, when open: it hears the sign-in flow's events too. */
+    settingsWebContents?: () => Electron.WebContents | null
+    onAuthChanged?: () => void
+  },
+): {
+  evictWindow: (webContentsId: number) => void
+  dispose: () => void
+  /** The agent's credential store (userData/auth.json), for Accounts and keys (key-slots.ts). */
+  auth: BridleAuth
+  /** Preferences changed outside a window's own `wf-settings:set` (the Settings window, the CLI, an import): tell every window. */
+  preferencesChanged: (keys: readonly string[]) => void
+} {
   // bindWorkspace is a separate export the WindowManager calls; these app-wide services reach it
   // through the module seam rather than a widened signature (registerIpc always runs first at boot).
   const unsubscribeFolioIdentityMoves = onDocumentsMoved((root, from, to) => {
@@ -709,10 +735,18 @@ export function registerIpc(
   // broadcast to every window, so a Settings window in window B stays truthful
   // about a sign-in started in window A. Storage stays userData/auth.json so the
   // shared agent-side BridleAuth observes the same credential changes.
-  const authRegistration = registerWriteFlexAuth(ipcMain, auth, {
+  // Signing in, out and saving a key change Accounts and keys, so only the Settings window may ask
+  // (shared settings, 2026-10-20): the main window's sign-in buttons open Settings at Accounts. The
+  // provider list stays readable from every window (the agent panel and the Guide show who is connected).
+  const isSettingsSender = (event: unknown): boolean => Boolean(hooks?.isSettingsSender?.(event as Electron.IpcMainInvokeEvent))
+  const authRegistration = registerWriteFlexAuth(settingsWindowOnlyAuth(ipcMain, isSettingsSender), auth, {
     openExternal: (url) => void shell.openExternal(url),
-    emit: (event) => { for (const state of allStates()) sendSafe(state, 'bridle.auth:event', event) }
-  })
+    emit: (event) => {
+      for (const state of allStates()) sendSafe(state, 'bridle.auth:event', event)
+      const settingsPage = hooks?.settingsWebContents?.()
+      if (settingsPage && !settingsPage.isDestroyed()) settingsPage.send('bridle.auth:event', event)
+    }
+  }, () => hooks?.onAuthChanged?.())
   const requireWorkspace = (state: WindowState) => {
     if (!state.workspace) throw new Error('No Workspace is open in this window.')
     return state.workspace
@@ -942,10 +976,10 @@ export function registerIpc(
   // each change goes out to every window through the ordinary settings:changed push.
   const guide = hooks?.guide ?? new GuideProgressStore(settings)
   guide.onChange = (key) => broadcastSettingChange(key)
-  ipcMain.handle('guide:command-ran', (_event, id: unknown) => { guide.commandRan(id) })
-  ipcMain.handle('guide:chapter-finished', (_event, chapter: unknown) => { guide.chapterFinished(chapter) })
-  ipcMain.handle('guide:chapter-opened', (_event, chapter: unknown) => { guide.chapterOpened(chapter) })
-  ipcMain.handle('guide:topic-read', (_event, id: unknown) => { guide.topicRead(id) })
+  ipcMain.handle('guide:command-ran', (_event, id: unknown) => guide.commandRan(id))
+  ipcMain.handle('guide:chapter-finished', (_event, chapter: unknown) => guide.chapterFinished(chapter))
+  ipcMain.handle('guide:chapter-opened', (_event, chapter: unknown) => guide.chapterOpened(chapter))
+  ipcMain.handle('guide:topic-read', (_event, id: unknown) => guide.topicRead(id))
   // What it connects to: Zotero is read here; the account and the voices are read in the renderer. Read-only.
   ipcMain.handle('guide:connections', () => ({ zotero: hooks?.zoteroFound?.() ?? false }))
   ipcMain.handle('guide:open-link', (_event, link: unknown) => {
@@ -972,17 +1006,18 @@ export function registerIpc(
     if (result.ok) broadcastExampleChange('removed')
     return result
   })
-  ipcMain.handle('example:restore', async (): Promise<ExampleRestoreResult> => {
+  const restoreExample = async (): Promise<ExampleRestoreResult> => {
     if (!router.example) return NO_EXAMPLE
     const result = await router.example.restore()
     if (result.ok) broadcastExampleChange('restored')
     return result
-  })
+  }
+  ipcMain.handle('example:restore', restoreExample)
   ipcMain.handle('guide:open-chapter', async (event, chapter: unknown) => {
     if (!router.example) throw new Error('The Example collection is not on this Mac.')
     if (chapter === OBJECTS_LESSON) return void (await router.example.openChapter(stateForSender(event.sender.id), OBJECTS_LESSON)) // a lesson, not a chapter: no progress is kept
     if (typeof chapter !== 'string' || !(TASK_GROUPS as readonly string[]).includes(chapter)) throw new Error('Not a chapter.')
-    guide.chapterOpened(chapter)
+    await guide.chapterOpened(chapter)
     await router.example.openChapter(stateForSender(event.sender.id), chapter as TaskGroup)
   })
   ipcMain.handle('example:open', async (event, target: unknown) => {
@@ -1120,25 +1155,25 @@ export function registerIpc(
   // every window at once: without this push, window B would keep painting the bar window A hid
   // until it was reopened. The payload is the stored value AFTER the write — never the request.
   const broadcastSettingChange = (key: string): void => {
-    for (const state of allStates()) sendSafe(state, 'settings:changed', { key, value: settings.get(key) })
+    for (const state of allStates()) sendSafe(state, 'wf-settings:changed', { key, value: settings.get(key) })
   }
-  ipcMain.handle('settings:get', (_event, key?: string) =>
+  ipcMain.handle('wf-settings:get', (_event, key?: string) =>
     typeof key === 'string' ? settings.get(key) : settings.values())
-  ipcMain.handle('settings:set', (_event, input: { key: string; value: SettingValue | null; label: string; log?: boolean }) => {
+  ipcMain.handle('wf-settings:set', async (_event, input: { key: string; value: SettingValue | null; label: string; log?: boolean }) => {
     // `value: null` is the legitimate UNSET payload (⌥⌘0 reset → back to the locked default).
     if (typeof input?.key !== 'string' || typeof input?.label !== 'string' || !(input.value === null || isSettingValue(input.value))) {
-      throw new Error('Invalid settings:set payload.')
+      throw new Error('Invalid wf-settings:set payload.')
     }
-    settings.set(input.key, input.value, input.label, { log: input.log !== false })
-    if (input.key === 'workspace.watchExternalChanges') syncWorkspaceWatcherSetting(settings)
-    hooks?.onSettingChanged?.(input.key)
-    broadcastSettingChange(input.key)
-    return { value: settings.get(input.key), changelog: settings.changelog() }
+    return writeMainWindowPreference(settings, input, () => {
+      hooks?.onSettingChanged?.(input.key)
+      broadcastSettingChange(input.key)
+    })
   })
-  ipcMain.handle('settings:changelog', () => settings.changelog())
-  ipcMain.handle('settings:revert', async (_event, index: number) => {
+  ipcMain.handle('wf-settings:changelog', () => settings.changelog())
+  const revertSetting = async (index: number) => {
     const candidate = typeof index === 'number' ? settings.revertCandidate(index) : null
     const counted = candidate ? parseCountedSettingKey(candidate.key) : null
+    if (candidate && !counted) requireMainWindowPreference(candidate.key)
     if (counted) {
       if (!existsSync(counted.root) || !statSync(counted.root).isDirectory()) {
         throw new Error(`Could not reset ${candidate?.label ?? 'that Counted Collection'} because the Workspace no longer exists: ${counted.root}`)
@@ -1153,12 +1188,14 @@ export function registerIpc(
         collectionRevision += 1
       }
     }
-    const entry = candidate ? settings.revert(index) : null
+    const currentIndex = candidate ? settings.changelog().findIndex(e => e.key === candidate.key && e.at === candidate.at && !e.reverted) : -1
+    const entry = currentIndex >= 0 ? await settings.revertPersisted(currentIndex) : null
     if (entry?.key === 'workspace.watchExternalChanges') syncWorkspaceWatcherSetting(settings)
     if (entry) hooks?.onSettingChanged?.(entry.key)
     if (entry) broadcastSettingChange(entry.key)
     return { entry, changelog: settings.changelog() }
-  })
+  }
+  ipcMain.handle('wf-settings:revert', (_event, index: number) => revertSetting(index))
   // Named export presets are structured app settings, deliberately outside both the generic
   // primitive setting values and every Workspace folder.
   ipcMain.handle('export-presets:get', () => settings.exportPresetSettings())
@@ -1202,7 +1239,7 @@ export function registerIpc(
     if (old === input.counted) return knownCountedCollections()
     const saved = await setCollectionCounted(workspace, dir, input.counted)
     collectionRevision += 1
-    settings.set(countedSettingKey(workspace.root, dir), input.counted, `Counted Collection: ${dir ? basename(dir) : basename(workspace.root)}`)
+    await settings.set(countedSettingKey(workspace.root, dir), input.counted, `Counted Collection: ${dir ? basename(dir) : basename(workspace.root)}`)
     const openState = allStates().find((candidate) => candidate.workspace?.root === workspace.root)
     if (openState) notifyCollectionChanged(openState, [saved.file.path])
     return knownCountedCollections()
@@ -1364,7 +1401,7 @@ export function registerIpc(
     // The document the copy came FROM is what makes its pictures resolvable — a relative `src` means
     // nothing to the application receiving the paste. Reading still goes through the workspace
     // containment check, so a copy can no more read outside the workspace than an export can.
-    const workspace = stateForSender(event.sender.id).workspace ?? null
+    const workspace = hooks?.isSettingsSender?.(event) ? null : stateForSender(event.sender.id).workspace ?? null
     const path = typeof input?.path === 'string' && input.path !== '' ? input.path : null
     const { kind, payload } = await clipboardPayload(
       input?.markdown,
@@ -1727,13 +1764,38 @@ export function registerIpc(
     sendSafe(state, 'changes:changed', null)
     return outcome
   })
-  ipcMain.handle('changes:resolve', async (event, input: { id: string; action: 'accept' | 'reject'; sweep?: unknown }) => {
+  ipcMain.handle('changes:batch-missing', async (event, input: unknown) => {
+    if (!Array.isArray(input) || input.length > 1000 || !input.every(path => typeof path === 'string')) {
+      throw new Error('Invalid outside proposal paths.')
+    }
+    const workspace = requireWorkspace(stateForSender(event.sender.id))
+    const paths = [...new Set<string>(input)]
+    const checks = await Promise.all(paths.map(path => missingOutsideDocument(workspace, path)))
+    return paths.filter((_, index) => checks[index])
+  })
+  ipcMain.handle('changes:batch-order', async (event, input: unknown) => {
+    const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
+    return orderOutsideBatch(workspace, await requireChanges(state).list(), batchTargets(input))
+  })
+  for (const action of ['clear', 'reject'] as const) {
+    ipcMain.handle(`changes:batch-${action}`, async (event, input: unknown) => {
+      const state = stateForSender(event.sender.id)
+      const result = await requireChanges(state).decideOutsideBatch(batchTargets(input), action)
+      if (result.decided) sendSafe(state, 'changes:changed', null)
+      return result
+    })
+  }
+  ipcMain.handle('changes:resolve', async (event, input: { id: string; action: 'accept' | 'reject'; sweep?: unknown; batchPath?: unknown }) => {
     const state = stateForSender(event.sender.id)
     // What the accept wrote is the renderer's next baseline, never the file read back after it (Muse M2,
     // round 2): another program may write between the two, and that version was not seen. It is the
     // receipt of the accept's own write call (Sol r3 M1, Muse r3 S1), absent when the accept wrote nothing.
     // `sweep: false` only from Accept all from one source (the window's own route for an open document).
-    const { receipt, ...result } = await (await requireAgent(state)).resolveChange(input.id, input.action, input.sweep === false ? { sweep: false } : {})
+    if (input.action !== 'accept' && input.action !== 'reject') throw new Error('Choose Accept or Reject.')
+    const options = typeof input.batchPath === 'string' ? { sweep: false, batchPath: input.batchPath }
+      : input.sweep === false ? { sweep: false } : {}
+    const { receipt, ...result } = await (await requireAgent(state)).resolveChange(input.id, input.action, options)
     const change = await requireChanges(state).get(input.id)
     if (change) hearBackSoon(state, change)
     if (!result.applied || input.action !== 'accept') return result
@@ -2038,7 +2100,7 @@ export function registerIpc(
     target.pendingFocusFile = input.path
     target.pendingFocusLine = null
     flushPendingFocus(target)
-    target.window.focus()
+    focusWindow(target.window)
   })
   const stubTarget = (event: Electron.IpcMainInvokeEvent, input: StubInput & { windowId?: number }): { state: WindowState; stub: StubInput } => {
     validateCollectionStubIpcInput(input)
@@ -2085,9 +2147,29 @@ export function registerIpc(
     notifyCollectionChanged(state, [path]) // the new Index Note appears in the tree and projections refresh
     return path
   })
+  type CreatedPiece = { created: string; identity: PathIdentity; preference?: ReturnType<typeof preferredCollectionTitle>; saved?: AutoNameSave; revision: number }
+  const createdPieces = new WeakMap<Workspace, Map<string, CreatedPiece>>()
+  const autoNameUndos = new WeakMap<Workspace, Map<string, { oldPath: string; identity: PathIdentity }>>()
+  const sameFileIdentity = (left: PathIdentity | undefined, right: PathIdentity) => left?.dev === right.dev && left.ino === right.ino
+  const stopAutoName = (workspace: Workspace, path: string, piece: CreatedPiece) => {
+    const pieces = createdPieces.get(workspace)
+    if (pieces?.get(path) === piece) pieces.delete(path)
+  }
+  let namingCandidateId = 0
+
   ipcMain.handle('collection:new-piece', async (event, input: { dir?: string }) => {
     const state = stateForSender(event.sender.id)
-    const path = await createPiece(requireWorkspace(state), collectionDir(input))
+    const workspace = requireWorkspace(state)
+    const path = await workspace.exclusiveAll(async () => {
+      const path = await createPiece(workspace, collectionDir(input))
+      const identity = await lstat(workspace.absolute(path)).catch(() => null)
+      if (identity?.isFile()) {
+        const created = createdPieces.get(workspace) ?? new Map()
+        created.set(path, { created: localCalendarDate(), identity, revision: 0 })
+        createdPieces.set(workspace, created)
+      }
+      return path
+    })
     notifyCollectionChanged(state, [path]) // the new piece appears in the tree and projections refresh
     return path
   })
@@ -2716,7 +2798,43 @@ export function registerIpc(
       // Local and synchronous: never waits for OneDrive (replica-save-cycles.ts). Keep mine refuses here if
       // the other copy cannot be kept.
       replicas?.beforeSave(input.path, input.basis)
-      const saved = await workspace.saveEditorText(input.path, input.content, input.basis, receipt ? { receipt } : {})
+      const piece = input.basis.kind === 'disk' ? createdPieces.get(workspace)?.get(input.path) : undefined
+      const undo = autoNameUndos.get(workspace)?.get(input.path)
+      let pieceIdentity: PathIdentity | undefined
+      let undoIdentity: PathIdentity | undefined
+      const saved = await workspace.saveEditorText(input.path, input.content, input.basis, {
+        ...(receipt ? { receipt } : {}),
+        ...(undo || piece ? { beforeCommit: (target?: CommitTarget) => {
+          if (!target) return
+          const standing = lstatSync(workspace.absolute(input.path), { throwIfNoEntry: false })
+          const staged = { dev: Number(target.staged.dev), ino: Number(target.staged.ino) }
+          if (piece && sameFileIdentity(standing, piece.identity)) pieceIdentity = staged
+          if (undo && sameFileIdentity(standing, undo.identity)) undoIdentity = staged
+        } } : {}),
+      })
+      if (undo && undoIdentity && saved.content === saved.written) undo.identity = undoIdentity
+      let naming: AutoNameSave['candidate'] | undefined
+      let nameError: string | undefined
+      if (piece && createdPieces.get(workspace)?.get(input.path) === piece) {
+        piece.identity = pieceIdentity ?? piece.identity
+        const revision = ++piece.revision
+        piece.saved = undefined
+        if (saved.written === saved.content && hasNewCollectionTitle('', input.content)) {
+          try {
+            const preference = await (piece.preference ??= preferredCollectionTitle(workspace, input.path))
+            const title = collectionNamingTitle('', input.content, preference)
+            if (title && piece.revision === revision && createdPieces.get(workspace)?.get(input.path) === piece) {
+              naming = { ...title, id: ++namingCandidateId }
+              piece.saved = { content: saved.written, created: piece.created, candidate: naming }
+            }
+          } catch (error) {
+            if (createdPieces.get(workspace)?.get(input.path) === piece) {
+              stopAutoName(workspace, input.path, piece)
+              nameError = error instanceof Error ? error.message : 'The Collection title could not be read.'
+            }
+          }
+        }
+      }
       replicas?.saved(saved.file.path, saved.written, input.basis)
       // Durable only after the file and its folder are synced and read back (never a claim of backup).
       if (receipt) await receipt.saved(workspace.absolute(input.path), saved.written)
@@ -2729,7 +2847,7 @@ export function registerIpc(
         await writeFile(workspace.absolute(input.path), outside, 'utf8')
         return { ...(await workspace.readFile(input.path)), written: saved.written, seq: saved.seq }
       }
-      return saved
+      return { ...saved, ...(naming ? { naming } : {}), ...(nameError ? { nameError } : {}) }
     } catch (error) {
       if (receipt) await receipt.failed()
       if (error instanceof DiskChangedUnderBuffer) {
@@ -2874,7 +2992,7 @@ export function registerIpc(
     const created = await requireWorkspace(state).createFile(path, '')
     notifyCollectionChanged(state, [created.file.path])
     // Step two of the Guide's first steps: a file of the person's own (never one made in the example).
-    if (!(await router.example?.context(state))?.here) guide.stepDone('file', basename(created.file.path))
+    if (!(await router.example?.context(state))?.here) await guide.stepDone('file', basename(created.file.path))
     return created
   })
 
@@ -2900,7 +3018,8 @@ export function registerIpc(
       void recordMainProcessDiagnostic('scratchpad.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
     }
   }
-  const renameWithRepair = async (state: WindowState, path: string, newPath: string, collection?: string) => {
+  const renameWithRepair = async (state: WindowState, path: string, newPath: string, collection?: string,
+    guardedSource?: () => Promise<PathIdentity>) => {
     const workspace = requireWorkspace(state)
     let discovered: Promise<ReadonlySet<string>> | undefined
     const folderPieces = () => {
@@ -2915,7 +3034,12 @@ export function registerIpc(
     // document follows it to its new name before any decision on it can run.
     const renamed = await workspace.exclusiveAll(async () => {
       if (collection !== undefined) await assertCollectionMove(workspace, collection, path, newPath, folderPieces)
-      const moved = await workspace.renameFile(path, newPath, { requireExistingDirectory: collection !== undefined })
+      const expectedSource = await guardedSource?.()
+      const moved = await workspace.renameFile(path, newPath, expectedSource
+        ? { documentOnly: true, requireExistingDirectory: true, expectedSource }
+        : { requireExistingDirectory: collection !== undefined })
+      createdPieces.get(workspace)?.delete(path)
+      autoNameUndos.get(workspace)?.delete(path)
       await followRenameInLedger(state, path, moved.file.path)
       await followRenameInScratchpad(state, path, moved.file.path)
       // Sharing (ticket 04): the share follows in the same turn, before any save signal names either path.
@@ -2939,6 +3063,77 @@ export function registerIpc(
     if (repair.writtenPaths.length) sendSafe(state, 'file:changed-on-disk', repair.writtenPaths)
     return { ...renamed, repair }
   }
+
+  const pendingCollectionName = async (workspace: Workspace, path: string, piece: CreatedPiece, id: number, collisions: readonly string[]) => {
+    const saved = piece.saved
+    if (!saved || saved.candidate.id !== id || !isUntitledPiece(basename(path))) return null
+    const identity = await lstat(workspace.absolute(path))
+    if (!sameFileIdentity(identity, piece.identity)) throw new Error('The untitled document was replaced before it could be named.')
+    const current = await readDocumentBytesGuarded(workspace, path)
+    if (piece.saved !== saved) return null
+    if (!current.bytes.equals(Buffer.from(saved.content))) throw new Error('The document changed before it could be named.')
+    const name = await planCollectionName(workspace, path, saved, collisions)
+    return name && piece.saved === saved ? { name, saved } : null
+  }
+  ipcMain.handle('file:auto-name-plan', async (event, input: { path: string; id: number; collisions: string[] }) => {
+    const workspace = requireWorkspace(stateForSender(event.sender.id))
+    const { path, id, collisions } = input
+    const piece = createdPieces.get(workspace)?.get(path)
+    if (!piece || !Array.isArray(collisions) || collisions.length > 5 || !collisions.every(name => typeof name === 'string')) return null
+    try {
+      const suggestion = await pendingCollectionName(workspace, path, piece, id, collisions)
+      if (!suggestion) return null
+      const newPath = workspace.relative(workspace.renameTarget(path, suggestion.name))
+      const plan = await planRenameRepair(workspace, path, newPath)
+      return { newPath, repairPaths: plan.writes.map(write => write.path) }
+    } catch (error) {
+      stopAutoName(workspace, path, piece)
+      throw error
+    }
+  })
+  const STALE_NAMING_CANDIDATE = Symbol('stale naming candidate')
+  ipcMain.handle('file:auto-name', async (event, input: { path: string; id: number; newPath: string; collisions: string[] }) => {
+    const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
+    const { path, id, newPath, collisions } = input
+    const piece = createdPieces.get(workspace)?.get(path)
+    if (!piece || !Array.isArray(collisions) || collisions.length > 5 || !collisions.every(name => typeof name === 'string')) return null
+    try {
+      const suggestion = await pendingCollectionName(workspace, path, piece, id, collisions)
+      if (!suggestion) return null
+      if (workspace.relative(workspace.renameTarget(path, suggestion.name)) !== newPath) return { kind: 'collision' as const }
+      const renamed = await renameWithRepair(state, path, newPath, undefined, async () => {
+        if (state.workspace !== workspace || createdPieces.get(workspace)?.get(path) !== piece || piece.saved !== suggestion.saved) throw STALE_NAMING_CANDIDATE
+        const current = await readDocumentBytesGuarded(workspace, path)
+        if (!current.bytes.equals(Buffer.from(suggestion.saved.content))) throw new Error('The document changed before it could be named.')
+        return piece.identity
+      })
+      const identity = await lstat(workspace.absolute(newPath)).catch(() => null)
+      if (identity?.isFile()) {
+        const undos = autoNameUndos.get(workspace) ?? new Map()
+        undos.set(newPath, { oldPath: path, identity })
+        autoNameUndos.set(workspace, undos)
+      }
+      return { kind: 'renamed' as const, renamed }
+    } catch (error) {
+      if (error instanceof NameTaken) return { kind: 'collision' as const }
+      if (error === STALE_NAMING_CANDIDATE) return null
+      stopAutoName(workspace, path, piece)
+      throw error
+    }
+  })
+  ipcMain.handle('file:undo-auto-name', async (event, input: { path: string; oldPath: string }) => {
+    const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
+    const undos = autoNameUndos.get(workspace)
+    const undo = undos?.get(input.path)
+    if (!undo || undo.oldPath !== input.oldPath) throw new Error('This rename is no longer available to undo.')
+    const renamed = await renameWithRepair(state, input.path, './' + undo.oldPath, undefined, async () => {
+      if (state.workspace !== workspace || undos?.get(input.path) !== undo) throw new Error('This rename is no longer available to undo.')
+      return undo.identity
+    })
+    return renamed
+  })
 
   ipcMain.handle('file:rename-repair-paths', async (
     event,
@@ -2978,6 +3173,10 @@ export function registerIpc(
   ipcMain.handle('file:reveal', async (event, input: { path: string }) => {
     const workspace = requireWorkspace(stateForSender(event.sender.id))
     shell.showItemInFolder(workspace.absolute(input.path))
+  })
+  ipcMain.handle('file:open-location', async (event, input: DocumentLocationRequest) => {
+    const workspace = requireWorkspace(stateForSender(event.sender.id))
+    await openDocumentLocation(workspace, input, shell)
   })
   ipcMain.handle('folder:create', async (event, input: { path: string }) => {
     const state = stateForSender(event.sender.id)
@@ -3184,12 +3383,14 @@ export function registerIpc(
     const catalogue = registryModels(modelService).all
     const known = catalogue.some((model) => model.provider === input?.provider && model.id === input?.modelId)
     if (!known) throw new Error(`Unknown model: ${input?.provider}/${input?.modelId}`)
-    settings.setModelDefaults({ provider: input.provider, modelId: input.modelId })
+    if (!isSettingsSender(event)) throw new Error('Change assistant defaults in Settings.')
+    await settings.setPersisted('agent.model', `${input.provider}::${input.modelId}`, 'Model')
     return true
   })
-  ipcMain.handle('agent:set-default-thinking', (_event, level: ThinkingLevel) => {
+  ipcMain.handle('agent:set-default-thinking', async (event, level: ThinkingLevel) => {
     if (!(['minimal', 'low', 'medium', 'high'] as const).includes(level)) throw new Error(`Unknown reasoning level: ${String(level)}`)
-    settings.setModelDefaults({ thinkingLevel: level })
+    if (!isSettingsSender(event)) throw new Error('Change assistant defaults in Settings.')
+    await settings.setPersisted('agent.thinkingLevel', level, 'Thinking')
     return true
   })
   ipcMain.handle('agent:turns:list', async (event) => (await requireAgent(stateForSender(event.sender.id))).turnState())
@@ -3341,7 +3542,72 @@ export function registerIpc(
 
   // Auth is now one app-wide broker (no per-window map to evict); only the e2e
   // script map is window-keyed. WindowManager calls this on close.
+  // ---- The Settings window's own pages (settings-pages.tsx) -----------------------------------
+  // Answered only for the Settings window's page; the prefix is WriteFlex's, never `settings:` or
+  // `bridle-settings:` (the shared package owns those).
+  const settingsWindowChannels = new Set<string>()
+  const settingsWindowOnly = (channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown): void => {
+    settingsWindowChannels.add(channel)
+    ipcMain.handle(channel, (event, ...args) => {
+      if (!isSettingsSender(event)) throw new Error('Only the Settings window may ask for this.')
+      return listener(event, ...args)
+    })
+  }
+  settingsWindowOnly('wf-settings-window:set', async (_event, input: unknown) => {
+    const request = requireSettingsPagePreference(input)
+    await settings.setPersisted(request.key, request.value, request.key)
+    return { value: settings.get(request.key), changelog: settings.changelog() }
+  })
+  settingsWindowOnly('wf-settings-window:source-status', async (_event, input: unknown) => {
+    const source = (input as { source?: unknown })?.source
+    if (source !== 'talkweaver' && source !== 'slidewell') throw new Error('Choose a Scratchpad source.')
+    return { ok: true, status: await bindScratchpadExternalSettings(settings).status(source) }
+  })
+  settingsWindowOnly('wf-settings-window:get-started', () => ({ removed: settings.exampleState() === 'removed', canRestore: settings.exampleState() === 'removed' || settings.exampleState() === 'incomplete' }))
+  settingsWindowOnly('wf-settings-window:restore-example', restoreExample)
+  settingsWindowOnly('wf-settings-window:models', async () => {
+    await modelServiceReady
+    return { ...projectModels(), defaults: resolvedDefaults() }
+  })
+  settingsWindowOnly('wf-settings-window:counted', () => knownCountedCollections())
+  settingsWindowOnly('wf-settings-window:counted-changes', () => settings.changelog().map((entry, index) => ({ ...entry, index })).filter(entry => parseCountedSettingKey(entry.key)))
+  settingsWindowOnly('wf-settings-window:counted-reset', async (_event, input: unknown) => {
+    const request = input as { index?: unknown; key?: unknown; at?: unknown }
+    const candidate = typeof request?.index === 'number' ? settings.revertCandidate(request.index) : null
+    if (!candidate || !parseCountedSettingKey(candidate.key) || candidate.key !== request.key || candidate.at !== request.at) throw new Error('That change is no longer the one shown. Refresh Counted Collections and try again.')
+    await revertSetting(request.index as number)
+    return knownCountedCollections()
+  })
+  settingsWindowOnly('wf-settings-window:uncount', async (_event, input: unknown) => {
+    const request = input as { root?: unknown; dir?: unknown } | null
+    if (typeof request?.root !== 'string' || (request.dir !== undefined && typeof request.dir !== 'string')) throw new Error('Invalid Counted Collection request.')
+    const requestedRoot = normaliseRoot(request.root)
+    const allowedRoots = new Set([...settings.recents().map((recent) => recent.root), ...allStates().flatMap((candidate) => candidate.workspace ? [candidate.workspace.root] : [])])
+    if (!allowedRoots.has(requestedRoot) || !existsSync(requestedRoot) || !statSync(requestedRoot).isDirectory()) {
+      throw new Error('A Counted Collection can only be changed inside an open or recent Workspace.')
+    }
+    const workspace = allStates().find((candidate) => candidate.workspace?.root === requestedRoot)?.workspace ?? new Workspace(requestedRoot)
+    const dir = collectionDir({ dir: request.dir as string | undefined })
+    if (!(await isCountedCollection(workspace, dir))) return knownCountedCollections()
+    const saved = await setCollectionCounted(workspace, dir, false)
+    collectionRevision += 1
+    await settings.set(countedSettingKey(workspace.root, dir), false, `Counted Collection: ${dir ? basename(dir) : basename(workspace.root)}`)
+    const openState = allStates().find((candidate) => candidate.workspace?.root === workspace.root)
+    if (openState) notifyCollectionChanged(openState, [saved.file.path])
+    return knownCountedCollections()
+  })
+
+  const preferencesChanged = (keys: readonly string[]): void => {
+    for (const key of keys) {
+      if (key === 'workspace.watchExternalChanges') syncWorkspaceWatcherSetting(settings)
+      hooks?.onSettingChanged?.(key)
+      broadcastSettingChange(key)
+    }
+  }
+
   return {
+    auth,
+    preferencesChanged,
     evictWindow: (webContentsId: number) => { e2eScripts.delete(webContentsId); widgetWatches.disposeWindow(webContentsId) },
     dispose: () => {
       disposeConfirmIpc()
@@ -3352,6 +3618,8 @@ export function registerIpc(
       authRegistration.dispose()
       ipcMain.removeHandler('agent:models-picker-opened')
       ipcMain.removeHandler('agent:models-refresh')
+      for (const channel of settingsWindowChannels) ipcMain.removeHandler(channel)
+      settingsWindowChannels.clear()
     },
   }
 }

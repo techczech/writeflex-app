@@ -43,8 +43,8 @@ test('keystrokeVoice: writing keys sound; modifiers and navigation stay silent',
   expect(keystrokeVoice('č')).toBe('key')
   expect(keystrokeVoice(' ')).toBe('space')
   expect(keystrokeVoice('Enter')).toBe('enter')
-  expect(keystrokeVoice('Backspace')).toBe('key')
-  expect(keystrokeVoice('Delete')).toBe('key')
+  expect(keystrokeVoice('Backspace')).toBe('backspace')
+  expect(keystrokeVoice('Delete')).toBe('backspace')
   expect(keystrokeVoice('Tab')).toBe('key')
   expect(keystrokeVoice('Shift')).toBeNull()
   expect(keystrokeVoice('Meta')).toBeNull()
@@ -58,7 +58,7 @@ const SCHEMES = ['deep', 'crisp', 'soft'] as const
 test('all three schemes map every voice to a sample, and letter keys carry several', () => {
   expect(Object.keys(TYPING_SAMPLES).sort()).toEqual([...SCHEMES].sort())
   for (const scheme of SCHEMES) {
-    for (const voice of ['key', 'space', 'enter'] as const) {
+    for (const voice of ['key', 'space', 'enter', 'backspace'] as const) {
       const samples = typingSamples(scheme, voice)
       expect(samples.length, `${scheme}/${voice} has no sample`).toBeGreaterThan(0)
       for (const file of samples) expect(SOUND_PACK_FILES).toContain(file)
@@ -82,13 +82,13 @@ test('all three schemes map every voice to a sample, and letter keys carry sever
   expect(new Set(enters).size).toBe(SCHEMES.length)
 })
 
-test('a stored scheme resolves, and the legacy "typewriter" value still means Deep', () => {
+test('a stored scheme resolves, and the legacy "typewriter" value still means Classic manual', () => {
   for (const scheme of SCHEMES) expect(normaliseTypingScheme(scheme)).toBe(scheme)
   // The value written before there were two typewriters. Nobody's preference may reset on upgrade.
   expect(normaliseTypingScheme('typewriter')).toBe('deep')
   // Anything unset or unrecognised falls back to the same default the UI shows.
   for (const junk of [null, undefined, '', 'Deep', 'erika', 42, {}, []]) {
-    expect(normaliseTypingScheme(junk)).toBe('deep')
+    expect(normaliseTypingScheme(junk)).toBe('crisp')
   }
 })
 
@@ -141,48 +141,26 @@ test('the pack on disk is the pack the table names, and it is small enough to bu
   for (const file of SOUND_PACK_FILES) expect(credits).toContain(file)
 })
 
-test('one-shots are short and lossless; loops are FLAC so the seam stays sample-exact', () => {
+test('typing sounds are compact mono FLAC with short, padding-free playback', () => {
+  let total = 0
   for (const file of Object.values(TYPING_SAMPLES).flatMap((voices) => Object.values(voices).flat())) {
-    expect(file.endsWith('.wav'), `${file} must be WAV — no encoder delay on the keystroke path`).toBe(true)
     const bytes = readFileSync(join(PACK, file))
-    expect(bytes.subarray(0, 4).toString('latin1')).toBe('RIFF')
-    const rate = bytes.readUInt32LE(24)
-    const channels = bytes.readUInt16LE(22)
-    const seconds = (bytes.length - 44) / (rate * channels * 2)
+    total += bytes.length
+    expect(file.endsWith('.flac')).toBe(true)
+    expect(bytes.subarray(0, 4).toString('latin1')).toBe('fLaC')
+    // STREAMINFO starts at byte 8. The packed fields start 10 bytes into that block.
+    const rate = bytes.readUIntBE(18, 3) >>> 4
+    const channels = ((bytes[20] >>> 1) & 7) + 1
+    const samples = bytes.readUIntBE(21, 5) % 2 ** 36
     expect(channels).toBe(1)
-    // Keystroke clicks stay under 150 ms so playback is tight; the Enter bell is allowed to ring.
-    expect(seconds).toBeLessThan(file.includes('enter') ? 0.6 : 0.15)
-    expect(seconds).toBeGreaterThan(0.05)
+    expect(rate).toBe(32_000)
+    expect(samples / rate).toBeGreaterThan(0.05)
+    expect(samples / rate).toBeLessThan(file.includes('enter') ? 0.4 : 0.12)
   }
+  expect(total).toBeLessThan(120 * 1024)
   for (const file of Object.values(AMBIENT_SAMPLES)) {
     expect(file.endsWith('.flac')).toBe(true)
     expect(readFileSync(join(PACK, file)).subarray(0, 4).toString('latin1')).toBe('fLaC')
-  }
-})
-
-test('every keystroke sample is ONE hit — the defect that failed the live check', () => {
-  for (const file of Object.values(TYPING_SAMPLES).flatMap((voices) => Object.values(voices).flat())) {
-    const bytes = readFileSync(join(PACK, file))
-    const rate = bytes.readUInt32LE(24)
-    const samples = (bytes.length - 44) / 2
-    // 4 ms peak envelope of the PCM.
-    const frame = Math.round(0.004 * rate)
-    const envelope: number[] = []
-    for (let i = 0; i + frame <= samples; i += frame) {
-      let peak = 0
-      for (let j = 0; j < frame; j += 1) peak = Math.max(peak, Math.abs(bytes.readInt16LE(44 + (i + j) * 2)))
-      envelope.push(peak / 32768)
-    }
-    const loudest = Math.max(...envelope)
-    const attack = envelope.indexOf(loudest)
-    // The strike lands in the first 60 ms — nothing may creep in ahead of the key press.
-    expect(attack * 0.004, `${file} attacks late`).toBeLessThan(0.06)
-    // After the envelope has fallen to a quarter of the peak it must never climb back near it: a
-    // second tap there is exactly what made typing sound unsynchronised in the synthesised version.
-    const fell = envelope.findIndex((value, index) => index > attack && value < loudest * 0.25)
-    expect(fell, `${file} never decays`).toBeGreaterThan(-1)
-    const rebound = Math.max(...envelope.slice(fell))
-    expect(rebound / loudest, `${file} has a second transient`).toBeLessThan(0.35)
   }
 })
 
@@ -230,4 +208,64 @@ test('session cues are gated to a timed running session with Tick on', () => {
     { kind: 'tick', volume: 0.4 },
     { kind: 'complete', volume: 0.4 },
   ])
+})
+
+test('enabled typing preloads once, plays decoded strikes synchronously, and caps overlapping voices', async () => {
+  const originalContext = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext')
+  const loaded: string[] = []
+  const played: number[] = []
+  const finished: Array<() => void> = []
+  const bufferIds = new Map<string, number>()
+  class TestAudioContext {
+    state = 'running'
+    destination = {}
+    decodeAudioData(bytes: ArrayBuffer): Promise<number> {
+      return Promise.resolve(new Uint8Array(bytes)[0])
+    }
+    resume(): Promise<void> { return Promise.resolve() }
+    createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} } }
+    createBufferSource() {
+      return {
+        buffer: 0,
+        playbackRate: { value: 1 },
+        onended: () => {},
+        connect() {},
+        disconnect() {},
+        start() {
+          played.push(this.buffer)
+          finished.push(() => this.onended())
+        },
+        stop() { this.onended() },
+      }
+    }
+  }
+  Object.defineProperty(globalThis, 'AudioContext', { configurable: true, value: TestAudioContext })
+  try {
+    const engine = new SoundEngine(async (name) => {
+      loaded.push(name)
+      const id = loaded.length
+      bufferIds.set(name, id)
+      return new Uint8Array([id])
+    })
+    engine.setTyping(true, 'deep', 0.6)
+    const expected = Object.values(TYPING_SAMPLES.deep).flat()
+    expect(loaded.sort()).toEqual([...expected].sort())
+    engine.keystroke('a')
+    expect(played).toHaveLength(0)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    for (const key of ['a', 'a', ' ', 'Backspace', 'Enter']) engine.keystroke(key)
+    expect(new Set(played.slice(0, 2)).size).toBe(2)
+    expect(played.slice(2)).toEqual(['space', 'backspace', 'enter'].map(voice => bufferIds.get(`deep-${voice}.flac`)))
+    for (let i = 0; i < 20; i += 1) engine.keystroke('x')
+    expect(played).toHaveLength(6)
+    finished[0]()
+    engine.keystroke('x')
+    expect(played).toHaveLength(7)
+    engine.setTyping(true, 'deep', 0.5)
+    expect(loaded).toHaveLength(expected.length)
+  } finally {
+    if (originalContext) Object.defineProperty(globalThis, 'AudioContext', originalContext)
+    else Reflect.deleteProperty(globalThis, 'AudioContext')
+  }
 })

@@ -1,4 +1,5 @@
 import { EVIDENCE_DRAG_MIME } from '../../../shared/folio-evidence-transfer'
+import { relativeLinkTo } from '../../../shared/scratchpad-reference-actions'
 import { askConfirm } from './confirm-bus'
 import { FLAG_NOTICE } from '../editor/flag-actions'
 import { setMetadataCollapsed } from '../editor/metadata-view-state'
@@ -517,15 +518,24 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   }, [])
 
   const saveDroppedImages = useCallback(async (files: File[], at: number): Promise<void> => {
+    const view = viewRef.current
+    const documentPath = activePathRef.current
+    if (!view || !documentPath) {
+      onStatusRef.current('There is no document to insert an image into.')
+      return
+    }
     const links: string[] = []
     for (const file of files) {
       const ext = file.type.split('/')[1]?.replace('jpeg', 'jpg') || file.name.split('.').pop() || 'png'
       const saved = await window.writeflex.saveImage(await file.arrayBuffer(), ext)
-      links.push(`![pasted image](${saved.path})`)
+      links.push(`![pasted image](${relativeLinkTo(documentPath, saved.path)})`)
       onStatusRef.current(`Saved ${saved.path}`)
     }
-    const view = viewRef.current
-    if (view && links.length) {
+    if (viewRef.current !== view || activePathRef.current !== documentPath) {
+      onStatusRef.current('Images saved, but the destination document changed before insertion.')
+      return
+    }
+    if (links.length) {
       const doc = view.state.doc.toString()
       const position = frontmatterSafeInsertPosition(doc, Math.min(at, view.state.doc.length))
       const prefix = doc.slice(0, position).endsWith('\n\n') ? '' : '\n\n'
@@ -1865,6 +1875,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
         <FixedLineMarker
           fraction={overlayOn ? dragFraction ?? overlayHandle.handleFraction ?? fixedLine : fixedLine}
           bounds={markerBounds}
+          autoHide={typewriterOn && !readAloudActive && !overlayOn}
           lineStep={overlayOn && overlayHandle.lineFraction > 0 ? overlayHandle.lineFraction : undefined}
           onChange={(fraction) => {
             if (!overlayOn) {

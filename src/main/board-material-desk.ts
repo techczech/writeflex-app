@@ -15,6 +15,7 @@
  */
 
 import { queueThenTurn } from './collection-write-order'
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import type { JournalEntry } from '@bridle/core'
@@ -22,6 +23,7 @@ import type { OperationWrite, Workspace } from './workspace'
 import { rollBackOperationWrites, rollbackMessage } from './operation-rollback'
 import { pausedMessage } from './collection-write-gate'
 import { restoreFailure } from './restore-failure'
+import type { WrittenFile } from './restore-keeps-later-writing'
 import type { ScrapStore } from './scraps'
 import { prepareOffcutPromotion, prepareScrapAppend, recordLosslessBoardCopy, writeMaterial, type LosslessBoardTake, type MaterialWrite } from './board-material'
 import { prepareSourceAttach } from './source-attach'
@@ -43,7 +45,7 @@ export type BoardDeskBridle = {
   snapshots: {
     beginRestorePoint(label: string, sessionId?: string): Promise<string>
     snapshotFile(absPath: string, meta: { sessionId?: string; capability?: string; origin?: 'turn' | 'host' }): Promise<unknown>
-    restoreTo(restorePointId: string, opts?: { origin?: 'turn' | 'host' }): Promise<string[]>
+    restoreTo(restorePointId: string, opts?: { origin?: 'turn' | 'host'; written?: readonly WrittenFile[] }): Promise<string[]>
     entries(): Promise<JournalEntry[]>
   }
   sessionId(): string
@@ -186,7 +188,11 @@ export class BoardMaterialDesk {
       // document (and a legacy scraps file, for a legacy step) goes back.
       let restored: string[]
       try {
-        restored = await this.bridle.snapshots.restoreTo(id, { origin: 'host' })
+        // What the step wrote, just checked unchanged: a file it created and still holding that is removed.
+        const written = held.after.flatMap((file) => file.content === null ? [] : [{
+          file: this.workspace.absolute(file.path), sha256: createHash('sha256').update(file.content, 'utf8').digest('hex'),
+        }])
+        restored = await this.bridle.snapshots.restoreTo(id, { origin: 'host', written })
       } catch (error) {
         // Refused: nothing was written and the step is still held. Stopped part-way: the step is
         // half undone, and the writer is told which files were and were not put back.

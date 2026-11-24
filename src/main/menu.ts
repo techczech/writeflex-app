@@ -26,11 +26,30 @@ function withdraw(sender: WebContents): void {
 let refresh: (() => void) | undefined
 /** Hidden e2e windows cannot take native focus. Normal runs require an actual focused window. */
 let lastFocusedWindow: BrowserWindow | undefined
-export function noteFocusedWindow(window: BrowserWindow): void { lastFocusedWindow = window }
+let settingsMenuWindow: BrowserWindow | undefined
+let lastMenuWindow: BrowserWindow | undefined
+export function noteSettingsWindow(window: BrowserWindow): void {
+  settingsMenuWindow = window
+  editorFocus.set(window.webContents, 'other')
+  noteFocusedWindow(window)
+}
+const SETTINGS_EDITOR_ONLY = new Set(['file.new', 'folder.new', 'file.checkpoint'])
+/** The shared Settings window publishes only its focus kind, never an editor command model. */
+export function noteSettingsMenuFocus(window: BrowserWindow, focus: MenuFocus): void {
+  settingsMenuWindow = window
+  editorFocus.set(window.webContents, focus)
+  refresh?.()
+}
+export function noteFocusedWindow(window: BrowserWindow): void {
+  lastMenuWindow = window
+  if (allStates().some(state => state.window === window)) lastFocusedWindow = window
+  refresh?.()
+}
 function menuWindow(): BrowserWindow | null {
   const focused = BrowserWindow.getFocusedWindow()
   if (focused && !focused.isDestroyed() && !focused.isMinimized()) return focused
   if (process.env.WRITEFLEX_E2E !== '1') return null
+  if (lastMenuWindow && !lastMenuWindow.isDestroyed()) return lastMenuWindow
   if (lastFocusedWindow && !lastFocusedWindow.isDestroyed() && !lastFocusedWindow.isMinimized()) return lastFocusedWindow
   return allStates().find(state => !state.window.isDestroyed() && !state.window.isMinimized())?.window ?? null
 }
@@ -121,15 +140,23 @@ function updateWindow(): BrowserWindow | undefined {
 
 /** A menu click: to the focused window's model when it has one, otherwise the few things main can do alone. */
 export function runMenuClick(id: string, manager: WindowManager): void {
+  if (id === 'app.settings' && manager.openSettings) { manager.openSettings(); return }
+  const target = menuWindow()
+  if (target === settingsMenuWindow && SETTINGS_EDITOR_ONLY.has(id)) return
+  if (target === settingsMenuWindow && target && id === 'tab.close') { target.close(); return }
+  if (target === settingsMenuWindow && target && editorFocus.get(target.webContents) === 'plain-text-field' && (id === 'edit.undo' || id === 'edit.redo')) {
+    if (id === 'edit.undo') target.webContents.undo(); else target.webContents.redo()
+    return
+  }
   const focused = menuWindow()
   if (focused && models.has(focused.webContents)) focused.webContents.send('menu:command', id)
   else if (id === 'window.new') manager.createWindow()
   else if (id === 'app.open') void promptOpen(manager)
   else if (focused && (MENU_FALLBACK_ENABLED.withWindow as readonly string[]).includes(id)) invokeNativeMenuCommand(id, focused)
   // The renderer's own handler is mounted before its first model reaches main, and rechecks the command itself.
-  else if (focused && (MENU_FALLBACK_ENABLED.update as readonly string[]).includes(id)) focused.webContents.send('menu:command', id)
+  else if (focused && focused !== settingsMenuWindow && (MENU_FALLBACK_ENABLED.update as readonly string[]).includes(id)) focused.webContents.send('menu:command', id)
   // Preserve the previous update-menu fallback, including hidden editor windows.
-  else if (!focused && noFocusIds.has(id)) {
+  else if ((!focused || focused === settingsMenuWindow) && noFocusIds.has(id)) {
     const window = updateWindow() ?? manager.createWindow().window
     if (process.env.WRITEFLEX_E2E !== '1') {
       if (window.isMinimized()) window.restore()
@@ -158,9 +185,9 @@ export function buildAppMenu(manager: WindowManager, settings: SettingsStore): M
   const commands = (live ?? (lastModel.length ? lastModel : SEED_MENU_COMMANDS)).map(c => ({ ...c,
     chord: focus !== 'editor' && nativeEditRoleChord(c.chord) ? undefined : c.chord,
     nativeAccelerator: live ? c.nativeAccelerator : MAIN_MENU_KEY_IDS.has(c.id),
-    enabled: live ? c.enabled : (MENU_FALLBACK_ENABLED.always as readonly string[]).includes(c.id)
+    enabled: target === settingsMenuWindow && SETTINGS_EDITOR_ONLY.has(c.id) ? false : live ? c.enabled : (MENU_FALLBACK_ENABLED.always as readonly string[]).includes(c.id)
       || Boolean(target && (MENU_FALLBACK_ENABLED.withWindow as readonly string[]).includes(c.id))
-      || noFocusIds.has(c.id),
+      || noFocusIds.has(c.id) || (target === settingsMenuWindow && focus === 'plain-text-field' && (c.id === 'edit.undo' || c.id === 'edit.redo')),
     ...(c.id === 'view.fullScreen' ? { checked: target?.isFullScreen() ?? false } : {}),
   }))
   const { pinned, recents } = startScreenLists(settings)

@@ -37,7 +37,7 @@ export { highlightMarkTag, footnoteTag }
 const editorChrome = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'transparent' },
   '&.cm-focused': { outline: 'none' },
-  '.cm-scroller': { overflow: 'auto' },
+  '.cm-scroller': { overflow: 'auto', colorScheme: 'var(--editor-color-scheme, light)' },
   '.cm-content': {
     fontFamily: '"Source Serif 4", Georgia, "Times New Roman", serif',
     // The locked literals (18.5px / #26262a / 660px) moved into tokens.css as defaults (Task 17)
@@ -58,8 +58,14 @@ const editorChrome = EditorView.theme({
   '.cm-line': { padding: '0' },
   // The mockup's .caret: 2px hairline in the accent colour (drawSelection draws this layer).
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
-  '.cm-selectionBackground': { backgroundColor: 'var(--line-soft)' },
-  '&.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--accent-soft)' },
+  // Match CodeMirror's focused layer selector, whose built-in light theme paints lavender.
+  '&.cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {
+    backgroundColor: 'var(--text-selection)',
+    borderRadius: '2px',
+  },
+  '&.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground': {
+    backgroundColor: 'var(--text-selection)',
+  },
   '.cm-selectionMatch': { backgroundColor: 'var(--line-soft)' },
   '.cm-searchMatch': { backgroundColor: 'var(--accent-soft)' },
   '.cm-searchMatch-selected': { backgroundColor: 'rgba(46,107,230,.25)' }, // stronger --accent tint
@@ -109,6 +115,36 @@ const editorChrome = EditorView.theme({
     fontFamily: 'var(--ui)',
     fontSize: '13px',
   },
+})
+
+// CodeMirror extends multiline selections through the paper gutters. Leave just enough
+// highlight in the gutter to mark a selected newline on an otherwise empty row.
+const selectionGutters = ViewPlugin.define((view) => {
+  const measure = {
+    read: () => {
+      const content = view.contentDOM
+      const style = getComputedStyle(content)
+      const width = view.scrollDOM.clientWidth
+      const newlineWidth = 6
+      const left = Math.max(0, content.offsetLeft + parseFloat(style.paddingLeft) - newlineWidth)
+      const right = Math.max(0, width - content.offsetLeft - content.offsetWidth + parseFloat(style.paddingRight) - newlineWidth)
+      return { width, height: content.offsetHeight, left, right }
+    },
+    write: ({ width, height, left, right }: { width: number; height: number; left: number; right: number }) => {
+      const layer = view.scrollDOM.querySelector<HTMLElement>(':scope > .cm-selectionLayer')
+      if (!layer) return
+      layer.style.width = `${width}px`
+      layer.style.height = `${height}px`
+      layer.style.clipPath = `inset(0 ${right}px 0 ${left}px round 2px)`
+      layer.style.pointerEvents = 'none'
+    },
+  }
+  view.requestMeasure(measure)
+  return {
+    update(update) {
+      if (update.geometryChanged || update.docChanged) view.requestMeasure(measure)
+    },
+  }
 })
 
 /**
@@ -204,4 +240,4 @@ const quoteLineHighlight = ViewPlugin.fromClass(
 )
 
 /** The complete locked-typography stack: chrome theme, prose highlighting, quote-line hairlines. */
-export const writeflexTheme: Extension[] = [editorChrome, syntaxHighlighting(proseHighlight), quoteLineHighlight]
+export const writeflexTheme: Extension[] = [editorChrome, selectionGutters, syntaxHighlighting(proseHighlight), quoteLineHighlight]

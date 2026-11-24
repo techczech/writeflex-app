@@ -188,3 +188,10 @@ NOT undone: files or folders the command line created (`create`, `create-folder`
 ## `read` and its output
 
 Piped, redirected or under `--json`, `read` gives the document exactly (`result.content`). Printed straight to a terminal, control characters other than newline and tab are shown as `\u{hex}`, as hidden characters in file names are. In plain text a hidden character in a name is shown the same way; `--json` carries the exact name. Path arguments are literal: never type `\u{..}` expecting decoding.
+
+
+## App settings
+
+`writeflex settings list --json` lists schema-defined preferences. `writeflex settings get appearance.theme --json` reads one; `writeflex settings set appearance.theme dark --json` changes it through the same store and changelog as the Settings window. `writeflex settings changes --json` shows recorded changes. Use `writeflex settings --help` for reset, export, import and undo-import. Keys and sign-ins are managed in Settings > Accounts and keys and are never returned by these commands.
+
+`keyboard.appKeys` is a migration-owned compatibility record. Direct set/reset and resetting its change entry are refused; resetting the Advanced section leaves it intact. Use `writeflex settings rebind <command> <chord>` or `writeflex settings reset-shortcut <command>` for intentional shortcut changes. Resetting all shortcuts requires `reset-shortcut --all --yes`.

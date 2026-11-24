@@ -2,8 +2,8 @@ import { shortcutCaptureActive, subscribeShortcutCapture } from '../../src/rende
 import { expect, test } from 'bun:test'
 import { EditorState } from '@codemirror/state'
 import { readFileSync } from 'node:fs'
-import { dispatchMenuCommand, menuCommands, sameMenuModel } from '../../src/renderer/src/commands/menu-model'
-import { commandRegistry } from '../../src/renderer/src/commands/registry'
+import { dispatchMenuCommand, menuChord, menuCommands, sameMenuModel } from '../../src/renderer/src/commands/menu-model'
+import { commandRegistry, registryCommand } from '../../src/renderer/src/commands/registry'
 
 test('the renderer projection keeps missing rows disabled and uses the shared effective chord resolver', () => {
   const state = EditorState.create({ doc: 'A paragraph' })
@@ -32,6 +32,14 @@ test('dispatch rechecks availability and when against the current editor state b
   dispatchMenuCommand(row.id, [{ ...row, disabled: false }], state, true, runRow, runEditor)
   dispatchMenuCommand('edit.bold', [], state, true, runRow, runEditor)
   expect(runs).toEqual(['app.quickOpen', 'edit.bold'])
+})
+
+test('adding a Files row action to the palette keeps the default local and honours a user binding', () => {
+  const rename = registryCommand('file.rename')
+  expect(rename.keys).toBe('F2')
+  expect(menuChord(rename, {})).toBeUndefined()
+  expect(menuChord(rename, { 'file.rename': '⌃Q' })).toBe('⌃Q')
+  expect(menuChord(registryCommand('file.openInDefaultApp'), {})).toBeUndefined()
 })
 
 test('history commands stay available for native text inputs without an open document', () => {

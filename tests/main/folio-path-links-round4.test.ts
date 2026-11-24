@@ -19,6 +19,7 @@ import { readFolioPlan } from '../../src/main/plan'
 import { registerPlanIpcHandlers, type PlanIpcHandler } from '../../src/main/plan-ipc'
 import { repairRename } from '../../src/main/rename-repair'
 import { buildWikilinkCandidateIndex, resolveWikilinkTargetFromIndex, type Candidate } from '../../src/main/wikilinks'
+import { formatFolderRenameRepairMessage } from '../../src/shared/rename-repair-message'
 import { Workspace } from '../../src/main/workspace'
 import { wikilinkRanges } from '../../src/renderer/src/editor/wikilinks'
 
@@ -100,6 +101,9 @@ test('a folder rename repair leaves a note changed since the plan as it is and r
   await rename(join(root, DIR, 'contents'), join(root, DIR, 'chapters'))
   await write(`${DIR}/ref.md`, 'See [[./contents/a]]. Edited meanwhile.\n')
   const result = await applyFolderRenameRepair(plan, ws)
+  const message = formatFolderRenameRepairMessage('Renamed folder to chapters', result)
+  expect(message).toContain(`${DIR}/ref.md`)
+  expect(message).toContain('was not repaired')
   expect(result.writtenPaths).toEqual([])
   expect(result.unrepairedReferences).toEqual([expect.stringContaining(`${DIR}/ref.md: [[./contents/a]] was not repaired`)])
   expect(await read(`${DIR}/ref.md`)).toBe('See [[./contents/a]]. Edited meanwhile.\n')

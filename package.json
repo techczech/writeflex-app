@@ -1,6 +1,6 @@
 {
   "name": "writeflex-app",
-  "version": "0.29.0-alpha.1",
+  "version": "0.29.0-alpha.2",
   "private": true,
   "type": "module",
   "main": "./out/main/bootstrap.js",
@@ -54,7 +54,11 @@
     "sharp": "0.35.5",
     "typebox": "1.1.38",
     "@app-patterns/updates": "file:./vendor/app-patterns/app-patterns-updates-0.4.1.tgz",
-    "@app-patterns/updates-react": "file:./vendor/app-patterns/app-patterns-updates-react-0.4.1.tgz"
+    "@app-patterns/updates-react": "file:./vendor/app-patterns/app-patterns-updates-react-0.4.1.tgz",
+    "@app-patterns/commands": "file:./vendor/app-patterns/app-patterns-commands-0.4.1.tgz",
+    "@app-patterns/settings": "file:./vendor/app-patterns/app-patterns-settings-0.4.1.tgz",
+    "@app-patterns/settings-electron": "file:./vendor/app-patterns/app-patterns-settings-electron-0.4.1.tgz",
+    "@app-patterns/settings-react": "file:./vendor/app-patterns/app-patterns-settings-react-0.4.1.tgz"
   },
   "devDependencies": {
     "@app-patterns/vault-sync": "file:./vendor/app-patterns/app-patterns-vault-sync-0.5.1.tgz",
@@ -236,6 +240,10 @@
     "markdown-it": "14.3.3",
     "zod": "4.6.6",
     "dompurify": "3.4.17",
-    "@app-patterns/updates": "file:./vendor/app-patterns/app-patterns-updates-0.4.1.tgz"
+    "@app-patterns/updates": "file:./vendor/app-patterns/app-patterns-updates-0.4.1.tgz",
+    "@app-patterns/commands": "file:./vendor/app-patterns/app-patterns-commands-0.4.1.tgz",
+    "@app-patterns/settings": "file:./vendor/app-patterns/app-patterns-settings-0.4.1.tgz",
+    "@app-patterns/settings-electron": "file:./vendor/app-patterns/app-patterns-settings-electron-0.4.1.tgz",
+    "@app-patterns/settings-react": "file:./vendor/app-patterns/app-patterns-settings-react-0.4.1.tgz"
   }
 }

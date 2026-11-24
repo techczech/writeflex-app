@@ -18,7 +18,7 @@ import { outlineSelectionExtension } from './outline-selection'
 import { comments } from './comments'
 import { autoLinkTitle } from './auto-link-title'
 import { headingFolding } from './folding'
-import { typewriterCompartment } from './typewriter'
+import { typewriterCompartment, typewriterTopRoomKey } from './typewriter'
 import { focusCompartment } from './focus-modes'
 import { lineOverlayCompartment } from './line-overlay'
 import {
@@ -160,6 +160,7 @@ export function baseExtensions(opts: BaseExtensionOpts): Extension[] {
     // centred-cursor toggle never rebuilds the extension stack. Reapplied per EditorState on every
     // tab switch (EditorPane.switchTo) because a fresh/cached state resets the compartment to [].
     typewriterCompartment.of([]),
+    typewriterTopRoomKey,
     // Focus modes (Round A, ADR-0028): empty by default; setFocusMode reconfigures in place and
     // EditorPane.switchTo reapplies the live mode per swapped-in state (the typewriter pattern).
     focusCompartment.of([]),

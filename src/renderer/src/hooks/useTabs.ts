@@ -33,6 +33,7 @@ export type UseTabs = {
   groups: OpenTabGroup[]
   open: (path: string) => void
   replaceActive: (path: string) => void
+  renamed: (from: string, to: string) => void
   close: (path: string) => void
   activate: (path: string) => void
   cycle: (dir: 1 | -1) => void
@@ -122,6 +123,11 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
     setState((s) => openTab(s, path))
   }, [])
   const replaceActive = useCallback((path: string) => setState((s) => replaceActiveTab(s, path)), [])
+  const renamed = useCallback((from: string, to: string) => setState((state) => {
+    const move = (path: string) => path === from ? to : path
+    const paths = (items: string[]) => [...new Set(items.map(move))]
+    return { tabs: paths(state.tabs), active: state.active && move(state.active), pinned: paths(state.pinned), recent: paths(state.recent) }
+  }), [])
   // ⌘W focuses a neighbour ON THE STRIP; an emptied group hands the strip to the most recent other one.
   const close = useCallback((path: string) => setState((s) => closeTab(s, path, groupOfRef.current)), [])
   const activate = useCallback((path: string) => setState((s) => activateTab(s, path)), [])
@@ -130,5 +136,5 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
   const pin = useCallback((path: string, pinned: boolean) => setState((s) => pinTab(s, path, pinned)), [])
   const reorderPin = useCallback((path: string, before: string | null) => setState((s) => reorderPinnedTab(s, path, before)), [])
 
-  return { tabs: state.tabs, active: state.active, pinned: state.pinned, recent: state.recent, strip: view.strip, groups: view.groups, open, replaceActive, close, activate, cycle, pin, reorderPin }
+  return { tabs: state.tabs, active: state.active, pinned: state.pinned, recent: state.recent, strip: view.strip, groups: view.groups, open, replaceActive, renamed, close, activate, cycle, pin, reorderPin }
 }

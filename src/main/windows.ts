@@ -57,6 +57,8 @@ const STALLED_CLOSE_COPY: Record<CloseStallKind, { message: string; detail: stri
  * than opening a second one on the same root.
  */
 export class WindowManager {
+  /** Shared Settings can open without creating an editor window. */
+  openSettings?: (section?: string) => void
   /** Set by index.ts after registerIpc so window-close evicts per-window IPC state (the broker map). */
   onWindowClosed?: (webContentsId: number) => void
   /** Set by index.ts to rebuild the app menu when recents change (Open Recent submenu). */

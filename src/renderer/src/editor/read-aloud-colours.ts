@@ -102,7 +102,7 @@ export function composite(over: Rgb, alpha: number, under: Rgb): Rgb {
 }
 
 /** The editor's page and prose ink per theme (tokens.css: --bg-pane and --prose-ink; a test keeps them equal). */
-export const READ_ALOUD_PAPER: Record<ReadAloudTheme, Rgb> = { light: [255, 255, 255], dark: [26, 26, 30] }
+export const READ_ALOUD_PAPER: Record<ReadAloudTheme, Rgb> = { light: [255, 255, 255], dark: [33, 33, 36] }
 export const READ_ALOUD_INK: Record<ReadAloudTheme, Rgb> = { light: [38, 38, 42], dark: [217, 217, 222] }
 export const READ_ALOUD_MIN_CONTRAST = 4.5
 

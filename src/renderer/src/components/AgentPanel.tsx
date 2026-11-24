@@ -93,7 +93,8 @@ type AgentPanelProps = {
   /** Run a folder skill from the switcher: App resolves the focused folder (ticket 10). */
   onRunFolderSkill?: (skillName: string) => void
   /** Opens Settings at the existing account surface for API-key entry and broader account work. */
-  onOpenAccountSettings: () => void
+  /** Opens Settings at Accounts and keys, or at `page` (the Sign in page): sign-ins and keys change only there. */
+  onOpenAccountSettings: (page?: 'sign-in') => void
   onShowSkillToast: (toast: SkillToast) => void
   /** The persistent handoff row's actions (same handlers as the transient toast's). */
   onOpenReviewing: () => void
@@ -847,18 +848,18 @@ export function AgentPanel({
                         <div className="agent-provider-row" key={provider.id}>
                           <span><strong>{providerName}</strong><small>{provider.configured ? 'Configured' : 'Signed out'}</small></span>
                           {provider.configured ? (
-                            <button ref={index === 0 ? accountButtonRef : undefined} type="button" className="ghost" onClick={() => auth.logout(provider.id)} title={`Sign out of ${providerName}`}>
+                            <button ref={index === 0 ? accountButtonRef : undefined} type="button" className="ghost" onClick={() => onOpenAccountSettings(oauth ? 'sign-in' : undefined)} title={`Sign out of ${providerName} in Settings`}>
                               <LogOut className="icon sm" aria-hidden="true" />Sign out
                             </button>
                           ) : (
-                            <button ref={index === 0 ? accountButtonRef : undefined} type="button" className="ghost" onClick={() => oauth ? void auth.login(provider.id) : onOpenAccountSettings()} title={oauth ? `Sign in to ${providerName}` : `Add ${providerName} key in Settings`}>
+                            <button ref={index === 0 ? accountButtonRef : undefined} type="button" className="ghost" onClick={() => onOpenAccountSettings(oauth ? 'sign-in' : undefined)} title={oauth ? `Sign in to ${providerName} in Settings` : `Add ${providerName} key in Settings`}>
                               {oauth ? 'Sign in' : 'Add key'}
                             </button>
                           )}
                         </div>
                       )
                     })}
-                    <button type="button" className="agent-manage-accounts" onClick={onOpenAccountSettings}>Manage accounts in Settings</button>
+                    <button type="button" className="agent-manage-accounts" onClick={() => onOpenAccountSettings()}>Manage accounts in Settings</button>
                   </div>
                 </div>
               )}

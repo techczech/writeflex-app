@@ -93,4 +93,4 @@ Exit codes: 0 done or filed; 1 refused, failed, needs-writer or not verified; 2 
 
 ## 8. Not available
 
-No formatting or outline commands acting on a selection. No unsaved editor text or selection. No settings. No change to a Folio's running order from the command line. No permanent delete (`trash` only). If asked, say so; do not simulate by file edits.
+No formatting or outline commands acting on a selection. No unsaved editor text or selection. Settings are available through `writeflex settings` (see references/cli.md). No change to a Folio's running order from the command line. No permanent delete (`trash` only). If asked, say so; do not simulate by file edits.

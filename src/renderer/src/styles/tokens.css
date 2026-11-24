@@ -7,6 +7,7 @@
   --bg-toolbar:#f6f6f5; --bg-side:#f4f4f2; --bg-pane:#ffffff; --bg-sunk:#faf9f7;
   --pill:#e9e9e6; --hover:rgba(0,0,0,.045);
   --accent:#2e6be6; --accent-soft:rgba(46,107,230,.10);
+  --text-selection:rgb(58 112 198 / 20%);
   --review:#1f8a76; --review-bg:rgba(31,138,118,.10);
   --green:#2e9e5b; --danger:#c4432e; --danger-soft:rgba(196,67,46,.09);
   /* The mockup referenced favourites via var(--amber,#b97d10) without a :root entry; this pins
@@ -57,9 +58,11 @@
 [data-theme="dark"]{
   --ink:#e7e7ea; --ink-2:#a6a6ae; --ink-3:#92929b; --ink-4:#5f5f68;
   --line:rgba(255,255,255,.13); --line-soft:rgba(255,255,255,.07);
-  --bg-toolbar:#242427; --bg-side:#212124; --bg-pane:#1a1a1e; --bg-sunk:#202024;
+  --bg-toolbar:#242427; --bg-side:#212124; --bg-pane:var(--bg-side); --bg-sunk:#202024;
   --pill:#333338; --hover:rgba(255,255,255,.06);
   --accent:#5f8ef2; --accent-soft:rgba(95,142,242,.18);
+  --text-selection:rgb(85 139 211 / 23%);
+  --editor-color-scheme:dark;
   --review:#55b6a2; --review-bg:rgba(85,182,162,.17);
   --green:#43b271; --danger:#e0674f; --danger-soft:rgba(224,103,79,.16);
   --amber:#d2a04a; --amber-soft:rgba(210,160,74,.16);

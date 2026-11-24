@@ -36,6 +36,12 @@ const key = (partial: Partial<ShortcutLike>): ShortcutLike => ({
 const KNOWN_OS_RESERVED = new Set(['⌃⌘Q', '⌘Space', '⌃↑', '⌃↓', '⌃←', '⌃→', '⌘Tab', '⌘H', '⌘M'])
 
 const COMMAND_BACKED_SHEET_ROWS = new Map([
+  ['Open folder or file', 'app.open'],
+  ['Checkpoint (save is automatic)', 'file.checkpoint'],
+  ['New file', 'file.new'],
+  ['New folder', 'folder.new'],
+  ['New window', 'window.new'],
+  ['Close tab', 'tab.close'],
   ['Pin to strip / Unpin from strip', 'tab.pin'],
   ['Quick-open file or folder', 'app.quickOpen'],
   ['Next open tab', 'navigation.nextTab'],

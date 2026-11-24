@@ -1,3 +1,5 @@
+import { pendingOutsideBatchChange, type BatchResult, type BatchTarget } from '../shared/outside-batch-review'
+import { missingOutsideDocument } from './outside-batch-target'
 import { applyReaderItemState, uniqueReaderItems, type ReaderItemState } from './sharing-review-state'
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
@@ -590,6 +592,38 @@ export class ChangeStore {
       })
       if (rejected.length > 0) await this.#writeAll(next)
       return rejected
+    })
+  }
+
+  /** Keep the settled IDs in the ledger so a synced copy cannot bring cleared proposals back. */
+  async decideOutsideBatch(targets: readonly BatchTarget[], action: 'reject' | 'clear'): Promise<BatchResult> {
+    return this.#door(async () => {
+      const all = await this.#readAll()
+      const byId = new Map(all.map(change => [change.id, change]))
+      const checked = new Map<string, boolean>()
+      const decided = new Set<string>()
+      const left: BatchResult['left'] = []
+      for (const target of targets) {
+        const change = byId.get(target.id)
+        if (!change || change.path !== target.path || !pendingOutsideBatchChange(change)) {
+          left.push({ ...target, reason: 'This proposal changed since the preview.' })
+          continue
+        }
+        if (action === 'clear') {
+          const missing = checked.get(target.path) ?? await missingOutsideDocument(this.ws, target.path)
+          checked.set(target.path, missing)
+          if (!missing) {
+            left.push({ ...target, reason: 'The document is available again or could not be checked.' })
+            continue
+          }
+        }
+        decided.add(target.id)
+      }
+      if (decided.size) await this.#writeAll(all.map(change => {
+        if (!decided.has(change.id)) return change
+        return action === 'clear' ? closedWith(change, 'Document missing when cleared.', 'file-missing') : this.#moved(change, 'rejected')
+      }))
+      return { decided: decided.size, left }
     })
   }
 

@@ -127,8 +127,17 @@ export async function applyPlannedRenameRepair(
     // Correctness invariant: this is the only forward-write loop, and it iterates the declared plan
     // directly. Apply therefore writes exactly the plan's path set: neither a subset nor a superset.
     for (const write of plan.writes) {
+      const expected = plan.verification.markdown.find(({ path }) => path === write.path)
+        ?? plan.verification.manifests.find(({ path }) => path === write.path)
+      if (!expected || expected.content === null) throw planDriftError(plan)
+      // Verification and checkpoints await: a save may have landed since. Compare the plan's
+      // source bytes again in the commit tick, for Markdown AND manifests, before replacing them.
       // A write that committed counts as applied even if its read-back failed: rollback must cover it.
-      await workspace.saveFileWithoutReadBack(write.path, write.content)
+      try {
+        await workspace.saveFileOverRead(write.path, write.content, expected.content)
+      } catch (error) {
+        if (!(error instanceof SavedButNotReadBack)) throw error
+      }
       applied.push(write)
     }
   } catch (error) {

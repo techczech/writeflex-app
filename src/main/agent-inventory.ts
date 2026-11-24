@@ -10,6 +10,7 @@
 // in this inventory.
 //
 // No Electron import (bun runs it as it is; the operation table is Electron-free by design).
+import { SETTINGS_ROUTE } from '../cli/settings-cli'
 import { AGENT_ROUTE_VERBS } from './agent-skill/cli.ts'
 import { BEHAVIOUR_LABELS, buildOperationTable } from './cli/table'
 import { TASK_GROUPS } from './cli/groups'
@@ -31,6 +32,7 @@ const argsOf = (op: Operation): string =>
   }).join(' ')
 
 export const CLI_VERBS: readonly VerbEntry[] = [
+  SETTINGS_ROUTE,
   ...buildOperationTable().map((op): VerbEntry => ({ verb: op.name, args: argsOf(op), summary: op.summary, group: op.group, behaviour: BEHAVIOUR_LABELS[op.behaviour] })),
   ...AGENT_ROUTE_VERBS.map((v): VerbEntry => ({ verb: v.verb, args: v.args, summary: v.summary, group: 'Connect agents', behaviour: 'direct' }))
 ]
@@ -43,7 +45,7 @@ export const VERB_INVENTORY: readonly VerbEntry[] = CLI_VERBS
  */
 export function commandsReference(omitted: ReadonlySet<string> = new Set()): string {
   const table = (rows: readonly VerbEntry[]): string[] => ['| Command | Arguments | Behaviour | What it does |', '|---|---|---|---|', ...rows.map((v) => `| \`writeflex ${v.verb}\` | ${v.args ? `\`${v.args}\`` : ''} | ${v.behaviour} | ${v.summary} |`), '']
-  const sections = [...TASK_GROUPS, 'Connect agents'].flatMap((group) => {
+  const sections = [...TASK_GROUPS, 'Connect agents', 'App settings'].flatMap((group) => {
     const rows = CLI_VERBS.filter((v) => v.group === group && !omitted.has(v.verb))
     return rows.length ? [`## ${group}`, '', ...table(rows)] : []
   })

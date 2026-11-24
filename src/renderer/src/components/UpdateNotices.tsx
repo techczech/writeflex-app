@@ -4,7 +4,6 @@
 // shared one (apu-update-pop, @app-patterns/updates-react's styling), drawn from update-notices-view.ts. The answer to
 // Check for Updates… and the About card read the same view model. Hidden during distraction-free writing.
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
 import { AlertTriangle, ArrowUpCircle, Download, RotateCw } from 'lucide-react'
 import { SETTING_HINT, aboutLines, noteReducer, privacyText, storeAboutDetail, storeAboutLine, type WhatsNewItem } from '@app-patterns/updates'
 import { UpdatesProvider, WhatsNewMark } from '@app-patterns/updates-react'
@@ -131,56 +130,33 @@ function PopoverBody({ snap, close }: { snap: UpdateSnapshot; close: () => void 
 }
 
 /** The mark (and the shared What's new mark) in the status bar's notice slot. */
-export function UpdateMarks() {
+export function UpdateMarks({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const snap = useUpdates()
-  const [open, setOpen] = useState(false)
-  const anchor = useRef<HTMLSpanElement | null>(null)
   const mark = useRef<HTMLButtonElement | null>(null)
   const popover = useRef<HTMLDivElement | null>(null)
-  const [place, setPlace] = useState<{ left: number; bottom: number } | null>(null)
   const view = snap ? markView(snap) : null
-  useEffect(() => { if (!view) setOpen(false) }, [view === null])
-  useLayoutEffect(() => {
-    if (!open) return
-    const rect = anchor.current?.getBoundingClientRect()
-    if (rect) setPlace({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 400)), bottom: window.innerHeight - rect.top + 8 })
-  }, [open])
-  useEffect(() => {
-    if (!open) return
-    const away = (event: MouseEvent): void => {
-      const target = event.target as Node
-      if (!anchor.current?.contains(target) && !popover.current?.contains(target)) setOpen(false)
-    }
-    const esc = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      setOpen(false)
-      mark.current?.focus()
-    }
-    document.addEventListener('mousedown', away)
-    document.addEventListener('keydown', esc)
-    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc) }
-  }, [open])
+  useEffect(() => { if (open && !view) onOpenChange(false) }, [open, view])
   // Keyboard: opening moves focus to the popover's first button that can be pressed, and so does a change of state
   // that took away the button that had it (Update becomes Cancel; Cancel becomes Update).
   const phase = snap?.install.phase
   useEffect(() => {
-    if (!open || !place) return
+    if (!open) return
     if (popover.current?.contains(document.activeElement)) return
     popover.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus()
-  }, [open, place, phase])
+  }, [open, phase])
   if (!snap) return null
   return <Provider snapshot={snap}><span className="wf-update-marks">
     {view && <>
       <span style={{ margin: '0 8px', color: 'var(--app-updates-line, #d9d0c1)' }}>|</span>
-      <span className="apu-update-anchor" ref={anchor}>
+      <span className="apu-update-anchor">
         <button type="button" ref={mark} className={`apu-update-mark${view.failed ? ' wf-update-mark--failed' : ''}`} data-update-mark data-update-phase={view.phase}
-          aria-expanded={open} aria-haspopup="dialog" title={view.phase === 'idle' ? 'A new version of WriteFlex is out' : 'Updating WriteFlex'} onClick={() => setOpen(v => !v)}>
+          aria-expanded={open} aria-haspopup="dialog" title={view.phase === 'idle' ? 'A new version of WriteFlex is out' : 'Updating WriteFlex'} onClick={() => onOpenChange(!open)}>
           <MarkIconOf icon={view.icon} />{' '}{view.text}
         </button>
-        {open && place && createPortal(
-          <div className="apu-update-pop" ref={popover} style={{ position: 'fixed', left: place.left, bottom: place.bottom }} role="dialog" aria-label="Updating WriteFlex" data-update-popover>
-            <PopoverBody snap={snap} close={() => { setOpen(false); mark.current?.focus() }} />
-          </div>, document.body,
+        {open && (
+          <div className="apu-update-pop" ref={popover} role="dialog" aria-label="Updating WriteFlex" data-update-popover>
+            <PopoverBody snap={snap} close={() => { onOpenChange(false); mark.current?.focus() }} />
+          </div>
         )}
       </span>
     </>}

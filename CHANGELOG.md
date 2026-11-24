@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.29.0-alpha.2] — 2026-11-21
+
+An alpha: early, and it can break.
+
+### Added
+- Settings in one window: search preferences, change shortcuts and reset any setting. Open it with ⌘,.
+- The command palette (⇧⌘P) lists commands by task, in groups with icons.
+- File actions for the open document in the palette, such as Reveal in Finder, Copy Path, Rename and Move.
+- New pieces in a Collection take a file name from their title once you have settled on it, following the pattern of the files beside them.
+- Review changes made outside WriteFlex in groups, with a preview, and accept or reject a whole group at once.
+- Three typewriter sound sets; Crisp is the default.
+
+### Changed
+- The menu bar shows the shortcuts you set in Settings.
+- Writing-mode refinements: distraction-free mode hides the metadata bar, typewriter mode keeps its line on short documents, and the dark theme has a darker editor and a readable selection colour.
+
+### Fixed
+- Restoring a checkpoint no longer deletes writing added after that checkpoint. This fault was present in 0.28.0 and 0.29.0-alpha.1.
+- When accepting an assistant's proposal fails part-way, WriteFlex no longer removes a file it made there if that file has changed since.
+- Links survive more renames and moves: moved documents keep their own links, files moved together keep links to each other, and a rename that races a save no longer overwrites the newer text.
+
 ## [0.29.0-alpha.1] — 2026-11-16
 
 An alpha: early, and it can break.

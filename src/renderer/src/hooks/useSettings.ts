@@ -7,7 +7,7 @@ export type UseSettings = {
   /** The settings changelog, newest first (the Changelog section renders this). */
   changelog: SettingsChangeEntry[]
   /**
-   * Set a key: persists through `settings:set`, records a changelog entry (unless `log: false` —
+   * Set a key: persists through `wf-settings:set`, records a changelog entry (unless `log: false` —
    * live-surface tweaks like ⌘T that are not "changes made in Settings"), and fires the applier so
    * the effect lands immediately. `value: null` UNSETS the key — the local value is deleted (so it
    * reads as untouched again) and the applier removes its effect (the ⌥⌘0 reset path).
@@ -95,10 +95,14 @@ export function useSettings(apply: (key: string, value: SettingValue | null) => 
     window.writeflex
       .setSetting(key, value, label, opts)
       .then(({ changelog: log }) => setChangelog(log))
-      .catch(() => {
-        /* a failed persist keeps the live effect for this session; the next boot re-reads disk */
+      .catch((error: unknown) => {
+        onError?.(error)
+        void window.writeflex.getSettings().then((record) => {
+          setValues(record)
+          applyRef.current(key, record[key] ?? null)
+        })
       })
-  }, [])
+  }, [onError])
 
   const revert = useCallback((index: number) => {
     void window.writeflex

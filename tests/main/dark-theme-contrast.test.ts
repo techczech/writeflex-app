@@ -44,7 +44,7 @@ test('the WCAG helper agrees with the published reference points', () => {
 
 test('dark --ink-3 clears WCAG AA on every dark surface it is drawn on', () => {
   const dark = tokensOf(darkBlock())
-  for (const surface of ['--bg-elev', '--bg-toolbar', '--bg-side', '--bg-pane', '--bg-sunk']) {
+  for (const surface of ['--bg-elev', '--bg-toolbar', '--bg-side', '--bg-sunk']) {
     expect(dark[surface]).toBeDefined()
     expect(contrastRatio(dark['--ink-3'], dark[surface])).toBeGreaterThanOrEqual(4.5)
   }
@@ -54,4 +54,39 @@ test('dark --ink-3 stays muted: dimmer than --ink-2, brighter than --ink-4', () 
   const dark = tokensOf(darkBlock())
   expect(relativeLuminance(dark['--ink-3'])).toBeLessThan(relativeLuminance(dark['--ink-2']))
   expect(relativeLuminance(dark['--ink-3'])).toBeGreaterThan(relativeLuminance(dark['--ink-4']))
+})
+
+
+test('dark editor paper uses the sidebar token and keeps prose and metadata readable', () => {
+  const block = darkBlock()
+  const dark = tokensOf(block)
+  expect(block).toMatch(/--bg-pane:\s*var\(--bg-side\)/)
+  for (const ink of ['--prose-ink', '--ink', '--ink-2', '--ink-3']) {
+    expect(contrastRatio(dark[ink], dark['--bg-side'])).toBeGreaterThanOrEqual(4.5)
+  }
+})
+
+
+test('dark and light selection tints keep normal-sized prose at WCAG AA', () => {
+  const light = css.slice(css.indexOf(':root{'), css.indexOf('}', css.indexOf(':root{')))
+  for (const block of [light, darkBlock()]) {
+    const tokens = tokensOf(block)
+    const tint = block.match(/--text-selection:rgb\((\d+) (\d+) (\d+) \/ (\d+)%\)/)
+    expect(tint).not.toBeNull()
+    const [red, green, blue, percent] = tint!.slice(1).map(Number)
+    expect(red).toBeLessThan(green)
+    expect(green).toBeLessThan(blue)
+    expect(percent).toBeLessThan(100)
+    const paper = tokens['--bg-pane'] ?? tokens['--bg-side']
+    for (const base of [paper, tokens['--bg-elev']]) {
+      const alpha = percent / 100
+      const composited = '#' + [red, green, blue].map((foreground, i) => {
+        const background = parseInt(base.slice(1 + i * 2, 3 + i * 2), 16)
+        return Math.round(foreground * alpha + background * (1 - alpha)).toString(16).padStart(2, '0')
+      }).join('')
+      for (const ink of ['--ink', '--prose-ink', '--ink-2']) {
+        expect(contrastRatio(tokens[ink], composited)).toBeGreaterThanOrEqual(4.5)
+      }
+    }
+  }
 })

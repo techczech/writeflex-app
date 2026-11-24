@@ -49,11 +49,11 @@ test('model defaults round-trip', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-settings2-'))
   const store = new SettingsStore(join(dir, 'settings.json'))
   expect(store.modelDefaults()).toEqual({})
-  store.setModelDefaults({ provider: 'openai-codex', modelId: 'gpt-5.5', thinkingLevel: 'high' })
+  await store.setModelDefaults({ provider: 'openai-codex', modelId: 'gpt-5.5', thinkingLevel: 'high' })
   expect(new SettingsStore(join(dir, 'settings.json')).modelDefaults().modelId).toBe('gpt-5.5')
 })
 
-test('model defaults resolve from Settings and then the app built-in only', () => {
+test('model defaults resolve from Settings and then the app built-in only', async () => {
   expect(typeof (settingsModule as Record<string, unknown>).resolveModelDefaults).toBe('function')
   const resolveModelDefaults = (settingsModule as typeof settingsModule & {
     resolveModelDefaults: (defaults: Parameters<SettingsStore['setModelDefaults']>[0]) => unknown
@@ -87,7 +87,7 @@ test('retired tab-layout preferences and changelog rows are discarded on load', 
   const persisted = JSON.parse(await readFile(path, 'utf8')) as { values: Record<string, unknown>; changelog: Array<{ key: string }> }
   expect(persisted.values['editor.tabLayout']).toBeUndefined()
   expect(persisted.changelog.map((entry) => entry.key)).toEqual(['editor.spellcheck'])
-  expect(store.set('editor.tabLayout', 'vertical', 'Tab layout')).toBeNull()
+  expect(await store.set('editor.tabLayout', 'vertical', 'Tab layout')).toBeNull()
   expect(store.get('editor.tabLayout')).toBeNull()
 })
 
@@ -98,8 +98,8 @@ test('values: generic get/set round-trip, persisted across a reload', async () =
   const path = join(dir, 'settings.json')
   const store = new SettingsStore(path)
   expect(store.get('appearance.theme')).toBeNull() // unset reads null (renderer applies defaults)
-  store.set('appearance.theme', 'dark', 'Appearance')
-  store.set('editor.spellcheck', false, 'Spellcheck')
+  await store.set('appearance.theme', 'dark', 'Appearance')
+  await store.set('editor.spellcheck', false, 'Spellcheck')
   expect(store.get('appearance.theme')).toBe('dark')
   expect(store.get('editor.spellcheck')).toBe(false)
   expect(store.values()).toEqual({ 'agent.mode': 'work', 'appearance.theme': 'dark', 'editor.spellcheck': false })
@@ -112,9 +112,9 @@ test('changelog: every logged set prepends {key,label,old,new,at}; same-value se
   const dir = await mkdtemp(join(tmpdir(), 'wf-settings-log-'))
   const path = join(dir, 'settings.json')
   const store = new SettingsStore(path)
-  store.set('editor.typewriter', true, 'Typewriter mode')
-  store.set('editor.typewriter', true, 'Typewriter mode') // no change → no entry
-  store.set('editor.lineWidth', 'wide', 'Line width')
+  await store.set('editor.typewriter', true, 'Typewriter mode')
+  await store.set('editor.typewriter', true, 'Typewriter mode') // no change → no entry
+  await store.set('editor.lineWidth', 'wide', 'Line width')
   const log = store.changelog()
   expect(log.length).toBe(2)
   // Newest first (the mockup prepends).
@@ -122,7 +122,7 @@ test('changelog: every logged set prepends {key,label,old,new,at}; same-value se
   expect(log[1]).toMatchObject({ key: 'editor.typewriter', label: 'Typewriter mode', old: null, new: true })
   expect(typeof log[0].at).toBe('number')
   // A second change of the same key logs the true previous value.
-  store.set('editor.lineWidth', 'narrow', 'Line width')
+  await store.set('editor.lineWidth', 'narrow', 'Line width')
   expect(store.changelog()[0]).toMatchObject({ key: 'editor.lineWidth', old: 'wide', new: 'narrow' })
   // Persisted with the file.
   expect(new SettingsStore(path).changelog().length).toBe(3)
@@ -131,11 +131,11 @@ test('changelog: every logged set prepends {key,label,old,new,at}; same-value se
 test('changelog: silent sets (log:false) change the value without an entry — the ⌘T path', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-settings-silent-'))
   const store = new SettingsStore(join(dir, 'settings.json'))
-  store.set('editor.typewriter', true, 'Typewriter mode', { log: false })
+  await store.set('editor.typewriter', true, 'Typewriter mode', { log: false })
   expect(store.get('editor.typewriter')).toBe(true)
   expect(store.changelog()).toEqual([])
   // A later LOGGED change still reports the silent value as its honest `old`.
-  store.set('editor.typewriter', false, 'Typewriter mode')
+  await store.set('editor.typewriter', false, 'Typewriter mode')
   expect(store.changelog()[0]).toMatchObject({ old: true, new: false })
 })
 
@@ -143,17 +143,17 @@ test('revert: restores the entry’s old value, marks it reverted, appends NO ne
   const dir = await mkdtemp(join(tmpdir(), 'wf-settings-revert-'))
   const path = join(dir, 'settings.json')
   const store = new SettingsStore(path)
-  store.set('editor.proseSize', '21', 'Prose size') // old: null (unset)
-  store.set('appearance.theme', 'dark', 'Appearance')
+  await store.set('editor.proseSize', '21', 'Prose size') // old: null (unset)
+  await store.set('appearance.theme', 'dark', 'Appearance')
   // Revert the theme change (index 0 = newest).
-  const reverted = store.revert(0)
+  const reverted = await store.revert(0)
   expect(reverted).toMatchObject({ key: 'appearance.theme', old: null, new: 'dark', reverted: true })
   expect(store.get('appearance.theme')).toBeNull() // back to unset → the default applies
   expect(store.changelog().length).toBe(2) // no new entry — the row is marked, not re-logged
   expect(store.changelog()[0].reverted).toBe(true)
   // Reverting an already-reverted entry is a no-op.
-  expect(store.revert(0)).toBeNull()
-  expect(store.revert(99)).toBeNull() // out of range
+  expect(await store.revert(0)).toBeNull()
+  expect(await store.revert(99)).toBeNull() // out of range
   // Round-trip: the reverted flag and the restored value survive a reload.
   const reloaded = new SettingsStore(path)
   expect(reloaded.get('appearance.theme')).toBeNull()
@@ -164,7 +164,7 @@ test('revert: restores the entry’s old value, marks it reverted, appends NO ne
 test('revert candidate inspects a change without flipping settings before its external write succeeds', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-settings-revert-candidate-'))
   const store = new SettingsStore(join(dir, 'settings.json'))
-  store.set('diary.counted:root:essays', true, 'Counted Collection: essays')
+  await store.set('diary.counted:root:essays', true, 'Counted Collection: essays')
   expect(store.revertCandidate(0)).toMatchObject({ key: 'diary.counted:root:essays', old: null, new: true })
   expect(store.get('diary.counted:root:essays')).toBe(true)
   expect(store.changelog()[0].reverted).toBeUndefined()
@@ -173,11 +173,11 @@ test('revert candidate inspects a change without flipping settings before its ex
 test('revert re-fires honestly: a set AFTER a revert logs old = the reverted-to value', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-settings-refire-'))
   const store = new SettingsStore(join(dir, 'settings.json'))
-  store.set('editor.lineWidth', 'medium', 'Line width') // null → medium
-  store.set('editor.lineWidth', 'wide', 'Line width') // medium → wide
-  store.revert(0) // back to medium
+  await store.set('editor.lineWidth', 'medium', 'Line width') // null → medium
+  await store.set('editor.lineWidth', 'wide', 'Line width') // medium → wide
+  await store.revert(0) // back to medium
   expect(store.get('editor.lineWidth')).toBe('medium')
-  store.set('editor.lineWidth', 'narrow', 'Line width')
+  await store.set('editor.lineWidth', 'narrow', 'Line width')
   // The log stays honest: the new entry's old is the value the revert restored.
   expect(store.changelog()[0]).toMatchObject({ old: 'medium', new: 'narrow' })
 })

@@ -24,6 +24,7 @@ import { WRITEFLEX_SELF_AUTHOR_NAME } from '../shared/part-title-proposal'
 import { folioSaveOf } from '../shared/folio-version-records'
 import { assertCollectionWritable } from './collection-write-gate'
 import { runBounded, type BoundedOptions } from './bounded-child'
+import { systemGit } from './developer-tools'
 import { appendStoreLine, StoreAppendRefused } from './checked-store-append'
 import { isReplicaVersionId } from './replica-versions'
 import { FOLIO_SAVE_COMMITS_JOURNAL_REL, folioSaveCommitLine, withoutUnfinishedFolioSaves } from './folio-save-commit'
@@ -202,7 +203,8 @@ export class VersionStore {
 export const GIT_CONFIG_WAIT_MS = 3_000
 
 /** Git, by its own path: never looked up on `PATH`, which the command line inherits from the agent
- *  that runs it and which may name a folder inside the Collection first. */
+ *  that runs it and which may name a folder inside the Collection first. On macOS this is Apple's stub, so the
+ *  author lookup runs the concrete Git it stands for (`systemGit`, developer-tools.ts), never this path itself. */
 export const GIT_PATH = '/usr/bin/git'
 
 /** @internal Test seams: another program in place of `git`, and the limit without the clock. */
@@ -211,7 +213,10 @@ export type AuthorSeams = { command?: string; expired?: BoundedOptions['expired'
 /** One value from git's configuration, or null when there is none, git is not there, or it did not
  *  answer in time (the child is then killed: bounded-child.ts). */
 async function gitConfig(root: string, key: string, seams: AuthorSeams): Promise<string | null> {
-  const run = await runBounded(seams.command ?? GIT_PATH, ['-C', root, 'config', '--get', key], { timeoutMs: GIT_CONFIG_WAIT_MS, ...(seams.expired ? { expired: seams.expired } : {}) })
+  // The concrete Git inside the developer tools; without them, no Git at all (`GIT_PATH` would open Apple's installer).
+  const command = seams.command ?? await systemGit()
+  if (!command) return null
+  const run = await runBounded(command, ['-C', root, 'config', '--get', key], { timeoutMs: GIT_CONFIG_WAIT_MS, ...(seams.expired ? { expired: seams.expired } : {}) })
   if (run.kind !== 'exited' || run.code !== 0) return null
   const value = run.stdout.trim()
   return value === '' ? null : value

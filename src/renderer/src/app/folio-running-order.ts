@@ -28,7 +28,7 @@ import type { PlanCardKey } from '../../../shared/folio-running-order'
 /** The Folio as the caller was looking at it: its folder and the running order it saw, with titles for the messages. */
 export type FolioSeen = { dir: string; pieces: ReadonlyArray<{ path: string; title: string }> }
 
-export type FlashAction = { label: string; run: () => void; kind?: 'folio-order' | 'scratchpad' }
+export type FlashAction = { label: string; run: () => void; kind?: 'folio-order' | 'scratchpad' | 'auto-name' }
 
 type Deps = {
   /** Hide the preceding notice when another order change starts, without discarding Undo. */

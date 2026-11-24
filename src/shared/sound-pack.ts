@@ -7,47 +7,48 @@
  * a SINGLE transient; provenance and licences are in resources/sounds/CREDITS.md.
  */
 
-/** Three machines the writer chooses between: `deep` is a 1940 Erika 5 manual typewriter, `crisp` an
- *  electric Smith-Corona, `soft` an ordinary keyboard. `deep` was stored as `typewriter` before the
- *  second machine existed — normaliseTypingScheme still accepts it. */
+/** Keep the stored identifiers, including the original "typewriter" alias. */
 export type TypingScheme = 'deep' | 'crisp' | 'soft'
+export const DEFAULT_TYPING_SCHEME: TypingScheme = 'crisp'
 export type AmbientLoop = 'white' | 'rain'
-export type KeystrokeVoice = 'key' | 'space' | 'enter'
+export type KeystrokeVoice = 'key' | 'space' | 'enter' | 'backspace'
 
-/** scheme → voice → the sample variants that voice may speak with. Letter keys carry several so
- *  fast typing never machine-guns one waveform; space and Enter carry one apiece. */
+/** Several letter strikes, plus a distinct sample for each mechanical action. */
 export const TYPING_SAMPLES: Record<TypingScheme, Record<KeystrokeVoice, readonly string[]>> = {
   deep: {
     key: [
-      'deep-key-1.wav',
-      'deep-key-2.wav',
-      'deep-key-3.wav',
-      'deep-key-4.wav',
-      'deep-key-5.wav',
+      'deep-key-1.flac',
+      'deep-key-2.flac',
+      'deep-key-3.flac',
+      'deep-key-4.flac',
+      'deep-key-5.flac',
     ],
-    space: ['deep-space.wav'],
-    enter: ['deep-enter.wav'], // the line bell — the one voice that is not a click
+    space: ['deep-space.flac'],
+    enter: ['deep-enter.flac'],
+    backspace: ['deep-backspace.flac'],
   },
   crisp: {
     key: [
-      'crisp-key-1.wav',
-      'crisp-key-2.wav',
-      'crisp-key-3.wav',
-      'crisp-key-4.wav',
-      'crisp-key-5.wav',
+      'crisp-key-1.flac',
+      'crisp-key-2.flac',
+      'crisp-key-3.flac',
+      'crisp-key-4.flac',
+      'crisp-key-5.flac',
     ],
-    space: ['crisp-space.wav'],
-    enter: ['crisp-enter.wav'], // the same bell recording, cut shorter and a semitone up
+    space: ['crisp-space.flac'],
+    enter: ['crisp-enter.flac'],
+    backspace: ['crisp-backspace.flac'],
   },
   soft: {
     key: [
-      'soft-key-1.wav',
-      'soft-key-2.wav',
-      'soft-key-3.wav',
-      'soft-key-4.wav',
+      'soft-key-1.flac',
+      'soft-key-2.flac',
+      'soft-key-3.flac',
+      'soft-key-4.flac',
     ],
-    space: ['soft-space.wav'],
-    enter: ['soft-enter.wav'], // no bell: the flourish is the typewriter's alone
+    space: ['soft-space.flac'],
+    enter: ['soft-enter.flac'],
+    backspace: ['soft-backspace.flac'],
   },
 }
 
@@ -58,11 +59,14 @@ export const AMBIENT_SAMPLES: Record<AmbientLoop, string> = {
   rain: 'ambient-rain.flac',
 }
 
+export const SESSION_CUE_FILES = { tick: 'session-tick.wav', complete: 'session-complete.wav' } as const
+
 /** Every file the pack must contain — the IPC allowlist, and what the pack test asserts exists. */
 export const SOUND_PACK_FILES: readonly string[] = [
   ...new Set([
     ...Object.values(TYPING_SAMPLES).flatMap((voices) => Object.values(voices).flat()),
     ...Object.values(AMBIENT_SAMPLES),
+    ...Object.values(SESSION_CUE_FILES),
   ]),
 ]
 
@@ -76,8 +80,9 @@ export function typingSamples(scheme: TypingScheme, voice: KeystrokeVoice): read
  * preference resets when they upgrade. Anything unrecognised falls back to the same default.
  */
 export function normaliseTypingScheme(value: unknown): TypingScheme {
+  if (value === 'typewriter') return 'deep'
   if (value === 'crisp' || value === 'soft' || value === 'deep') return value
-  return 'deep' // includes the legacy 'typewriter'
+  return DEFAULT_TYPING_SCHEME
 }
 
 export function ambientSample(loop: AmbientLoop): string {
@@ -95,7 +100,8 @@ export function clampVolume(value: unknown, fallback: number): number {
 export function keystrokeVoice(key: string): KeystrokeVoice | null {
   if (key === ' ') return 'space'
   if (key === 'Enter') return 'enter'
-  if (key === 'Backspace' || key === 'Delete' || key === 'Tab') return 'key'
+  if (key === 'Backspace' || key === 'Delete') return 'backspace'
+  if (key === 'Tab') return 'key'
   if (key.length === 1) return 'key'
   return null
 }

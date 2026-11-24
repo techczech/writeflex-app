@@ -6,6 +6,8 @@ import {
 } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { dirname } from 'node:path'
+import { schema } from '../shared/settings-schema'
+import { APP_KEYS_SETTING } from '../shared/keymap-overrides'
 import { sameLexicalPath } from './lexical-path'
 import { EXAMPLE_ORIGINAL_FILES } from './example-collection'
 import {
@@ -155,9 +157,27 @@ function isSettingValue(value: unknown): value is SettingValue {
  * App-level persistence for recents + model defaults (userData/settings.json). Pure node — the file
  * path is injected so the store is testable without Electron, per ADR-0007 / Electron-boundary rule.
  */
+/**
+ * The shared settings store's side of the preferences (settings-host.ts): once attached, every
+ * preference the shared schema knows is read from and written to userData/settings-v2.json, and this
+ * file keeps only the app's state (recents, pins, favourites, presets, the Example, model defaults,
+ * Counted Collection marks, the guide, the action bar's layout). The old values here are left as the
+ * old version wrote them: they are no longer read for an owned key, and never rewritten.
+ */
+export interface SharedPreferences {
+  owns(key: string): boolean
+  /** The value, or null when it is the default (the renderer applies that surface's default, as before). */
+  get(key: string): SettingValue | null
+  /** Every non-default preference. */
+  values(): Record<string, SettingValue>
+  /** Resolves only after saving, or rejects with the store problem. */
+  persist(key: string, value: SettingValue | null): Promise<void>
+}
+
 export class SettingsStore {
   #path: string
   #data: SettingsData
+  #shared: SharedPreferences | null = null
   #needsMigration = false
   #listeners = new Set<(key: string) => void>()
   #shownExampleRoot: () => string | null
@@ -234,6 +254,7 @@ export class SettingsStore {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
     const out: Record<string, SettingValue> = {}
     for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (key.startsWith('accounts.') || schema.def(key)?.type === 'secret') continue
       if (RETIRED_SETTING_KEYS.has(key)) {
         this.#needsMigration = true
         continue
@@ -251,6 +272,7 @@ export class SettingsStore {
       if (!entry || typeof entry !== 'object') continue
       const e = entry as Record<string, unknown>
       if (typeof e.key !== 'string' || typeof e.label !== 'string' || typeof e.at !== 'number') continue
+      if (e.key.startsWith('accounts.') || schema.def(e.key)?.type === 'secret') continue
       if (RETIRED_SETTING_KEYS.has(e.key)) {
         this.#needsMigration = true
         continue
@@ -594,14 +616,23 @@ export class SettingsStore {
     return true
   }
 
+  /** The original defaults, used only to recover preferences when shared migration is unavailable. */
+  legacyModelDefaults(): ModelDefaults { return { ...this.#data.modelDefaults } }
+
   modelDefaults(): ModelDefaults {
-    return { ...this.#data.modelDefaults }
+    const raw = this.get('agent.model')
+    const thinking = this.get('agent.thinkingLevel')
+    const parts = typeof raw === 'string' ? raw.split('::') : []
+    return {
+      ...(parts.length >= 2 && parts[0] && parts.slice(1).join('::') ? { provider: parts[0], modelId: parts.slice(1).join('::') } : {}),
+      ...(thinking === 'minimal' || thinking === 'low' || thinking === 'medium' || thinking === 'high' ? { thinkingLevel: thinking } : {}),
+    }
   }
 
   /** Merge (not replace) so set-model and set-thinking can each update their slice independently. */
-  setModelDefaults(defaults: ModelDefaults): void {
-    this.#data.modelDefaults = { ...this.#data.modelDefaults, ...defaults }
-    this.#persist()
+  async setModelDefaults(defaults: ModelDefaults): Promise<void> {
+    if (defaults.modelId !== undefined) await this.setPersisted('agent.model', `${defaults.provider ?? 'openai-codex'}::${defaults.modelId}`, 'Model')
+    if (defaults.thinkingLevel !== undefined) await this.setPersisted('agent.thinkingLevel', defaults.thinkingLevel, 'Thinking')
   }
 
   /** Favourite file paths (relative to `root`) pinned for that workspace, in pin order. */
@@ -655,8 +686,12 @@ export class SettingsStore {
 
   /** The stored value for `key`, or null when unset (the renderer applies that surface's default). */
   get(key: string): SettingValue | null {
+    if (key.startsWith('accounts.') || schema.def(key)?.type === 'secret') return null
+    if (this.#shared?.owns(key)) return this.#shared.get(key)
     return this.#data.values[key] ?? null
   }
+
+  notifySharedChange(key: string): void { for (const listener of this.#listeners) listener(key) }
 
   onChange(listener: (key: string) => void): () => void {
     this.#listeners.add(listener)
@@ -665,7 +700,16 @@ export class SettingsStore {
 
   /** A copy of every stored value — the settings window's one-pull hydrate. */
   values(): Record<string, SettingValue> {
-    return { ...this.#data.values }
+    const shared = this.#shared
+    const safe = Object.fromEntries(Object.entries(this.#data.values).filter(([key]) => !key.startsWith('accounts.') && schema.def(key)?.type !== 'secret'))
+    if (!shared) return safe
+    const own = Object.fromEntries(Object.entries(safe).filter(([key]) => !shared.owns(key)))
+    return { ...own, ...shared.values() }
+  }
+
+  /** From now on, preferences the shared schema knows live in the shared store (settings-host.ts). */
+  attachShared(shared: SharedPreferences): void {
+    this.#shared = shared
   }
 
   /**
@@ -676,7 +720,12 @@ export class SettingsStore {
    * key (deleted from the record, `get` reads null again) — the same "back to unset" semantics as
    * revert, so ⌥⌘0 reset returns a key to its locked default rather than logging a concrete value.
    */
-  set(key: string, value: SettingValue | null, label: string, opts?: { log?: boolean }): ChangelogEntry | null {
+  async set(key: string, value: SettingValue | null, label: string, opts?: { log?: boolean }): Promise<ChangelogEntry | null> {
+    return this.setPersisted(key, value, label, opts)
+  }
+
+  #setLegacy(key: string, value: SettingValue | null, label: string, opts?: { log?: boolean }): ChangelogEntry | null {
+    if (key.startsWith('accounts.') || schema.def(key)?.type === 'secret' || key === APP_KEYS_SETTING) throw new Error('Change this setting in Settings.')
     if (RETIRED_SETTING_KEYS.has(key)) return null
     const old = this.get(key)
     if (old === value) return null
@@ -692,9 +741,32 @@ export class SettingsStore {
     return entry ? { ...entry } : null
   }
 
+  /** IPC writers await this method; a shared preference never falls back to settings.json. */
+  async setPersisted(key: string, value: SettingValue | null, label: string, opts?: { log?: boolean }): Promise<ChangelogEntry | null> {
+    if (key.startsWith('accounts.') || schema.def(key)?.type === 'secret' || key === APP_KEYS_SETTING) throw new Error('Change this setting in Settings.')
+    if (this.#shared?.owns(key)) {
+      await this.#shared.persist(key, value)
+      return null
+    }
+    return this.#setLegacy(key, value, label, opts)
+  }
+
+  /** The legacy reset bridge also awaits an owned preference and cannot fall back to the old file. */
+  async revertPersisted(index: number): Promise<ChangelogEntry | null> {
+    const entry = this.#data.changelog[index]
+    if (!entry || entry.reverted || entry.key.startsWith('accounts.') || entry.key === APP_KEYS_SETTING) return null
+    if (this.#shared?.owns(entry.key)) await this.setPersisted(entry.key, entry.old, entry.label)
+    else if (entry.old === null) delete this.#data.values[entry.key]
+    else this.#data.values[entry.key] = entry.old
+    entry.reverted = true
+    this.#persist()
+    for (const listener of this.#listeners) listener(entry.key)
+    return { ...entry }
+  }
+
   /** The changelog, newest first (copies). */
   changelog(): ChangelogEntry[] {
-    return this.#data.changelog.map((entry) => ({ ...entry }))
+    return this.#data.changelog.filter((entry) => !entry.key.startsWith('accounts.') && schema.def(entry.key)?.type !== 'secret').map((entry) => ({ ...entry }))
   }
 
   /** Inspect a reset before a filesystem-backed setting performs its required write. */
@@ -710,14 +782,7 @@ export class SettingsStore {
    * nothing re-logs; honesty lives in the ` · reset` marker. A later set of the same key records
    * the reverted-to value as its `old`. Returns the updated entry, or null for a bad/spent index.
    */
-  revert(index: number): ChangelogEntry | null {
-    const entry = this.#data.changelog[index]
-    if (!entry || entry.reverted) return null
-    if (entry.old === null) delete this.#data.values[entry.key]
-    else this.#data.values[entry.key] = entry.old
-    entry.reverted = true
-    this.#persist()
-    for (const listener of this.#listeners) listener(entry.key)
-    return { ...entry }
+  async revert(index: number): Promise<ChangelogEntry | null> {
+    return this.revertPersisted(index)
   }
 }

@@ -1,3 +1,4 @@
+import { pendingOutsideBatchChange } from '../shared/outside-batch-review'
 import { guardReaderAcceptance } from './sharing-reader-notes-run'
 import { prepareVersionRestore, versionMovesForRestore } from './version-moves'
 import { assertCollectionWritable } from './collection-write-gate'
@@ -8,6 +9,7 @@ import { folioRoomContext } from './folio-room-context'
 import { AmbientState, ambientContextItem } from './ambient'
 import { resolveWidgetFileForInsert } from './widget-insert'
 import { planWidgetCreate } from './widget-create'
+import { recordingCreatedFiles, type CreatedFiles } from './created-file-record'
 import type { WidgetsCreateInput } from './verbs/verb-support'
 import { insertWidgetInText, relativeEmbedPath, removeWidgetInText } from '../shared/widget-insert'
 import type { PromptComposition } from './threads'
@@ -34,8 +36,8 @@ import {
   type ProposalPreview,
   type TraceEvent,
 } from '@bridle/core'
-import { existsSync, statSync } from 'node:fs'
-import { unlink } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { lstatSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { isAbsolute, posix } from 'node:path'
 import { buildWriteFlexManifest, resolveProseInsert, resolveProseInsertAt, resolveProseMove, setFrontmatterKeys, writeflexApprovalPolicy, type CapabilityServices, type FrontmatterSetInput, type ObjectInsertInput, type ProseEditInput, type ProseInsertInput, type ProseMoveInput } from './capabilities'
 import { objectBlock } from '../shared/object-markup'
@@ -100,7 +102,7 @@ export type Suggestion = { id: string; capabilityName: string; input: unknown; p
 export type ScriptedStep = { cap: string; input: unknown }
 export type ScriptedTurn = Parameters<typeof scriptedSessionFactory>[0][number]
 /** `sweep: false`: after an accept, the other outside changes of the document that no longer place are left waiting, not closed (Accept all from one source). */
-export type ResolveOptions = { sweep?: boolean }
+export type ResolveOptions = { sweep?: boolean; batchPath?: string }
 /** `receipt`: an accept that wrote the change's file says what THIS call wrote there (its own write's
  *  receipt, never one looked up afterwards); absent when the accept wrote nothing to it.
  *  `closed`: the Change could not be applied and has been closed with `message` as its recorded reason
@@ -879,8 +881,8 @@ export class WorkspaceAgent {
    * nor declined, and nothing is owed to a reader. The writer is told why and may Decline it. Any
    * other reason (the document is missing, unreadable, not a document, an empty record) closes it.
    */
-  private notPlaced(change: Change, unplaced: Unplaceable): Promise<ResolveChangeResult> | ResolveChangeResult {
-    if (UNPLACED_ON_ACCEPT.has(unplaced.code)) return { applied: false, message: unplaced.reason }
+  private notPlaced(change: Change, unplaced: Unplaceable, inBatch = false): Promise<ResolveChangeResult> | ResolveChangeResult {
+    if (inBatch || UNPLACED_ON_ACCEPT.has(unplaced.code)) return { applied: false, message: unplaced.reason }
     return this.closeChange(change, unplaced.reason, unplaced.code)
   }
 
@@ -925,8 +927,10 @@ export class WorkspaceAgent {
     let thrown: unknown
     // Every write the adoption makes through the Workspace, for a rewind that puts back only those (R7).
     const written: OperationWrite[] = []
+    // Every file it creates outside those writes, with the hash of what it wrote, for the same rewind.
+    const createdOutside: CreatedFiles = new Map()
     try {
-      proposal = await this.workspace.recordingOperationWrites(written, () => this.bridle.proposals.adopt(id))
+      proposal = await recordingCreatedFiles(createdOutside, () => this.workspace.recordingOperationWrites(written, () => this.bridle.proposals.adopt(id)))
     } catch (error) {
       thrown = error
       proposal = (await this.bridle.proposals.get(id))!
@@ -938,7 +942,7 @@ export class WorkspaceAgent {
     }
     // What the refusal says happened to the Collection is what did: a rewind that was refused or
     // stopped part-way is reported with what was and was not put back, never as "nothing changed".
-    const notRewound = await this.rewindAdoption(id, written)
+    const notRewound = await this.rewindAdoption(id, written, createdOutside)
     return { proposal, refused: notRewound === null ? `${refused} Nothing was changed.` : `${refused} ${notRewound}` }
   }
 
@@ -951,37 +955,66 @@ export class WorkspaceAgent {
    * which puts every snapshot back over whatever is there now and follows a link to do it.
    *
    * `since` is the journal after the adoption's restore point: a file it snapshotted as absent and that the
-   * Workspace did not write (a widget file, made by its own exclusive create) is removed as before.
+   * Workspace did not write (a widget file, made by its own exclusive create) is removed only while it holds
+   * exactly the bytes the adoption recorded writing there (`createdOutside`). Without a record, or with other
+   * bytes in it, it is kept and named: writing put there by another program is never deleted unproven.
    */
-  private rewindAdoption(proposalId: string, written: readonly OperationWrite[]): Promise<string | null> {
+  private rewindAdoption(proposalId: string, written: readonly OperationWrite[], createdOutside: ReadonlyMap<string, string> = new Map()): Promise<string | null> {
     // One turn of the Collection's write turn, from reading the journal to the last file put back: no
     // other writer in this app runs meanwhile.
     return this.workspace.exclusiveAll(async () => {
       const entries = await this.snapshots.entries()
       const point = entries.findLast((entry) => entry.kind === 'restore-point' && entry.proposalId === proposalId)
-      return this.rewindAdoptionInTurn(point ? entries.slice(entries.indexOf(point) + 1) : [], written)
+      return this.rewindAdoptionInTurn(point ? entries.slice(entries.indexOf(point) + 1) : [], written, createdOutside)
     })
   }
 
-  private async rewindAdoptionInTurn(since: JournalEntry[], written: readonly OperationWrite[]): Promise<string | null> {
+  private async rewindAdoptionInTurn(since: JournalEntry[], written: readonly OperationWrite[], createdOutside: ReadonlyMap<string, string>): Promise<string | null> {
     const outcome = await rollBackOperationWrites(documentOnlyView(this.workspace).workspace, written)
     const logged = new Set(written.map((write) => write.path))
     const created = new Set<string>()
     for (const entry of since) {
       if (entry.kind === 'snapshot' && entry.hash === ABSENT_HASH) created.add(entry.file)
     }
+    const keptCreated: string[] = []
     for (const file of created) {
       const path = this.workspace.relative(file)
       if (logged.has(path) || this.pathRefusal(path) !== null) continue
-      // Made by the adoption outside the Workspace's writes. Judged again in the tick of the delete; never a link's target.
-      this.workspace.assertWritable()
-      if (this.pathRefusal(path) === null && existsSync(file)) await unlink(file)
+      const kept = this.removeCreatedIfOwn(file, path, createdOutside.get(path))
+      if (kept !== null) keptCreated.push(kept)
     }
     const left = [
       ...outcome.changed.map((path) => `${path} changed on disk after WriteFlex wrote it, so it was left as it is.`),
       ...outcome.failed.map((failure) => `${failure.path} could not be put back (${failure.reason.replace(/[.\s]+$/, '')}), so it was left as it is.`),
+      ...keptCreated,
     ]
     return left.length ? `What the change had already written could not all be undone. ${left.join(' ')}` : null
+  }
+
+  /**
+   * Remove a file the adoption made outside the Workspace's writes, only while it holds exactly the bytes it
+   * recorded writing (`sha256`). Synchronous from the judgement to the unlink, so nothing runs between the
+   * read that proves the bytes and the delete; never a link's target. Returns null when the file is gone
+   * (removed here or already), else the sentence naming the file that was kept and why.
+   */
+  private removeCreatedIfOwn(file: string, path: string, sha256: string | undefined): string | null {
+    this.workspace.assertWritable()
+    if (this.pathRefusal(path) !== null) return null
+    let bytes: Buffer
+    try {
+      if (!lstatSync(file).isFile()) return `${path} is no longer an ordinary file, so it was left as it is.`
+      bytes = readFileSync(file)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      return code === 'ENOENT' ? null : `${path} could not be read to check it (${code ?? 'unknown error'}), so it was left as it is.`
+    }
+    if (sha256 === undefined) return `${path} was made by the change, but WriteFlex has no record of what it wrote there, so it was left as it is.`
+    if (createHash('sha256').update(bytes).digest('hex') !== sha256) return `${path} changed on disk after WriteFlex wrote it, so it was left as it is.`
+    try { unlinkSync(file) } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT') return `${path} could not be removed (${code ?? 'unknown error'}), so it was left as it is.`
+    }
+    return null
   }
 
   /**
@@ -1167,7 +1200,7 @@ export class WorkspaceAgent {
   /** Re-apply a persisted recorded move after editor undo revived it to pending. The Bridle proposal
    *  is already settled, but the Change still carries the exact source/destination coordinates C8.4
    *  froze, so redo can use the same changes:resolve door without re-interpreting the prose. */
-  private async acceptPersistedRecordedMove(change: Change): Promise<ResolveChangeResult> {
+  private async acceptPersistedRecordedMove(change: Change, inBatch: boolean): Promise<ResolveChangeResult> {
     // A move from outside is placed by its text again (the passage and its anchor, each occurring
     // once), never by the ranges found when it was added: the document may have changed since.
     const after = outsideMoveAfterOf(change)
@@ -1175,7 +1208,7 @@ export class WorkspaceAgent {
       ? applyRecordedMove(content, change)
       : resolveProseMove(content, { path: change.path, text: change.oldText, insertAfter: after, summary: change.summary }).nextContent), 'Could not apply the recorded move.')
     if ('changed' in written) return { applied: false, message: written.changed }
-    if ('reason' in written) return this.notPlaced(change, written)
+    if ('reason' in written) return this.notPlaced(change, written, inBatch)
     await this.changes?.setStatus(change.id, 'accepted')
     this.onChangesChanged?.()
     return { applied: true }
@@ -1268,7 +1301,7 @@ export class WorkspaceAgent {
   }
 
   private async resolveChangeWriting(changeId: string, action: 'accept' | 'reject', options: ResolveOptions): Promise<ResolveChangeResult> {
-    const result = await this.resolveChangeOnce(changeId, action)
+    const result = await this.resolveChangeOnce(changeId, action, options.batchPath)
     if (action === 'accept' && result.applied && options.sweep !== false) await this.closeOutsideChangesNoLongerPlaceable(changeId)
     return result
   }
@@ -1315,13 +1348,17 @@ export class WorkspaceAgent {
    * has recorded `accepted`, finds it, and writes nothing. The scrap store's queue is taken first
    * (`queueThenTurn`, the one order): accepting may run a capability that asks for it.
    */
-  private resolveChangeOnce(changeId: string, action: 'accept' | 'reject'): Promise<ResolveChangeResult> {
+  private resolveChangeOnce(changeId: string, action: 'accept' | 'reject', batchPath?: string): Promise<ResolveChangeResult> {
     return queueThenTurn(this.scrapQueue, this.workspace, async () => {
-      const candidate = action === 'accept' ? await this.changes?.get(changeId) : null
-      if (candidate && (candidate.status === 'pending' || candidate.status === 'held') && !closedReasonOf(candidate)) {
-        return guardReaderAcceptance(this.workspace.root, candidate, () => this.resolveChangeInTurn(changeId, action))
+      const inBatch = batchPath !== undefined
+      const candidate = action === 'accept' || inBatch ? await this.changes?.get(changeId) : null
+      if (inBatch && (!candidate || candidate.path !== batchPath || !pendingOutsideBatchChange(candidate))) {
+        return { applied: false, message: 'This proposal changed since the preview.' }
       }
-      return this.resolveChangeInTurn(changeId, action)
+      if (candidate && (candidate.status === 'pending' || candidate.status === 'held') && !closedReasonOf(candidate)) {
+        return guardReaderAcceptance(this.workspace.root, candidate, () => this.resolveChangeInTurn(changeId, action, inBatch))
+      }
+      return this.resolveChangeInTurn(changeId, action, inBatch)
     })
   }
 
@@ -1337,7 +1374,7 @@ export class WorkspaceAgent {
     return { applied: !result.isError, ...(result.isError ? { message: result.text } : said ? { message: said } : {}), ...(closed ? { closed: true as const } : {}), ...(!result.isError && details?.scratchPlacement ? { scratchPlacement: details.scratchPlacement } : {}) }
   }
 
-  private async resolveChangeInTurn(changeId: string, action: 'accept' | 'reject'): Promise<ResolveChangeResult> {
+  private async resolveChangeInTurn(changeId: string, action: 'accept' | 'reject', inBatch: boolean): Promise<ResolveChangeResult> {
     if (action === 'accept') {
       // Before anything is read, snapshotted or written, and whichever route below would apply it:
       // a Change whose path is not a document the sidebar would show is closed, never accepted.
@@ -1349,7 +1386,7 @@ export class WorkspaceAgent {
         return { applied: false, message: 'That change targets a file outside the visible folders of the Workspace, so nothing was written.' }
       }
       const refusal = candidate ? this.pathRefusal(candidate.path) : null
-      if (candidate && refusal) return this.closeChange(candidate, refusal, 'not-a-document')
+      if (candidate && refusal) return this.notPlaced(candidate, { reason: refusal, code: 'not-a-document' }, inBatch)
       // Already accepted: its text was placed when it was accepted. A second Accept (a repeated or
       // late click, a retried call) writes nothing and reads nothing; placing it again would put an
       // insertion in twice. Applying it again after an undo is done by reopening it to pending.
@@ -1419,7 +1456,7 @@ export class WorkspaceAgent {
         return { applied: true }
       }
       if (change.editClass === 'move') {
-        return this.acceptPersistedRecordedMove(change)
+        return this.acceptPersistedRecordedMove(change, inBatch)
       }
       if (change.editClass === 'insert') {
         // An insert stores its anchor as `insertAfter` (empty = append), so unlike a move it CAN replay
@@ -1441,7 +1478,7 @@ export class WorkspaceAgent {
                 }).nextContent
         )), 'Could not place the insertion.')
         if ('changed' in written) return { applied: false, message: written.changed }
-        if ('reason' in written) return this.notPlaced(change, written)
+        if ('reason' in written) return this.notPlaced(change, written, inBatch)
         await this.changes.setStatus(changeId, 'accepted')
         const warning = await this.settlementWarning(agentObjectFromChange(change), 'accepted', this.takeRestagedOrigin(change.id))
         this.onChangesChanged?.()
@@ -1462,7 +1499,7 @@ export class WorkspaceAgent {
         return addHeadingChecked(change, content, content.slice(0, range.from) + change.newText + content.slice(range.to))
       }, 'Could not place the change.')
       if ('changed' in written) return { applied: false, message: written.changed }
-      if ('reason' in written) return this.notPlaced(change, written)
+      if ('reason' in written) return this.notPlaced(change, written, inBatch)
       await this.changes.setStatus(changeId, 'accepted')
       this.onChangesChanged?.()
       return { applied: true }

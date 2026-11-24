@@ -14,6 +14,8 @@ import { agentArguments, commandLineAgentParams, runWriteFlexAgent } from './age
 import { resolveAppVariant } from './app-variant'
 import { runCli } from './cli/run'
 import { readCapped } from './cli/stdin'
+import { run as runSettings } from '../cli/settings-cli'
+import { userDataDir } from '../cli/paths'
 
 /**
  * Which app this command line belongs to, and so whose application-data folder it writes its undo
@@ -41,7 +43,7 @@ async function runAgentRoute(args: string[]): Promise<number> {
 }
 
 const agentArgs = agentArguments(process.argv.slice(2))
-const run = agentArgs ? runAgentRoute(agentArgs) : runCli(process.argv.slice(2), {
+const run = process.argv[2] === 'settings' ? runSettings(process.argv.slice(3), undefined, userDataDir(ownVariant())) : agentArgs ? runAgentRoute(agentArgs) : runCli(process.argv.slice(2), {
   write: { variant: ownVariant() },
   cwd: process.cwd(),
   stdout: (text) => process.stdout.write(text),

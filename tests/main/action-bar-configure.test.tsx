@@ -405,23 +405,23 @@ test('the sheet is the drawing: two lists, a search field over the left one, a m
 
 // ---- Where it is reached from, and where the state lives ----------------------------------------
 
-test('the sheet is reached from the bar’s own control AND from Settings → Action bar', () => {
+test('the sheet is reached from the bar’s own control AND from the Settings window', () => {
   const app = readFileSync(new URL('../../src/renderer/src/app/App.tsx', import.meta.url), 'utf8')
   // A1 left the bar's configure control behind one prop; this is it.
   expect(app).toContain('onConfigure={() => setConfigureActionBarOpen(true)}')
   expect(app).toContain('<ActionBarConfigureSheet')
-  expect(app).toContain('onConfigureActionBar={() => setConfigureActionBarOpen(true)}')
-  // The sheet is rendered AFTER the Settings window, so opening it from inside Settings puts it on
-  // top rather than behind.
-  expect(app.indexOf('<ActionBarConfigureSheet')).toBeGreaterThan(app.indexOf('<SettingsWindow'))
   // While it is up it owns the keyboard, like every other sheet.
   expect(app).toContain('|| configureActionBarOpen')
 
-  const settings = readFileSync(new URL('../../src/renderer/src/components/SettingsWindow.tsx', import.meta.url), 'utf8')
-  expect(settings).toContain("{ id: 'sec-action-bar', title: 'Action bar', icon: PanelTop }")
-  expect(settings).toContain('onClick={onConfigureActionBar}')
-  // The Settings switch writes the SAME global boolean the toolbar toggle does — no second setting.
-  expect(settings).toContain('onSet(ACTION_BAR_VISIBLE_KEY, e.target.checked, ACTION_BAR_VISIBLE_LABEL)')
+  // Settings is its own window (0.27): its Get started page runs the palette's own configure command
+  // in the main window, so the sheet opens there, above everything.
+  const pages = readFileSync(new URL('../../src/renderer/src/settings-pages.tsx', import.meta.url), 'utf8')
+  expect(pages).toContain("run('view.configureActionBar')")
+  const host = readFileSync(new URL('../../src/main/settings-host.ts', import.meta.url), 'utf8')
+  expect(host).toContain("'view.configureActionBar'")
+  // The Settings switch is the SAME global boolean the toolbar toggle writes — no second setting.
+  const schema = readFileSync(new URL('../../src/shared/settings-schema.ts', import.meta.url), 'utf8')
+  expect(schema).toContain("on('chrome.actionBarVisible'")
 })
 
 test('configuring the bar is a registered, palette-listed, rebindable command', () => {

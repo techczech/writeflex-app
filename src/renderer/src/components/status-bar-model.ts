@@ -211,8 +211,10 @@ export function reviewModeLine(mode: ReviewLineMode): ReviewModeLine {
   }
 }
 
-export function waitingInOtherPieces(pieces: number): string {
-  return `Waiting in ${pieces.toLocaleString()} other ${pieces === 1 ? 'piece' : 'pieces'}`
+export const REVIEW_ELSEWHERE_HELP = 'Edits sent to WriteFlex from outside the app (for example by an agent, another app or another computer), waiting for you to accept or reject.'
+
+export function waitingInOtherPieces(documents: number): string {
+  return `Changes to review in ${documents.toLocaleString()} other document${documents === 1 ? '' : 's'}`
 }
 
 /**

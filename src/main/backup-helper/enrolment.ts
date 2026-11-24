@@ -80,7 +80,8 @@ import { createEarlierLocations } from './earlier-locations'
 import { WRITEFLEX_SCOPE } from '../../shared/backup-scope'
 import { HISTORY_APPROVAL_BASENAME } from '../../backup-helper/history-approvals'
 import { randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { isAppleToolStub } from '../apple-tool-stub'
 import { lstat, mkdir, readFile, realpath, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BackupEarlierInput, BackupEnableInput, BackupEnrolmentPreview, BackupEnrolmentResult, BackupEnrolmentStatus, BackupHelperRun, BackupPrerequisite, BackupRemoteView } from '../../shared/backup-enrolment'
@@ -166,7 +167,8 @@ export function backupHelperEntry(packaged: boolean, resourcesPath: string, appP
 
 const firstFile = (candidates: readonly string[]): string | null => {
   for (const c of candidates) {
-    try { if (statSync(c).isFile()) return c } catch { /* next */ }
+    // A link (Homebrew's or a hand-made one) to Apple's `/usr/bin` stub would open the install dialog: never chosen.
+    try { if (statSync(c).isFile() && !isAppleToolStub(realpathSync(c))) return c } catch { /* next */ }
   }
   return null
 }
