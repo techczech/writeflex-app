@@ -109,7 +109,7 @@ test('planning a status writes nothing (I-4)', async () => {
 
 const probe = String.raw`
   import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
+  import { electronMainStandIn, settingsForIpcTest } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
   import { join } from 'node:path'
   import { tmpdir } from 'node:os'
@@ -140,7 +140,7 @@ const probe = String.raw`
   state.workspace = new Raced(root)
   state.agent = null
   state.agentReady = null
-  registerIpc({ openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} }, { modelDefaults: () => ({}), recents: () => [] }, {})
+  registerIpc({ openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} }, await settingsForIpcTest(root), {})
   const invoke = (name, value) => handlers.get(name)({ sender }, value)
   const file = join(root, 'series', 'piece.md')
   const changes = () => sent.filter(([channel]) => channel === 'collection:changed').length

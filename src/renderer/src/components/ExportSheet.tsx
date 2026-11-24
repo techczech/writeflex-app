@@ -571,8 +571,8 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
             </button>
           </>}
           {ebookComplete && <>
-            <button className="btn ghost" type="button" onClick={() => void window.writeflex.folioEpub.reveal().catch(() => setProblem('The saved ebook has moved or changed.'))}>Show in Finder</button>
-            <button className="btn ghost" type="button" onClick={() => void window.writeflex.folioEpub.open().catch(() => setProblem('The ebook could not be opened.'))}>Open ebook</button>
+            <button className="btn ghost" type="button" onClick={() => void window.writeflex.folioEpub?.reveal().catch(() => setProblem('The saved ebook has moved or changed.'))}>Show in Finder</button>
+            <button className="btn ghost" type="button" onClick={() => void window.writeflex.folioEpub?.open().catch(() => setProblem('The ebook could not be opened.'))}>Open ebook</button>
             <button className="btn primary" type="submit" autoFocus>Done</button>
           </>}
           {done !== null && (

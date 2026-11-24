@@ -3,9 +3,9 @@ import {join} from 'node:path'
 import {rename} from 'node:fs/promises'
 import {SnapshotStore} from '@bridle/core'
 import {fixture} from './git-vault-sync-fixture'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 import {SendProgress,pendingFingerprint} from '../../src/main/git-sync-progress'
-testWithGitleaks('G1 failed offline sends keep retrying and manual sends always bypass a genuine stall',async()=>{
+testWithSafeSyncGitAndGitleaks('G1 failed offline sends keep retrying and manual sends always bypass a genuine stall',async()=>{
  const f=await fixture();try{
   await f.put(f.a,'draft.md','Written offline.\n');const sa=await SnapshotStore.open({dir:join(f.a,'.bridle'),root:f.a});await sa.snapshotFile(join(f.a,'draft.md'),{sessionId:'s'})
   const status=await f.A.status(f.av),paths=[...status.internalPending,...status.pending.map(d=>d.path)],before=await pendingFingerprint(f.a,paths),head=f.git(f.a,'rev-parse','HEAD'),guard=new SendProgress()

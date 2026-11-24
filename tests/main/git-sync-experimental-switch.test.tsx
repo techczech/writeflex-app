@@ -14,7 +14,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { GitPanel } from '../../src/renderer/src/sync/GitSync'
 import type { GitView } from '../../src/shared/git-sync-view'
 import { EXPERIMENTAL_GIT_SYNC_OFF } from '../../src/shared/git-sync-settings'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 
 const gitEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' }
 const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', args, { cwd, env: gitEnv, stdio: 'pipe' }).toString().trim()
@@ -82,7 +82,7 @@ const probe = String.raw`
 type Probe = { started: string[][]; marks: Record<string, number>; views: Record<string, { enabled: boolean; experimentalOff: boolean; marker: boolean }>; turnOn: string }
 
 // Sending (the switched-on half) runs the secret check, so the journey needs gitleaks, like the other sync journeys.
-testWithGitleaks('switched off at launch: nothing sends or fetches and the vault shows its marker; on at the next launch it sends', async () => {
+testWithSafeSyncGitAndGitleaks('switched off at launch: nothing sends or fetches and the vault shows its marker; on at the next launch it sends', async () => {
   const scratch = await realpath(await mkdtemp(join(tmpdir(), 'wf-sync-switch-')))
   try {
     const vault = join(scratch, 'vault'), remote = join(scratch, 'remote.git'), xcodeSelect = join(scratch, 'xcode-select')

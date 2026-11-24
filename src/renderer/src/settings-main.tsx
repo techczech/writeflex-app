@@ -29,7 +29,6 @@ const ROW_HINTS: Record<string, RowHint> = {
   'editor.ruler.opacity': { step: 5 },
   'readAloud.rate': { step: 0.1 },
   'sounds.typing.enabled': { summary: 'Distinct sounds for keys, Space, Return and Backspace' },
-  'sounds.typing.scheme': { control: 'segmented' },
   'sounds.typing.volume': { step: 0.05 },
   'sounds.ambient.volume': { step: 0.05 },
   'agent.model': { summary: 'Choose it on the Model page', example: 'openai-codex::gpt-5.5' },

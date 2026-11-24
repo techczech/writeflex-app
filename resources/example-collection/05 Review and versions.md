@@ -22,6 +22,8 @@ The stone comes out of the field the wall goes round. Nobody carried it far. The
 >
 > Three more views are modes in the palette, and they are there even when nothing is waiting; Esc goes back to review. **Settled today** shows what you accepted or declined today beside its words; Reopen on its card makes one wait again. **My edits** shows your own recorded edits as cards, with Accept all for the session. **Show quiet fixes** shows the small fixes that otherwise wait without a card.
 >
+> **All comments in this Folio** lists comments and suggested edits across its parts. Choose an item to open it in context.
+>
 > Select a change you have already accepted: **Return change to review** makes it open again, and **Send original to Scratchpad** keeps the words it replaced as a scrap. **Hide strikes** hides what was taken out, and **Hide inserts** hides the marking of what was put in; choosing either again shows them.
 
 ## The gaps

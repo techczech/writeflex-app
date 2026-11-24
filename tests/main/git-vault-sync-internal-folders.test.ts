@@ -16,11 +16,11 @@ import { completedFolioSaveIds } from '../../src/main/folio-save-commit'
 import { VaultStore } from '../../src/main/vault-store'
 import { newRequestId, idOfFileName } from '../../src/main/cli/request-format'
 import { fixture, tree, snapshot, text, seed, running, addChange, hash } from './git-vault-sync-fixture'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 
 const limit = 120_000
 
-testWithGitleaks('intentionally tracked Bridle, changes and versions journals union both Mac tails and load through real readers', async () => {
+testWithSafeSyncGitAndGitleaks('intentionally tracked Bridle, changes and versions journals union both Mac tails and load through real readers', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -59,7 +59,7 @@ testWithGitleaks('intentionally tracked Bridle, changes and versions journals un
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('mutable changes ledger uses its real decision reconciliation and preserves decisions from both Macs', async () => {
+testWithSafeSyncGitAndGitleaks('mutable changes ledger uses its real decision reconciliation and preserves decisions from both Macs', async () => {
   const f = await fixture()
   try {
     const common = await seed(f)
@@ -70,7 +70,7 @@ testWithGitleaks('mutable changes ledger uses its real decision reconciliation a
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('distinct content objects and unique inbox/outbox items from both Macs all travel', async () => {
+testWithSafeSyncGitAndGitleaks('distinct content objects and unique inbox/outbox items from both Macs all travel', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -95,7 +95,7 @@ testWithGitleaks('distinct content objects and unique inbox/outbox items from bo
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('already tracked machine-local files keep their index entries and local bytes while shared history syncs', async () => {
+testWithSafeSyncGitAndGitleaks('already tracked machine-local files keep their index entries and local bytes while shared history syncs', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -124,7 +124,7 @@ testWithGitleaks('already tracked machine-local files keep their index entries a
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('immutable same-path corruption preserves both byte versions and warns without a user pair or stop', async () => {
+testWithSafeSyncGitAndGitleaks('immutable same-path corruption preserves both byte versions and warns without a user pair or stop', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -136,7 +136,7 @@ testWithGitleaks('immutable same-path corruption preserves both byte versions an
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('vault single-value conflicts keep local without a revision timestamp; stamped values take the newer value', async () => {
+testWithSafeSyncGitAndGitleaks('vault single-value conflicts keep local without a revision timestamp; stamped values take the newer value', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -149,7 +149,7 @@ testWithGitleaks('vault single-value conflicts keep local without a revision tim
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('an internal append during preparation is retained, deferred without stopping, and reconciled on the next round', async () => {
+testWithSafeSyncGitAndGitleaks('an internal append during preparation is retained, deferred without stopping, and reconciled on the next round', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -166,7 +166,7 @@ testWithGitleaks('an internal append during preparation is retained, deferred wi
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('a previous-hash ledger travels without a false stop and a divergent chained tail is kept separately', async () => {
+testWithSafeSyncGitAndGitleaks('a previous-hash ledger travels without a false stop and a divergent chained tail is kept separately', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -191,7 +191,7 @@ testWithGitleaks('a previous-hash ledger travels without a false stop and a dive
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('shared workspace identities retain both aliases through their actual reader', async () => {
+testWithSafeSyncGitAndGitleaks('shared workspace identities retain both aliases through their actual reader', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -201,7 +201,7 @@ testWithGitleaks('shared workspace identities retain both aliases through their 
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('a torn JSONL tail is preserved as opaque recovery evidence without stopping or writing invalid canonical lines', async () => {
+testWithSafeSyncGitAndGitleaks('a torn JSONL tail is preserved as opaque recovery evidence without stopping or writing invalid canonical lines', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -216,7 +216,7 @@ testWithGitleaks('a torn JSONL tail is preserved as opaque recovery evidence wit
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('S7 recovery segments compact and repeated status reuses content-addressed reads',async()=>{
+testWithSafeSyncGitAndGitleaks('S7 recovery segments compact and repeated status reuses content-addressed reads',async()=>{
  const f=await fixture();try{
   const {createHash}=await import('node:crypto'), hash=(s:string)=>createHash('sha256').update(s).digest('hex')
   const common=JSON.stringify({id:'common',prevHash:'0'.repeat(64)})+'\n'

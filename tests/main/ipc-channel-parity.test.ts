@@ -1,9 +1,11 @@
 import { expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
+import { EXPERIMENTAL_GIT_SYNC_KEY } from '../../src/shared/git-sync-settings'
+import { EPUB_EXPORT_AVAILABLE } from '../../src/shared/epub-feature'
 
 const repo = fileURLToPath(new URL('../..', import.meta.url))
 const preloadDir = join(repo, 'src', 'preload')
@@ -88,11 +90,14 @@ const probe = String.raw`
   process.exit(0)
 `
 
-async function recordedChannels(): Promise<{ handles: string[]; dependencyInvokes: string[] }> {
+async function recordedChannels(gitSyncEnabled: boolean): Promise<{ handles: string[]; dependencyInvokes: string[] }> {
   const profile = await mkdtemp(join(tmpdir(), 'wf-ipc-parity-'))
   try {
     const sourceHome = join(profile, 'external-sources')
     await mkdir(sourceHome)
+    if (gitSyncEnabled) {
+      await writeFile(join(profile, 'settings.json'), JSON.stringify({ values: { [EXPERIMENTAL_GIT_SYNC_KEY]: true } }))
+    }
     const child = Bun.spawn([process.execPath, '-e', probe], {
       cwd: repo,
       env: {
@@ -175,12 +180,20 @@ const preloadOnly: Record<string, string> = {}
 
 test('preload invokes and main IPC handlers have matching channels', async () => {
   const preloadFiles = (await readdir(preloadDir, { recursive: true })).filter(file => file.endsWith('.ts'))
-  const [registered, sourceInvokes] = await Promise.all([
-    recordedChannels(), Promise.all(preloadFiles.map(preloadInvocations)),
+  const [registered, withoutGitSync, sourceInvokes] = await Promise.all([
+    recordedChannels(true), recordedChannels(false), Promise.all(preloadFiles.map(preloadInvocations)),
   ])
   const main = new Set(registered.handles)
   const preload = new Set([...sourceInvokes.flat(), ...registered.dependencyInvokes])
+  const epubChannels = EPUB_EXPORT_AVAILABLE ? ['cancel', 'open', 'prepare', 'release', 'reveal', 'save'] : []
+  for (const channels of [preload, main]) {
+    expect([...channels].filter(channel => channel.startsWith('folio-epub:')).sort())
+      .toEqual(epubChannels.map(action => 'folio-epub:' + action))
+  }
   const difference = (from: Set<string>, to: Set<string>) => [...from].filter(channel => !to.has(channel)).sort()
+  const off = new Set(withoutGitSync.handles)
+  expect(difference(main, off)).toEqual(['git-sync:buffers'])
+  expect(difference(off, main)).toEqual([])
   console.info('[ipc-parity] %d invoke channels, %d main registrations', preload.size, main.size)
   expect({ mainOnly: difference(main, preload), preloadOnly: difference(preload, main) }).toEqual({
     mainOnly: Object.keys(mainOnly).sort(),

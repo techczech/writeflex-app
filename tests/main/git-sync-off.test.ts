@@ -4,6 +4,7 @@
  * quit start no Git process and change no byte, and the Sync tab writes nothing (git-sync-off-probe.ts).
  */
 import { expect, test } from 'bun:test'
+import { testWithSafeSyncGit } from './git-sync-prerequisites'
 
 async function probe(scenario: string) {
   const child = Bun.spawn([process.execPath, 'tests/main/git-sync-off-probe.ts', scenario], { cwd: new URL('../..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe' })
@@ -13,7 +14,7 @@ async function probe(scenario: string) {
 }
 const expected = { gitProcesses: 0, writes: 0, engines: 0, unchanged: true, marker: true }
 
-test('switched off: a vault with an interrupted receive is left byte for byte, with no Git process at startup, save or quit', async () => {
+testWithSafeSyncGit('switched off: a vault with an interrupted receive is left byte for byte, with no Git process at startup, save or quit', async () => {
   expect(await probe('interrupted')).toEqual(expected)
 }, 120000)
 

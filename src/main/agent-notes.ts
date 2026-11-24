@@ -1,3 +1,4 @@
+import { mapBounded } from './file-facts'
 import { randomUUID } from 'node:crypto'
 import { posix } from 'node:path'
 import type { Suggestion } from './agent'
@@ -148,7 +149,7 @@ function invalidCause(kind: AgentObjectKind, source: string): string | undefined
 export async function listAgentObjectNotes(ws: Workspace, collectionDir = ''): Promise<AgentObjectNote[]> {
   const directory = noteDirectory(collectionDir)
   const files = (await ws.listFiles()).filter((file) => file.directory === directory)
-  const notes = await Promise.all(files.map(async (file): Promise<AgentObjectNote | null> => {
+  const notes = await mapBounded(files, 16, async (file): Promise<AgentObjectNote | null> => {
     const content = (await ws.readFile(file.path)).content
     const frontmatter = parseFrontmatter(content)
     const status = frontmatter?.extra.agent_note_status
@@ -161,7 +162,7 @@ export async function listAgentObjectNotes(ws: Workspace, collectionDir = ''): P
       || typeof recordedAt !== 'string' || source === null) return null
     const invalidReason = invalidCause(kind, source)
     return { path: file.path, recordedAt, sourceDocument, kind, source, status, summary: heading(content), settlements: settlements(content), ...(invalidReason ? { invalidReason } : {}) }
-  }))
+  })
   return notes.filter((note): note is AgentObjectNote => note !== null)
     .sort((left, right) => right.recordedAt.localeCompare(left.recordedAt) || right.path.localeCompare(left.path))
 }
@@ -190,7 +191,7 @@ function proseNoteFromFile(path: string, content: string): AgentProseNote | null
  */
 export async function listAgentProseNotes(ws: Workspace): Promise<AgentProseNote[]> {
   const files = (await ws.listFiles()).filter((file) => posix.basename(file.directory) === AGENT_NOTE_DIR)
-  const notes = await Promise.all(files.map(async (file) => proseNoteFromFile(file.path, (await ws.readFile(file.path)).content)))
+  const notes = await mapBounded(files, 16, async (file) => proseNoteFromFile(file.path, (await ws.readFile(file.path)).content))
   return notes.filter((note): note is AgentProseNote => note !== null)
     .sort((left, right) => right.created.localeCompare(left.created) || left.path.localeCompare(right.path))
 }

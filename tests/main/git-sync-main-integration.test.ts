@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { fixture, text } from './git-vault-sync-fixture'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 import { createGitVaultSync } from '../../src/main/git-vault-sync'
 import { OwnWriteTracker } from '../../src/main/workspace-watcher'
 import { migratedSyncPreferences, syncVaultPreferences } from '../../src/shared/git-sync-settings'
@@ -13,7 +13,7 @@ test('legacy switch and wait migrate together without importing runtime receipts
   expect(entries).toEqual({[id]:{enabled:true,wait:10}})
 })
 
-testWithGitleaks('sync apply registers identity for outside-review dedupe; later foreign write is still delivered', async () => {
+testWithSafeSyncGitAndGitleaks('sync apply registers identity for outside-review dedupe; later foreign write is still delivered', async () => {
  const f = await fixture()
  try {
   const tracker = new OwnWriteTracker(p => join(f.b,p))
@@ -26,7 +26,7 @@ testWithGitleaks('sync apply registers identity for outside-review dedupe; later
  } finally {await f.close()}
 },60000)
 
-testWithGitleaks('own rename, move and bin send as delete/add without a clash', async () => {
+testWithSafeSyncGitAndGitleaks('own rename, move and bin send as delete/add without a clash', async () => {
  const f=await fixture()
  try {
   f.git(f.a,'mv','draft.md','Named piece.md')

@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { GitMark, GitPanel } from '../../src/renderer/src/sync/GitSync'
 import { leftAtQuitSentence, type GitView } from '../../src/shared/git-sync-view'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 
 const gitEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' }
 const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', args, { cwd, env: gitEnv, stdio: 'pipe' }).toString().trim()
@@ -104,7 +104,7 @@ async function launch(scratch: string, vault: string, xcodeSelect: string, mode:
   return JSON.parse(out.trim().split('\n').pop()!) as { openedLeftAtQuit: string | null; stopMs?: number; resume: unknown; sent?: { leftAtQuit: string; pending: number; state: string } }
 }
 
-testWithGitleaks('a quit that cannot send in time leaves the last save to the next opening, which sends it and tells the writer', async () => {
+testWithSafeSyncGitAndGitleaks('a quit that cannot send in time leaves the last save to the next opening, which sends it and tells the writer', async () => {
   const scratch = await realpath(await mkdtemp(join(tmpdir(), 'wf-quit-send-')))
   try {
     const vault = join(scratch, 'vault'), remote = join(scratch, 'remote.git'), developer = join(scratch, 'Developer')
@@ -136,7 +136,7 @@ testWithGitleaks('a quit that cannot send in time leaves the last save to the ne
   } finally { await rm(scratch, { recursive: true, force: true }) }
 }, 120000)
 
-testWithGitleaks('a quit mark whose writing did reach the other copy is cleared without a notice', async () => {
+testWithSafeSyncGitAndGitleaks('a quit mark whose writing did reach the other copy is cleared without a notice', async () => {
   const scratch = await realpath(await mkdtemp(join(tmpdir(), 'wf-quit-sent-')))
   try {
     const vault = join(scratch, 'vault'), remote = join(scratch, 'remote.git'), developer = join(scratch, 'Developer')
@@ -200,7 +200,7 @@ test('the Sync tab and its mark say when writing from the last quit is being sen
   expect(renderToStaticMarkup(<GitPanel controller={controller(view('waiting', 1))} open={() => {}} />)).toContain(leftAtQuitSentence.waiting)
 })
 
-testWithGitleaks('the last save in a nested Collection window before quitting is sent by the vault that contains it', async () => {
+testWithSafeSyncGitAndGitleaks('the last save in a nested Collection window before quitting is sent by the vault that contains it', async () => {
   const scratch = await realpath(await mkdtemp(join(tmpdir(), 'wf-quit-nested-')))
   try {
     const vault = join(scratch, 'vault'), remote = join(scratch, 'remote.git'), developer = join(scratch, 'Developer')
@@ -222,7 +222,7 @@ testWithGitleaks('the last save in a nested Collection window before quitting is
 // PR 298 review: a failed inspection keeps the quit marker; an intent settings cannot store stays in memory only (no
 // second storage place); a save reaches an enabled vault nested inside the saving window; each receive refreshes only
 // its own arrivals; opt-out retires only its own vault's intent; recovery is reported after its cleanup. The probe asserts each and prints one OK line per case.
-testWithGitleaks('quit recovery survives failed inspection and unwritable settings; saves reach nested vaults; every arrival refreshes', async () => {
+testWithSafeSyncGitAndGitleaks('quit recovery survives failed inspection and unwritable settings; saves reach nested vaults; every arrival refreshes', async () => {
   const child = Bun.spawn([process.execPath, 'tests/main/git-sync-quit-recovery-probe.ts'], {
     cwd: new URL('../..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe', env: { ...gitEnv },
   })

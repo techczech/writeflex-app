@@ -5,11 +5,11 @@ import { test, expect } from 'bun:test'
 import { writeFile, chmod } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fixture, tree, snapshot, text } from './git-vault-sync-fixture'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGit, testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 
 const timeout = 60_000
 
-testWithGitleaks('a real rejected push fetches, integrates and succeeds on a bounded retry', async () => {
+testWithSafeSyncGitAndGitleaks('a real rejected push fetches, integrates and succeeds on a bounded retry', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'A sent after the remote moves.\n'); let pushes = 0
@@ -28,7 +28,7 @@ test('unreachable remote returns stopped and leaves dirty writing, index and HEA
   } finally { await f.close() }
 }, timeout)
 
-test('network calls have a separately configurable longer bound and kill a timed-out upload pack', async () => {
+testWithSafeSyncGit('network calls have a separately configurable longer bound and kill a timed-out upload pack', async () => {
   const f = await fixture()
   try {
     const script = join(f.base, 'slow-upload-pack.sh')

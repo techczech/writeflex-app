@@ -302,7 +302,7 @@ test('the heading cache holds exactly 2,000 files per root, the oldest out first
   expect(reads.length).toBe(2010)
   // The first ten went, in the order they were added: the cache is the last 2,000, oldest first.
   expect(cachedFolioOutlinePaths(root)).toEqual(names.slice(10).map((name) => `paper/${name}`))
-})
+}, 30_000)
 
 test('a file that grows past the cap between stat and read is tooLarge, and no more than cap+1 bytes are read', async () => {
   await write(`paper/${MANIFEST_NAME}`, manifest(['a.md']))

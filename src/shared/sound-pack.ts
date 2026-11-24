@@ -4,11 +4,11 @@
  * Shared because BOTH sides need the same table — main reads files off disk against it (it is the
  * allowlist: nothing outside this table can be read through the sounds IPC), and the renderer's
  * SoundEngine decodes the same names into AudioBuffers. Every file is a real field recording cut to
- * a SINGLE transient; provenance and licences are in resources/sounds/CREDITS.md.
+ * a discrete mechanical action. Provenance and licences are in resources/sounds/CREDITS.md.
  */
 
 /** Keep the stored identifiers, including the original "typewriter" alias. */
-export type TypingScheme = 'deep' | 'crisp' | 'soft'
+export type TypingScheme = 'deep' | 'crisp' | 'soft' | 'olivetti' | 'hermes'
 export const DEFAULT_TYPING_SCHEME: TypingScheme = 'crisp'
 export type AmbientLoop = 'white' | 'rain'
 export type KeystrokeVoice = 'key' | 'space' | 'enter' | 'backspace'
@@ -50,6 +50,26 @@ export const TYPING_SAMPLES: Record<TypingScheme, Record<KeystrokeVoice, readonl
     enter: ['soft-enter.flac'],
     backspace: ['soft-backspace.flac'],
   },
+  olivetti: {
+    key: [
+      'olivetti-key-1.flac',
+      'olivetti-key-2.flac',
+      'olivetti-key-3.flac',
+    ],
+    space: ['olivetti-space.flac'],
+    enter: ['olivetti-enter.flac'],
+    backspace: ['olivetti-backspace.flac'],
+  },
+  hermes: {
+    key: [
+      'hermes-key-1.flac',
+      'hermes-key-2.flac',
+      'hermes-key-3.flac',
+    ],
+    space: ['hermes-space.flac'],
+    enter: ['hermes-enter.flac'],
+    backspace: ['hermes-backspace.flac'],
+  },
 }
 
 /** loop → the seam-crossfaded recording it plays. `white` keeps its settings key for compatibility;
@@ -81,7 +101,7 @@ export function typingSamples(scheme: TypingScheme, voice: KeystrokeVoice): read
  */
 export function normaliseTypingScheme(value: unknown): TypingScheme {
   if (value === 'typewriter') return 'deep'
-  if (value === 'crisp' || value === 'soft' || value === 'deep') return value
+  if (typeof value === 'string' && Object.hasOwn(TYPING_SAMPLES, value)) return value as TypingScheme
   return DEFAULT_TYPING_SCHEME
 }
 

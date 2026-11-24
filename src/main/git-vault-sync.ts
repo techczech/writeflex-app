@@ -18,6 +18,11 @@ import { refuse, siblingBlocked, GitSyncFailure, type GitSyncDocument, type GitS
   type GitSyncCall, type GitVaultSyncResult, type GitSyncPair, type GitSyncWarning, type GitSyncReason } from './git-vault-sync-types'
 export type { GitVaultSyncOptions, GitVaultSyncResult, GitSyncCall, GitSyncPair, GitSyncDocument, GitSyncReasonCode } from './git-vault-sync-types'
 
+/** The app's scanner lookup also determines whether integration tests can run a real send. */
+export function createGitSyncScanner() {
+  return createGitleaksScanner({ searchDirs: ['/opt/homebrew/bin', '/usr/local/bin'], timeoutMs: 20_000 })
+}
+
 type Context = { vault: string; root: string; prefix: string; branch: string; remote: string; host: string; repository: string; localPath?: string; gitDir: string; index: string; git: SyncGit; machineId: string }
 const queues = new Map<string, Promise<unknown>>()
 const containsRoot = (a: string, b: string) => a === b || b.startsWith(a.endsWith(sep) ? a : a + sep)
@@ -53,7 +58,7 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
   const now = options.now ?? Date.now
   const sleep = options.sleep ?? (ms => new Promise(resolveSleep => setTimeout(resolveSleep, ms)))
   const computerName = (options.computerName ?? friendlyComputerName()).replace(/[\r\n\0]/g, ' ').slice(0, 100)
-  const scanner = options.scanner ?? createGitleaksScanner({ searchDirs: ['/opt/homebrew/bin', '/usr/local/bin'], timeoutMs: 20_000 })
+  const scanner = options.scanner ?? createGitSyncScanner()
   const canonical = async (vault: string) => realpath(vault).catch(() => resolve(vault))
   const enabled = (vault: string) => options.settings.get(key(vault, 'enabled')) === true
   function machineIdentity(): string {
