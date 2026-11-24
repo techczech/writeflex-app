@@ -3,9 +3,9 @@
 // Real `git`, a bare remote and two clones through the shared fixture; no Electron.
 import { expect } from 'bun:test'
 import { fixture, text } from './git-vault-sync-fixture'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 
-testWithGitleaks('incoming WriteFlex computer labels prefer trailers, support older subjects and never adopt ordinary commit labels', async () => {
+testWithSafeSyncGitAndGitleaks('incoming WriteFlex computer labels prefer trailers, support older subjects and never adopt ordinary commit labels', async () => {
   const f = await fixture()
   try {
     const B = f.engineB({ computerName: 'MacBook Air' })

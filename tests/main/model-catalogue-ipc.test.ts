@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test'
 // Isolate Electron/Core mocks from the rest of Bun's suite, as in plan-main-ipc-wiring.
 const probe = String.raw`
   import { expect, mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
+  import { electronMainStandIn, settingsForIpcTest } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdtemp, rm } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -38,7 +38,7 @@ const probe = String.raw`
   const { registerIpc } = await import('./src/main/ipc.ts')
   const { registerWindow } = await import('./src/main/state.ts')
   registerWindow({ webContents: { id: 7, send: (channel, payload) => sent.push({ channel, payload }) }, on: () => {}, isDestroyed: () => false })
-  const registration = registerIpc({}, { modelDefaults: () => ({}), recents: () => [] }, {})
+  const registration = registerIpc({}, await settingsForIpcTest(root), {})
   await Promise.resolve()
   if (process.argv[1] === 'forward') {
     const { WorkspaceAgent } = await import('./src/main/agent.ts')

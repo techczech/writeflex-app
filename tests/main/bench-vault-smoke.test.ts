@@ -7,8 +7,10 @@ test('vault benchmark reports every journey and removes its synthetic vault', as
   const scratch = await mkdtemp(join(tmpdir(), 'wf-bench-smoke-'))
   try {
     const output = join(scratch, 'result.json')
+    const revision = 'synthetic-benchmark-revision'
     const child = Bun.spawn([process.execPath, 'scripts/bench-vault.ts', '--files', '50', '--runs', '1', '--json', output], {
-      env: { ...process.env, TMPDIR: scratch },
+      // Raw source exports have no .git directory. Use the benchmark's explicit revision input.
+      env: { ...process.env, TMPDIR: scratch, WF_BENCH_REVISION: revision },
       stdout: 'pipe',
       stderr: 'pipe',
     })
@@ -17,6 +19,7 @@ test('vault benchmark reports every journey and removes its synthetic vault', as
     ])
     if (exit !== 0) throw new Error(`Benchmark exited ${exit}\n${stdout}\n${stderr}`)
     const result = JSON.parse(await readFile(output, 'utf8'))
+    expect(result.gitSha).toBe(revision)
     expect(result.files).toBe(50)
     expect(result.rows.map((row: { journey: string }) => row.journey)).toEqual([
       'open vault', 'first search after open', 'repeat search', 'quick-open name search',

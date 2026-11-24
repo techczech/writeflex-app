@@ -8,7 +8,7 @@ import { expect, test } from 'bun:test'
 
 const probe = String.raw`
   import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
+  import { electronMainStandIn, settingsForIpcTest } from './tests/helpers/electron-main-stand-in.ts'
   import { EventEmitter } from 'node:events'
   import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
@@ -37,7 +37,7 @@ const probe = String.raw`
   } })
   registerIpc(
     { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
-    { modelDefaults: () => ({}), recents: () => [] },
+    await settingsForIpcTest(root),
     {},
   )
   const invoke = (channel, input) => handlers.get(channel)({ sender }, input)

@@ -803,7 +803,7 @@ export type WriteFlexApi = {
   /** `keepTocDepth`: the writer chose the Contents depth in the sheet; an HTML export uses exactly
    *  `html.tocDepth` (absent: Default) and main then saves it with the exported document or the Folio's
    *  Index Note (`outcome.tocDepthSave`; a refusal never fails the export). */
-  folioEpub: {
+  folioEpub?: {
     prepare: (input: EpubPrepareRequest) => Promise<EpubPrepareReply>
     save: (token: string) => Promise<EpubSaveReply>
     cancel: (token: string | null) => Promise<void>
@@ -1797,14 +1797,6 @@ const api: WriteFlexApi = {
   copyToClipboard: (markdown, kind, path) => ipcRenderer.invoke('clipboard:copy', { markdown, kind, path }),
   exportTitle: (input) => ipcRenderer.invoke('export:title', input),
   chooseExportTarget: (input) => ipcRenderer.invoke('export:choose', input),
-  folioEpub: {
-    prepare: input => ipcRenderer.invoke('folio-epub:prepare', input),
-    save: token => ipcRenderer.invoke('folio-epub:save', token),
-    cancel: token => ipcRenderer.invoke('folio-epub:cancel', token),
-    release: token => ipcRenderer.invoke('folio-epub:release', token),
-    open: () => ipcRenderer.invoke('folio-epub:open'),
-    reveal: () => ipcRenderer.invoke('folio-epub:reveal')
-  },
   exportDocument: (input) => ipcRenderer.invoke('export:document', input),
   exportBundle: (input) => ipcRenderer.invoke('export:bundle', input),
   revealExport: () => ipcRenderer.invoke('export:reveal'),

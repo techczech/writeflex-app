@@ -110,8 +110,10 @@ export const schema = defineSchema({
 
     // ---- Sounds ----
     on('sounds.typing.enabled', 'Typing sounds', 'sounds', 'Typing', 'Mechanical typewriter recordings with distinct sounds for keys, Space, Return and Backspace.', false),
-    choice('sounds.typing.scheme', 'Typewriter', 'sounds', 'Typing', [['deep', 'Classic manual'], ['crisp', 'Crisp'], ['soft', 'Soft']], DEFAULT_TYPING_SCHEME,
-      'Classic manual: Hermes Precisa 305, with a bell on Return. Crisp: brighter key strikes, with a ratchet on Return. Soft: damped manual keys and a quiet carriage return. Recordings by Joseph Sardin, _stubb and knufds (CC0). Full credits ship in resources/sounds/CREDITS.md.'),
+    choice('sounds.typing.scheme', 'Typewriter', 'sounds', 'Typing',
+      [['deep', 'Classic manual'], ['crisp', 'Crisp'], ['soft', 'Soft'], ['olivetti', 'Olivetti Lettera 22'], ['hermes', 'Hermes Baby']],
+      DEFAULT_TYPING_SCHEME,
+      'Olivetti Lettera 22 has a bright bell and a quick carriage return. Hermes Baby has lighter keys and a longer return. Recordings by keithpeter, evsecrets, Joseph Sardin, _stubb and knufds (CC0).'),
     { key: 'sounds.typing.volume', label: 'Typing volume', section: 'sounds', group: 'Typing', type: 'number', default: 0.6, min: 0, max: 1 },
     on('sounds.ambient.enabled', 'Ambient sound', 'sounds', 'Ambient', 'Bundled background loops by jackthemurray (CC0) and cori (public domain). Full credits ship in resources/sounds/CREDITS.md.', false),
     choice('sounds.ambient.loop', 'Ambient sound', 'sounds', 'Ambient', [['white', 'Warm noise'], ['rain', 'Rain']], 'white'),

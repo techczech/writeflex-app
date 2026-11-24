@@ -67,7 +67,7 @@ test('the preload exposes the write hooks only when main passed the argument', a
 // and a malformed value never stops registration (review S2: parsed when a save asks).
 const saveProbe = (isPackaged: boolean): string => String.raw`
   import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
+  import { electronMainStandIn, settingsForIpcTest } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -91,7 +91,7 @@ const saveProbe = (isPackaged: boolean): string => String.raw`
   state.workspace = new Workspace(root)
   registerIpc(
     { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
-    { modelDefaults: () => ({}), recents: () => [] },
+    await settingsForIpcTest(root),
     {},
   )
   await writeFile(join(root, 'note.md'), 'Seen.\n')

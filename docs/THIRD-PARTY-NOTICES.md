@@ -14,6 +14,8 @@ The local `vendor/reader/reader.html` change replaces three `resource://zotero/`
 
 The sound pack includes CC BY and CC0/public-domain material. Attribution and processing details are in `resources/sounds/CREDITS.md`.
 
+The Olivetti Lettera 22 set uses [typewriter-olivetti-lettra-22.wav by keithpeter](https://freesound.org/people/keithpeter/sounds/123344/). The Hermes Baby set uses [Typing on a typewriter with ding at end of each line.wav by evsecrets](https://freesound.org/people/evsecrets/sounds/334458/). Both original recordings were released under [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/).
+
 ## App Patterns outline
 
 `@app-patterns/outline` 0.3.0 is MIT licensed, copyright 2026 Dominik Lukeš. The public release archive at `vendor/app-patterns/app-patterns-outline-0.3.0.tgz` includes the compiled module, type declarations and full MIT licence in `package/LICENSE`. Installation uses the archive directly; it does not rebuild the package.

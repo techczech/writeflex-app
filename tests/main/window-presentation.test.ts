@@ -65,8 +65,10 @@ test('destroyed windows and an empty window list cause no presentation calls', (
 test('Settings frame openMain uses the guard and still dispatches editor commands', async () => {
   const probe = String.raw`
     import { mock } from 'bun:test'
+    import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
     mock.module('electron', () => ({
-      app: { isPackaged: false }, BrowserWindow: class {}, dialog: {}, Menu: {}, shell: {},
+      ...electronMainStandIn,
+      app: { isPackaged: false }, dialog: {}, shell: {},
       ipcMain: { handle() {}, removeHandler() {} },
     }))
     let options

@@ -10,7 +10,7 @@ import { SettingsStore } from '../../src/main/settings'
 import { ChangeStore } from '../../src/main/changes'
 import { Workspace } from '../../src/main/workspace'
 import { fixture, tree, snapshot, text, seed, running, addChange } from './git-vault-sync-fixture'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 
 const timeout = 60_000
 const limit = 120_000
@@ -52,7 +52,7 @@ async function child(f:Awaited<ReturnType<typeof fixture>>,hook:string,op='send'
  return new Promise<number|null>((resolve,reject)=>{const c=spawn(process.execPath,['-e',source],{stdio:['ignore','ignore','pipe']});let errors='';c.stderr.on('data',d=>errors+=d.toString().slice(0,2000));const timer=setTimeout(()=>reject(new Error('child timed out')),60000);c.on('close',code=>{clearTimeout(timer);if(code===1||code===2)reject(new Error(errors));else resolve(code)})})
 }
 
-testWithGitleaks('index.lock is waited on, never deleted; release allows send and timeout leaves it intact', async () => {
+testWithSafeSyncGitAndGitleaks('index.lock is waited on, never deleted; release allows send and timeout leaves it intact', async () => {
   const f = await fixture()
   try {
     const lock = join(f.a, '.git/index.lock'); await writeFile(lock, 'Owned by the test, not WriteFlex.'); await f.put(f.a, 'draft.md', 'A waiting draft.\n')
@@ -69,7 +69,7 @@ testWithGitleaks('index.lock is waited on, never deleted; release allows send an
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('failure after a merge starts applying restores files, directories, the index and HEAD exactly', async () => {
+testWithSafeSyncGitAndGitleaks('failure after a merge starts applying restores files, directories, the index and HEAD exactly', async () => {
   const f = await fixture(true)
   try {
     await f.put(f.a, 'vault/draft.md', 'Local version.\n'); await f.put(f.b, 'vault/draft.md', 'Remote version.\n'); await f.put(f.b, 'vault/new-folder/new.md', 'New remote file.\n'); await f.B.send(f.bv)
@@ -80,7 +80,7 @@ testWithGitleaks('failure after a merge starts applying restores files, director
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('a post-push local merge failure restores the local tree, reports the actual send, and retains the pair through recovery', async () => {
+testWithSafeSyncGitAndGitleaks('a post-push local merge failure restores the local tree, reports the actual send, and retains the pair through recovery', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'A keeps this version.\n'); await f.put(f.b, 'draft.md', 'B keeps this version.\n'); await f.B.send(f.bv)
@@ -94,7 +94,7 @@ testWithGitleaks('a post-push local merge failure restores the local tree, repor
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('R5 rollback leaves both newer saves and reports the preserved document', async () => {
+testWithSafeSyncGitAndGitleaks('R5 rollback leaves both newer saves and reports the preserved document', async () => {
   const f = await fixture()
   try {
     await f.put(f.b, 'draft.md', 'B draft.\n'); await f.put(f.b, 'second.md', 'B second.\n'); await f.B.send(f.bv)
@@ -115,7 +115,7 @@ testWithGitleaks('R5 rollback leaves both newer saves and reports the preserved 
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('network preparation holds no real index lock, and an ordinary vault-only user commit is sent', async () => {
+testWithSafeSyncGitAndGitleaks('network preparation holds no real index lock, and an ordinary vault-only user commit is sent', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'Own vault-only commit.\n'); f.git(f.a, 'commit', '-am', 'WriteFlex: spoofed message')
@@ -128,7 +128,7 @@ testWithGitleaks('network preparation holds no real index lock, and an ordinary 
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('index is installed before the branch; a real process crash between them is repaired on reopening', async () => {
+testWithSafeSyncGitAndGitleaks('index is installed before the branch; a real process crash between them is repaired on reopening', async () => {
   const f = await fixture()
   try {
     const oldHead = f.git(f.a, 'rev-parse', 'HEAD')
@@ -142,7 +142,7 @@ testWithGitleaks('index is installed before the branch; a real process crash bet
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('a dead WriteFlex lock owner is reclaimed after a real process crash; unknown locks remain foreign', async () => {
+testWithSafeSyncGitAndGitleaks('a dead WriteFlex lock owner is reclaimed after a real process crash; unknown locks remain foreign', async () => {
   const f = await fixture()
   try {
     await f.put(f.b, 'draft.md', 'Incoming before lock crash.\n'); expect((await f.B.send(f.bv)).reason).toBeUndefined()
@@ -154,7 +154,7 @@ testWithGitleaks('a dead WriteFlex lock owner is reclaimed after a real process 
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('a caught failure after index installation compensates the index, files and branch', async () => {
+testWithSafeSyncGitAndGitleaks('a caught failure after index installation compensates the index, files and branch', async () => {
   const f = await fixture()
   try {
     await f.put(f.b, 'draft.md', 'Incoming before install fault.\n'); await f.B.send(f.bv)
@@ -165,7 +165,7 @@ testWithGitleaks('a caught failure after index installation compensates the inde
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('one installation never reclaims another installation’s orphaned Git index lock', async () => {
+testWithSafeSyncGitAndGitleaks('one installation never reclaims another installation’s orphaned Git index lock', async () => {
   const f = await fixture()
   try {
     await f.put(f.b, 'draft.md', 'Incoming before ownership test.\n'); expect((await f.B.send(f.bv)).reason).toBeUndefined()
@@ -180,7 +180,7 @@ testWithGitleaks('one installation never reclaims another installation’s orpha
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('rollback never overwrites an app append made after the engine applied a ledger', async () => {
+testWithSafeSyncGitAndGitleaks('rollback never overwrites an app append made after the engine applied a ledger', async () => {
   const f = await fixture()
   try {
     await seed(f)
@@ -202,7 +202,7 @@ testWithGitleaks('rollback never overwrites an app append made after the engine 
   } finally { await f.close() }
 }, limit)
 
-testWithGitleaks('S4 a process exit between apply writes recovers target bytes as sync-owned',async()=>{
+testWithSafeSyncGitAndGitleaks('S4 a process exit between apply writes recovers target bytes as sync-owned',async()=>{
  const f=await fixture();try{
   await f.put(f.b,'draft.md','B draft.\n');await f.put(f.b,'second.md','B second.\n');await f.B.send(f.bv)
   await f.put(f.a,'draft.md','A local.\n');await f.put(f.a,'third.md','A third.\n')
@@ -214,7 +214,7 @@ testWithGitleaks('S4 a process exit between apply writes recovers target bytes a
  }finally{await f.close()}
 },180000)
 
-testWithGitleaks('S4a a save after interruption keeps the incoming version as a real pair on both Macs',async()=>{
+testWithSafeSyncGitAndGitleaks('S4a a save after interruption keeps the incoming version as a real pair on both Macs',async()=>{
  const f=await fixture();try{
   await f.put(f.b,'draft.md','B draft.\n');await f.put(f.b,'second.md','B second incoming.\n');await f.B.send(f.bv);await f.put(f.a,'third.md','A third.\n')
   expect(await child(f,`checkpoint:async p=>{if(p==='after-write'&&++seen===1)process.exit(91)}`)).toBe(91)
@@ -225,7 +225,7 @@ testWithGitleaks('S4a a save after interruption keeps the incoming version as a 
  }finally{await f.close()}
 },180000)
 
-testWithGitleaks('S4b two interruptions remove only UUID sync temporaries on restart',async()=>{
+testWithSafeSyncGitAndGitleaks('S4b two interruptions remove only UUID sync temporaries on restart',async()=>{
  const f=await fixture();try{
   await f.put(f.b,'draft.md','B draft.\n');await f.put(f.b,'second.md','B second.\n');await f.put(f.b,'zfour.md','B four.\n');await f.B.send(f.bv);await f.put(f.a,'third.md','A third.\n')
   expect(await child(f,`checkpoint:async p=>{if(p==='after-write'&&++seen===1)process.exit(91)}`)).toBe(91)

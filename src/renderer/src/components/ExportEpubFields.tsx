@@ -51,7 +51,7 @@ export function useEpubExport(prepare: Prepare | undefined, keepLineBreaks: bool
   useEffect(() => {
     if (!prepare) return
     return () => {
-      void window.writeflex.folioEpub.release(null).catch(() => {})
+      void window.writeflex.folioEpub?.release(null).catch(() => {})
       latestToken.current = null
     }
   }, [prepare])
@@ -60,13 +60,14 @@ export function useEpubExport(prepare: Prepare | undefined, keepLineBreaks: bool
   const checkAgain = () => setRefresh(value => value + 1)
 
   const save = useCallback(async () => {
-    if (!valid || !ready || savingRef.current) return
+    const bridge = window.writeflex.folioEpub
+    if (!bridge || !valid || !ready || savingRef.current) return
     savingRef.current = true
     setSaving(true)
     setCancelled(false)
     setProblem(null)
     try {
-      const answer = await window.writeflex.folioEpub.save(ready.token)
+      const answer = await bridge.save(ready.token)
       if (answer.status === 'complete') setComplete(answer)
       if (answer.status === 'cancelled') setCancelled(true)
       if (answer.status === 'error') {
@@ -83,11 +84,12 @@ export function useEpubExport(prepare: Prepare | undefined, keepLineBreaks: bool
   }, [ready, valid])
 
   function cancel(): void {
-    if (cancelling) return
+    const bridge = window.writeflex.folioEpub
+    if (!bridge || cancelling) return
     setCancelling(true)
     const wasSaving = savingRef.current
     if (!wasSaving) ++generation.current
-    void window.writeflex.folioEpub.cancel(wasSaving ? latestToken.current : null).finally(() => {
+    void bridge.cancel(wasSaving ? latestToken.current : null).finally(() => {
       // Save owns its outcome, including a commit which won against cancellation.
       if (!wasSaving) {
         setChecked(null)

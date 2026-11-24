@@ -6,12 +6,12 @@ import { randomBytes } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fixture, tree, snapshot, text, seed, hash } from './git-vault-sync-fixture'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 
 const timeout = 60_000
 const limit = 120_000
 
-testWithGitleaks('a planted synthetic secret blocks a commit, names its document and preserves the exact original index', async () => {
+testWithSafeSyncGitAndGitleaks('a planted synthetic secret blocks a commit, names its document and preserves the exact original index', async () => {
   const f = await fixture(true)
   try {
     await f.put(f.a, 'sibling/notes.md', 'Keep this staged.\n'); f.git(f.a, 'add', 'sibling/notes.md')
@@ -33,7 +33,7 @@ test('missing scanner fails closed and restores the index', async () => {
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('a secret in an intermediate outgoing commit from another tool is not pushed even if the final tree removed it', async () => {
+testWithSafeSyncGitAndGitleaks('a secret in an intermediate outgoing commit from another tool is not pushed even if the final tree removed it', async () => {
   const f = await fixture()
   try {
     const fake = 'ghp_' + randomBytes(18).toString('hex')
@@ -46,7 +46,7 @@ testWithGitleaks('a secret in an intermediate outgoing commit from another tool 
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('R7 a secret already on the remote does not block receiving a clean local change', async () => {
+testWithSafeSyncGitAndGitleaks('R7 a secret already on the remote does not block receiving a clean local change', async () => {
   const f = await fixture()
   try {
     const fake = 'ghp_' + randomBytes(18).toString('hex')
@@ -57,7 +57,7 @@ testWithGitleaks('R7 a secret already on the remote does not block receiving a c
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('receiving still brings in other documents when a dirty local secret cannot be committed', async () => {
+testWithSafeSyncGitAndGitleaks('receiving still brings in other documents when a dirty local secret cannot be committed', async () => {
   const f = await fixture()
   try {
     const fake = 'ghp_' + randomBytes(18).toString('hex')
@@ -71,7 +71,7 @@ testWithGitleaks('receiving still brings in other documents when a dirty local s
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('flagged dirty document receives an incoming version beside it without committing local bytes', async () => {
+testWithSafeSyncGitAndGitleaks('flagged dirty document receives an incoming version beside it without committing local bytes', async () => {
   const f = await fixture()
   try {
     const fake = 'ghp_' + randomBytes(18).toString('hex'), local = `Flagged local ${fake}\n`
@@ -86,7 +86,7 @@ testWithGitleaks('flagged dirty document receives an incoming version beside it 
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('a secret already committed in divergent local history stops receiving rather than rewriting user history or making an unscanned merge', async () => {
+testWithSafeSyncGitAndGitleaks('a secret already committed in divergent local history stops receiving rather than rewriting user history or making an unscanned merge', async () => {
   const f = await fixture()
   try {
     const fake = 'ghp_' + randomBytes(18).toString('hex')
@@ -97,7 +97,7 @@ testWithGitleaks('a secret already committed in divergent local history stops re
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('receiving around a flagged draft also preserves a different caller-unsaved document', async () => {
+testWithSafeSyncGitAndGitleaks('receiving around a flagged draft also preserves a different caller-unsaved document', async () => {
   const f = await fixture()
   try {
     const fake = 'ghp_' + randomBytes(18).toString('hex')
@@ -111,7 +111,7 @@ testWithGitleaks('receiving around a flagged draft also preserves a different ca
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('a synthetic secret in a raw snapshot object blocks sending and leaves the index and tree unchanged', async () => {
+testWithSafeSyncGitAndGitleaks('a synthetic secret in a raw snapshot object blocks sending and leaves the index and tree unchanged', async () => {
   const f = await fixture()
   try {
     await seed(f)

@@ -70,7 +70,7 @@ const UNTOUCHED = [
 
 const probe = `const MOVED = ${JSON.stringify(MOVED)}\nconst UNTOUCHED = ${JSON.stringify(UNTOUCHED)}\n` + String.raw`
   import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
+  import { electronMainStandIn, settingsForIpcTest } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -93,7 +93,7 @@ const probe = `const MOVED = ${JSON.stringify(MOVED)}\nconst UNTOUCHED = ${JSON.
   state.agentReady = Promise.resolve({ checkpointFile: async () => {} })
   registerIpc(
     { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
-    { modelDefaults: () => ({}), recents: () => [] },
+    await settingsForIpcTest(root),
     {},
   )
   const event = { sender: { id: 17 } }

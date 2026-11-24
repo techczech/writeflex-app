@@ -9,11 +9,11 @@ import { createGitVaultSync } from '../../src/main/git-vault-sync'
 import { SettingsStore } from '../../src/main/settings'
 import { Workspace } from '../../src/main/workspace'
 import { fixture, tree, snapshot, text, mergesWithoutRenames } from './git-vault-sync-fixture'
-import { testWithGitleaks, missingGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGit, testWithSafeSyncGitAndGitleaks, missingSyncPrerequisite } from './git-sync-prerequisites'
 
 const timeout = 60_000
 
-testWithGitleaks('send from Mac A arrives at Mac B; ignored files and both machine-state directories stay local', async () => {
+testWithSafeSyncGitAndGitleaks('send from Mac A arrives at Mac B; ignored files and both machine-state directories stay local', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'Writing from A.\n'); await f.put(f.a, 'ignored.md', 'Ignored writing.\n')
@@ -29,7 +29,7 @@ testWithGitleaks('send from Mac A arrives at Mac B; ignored files and both machi
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('different documents changed on both Macs merge and converge', async () => {
+testWithSafeSyncGitAndGitleaks('different documents changed on both Macs merge and converge', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'A changed the draft.\n'); await f.put(f.b, 'second.md', 'B changed the second.\n')
@@ -42,7 +42,7 @@ testWithGitleaks('different documents changed on both Macs merge and converge', 
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('same-document conflict keeps both exact versions, persists the pair, and both Macs converge', async () => {
+testWithSafeSyncGitAndGitleaks('same-document conflict keeps both exact versions, persists the pair, and both Macs converge', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'A version that must survive.\n'); await f.put(f.b, 'draft.md', 'B version that must survive.\n')
@@ -60,7 +60,7 @@ testWithGitleaks('same-document conflict keeps both exact versions, persists the
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('caller-provided unsaved paths keep this Mac disk content in place and put the incoming version beside it', async () => {
+testWithSafeSyncGitAndGitleaks('caller-provided unsaved paths keep this Mac disk content in place and put the incoming version beside it', async () => {
   const f = await fixture()
   try {
     await f.put(f.b, 'draft.md', 'Incoming while A is typing.\n'); await f.B.send(f.bv)
@@ -70,7 +70,7 @@ testWithGitleaks('caller-provided unsaved paths keep this Mac disk content in pl
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('delete versus edit keeps the edited document in both directions', async () => {
+testWithSafeSyncGitAndGitleaks('delete versus edit keeps the edited document in both directions', async () => {
   for (const localDeletes of [true, false]) {
     const f = await fixture()
     try {
@@ -83,7 +83,7 @@ testWithGitleaks('delete versus edit keeps the edited document in both direction
   }
 }, timeout)
 
-test('a staged vault version distinct from disk is preserved rather than silently replaced', async () => {
+testWithSafeSyncGit('a staged vault version distinct from disk is preserved rather than silently replaced', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'The separate staged version.\n'); f.git(f.a, 'add', 'draft.md'); await f.put(f.a, 'draft.md', 'The later disk version.\n')
@@ -92,7 +92,7 @@ test('a staged vault version distinct from disk is preserved rather than silentl
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('a later save during preparation is kept instead of being overwritten by the prepared version', async () => {
+testWithSafeSyncGitAndGitleaks('a later save during preparation is kept instead of being overwritten by the prepared version', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'The version sync first sees.\n')
@@ -104,7 +104,7 @@ testWithGitleaks('a later save during preparation is kept instead of being overw
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('R1 different-line edits in the same document keep both exact versions and converge', async () => {
+testWithSafeSyncGitAndGitleaks('R1 different-line edits in the same document keep both exact versions and converge', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'L1\nL2\nL3\nL4\nL5\nL6\n'); await f.A.send(f.av); await f.B.fetchAndIntegrate(f.bv)
@@ -119,7 +119,7 @@ testWithGitleaks('R1 different-line edits in the same document keep both exact v
   } finally { await f.close() }
 }, timeout)
 
-testWithGitleaks('R2 remote rename/edit retains the old local path and incoming new path as a convergent pair', async () => {
+testWithSafeSyncGitAndGitleaks('R2 remote rename/edit retains the old local path and incoming new path as a convergent pair', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, 'draft.md', 'Para one.\nPara two.\nPara three.\n'); await f.A.send(f.av); await f.B.fetchAndIntegrate(f.bv)
@@ -135,7 +135,7 @@ testWithGitleaks('R2 remote rename/edit retains the old local path and incoming 
   } finally { await f.close() }
 }, timeout)
 
-test('R4 leftover sync temporary files and .DS_Store are never committed', async () => {
+testWithSafeSyncGit('R4 leftover sync temporary files and .DS_Store are never committed', async () => {
   const f = await fixture()
   try {
     await f.put(f.a, '.writeflex-sync-1234.tmp', 'stale temp\n'); await f.put(f.a, '.DS_Store', 'x')
@@ -146,7 +146,7 @@ test('R4 leftover sync temporary files and .DS_Store are never committed', async
   } finally { await f.close() }
 }, timeout)
 
-test.skipIf(!!missingGitleaks).each(['fetch','send'] as const)(`M1 newest save at the rename boundary survives and is reported (%s)${missingGitleaks ? ` [requires: ${missingGitleaks}]` : ''}`, async mode => {
+test.skipIf(!!missingSyncPrerequisite).each(['fetch','send'] as const)(`M1 newest save at the rename boundary survives and is reported (%s)${missingSyncPrerequisite ? ` [requires: ${missingSyncPrerequisite}]` : ''}`, async mode => {
  const f=await fixture(); try {
   await f.put(f.b,'draft.md','Incoming B.\n'); await f.B.send(f.bv)
   let injected=false
@@ -158,7 +158,7 @@ test.skipIf(!!missingGitleaks).each(['fetch','send'] as const)(`M1 newest save a
  }finally{await f.close()}
 },120000)
 
-testWithGitleaks('S1 a save during push stays ordinary pending writing and never becomes a self-pair',async()=>{
+testWithSafeSyncGitAndGitleaks('S1 a save during push stays ordinary pending writing and never becomes a self-pair',async()=>{
  const f=await fixture();try{
   await f.put(f.a,'draft.md','First A.\n');let saved=false
   const first=await f.engineA({checkpoint:async phase=>{if(phase==='before-apply'&&!saved){saved=true;await f.put(f.a,'draft.md','Newest A.\n')}}}).send(f.av)
@@ -168,7 +168,7 @@ testWithGitleaks('S1 a save during push stays ordinary pending writing and never
  }finally{await f.close()}
 },120000)
 
-testWithGitleaks('M1 apply waits for the actual Workspace save turn and rechecks after acquiring it',async()=>{
+testWithSafeSyncGitAndGitleaks('M1 apply waits for the actual Workspace save turn and rechecks after acquiring it',async()=>{
  const f=await fixture();try{
   const {Workspace}=await import('../../src/main/workspace'),ws=new Workspace(f.a)
   await f.put(f.b,'draft.md','Incoming B.\n');await f.B.send(f.bv)
@@ -185,7 +185,7 @@ testWithGitleaks('M1 apply waits for the actual Workspace save turn and rechecks
  }finally{await f.close()}
 },120000)
 
-testWithGitleaks('S1 a newer save after a pushed round and later foreign commit never pairs with our old text',async()=>{
+testWithSafeSyncGitAndGitleaks('S1 a newer save after a pushed round and later foreign commit never pairs with our old text',async()=>{
  const f=await fixture();try{
   await f.put(f.a,'draft.md','A first pushed.\n')
   const first=await f.engineA({checkpoint:async phase=>{if(phase==='before-apply'){await f.put(f.a,'draft.md','A newest writing.\n');throw new Error('simulated failed local install')}}}).send(f.av)
@@ -199,7 +199,7 @@ testWithGitleaks('S1 a newer save after a pushed round and later foreign commit 
 
 // The 'Sync now' race: a receive that brings nothing new (a follow-up or periodic check) must not hide an arrival the
 // writer has not seen. The next send clears the list, as it always has.
-testWithGitleaks('arrivals stay listed through an empty receive until the next send', async () => {
+testWithSafeSyncGitAndGitleaks('arrivals stay listed through an empty receive until the next send', async () => {
   const f = await fixture()
   try {
     await f.put(f.b, 'draft.md', 'Writing from B.\n'); await f.B.send(f.bv)

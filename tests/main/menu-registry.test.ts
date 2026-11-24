@@ -5,6 +5,7 @@ import { EditorState } from '@codemirror/state'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { allBindableCommands, commandLabel, commandRegistry } from '../../src/renderer/src/commands/registry'
+import { THEME_COMMANDS } from '../../src/renderer/src/commands/theme-commands'
 import { menuCommands } from '../../src/renderer/src/commands/menu-model'
 import { conflictingBindableIds, conflictsFor, defaultChords, effectiveChords } from '../../src/renderer/src/commands/chords'
 import { buildCommandMenu, MENU_BAR_LABELS, toAccelerator, type CommandMenuItem } from '../../src/shared/command-menu'
@@ -134,7 +135,15 @@ test('appRows supplies behaviour only and every literal id resolves', () => {
       const check = (n: ts.Node): void => {
         if (ts.isObjectLiteralExpression(n) && n.properties.some(p => p.name?.getText(ast) === 'id')) {
           for (const p of n.properties) expect(['id', 'run', 'disabled', 'disabledReason', 'checked', 'labelName']).toContain(p.name?.getText(ast))
-          const id = n.properties.find(p => p.name?.getText(ast) === 'id') as ts.PropertyAssignment
+          const id = n.properties.find(p => p.name?.getText(ast) === 'id')!
+          if (ts.isShorthandPropertyAssignment(id)) {
+            // The theme rows take their id from the declared theme command family.
+            const mapper = n.parent.parent
+            expect(ts.isArrowFunction(mapper) && ts.isCallExpression(mapper.parent) && mapper.parent.expression.getText(ast)).toBe('THEME_COMMANDS.map')
+            for (const theme of THEME_COMMANDS) expect(commandRegistry.some(c => c.id === theme.id), theme.id).toBe(true)
+            return
+          }
+          if (!ts.isPropertyAssignment(id)) throw new Error(`Unresolved palette row id: ${id.getText(ast)}`)
           const identity = id.initializer
           if (ts.isStringLiteral(identity)) expect(commandRegistry.some(c => c.id === identity.text), identity.text).toBe(true)
           else if (ts.isPropertyAccessExpression(identity)) {

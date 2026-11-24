@@ -3,11 +3,11 @@
 // Real `git`, a bare remote and two clones through the shared fixture; no Electron.
 import { test, expect } from 'bun:test'
 import { fixture, tree, snapshot, text } from './git-vault-sync-fixture'
-import { testWithGitleaks } from '../helpers/built-output'
+import { testWithSafeSyncGit, testWithSafeSyncGitAndGitleaks } from './git-sync-prerequisites'
 
 const timeout = 60_000
 
-testWithGitleaks('subfolder send preserves staged and unstaged sibling edits; non-overlapping incoming sibling changes are applied', async () => {
+testWithSafeSyncGitAndGitleaks('subfolder send preserves staged and unstaged sibling edits; non-overlapping incoming sibling changes are applied', async () => {
   const f = await fixture(true)
   try {
     await f.put(f.a, 'sibling/notes.md', 'Staged sibling.\n'); f.git(f.a, 'add', 'sibling/notes.md')
@@ -24,7 +24,7 @@ testWithGitleaks('subfolder send preserves staged and unstaged sibling edits; no
   } finally { await f.close() }
 }, timeout)
 
-test('overlapping uncommitted sibling edits stop cleanly without changing the pre-attempt tree, index or HEAD', async () => {
+testWithSafeSyncGit('overlapping uncommitted sibling edits stop cleanly without changing the pre-attempt tree, index or HEAD', async () => {
   const f = await fixture(true)
   try {
     await f.put(f.a, 'sibling/notes.md', 'Private uncommitted sibling.\n')
@@ -61,7 +61,7 @@ test('R3 send refuses an unpushed user commit touching sibling paths', async () 
   } finally { await f.close() }
 }, timeout)
 
-test('incoming filter and newline conversion attributes anywhere in the repository stop before writing raw blobs', async () => {
+testWithSafeSyncGit('incoming filter and newline conversion attributes anywhere in the repository stop before writing raw blobs', async () => {
   for (const rule of ['text eol=crlf', 'filter=review-filter']) {
     const f = await fixture(true)
     try {
@@ -75,7 +75,7 @@ test('incoming filter and newline conversion attributes anywhere in the reposito
   }
 }, timeout)
 
-testWithGitleaks('S2 an ordinary pull merge introduces no new sibling work to publish',async()=>{
+testWithSafeSyncGitAndGitleaks('S2 an ordinary pull merge introduces no new sibling work to publish',async()=>{
  const f=await fixture(true);try{
   await f.put(f.a,'vault/draft.md','A local vault.\n');await f.A.fetchAndIntegrate(f.av)
   await f.put(f.b,'sibling/notes.md','Remote sibling.\n');f.git(f.b,'commit','-am','Sibling B');f.git(f.b,'push')

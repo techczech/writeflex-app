@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.29.0-alpha.4] — 2026-11-24
+
+An alpha: early, and it can break.
+
+### Added
+- Two new typewriter sounds: Olivetti Lettera 22 and Hermes Baby (Settings › Sounds). Crisp stays the default.
+
+### Changed
+- Renaming or moving a document in a large vault reads fewer files at once.
+
 ## [0.29.0-alpha.3] — 2026-11-24
 
 An alpha: early, and it can break.

@@ -53,9 +53,9 @@ test('keystrokeVoice: writing keys sound; modifiers and navigation stay silent',
   expect(keystrokeVoice('F5')).toBeNull()
 })
 
-const SCHEMES = ['deep', 'crisp', 'soft'] as const
+const SCHEMES = ['deep', 'crisp', 'soft', 'olivetti', 'hermes'] as const
 
-test('all three schemes map every voice to a sample, and letter keys carry several', () => {
+test('all five schemes map every voice to a sample, and letter keys carry several', () => {
   expect(Object.keys(TYPING_SAMPLES).sort()).toEqual([...SCHEMES].sort())
   for (const scheme of SCHEMES) {
     for (const voice of ['key', 'space', 'enter', 'backspace'] as const) {
@@ -65,18 +65,13 @@ test('all three schemes map every voice to a sample, and letter keys carry sever
     }
     // Repeated letters are what a reader hears most; one waveform for all of them machine-guns.
     expect(typingSamples(scheme, 'key').length).toBeGreaterThanOrEqual(3)
-    // Each scheme's files carry its own name, so the pack reads as three machines on disk too.
+    // Each scheme maps to its own recordings on disk.
     for (const file of Object.values(TYPING_SAMPLES[scheme]).flat()) {
       expect(file.startsWith(`${scheme}-`), `${file} does not belong to ${scheme}`).toBe(true)
     }
   }
-  // No scheme borrows another's CLICKS — they are different machines. (The bell is shared by the two
-  // typewriters on purpose: neither recording contains one, and each gets its own cut of it.)
-  for (const [a, b] of [['deep', 'crisp'], ['deep', 'soft'], ['crisp', 'soft']] as const) {
-    const clicks = (scheme: typeof SCHEMES[number]): Set<string> =>
-      new Set([...typingSamples(scheme, 'key'), ...typingSamples(scheme, 'space')])
-    for (const file of clicks(b)) expect(clicks(a).has(file), `${a} and ${b} share ${file}`).toBe(false)
-  }
+  const clicks = SCHEMES.flatMap((scheme) => [...typingSamples(scheme, 'key'), ...typingSamples(scheme, 'space')])
+  expect(new Set(clicks).size).toBe(clicks.length)
   // Every scheme rings its own Enter file, even where the underlying recording is shared.
   const enters = SCHEMES.map((scheme) => typingSamples(scheme, 'enter')[0])
   expect(new Set(enters).size).toBe(SCHEMES.length)
@@ -87,7 +82,7 @@ test('a stored scheme resolves, and the legacy "typewriter" value still means Cl
   // The value written before there were two typewriters. Nobody's preference may reset on upgrade.
   expect(normaliseTypingScheme('typewriter')).toBe('deep')
   // Anything unset or unrecognised falls back to the same default the UI shows.
-  for (const junk of [null, undefined, '', 'Deep', 'erika', 42, {}, []]) {
+  for (const junk of [null, undefined, '', 'Deep', 'erika', '__proto__', 'constructor', 42, {}, []]) {
     expect(normaliseTypingScheme(junk)).toBe('crisp')
   }
 })
@@ -155,9 +150,14 @@ test('typing sounds are compact mono FLAC with short, padding-free playback', ()
     expect(channels).toBe(1)
     expect(rate).toBe(32_000)
     expect(samples / rate).toBeGreaterThan(0.05)
-    expect(samples / rate).toBeLessThan(file.includes('enter') ? 0.4 : 0.12)
+    // The two new machines retain their bell and whole carriage sweep on Return.
+    const maxSeconds = file === 'hermes-enter.flac' ? 1.3
+      : file === 'olivetti-enter.flac' ? 0.65
+      : file.includes('enter') ? 0.4
+      : /^(olivetti|hermes)-/.test(file) ? 0.15 : 0.12
+    expect(samples / rate, file).toBeLessThan(maxSeconds)
   }
-  expect(total).toBeLessThan(120 * 1024)
+  expect(total).toBeLessThan(210 * 1024)
   for (const file of Object.values(AMBIENT_SAMPLES)) {
     expect(file.endsWith('.flac')).toBe(true)
     expect(readFileSync(join(PACK, file)).subarray(0, 4).toString('latin1')).toBe('fLaC')

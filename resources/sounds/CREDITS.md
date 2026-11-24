@@ -1,8 +1,8 @@
 # WriteFlex sound credits
 
 The one-shots are cut from mechanical typewriter recordings, level-matched on the attack and
-exported as mono 32 kHz FLAC without encoder padding. The longest is 360 ms. The Backspace
-samples use isolated carriage-mechanism clicks as a proxy for the reverse escapement.
+exported as mono 32 kHz FLAC without encoder padding. The Olivetti and Hermes returns combine a bell with the carriage
+sweep. Backspace uses a carriage-mechanism click as a proxy for the reverse escapement.
 The two ambient recordings remain seam-crossfaded 28-second FLAC loops.
 
 ## Recordings
@@ -15,6 +15,9 @@ The two ambient recordings remain seam-crossfaded 28-second FLAC loops.
 - F — teto_yasha, [Typing medium speed](https://commons.wikimedia.org/wiki/File:Typing_medium_speed.ogg), pdsounds.org recording 71. Public domain.
 - G — cori, [Rain against the window](https://commons.wikimedia.org/wiki/File:Rain_against_the_window.ogg), pdsounds.org recording 600. Public domain.
 - H — jackthemurray, [stream river water up close](https://commons.wikimedia.org/wiki/File:433589_jackthemurray_stream-river-water-up-close.wav). [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+
+- I — keithpeter, [typewriter-olivetti-lettra-22.wav](https://freesound.org/people/keithpeter/sounds/123344/), Olivetti Lettera 22. [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+- J — evsecrets, [Typing on a typewriter with ding at end of each line.wav](https://freesound.org/people/evsecrets/sounds/334458/), Hermes Baby. [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
 
 ## Bundled files
 
@@ -43,6 +46,18 @@ The two ambient recordings remain seam-crossfaded 28-second FLAC loops.
 | `soft-space.flac` | C | 0.136 s, damped |
 | `soft-backspace.flac` | E | Carriage engagement at 1.514 s, damped |
 | `soft-enter.flac` | E | Carriage stop at 2.386 s, damped |
+| `olivetti-key-1.flac` | I | 13.145–13.275 s |
+| `olivetti-key-2.flac` | I | 31.711–31.845 s |
+| `olivetti-key-3.flac` | I | 52.731–52.866 s |
+| `olivetti-space.flac` | I | 71.425–71.555 s, quieter same-machine strike |
+| `olivetti-backspace.flac` | I | 28.743–28.843 s, carriage click |
+| `olivetti-enter.flac` | I | Bell 41.797–42.368 s, carriage 28.388–28.847 s with a 120 ms offset |
+| `hermes-key-1.flac` | J | 13.051–13.183 s |
+| `hermes-key-2.flac` | J | 30.511–30.644 s |
+| `hermes-key-3.flac` | J | 50.041–50.172 s |
+| `hermes-space.flac` | J | 63.078–63.213 s, quieter same-machine strike |
+| `hermes-backspace.flac` | J | 41.442–41.568 s, carriage click |
+| `hermes-enter.flac` | J | Bell 39.539–40.115 s, carriage 40.449–41.622 s with an 80 ms offset |
 | `session-tick.wav` | F | 25.780 s, unchanged from the original session cue |
 | `session-complete.wav` | F | 27.800 s, unchanged from the original session cue |
 | `ambient-rain.flac` | G | From 36.0 s, high-pass, level-riding and equal-power crossfade |

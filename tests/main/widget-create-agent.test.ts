@@ -242,20 +242,17 @@ test('outside an accept the review check answers no: the verb run directly write
   await nothingWritten()
 })
 
-// review finding rounds 2 and 3, through the real accept route. During an accept the Change is fetched four times: twice by
-// resolveChange, once by applySuggestion, and last by the review lookup inside the verb. The store marks that
-// fourth fetch; from then on the verb reads the permission three times. `offFrom` 1: switched off while the place
-// is validated, before the widget file. 2: after the file, before the document save starts. 3: after the
-// document's temp file is written, in the tick of the rename that would commit it (review finding round 3, finding 1). If the
-// fetch count ever changes, these tests fail on the message (the policy would refuse first), not silently pass.
+// Exercise the three permission reads after widgets.create checks the reviewed file:
+// immediately before writing the widget, before saving the document, and at the document's commit.
+// The last two refusals must also remove the already-created widget.
 class LookupMarkingStore extends ChangeStore {
   accepting = false
   fetches = 0
   lookedUp = false
   override async get(id: string): ReturnType<ChangeStore['get']> {
     const found = await super.get(id)
-    // 5th fetch: the accept's own review lookup, after the sharing guard's one look at the change (guardReaderAcceptance).
-    if (this.accepting && (this.fetches += 1) === 5) this.lookedUp = true
+    // The sixth read is widgetFileShown, after the accept's own guards and Bridle's permission checks.
+    if (this.accepting && (this.fetches += 1) === 6) this.lookedUp = true
     return found
   }
 }

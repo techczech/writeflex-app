@@ -298,7 +298,7 @@ test('an empty save over a changed file is refused as a disk change before the e
 // renderer turns into its banner (an Error's class does not cross IPC).
 const ipcProbe = String.raw`
   import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
+  import { electronMainStandIn, settingsForIpcTest } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
@@ -321,7 +321,7 @@ const ipcProbe = String.raw`
   state.workspace = new Workspace(root)
   registerIpc(
     { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
-    { modelDefaults: () => ({}), recents: () => [] },
+    await settingsForIpcTest(root),
     {},
   )
   const save = handlers.get('file:save')
@@ -494,7 +494,7 @@ test('an empty write over a file with no text commits only over that text: text 
 
 const clearProbe = String.raw`
   import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
+  import { electronMainStandIn, settingsForIpcTest } from './tests/helpers/electron-main-stand-in.ts'
   import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
   import { writeFileSync } from 'node:fs'
   import { tmpdir } from 'node:os'
@@ -525,7 +525,7 @@ const clearProbe = String.raw`
   state.workspace = workspace
   registerIpc(
     { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
-    { modelDefaults: () => ({}), recents: () => [] },
+    await settingsForIpcTest(root),
     {},
   )
   await writeFile(join(root, 'empty.md'), '  \n')

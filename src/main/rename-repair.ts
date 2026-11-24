@@ -1,3 +1,4 @@
+import { mapBounded } from './file-facts'
 import { escapePlanLink } from '../shared/plan-line'
 import { batchLocator, movedDocumentLinks } from './moved-document-links'
 import { stat } from 'node:fs/promises'
@@ -870,10 +871,10 @@ export async function planRenameRepair(
   fromPath = canonicalWorkspacePath(workspace, fromPath)
   toPath = canonicalWorkspacePath(workspace, toPath)
   const listedFiles = await workspace.listFiles()
-  const files = await Promise.all(listedFiles.map(async (file): Promise<CachedMarkdown> => ({
+  const files = await mapBounded(listedFiles, 16, async (file): Promise<CachedMarkdown> => ({
     file,
     content: (await workspace.readFile(file.path)).content,
-  })))
+  }))
   return files.some(({ file }) => file.path === fromPath)
     ? planRenameRepairBeforeRename(workspace, fromPath, toPath, files, options)
     : planRenameRepairAfterRename(workspace, fromPath, toPath, files, options)

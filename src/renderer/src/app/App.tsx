@@ -1,5 +1,5 @@
 import type { EpubPreparationOptions, EpubPrepareReply } from '../../../shared/publication-export'
-import { EPUB_EXPORT_AVAILABLE } from '../../../shared/epub-feature'
+import { EPUB_EXPORT_AVAILABLE, EPUB_UNAVAILABLE } from '../../../shared/epub-feature'
 import { useGitSync, GitPanel, GitMark, ProtectionMark } from '../sync/GitSync'
 import { EXPERIMENTAL_GIT_SYNC_OFF } from '../../../shared/git-sync-settings'
 import { releaseEarlyChords, stopHoldingEarlyChords } from './early-chords'
@@ -5232,7 +5232,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       if (message) return { status: 'error', problem: { code: 'stale', message } }
       buffers.push({ path, source, disk })
     }
-    return window.writeflex.folioEpub.prepare({ ...options, dir, buffers })
+    const epub = window.writeflex.folioEpub
+    if (!epub) return { status: 'error', problem: { code: 'generation', message: EPUB_UNAVAILABLE } }
+    return epub.prepare({ ...options, dir, buffers })
   }, [bufferNow, exportRefusedUnderNotice, exportSubject, owner, unsaved])
 
   /** One export attempt, end to end: flush the buffer (so the file is what is on screen), ask the
