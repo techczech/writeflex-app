@@ -238,7 +238,8 @@ export async function repairWikilinksForMoves(ws: Workspace, realRoot: string, m
   const view = workspaceWithout(ws, hidden, madeByStep)
   const notices: string[] = []
   for (const { from, to } of moves) {
-    const plan = await planRenameRepair(view, from, to, { ignore: madeByStep })
+    // Each moved copy was written with its relative links carried by the whole batch (copyFileGuarded's transform).
+    const plan = await planRenameRepair(view, from, to, { ignore: madeByStep, outgoingLinksCarried: true })
     const writes = []
     for (const write of plan.writes) {
       const read = await readContainedFile(realRoot, write.path, MOVE_MAX_BYTES)

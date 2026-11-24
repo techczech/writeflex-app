@@ -143,8 +143,8 @@ const waiting = (over: Partial<ReviewLineInput> = {}): ReviewLineInput => ({
 
 test('the review line: absent with nothing waiting, "Waiting in N other pieces" alone, else count, segments and position', () => {
   expect(reviewLine(waiting({ waiting: 0, shown: 0, counts: { all: 0, comments: 0, edits: 0 } }))).toBeNull()
-  expect(reviewLine(waiting({ waiting: 0, shown: 0, counts: { all: 0, comments: 0, edits: 0 }, otherPieces: 2 }))).toEqual({ hereless: true, countText: '', segments: [], newText: null, elsewhereText: 'Waiting in 2 other pieces', who: null, selectedText: null, acceptAllText: null, progress: null, notPlacedText: null, mode: null })
-  expect(reviewLine(waiting({ waiting: 0, shown: 0, otherPieces: 1 }))?.elsewhereText).toBe('Waiting in 1 other piece')
+  expect(reviewLine(waiting({ waiting: 0, shown: 0, counts: { all: 0, comments: 0, edits: 0 }, otherPieces: 2 }))).toEqual({ hereless: true, countText: '', segments: [], newText: null, elsewhereText: 'Changes to review in 2 other documents', who: null, selectedText: null, acceptAllText: null, progress: null, notPlacedText: null, mode: null })
+  expect(reviewLine(waiting({ waiting: 0, shown: 0, otherPieces: 1 }))?.elsewhereText).toBe('Changes to review in 1 other document')
   const rest = reviewLine(waiting())!
   expect(rest.countText).toBe('5 waiting')
   expect(rest.segments.map((s) => `${s.label} ${s.count}${s.pressed ? ' pressed' : ''}`)).toEqual(['All 5 pressed', 'Comments 2', 'Edits 3'])
@@ -159,7 +159,7 @@ test('a segment with nothing in it is off, "N new" shows once, and other pieces 
   const line = reviewLine(waiting({ counts: { all: 3, comments: 0, edits: 3 }, newCount: 3, otherPieces: 2 }))!
   expect(line.segments.map((s) => [s.id, s.off])).toEqual([['all', false], ['comments', true], ['edits', false]])
   expect(line.newText).toBe('3 new')
-  expect(line.elsewhereText).toBe('Waiting in 2 other pieces')
+  expect(line.elsewhereText).toBe('Changes to review in 2 other documents')
 })
 
 test('the status bar draws the line: no markup when absent, count, Comments / Edits segments, arrows, and keys only while a card is focused', () => {

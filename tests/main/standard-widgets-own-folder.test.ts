@@ -220,6 +220,21 @@ describe('Moving into the new folder', () => {
     expect(read(root, `${W}/Course pack/planning.md`)).toBe(PLANNING)
   })
 
+  test('three documents linking each other move together: every link among them still reaches its document, and links out follow', async () => {
+    // Upkeep ticket 02. A vault-level img/logo.png is where the moved notes' `../img/logo.png` would land if read
+    // from the old folder: a second rewrite pass that knows only one move would retarget it there.
+    const reading = '# Reading list\n\nBack to the [plan](planning.md), the [notes](course-notes.md) and the [attendees](attendees.md).\n'
+    const { ws, root } = workspace({ ...workshop(), [`${W}/reading-list.md`]: reading, 'img/logo.png': 'decoy' })
+    const facts = await factsOf(ws)
+    const result = await create(ws, new StandardWidgetUndoDesk(), choice(facts, { mode: 'several', checked: ['reading-list.md', 'planning.md'], name: 'Course pack' }))
+    if (!result.ok) throw new Error(result.message)
+    const pack = `${W}/Course pack`
+    expect(read(root, `${pack}/planning.md`)).toBe(PLANNING)
+    expect(read(root, `${pack}/reading-list.md`)).toBe('# Reading list\n\nBack to the [plan](planning.md), the [notes](course-notes.md) and the [attendees](../attendees.md).\n')
+    expect(read(root, `${pack}/course-notes.md`)).toContain('See the [plan](planning.md) and the ![logo](../img/logo.png).')
+    for (const path of ['planning.md', 'reading-list.md', 'course-notes.md']) linksResolve(root, `${pack}/${path}`)
+  })
+
   test('every document chosen: the folder itself becomes the Folio and nothing moves; the data file is used where it is', async () => {
     const { ws, root } = workspace(workshop())
     const facts = await factsOf(ws)

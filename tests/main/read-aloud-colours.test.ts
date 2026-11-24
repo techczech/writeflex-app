@@ -29,8 +29,12 @@ const THEMES: ReadAloudTheme[] = ['light', 'dark']
 
 function tokenColour(theme: ReadAloudTheme, name: string): ReturnType<typeof hexToRgb> {
   const block = theme === 'dark' ? /\[data-theme="dark"\]\{([^}]*)\}/.exec(tokens)![1] : /:root\{([^}]*)\}/.exec(tokens)![1]
-  const match = new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`).exec(block)
-  return hexToRgb(match![1])
+  const declarations = new Map([...block.matchAll(/(--[a-z-]+):\s*([^;]+);/g)].map(([, key, value]) => [key, value.trim()]))
+  const value = declarations.get(name)
+  const alias = value?.match(/^var\((--[a-z-]+)\)$/)?.[1]
+  const hex = alias ? declarations.get(alias) : value
+  if (!hex) throw new Error(`Missing ${theme} colour token ${name}`)
+  return hexToRgb(hex)
 }
 
 test('the contrast constants are the real page and ink colours of both themes', () => {

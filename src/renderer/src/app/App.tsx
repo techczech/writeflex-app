@@ -23,6 +23,7 @@ import { closeWindowIfClean, closeWithEditor, editorIsPresent, queueCloseRetry, 
 import { acceptThroughOwner as acceptRoute, replayAcceptRedo, resolveProposalThroughOwner, type AcceptAnswer, type AcceptRouteResult } from './resolution-routes'
 import { createDocumentOwner, type DocumentOwner, type MainWriteOutcome, type OutsideOutcome, type Snapshot } from './document-owner'
 import { createAutosaveScheduler, type AutosaveScheduler } from './autosave-scheduler'
+import { isUntitledPiece, type CollectionNamingCandidate } from '../../../shared/collection-naming-title'
 import { fanOutReceipts } from './save-receipts'
 import { documentsUnder as documentsUnderFrom, folderPrefix, renameMembers } from './documents-under'
 import { useAmbientSnapshot } from '../hooks/useAmbientSnapshot'
@@ -35,7 +36,7 @@ import type { ClipboardKind, FileRenamePlan } from '../../../preload'
 import type { ReadingRoomWriteRefusal, ReadingRoomWriteResult } from '../../../preload'
 import { createOutboxSyncRunner, outboxResultAnnouncement } from '../reading-room-sync'
 import { applyReadingRoomSetting } from '../reading-room-settings'
-import { humanReadableError } from '../error-text'
+import { humanReadableError, plainErrorForScreen } from '../error-text'
 import { AlignCenterVertical, Anchor, AudioLines, BookOpen, Bold, CaseLower, CaseSensitive, CaseUpper, Check, ClipboardCopy, ClipboardType, ChevronsDownUp, ChevronsLeft, ChevronsRight, ChevronsUpDown, ChevronLeft, ChevronRight, Columns3, Command, CornerUpLeft, CopyPlus, RemoveFormatting, Code, Download, Eraser, Focus, FileCode, FilePlus2, FoldVertical, FolderTree, Folder, Files as FilesIcon, FileDown, GitCommitHorizontal, Heading, Highlighter, Info, Italic, Keyboard, LayoutPanelLeft, Link, List, ListFilter, LayoutGrid, ListTree, FileText, Columns2, ListOrdered, ListPlus, LocateFixed, Maximize2, Minimize2, MessageSquare, Minus, Moon, Pause, PanelRightOpen, PanelTop, Plus, GitMerge, RefreshCw, Quote, RotateCcw, Save, Scan, Search, Settings, SlidersHorizontal, Sparkles, Square, SquarePen, Star, StickyNote, Sun, Target, Timer, Text, TextCursorInput, TriangleAlert, Volume2, X, Glasses, Lightbulb, Library, Undo2, ArrowUp, ArrowDown, Pin, PinOff, type LucideIcon, Compass, AppWindow, FolderOpen, Rows3, Send, Upload, History, Eye, GitCompare, Pencil, BookOpenCheck, Telescope } from 'lucide-react'
 import { documentIdentityLabel, Toolbar } from '../components/Toolbar'
 import { ActionBar } from '../components/ActionBar'
@@ -107,9 +108,9 @@ import {
   pauseReadAloudForDocumentChange,
   runPauseResumeReadAloud,
 } from './read-aloud-controls'
-import { clampVolume, normaliseTypingScheme, SoundEngine, type AmbientLoop, type TypingScheme } from './sounds'
+import { clampVolume, DEFAULT_TYPING_SCHEME, normaliseTypingScheme, SoundEngine, type AmbientLoop, type TypingScheme } from './sounds'
 import { documentTitle, parseFrontmatter, parseGoal } from '../../../main/frontmatter'
-import { formatRenameRepairMessage } from '../../../shared/rename-repair-message'
+import { formatRenameRepairMessage, formatFolderRenameRepairMessage } from '../../../shared/rename-repair-message'
 import { isTextChange } from '../../../shared/line-endings'
 import { OBJECTS_LESSON } from '../../../shared/example-files'
 import { countUnits, countWords } from '../editor/word-count'
@@ -180,7 +181,6 @@ import { summariseRun } from '../../../engine'
 import { ComparePane } from '../components/ComparePane'
 import { compareHighlightsForEditor, compareToColumnMode, shouldRefreshWorkingCompare } from '../components/compare-live'
 import { SuggestionCallout, type CalloutViewRequest } from '../components/SuggestionCallout'
-import { SettingsWindow } from '../components/SettingsWindow'
 import { classifyExternalDrop, type DroppedPath } from '../external-drop'
 import { CheatSheet } from '../components/CheatSheet'
 import { FolioVersionSheet, SaveChooser } from '../components/FolioVersionSave'
@@ -216,13 +216,14 @@ import type { SessionSummary } from './session-history'
 import { useEditorSnapshot } from '../hooks/useEditorSnapshot'
 import { paneRowFromElement, pressCommandK, SHOW_PLACE_KEY, usePlace } from '../hooks/usePlace'
 import { useOverlayGuard } from '../hooks/useOverlayGuard'
-import { commandLabel, commandRegistry, LEDGER_EXCLUDED, registryCommand } from '../commands/registry'
+import { ACTIVE_FILE_COMMANDS, commandLabel, commandRegistry, isActiveFileCommand, LEDGER_EXCLUDED, registryCommand, type ActiveFileCommand } from '../commands/registry'
 import { commandRan, onCommandRan } from '../commands/command-ran'
 import { placeAt, placeOfRow, type Place } from '../commands/place'
 import { offeredAt } from '../commands/command-places'
 import { askComposerText, askContextAt } from '../commands/ask-context'
 import { runThemeCommand } from '../commands/theme-commands'
 import { runRefreshModelsCommand } from '../commands/model-refresh-command'
+import { settingsPageOf } from './settings-page-of'
 import { APP_DISPATCHED_EDITOR_IDS, parseOverrides, resolveChord, SHORTCUT_OVERRIDES_KEY, shortcutCaptureActive, subscribeShortcutCapture } from '../commands/chords'
 import { suggestionAnchors, uniqueRange } from '../editor/suggestion-anchor'
 import { flashApplied, minimisedAppliedRange } from '../editor/applied-flash'
@@ -241,6 +242,7 @@ import { countMenu, viewCountsOf, whoChipLabel, withoutWho, type CountMenuAction
 import { batchProgress, bulkTargets, declineQuestion, EMPTY_BATCH, nextBatch, runTargets, sendBackScope, visibleSelection, waitingEditIds, type DeclineQuestion, type ReviewBatch, type SendBackScope } from './margin-bulk'
 import { EMPTY_HEAD_FILTER, type HeadFilterState } from './margin-head-state'
 import { useDismissedNotApplied, useOutsideDock } from './outside-dock'
+import type { BatchResult, BatchTarget } from '../../../shared/outside-batch-review'
 import { useOutsideSourceBulk } from './use-outside-source-bulk'
 import { reviseSuggestionWithWarning } from './revise-suggestion'
 import { findLiveSuggestionForChange } from './change-suggestion-match'
@@ -291,6 +293,16 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   'text.upperCase': CaseUpper,
   'text.lowerCase': CaseLower,
   'text.titleCase': CaseSensitive,
+  'file.rename': Pencil,
+  'file.move': FolderTree,
+  'file.duplicate': CopyPlus,
+  'file.pin': Star,
+  'file.reveal': FolderOpen,
+  'file.copyPath': ClipboardCopy,
+  'file.copyRelativePath': ClipboardCopy,
+  'file.copyMarkdownLink': Link,
+  'file.openInDefaultApp': AppWindow,
+  'folder.reveal': FolderOpen,
 }
 
 
@@ -330,6 +342,12 @@ const VIEW_MODE_COMMANDS: Record<string, EditorViewMode> = {
   'view.raw': 'raw',
 }
 
+const TITLE_QUIET_MS = 10_000
+type NamingCandidate = { root: string; doc: string; title: CollectionNamingCandidate; deadline: number; timer: ReturnType<typeof setTimeout> }
+function namingErrorMessage(error: unknown): string {
+  const detail = plainErrorForScreen(error, '')
+  return detail ? `Could not name the document. ${detail}` : 'Could not name the document.'
+}
 /** Recently-used palette command ids are stored per workspace root so each Workspace keeps its own. */
 const recentsKey = (root: string): string => `wf:cmd-recents:${root}`
 
@@ -918,7 +936,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [pieceSourcesRequest, setPieceSourcesRequest] = useState<{ path: string; dir?: string } | null>(null)
   const restoredIdentityRoot = useRef(root)
   restoredIdentityRoot.current = root
-  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, close, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, boardDir, (path) => unsaved.textOf(path) !== undefined, path => {
+  const namingInFlight = useRef(new Map<string, Promise<string>>())
+  const namingCandidates = useRef(new Map<string, NamingCandidate>())
+  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, renamed: renameTab, close, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, boardDir, (path) => namingInFlight.current.has(path) || unsaved.textOf(path) !== undefined, path => {
     if (path.includes('://')) return
     const restoredRoot = root
     void window.writeflex.readFolioPlace(path).then(place => {
@@ -1385,6 +1405,16 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // written. Another program wrote it in between: an outside change, asked about like any other.
   const outsideAfterWriteRef = useRef<((path: string, diskText: string) => void) | null>(null)
   // The per-render values the owner's reports use (stable callbacks read them through this).
+  const requestAutoNameRef = useRef<(path: string, departed?: boolean) => Promise<string>>(async path => path)
+  const settleAutoNameRef = useRef<(path: string) => Promise<string>>(async path => path)
+  const forgetNamingCandidate = useCallback((path: string) => {
+    const candidate = namingCandidates.current.get(path)
+    if (candidate) clearTimeout(candidate.timer)
+    namingCandidates.current.delete(path)
+  }, [])
+  useEffect(() => () => {
+    for (const path of namingCandidates.current.keys()) forgetNamingCandidate(path)
+  }, [root, forgetNamingCandidate])
   const noteUserSaveRef = useRef(agent.noteUserSave)
   noteUserSaveRef.current = agent.noteUserSave
   // The document owner itself (document-owner.ts), created once. Its ports read this app's state when
@@ -1404,7 +1434,22 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         if (window.writeflex.e2eWriteHooks) e2eSavesSentRef.current.push({ path: p, content: doc })
         // The identity the owner captured with these bytes, for main's save receipt (absent: none applies).
         const receipt = identity ? backupReceiptsRef.current?.saveMeta(p, identity) : undefined
-        return window.writeflex.saveFile(p, doc, basis, receipt)
+        const saveRoot = restoredIdentityRoot.current
+        return window.writeflex.saveFile(p, doc, basis, receipt).then(result => {
+          if (!saveRoot || restoredIdentityRoot.current !== saveRoot || 'refused' in result) return result
+          const previous = namingCandidates.current.get(p)
+          forgetNamingCandidate(p)
+          if (result.nameError) flashRef.current?.(namingErrorMessage(new Error(result.nameError)))
+          if (result.naming) {
+            const title = result.naming
+            const deadline = previous?.title.field === title.field && previous.title.title === title.title
+              ? previous.deadline : performance.now() + TITLE_QUIET_MS
+            const timer = setTimeout(() => { void requestAutoNameRef.current(p) }, Math.max(0, deadline - performance.now()) + 1)
+            namingCandidates.current.set(p, { root: saveRoot, title, doc, deadline, timer })
+            void requestAutoNameRef.current(p)
+          }
+          return result
+        })
       },
       beforeSave: window.writeflex.e2eWriteHooks
         ? async () => {
@@ -1666,6 +1711,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const lastWriterEditAt = useRef<string>()
   const handleDocChanged = useCallback(
     (path: string, doc: string, beforeDoc: string) => {
+      const naming = namingCandidates.current.get(path)
+      if (naming && doc !== beforeDoc) {
+        clearTimeout(naming.timer)
+        naming.deadline = performance.now() + TITLE_QUIET_MS
+        naming.timer = setTimeout(() => { void requestAutoNameRef.current(path) }, TITLE_QUIET_MS + 1)
+      }
       if (doc !== beforeDoc) dismissFolioNoticeRef.current?.()
       if (doc !== beforeDoc && turnBackUndo.current && (turnBackUndo.current.dir === '' || path.startsWith(`${turnBackUndo.current.dir}/`))) turnBackUndo.current = null
       lastWriterEditAt.current = new Date().toISOString()
@@ -2049,10 +2100,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if (command === 'add') await folioRunningOrder.addPieces(seen, [{ path: target.path, title: target.title }])
     else await folioRunningOrder.movePiece(seen, target.path, target.beforePath)
   }, [flash, folioRunningOrder])
-  // Folio Undo leaves when its step cannot be used in the Folio on screen. Scratchpad Undo owns a
-  // durable item and remains available independently of the running order.
+  // Folio Undo leaves when its step cannot be used in the Folio on screen. Scratchpad and naming
+  // Undo have their own targets and remain available independently of the running order.
   useEffect(() => {
-    if (folioRunningOrder.canUndo || titleConflictActions.canUndo || !statusAction || statusAction.kind === 'scratchpad') return
+    if (folioRunningOrder.canUndo || titleConflictActions.canUndo || !statusAction || statusAction.kind === 'scratchpad' || statusAction.kind === 'auto-name') return
     setStatusAction(null)
     setStatus('')
   }, [folioRunningOrder.canUndo, titleConflictActions.canUndo, statusAction])
@@ -3671,7 +3722,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const soundsRef = useRef<SoundEngine | null>(null)
   const soundPrefsRef = useRef({
     typingOn: false,
-    typingScheme: 'deep' as TypingScheme,
+    typingScheme: DEFAULT_TYPING_SCHEME as TypingScheme,
     typingVolume: 0.6,
     ambientOn: false,
     ambientLoop: 'white' as AmbientLoop,
@@ -3818,25 +3869,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           else document.documentElement.style.setProperty('--prose-size', `${String(value)}px`)
           break
         }
-        case 'agent.model': {
-          // The stored raw is `${provider}::${modelId}`; the live effect is the real set-model
-          // channel (which also keeps the sticky modelDefaults in step — same store, same truth).
-          if (typeof value === 'string' && value.includes('::')) {
-            const [provider, ...rest] = value.split('::')
-            void window.writeflex
-              .setDefaultModel(provider, rest.join('::'))
-              .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
-          }
-          break
-        }
-        case 'agent.thinkingLevel': {
-          if (value === 'minimal' || value === 'low' || value === 'medium' || value === 'high') {
-            void window.writeflex
-              .setDefaultThinking(value)
-              .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
-          }
-          break
-        }
+        // Assistant defaults are resolved in main directly from the shared preferences.
+        // Hydration and reset never copy them into the retired modelDefaults record.
       }
     },
     [flash, applySoundPrefs],
@@ -4462,14 +4496,11 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if (selectedFolderPiece?.dir === folderPieceContextDir) applyFolderPieceMode(selectedFolderPiece)
     else openFolderPieceChooser()
   }, [applyFolderPieceMode, folderPieceContextDir, openFolderPieceChooser, selectedFolderPiece])
-  const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>()
-  const [settingsDiarySessionRequired, setSettingsDiarySessionRequired] = useState(false)
-  const openSettings = useCallback((initialSection?: string, diarySessionRequired = false) => {
-    refreshSpeechVoices()
-    setSettingsInitialSection(initialSection)
-    setSettingsDiarySessionRequired(diarySessionRequired)
-    openOverlay('settings')
-  }, [openOverlay, refreshSpeechVoices])
+  // Settings is its own window (0.27, shared settings): main opens it, at the page a caller names.
+  // `_diarySessionRequired` is kept for the callers: the Diary page says a folder is needed itself.
+  const openSettings = useCallback((initialSection?: string, _diarySessionRequired = false) => {
+    void window.writeflex.openSettings(settingsPageOf(initialSection)).catch(() => flash('Settings could not be opened.'))
+  }, [flash])
   const openReadAloudSettings = useCallback(() => {
     openSettings('sec-read-aloud')
   }, [openSettings])
@@ -5738,7 +5769,18 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   }, [openLeftTab])
 
   const historyCommandRef = useRef<(action: 'undo' | 'redo') => void>(() => {})
+  const activeFilePath = useMemo(() => (
+    root && active && loadedFile === active && !boardActive && (collectionDir === null || roomTextPath === active)
+      && files.some(file => file.path === active) ? active : null
+  ), [root, active, loadedFile, boardActive, collectionDir, roomTextPath, files])
+  const activeFileUnavailable = !activeFilePath ? 'Open a document first'
+    : versionRead ? 'Go back to the working draft first' : undefined
+  const runActiveFileCommand = useRef<(id: ActiveFileCommand, path: string) => void>(() => {})
   const paletteCommandList = useMemo<AppCommand[]>(() => {
+    const fileRows = Object.keys(ACTIVE_FILE_COMMANDS).filter(isActiveFileCommand).map(id => ({
+      id, disabled: activeFileUnavailable !== undefined, disabledReason: activeFileUnavailable,
+      run: () => { if (activeFilePath) runActiveFileCommand.current(id, activeFilePath) },
+    }))
     const editorState = editorRef.current?.view()?.state
     const editorRows: AppCommand[] = commandRegistry.filter((command) => command.surfaces.includes('palette') && command.run && (!command.when || (editorState && command.when(editorState)))).map((pc) => ({
       id: pc.id,
@@ -5758,6 +5800,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           : () => runEditorCommand(pc.run!, pc.id),
     }))
     const appRows: Array<Pick<AppCommand, 'id' | 'run' | 'disabled' | 'disabledReason' | 'checked'> & { labelName?: string }> = [
+      ...fileRows,
       { id: 'metadata.show', run: () => { editorRef.current?.setMetadataCollapsed(false) } },
       { id: 'metadata.collapse', run: () => editorRef.current?.setMetadataCollapsed(true) },
       { id: 'metadata.edit', run: () => editorRef.current?.editMetadata() },
@@ -6026,7 +6069,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       { id: 'file.clearDocument', run: clearDocument },
       // Round B export (T6/T7, ADR-0029): the round's ONE designed surface. Keyless like every
       // Round A command — the pre-v1 sweep assigns chords across the app at once.
-      { id: 'export.document', run: () => void openExportSheet() },
+      { id: 'export.document', disabled: !active, disabledReason: 'Open a document first', run: () => void openExportSheet() },
       { id: 'exportPresets.apply', run: () => void openExportSheet(undefined, 'apply') },
       { id: 'exportPresets.update', run: () => void openExportSheet(undefined, 'update') },
       { id: 'exportPresets.saveAs', run: () => void openExportSheet(undefined, 'save-as') },
@@ -6121,11 +6164,11 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       const keywords = registered.keywords
       const override = shortcutOverrides[row.id]
       const presented = { ...row, label: commandLabel(registered, { checked: row.checked, name: 'labelName' in row ? row.labelName : undefined }), keys: typeof registered.keys === 'string' ? formatShortcutKey(registered.keys) : registered.keys?.map(formatShortcutKey).join('  '), icon: COMMAND_ICONS[row.id] ?? Command, group: registered.task, subgroup: registered.subgroup, ...(keywords ? { keywords } : {}), ...(registered.hint ? { hint: registered.hint } : {}), ...(registered.leadsFor ? { leadsFor: registered.leadsFor } : {}) }
-      if (override === undefined) return presented
+      if (override === undefined) return registered.keysPlaceBound && isActiveFileCommand(row.id) ? { ...presented, keys: undefined } : presented
       return { ...presented, keys: override === '' ? undefined : override }
     })
   }, [
-    settingValues, fixedLine, roomTextPath, root, active, typewriterOn, viewMode, focusMode, lineOverlay, distractionFree, hideStrikes, hideInserts,
+    settingValues, fixedLine, roomTextPath, root, active, activeFilePath, activeFileUnavailable, typewriterOn, viewMode, focusMode, lineOverlay, distractionFree, hideStrikes, hideInserts,
     leftPaneCollapsed, rightPaneCollapsed, actionBarVisible, marginHidden, contextCounted,
     shownTitleConflict,
     titleHeadingCanBeInserted,
@@ -6313,7 +6356,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [menuTargetRequest, setMenuTargetRequest] = useState<{ id: string; key: string; kind: 'file' | 'folder' } | null>(null)
   const menuTargetHandled = useCallback(() => setMenuTargetRequest(null), [])
   const liveMenuChecks = useLiveMenuChecks()
-  // Menu-only rows keep contextual keys out of app dispatch. Context menus still supply their own target.
+  // Menu-only rows handle the remaining contextual commands. Sidebar menus still supply their own target.
   const targetMenuRows = () => commandRegistry.filter(command => command.surfaces.includes('menu') && !command.surfaces.includes('palette') && !command.noMenu).map(command => {
     const id = command.id
     const documentOpen = Boolean(active && loadedPath.current === active && editorRef.current?.path() === active && (collectionDir === null || roomTextRef.current !== null))
@@ -6461,6 +6504,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       if (row.disabled) continue
       const registryEntry = commandRegistry.find((command) => command.id === row.id)
       if (registryEntry?.run && !APP_DISPATCHED_EDITOR_IDS.has(row.id)) continue // editor keymap owns it
+      if (registryEntry?.keysPlaceBound && isActiveFileCommand(row.id) && shortcutOverrides[row.id] === undefined) continue
       const chord = resolveChord(row.id, shortcutOverrides)
       if (!chord) continue
       // Chord-specific behaviour where the key historically did more than the palette row:
@@ -6680,11 +6724,18 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
 
   // Flush any pending auto-save when the writer switches tabs (the buffer just left is written before it
   // stops being active — savePath then reads it from EditorPane's cache) or blurs the window.
+  const namingTab = useRef({ path: active, root })
   useEffect(() => {
+    const previous = namingTab.current
+    namingTab.current = { path: active, root }
     flushAutosave()
-  }, [active, flushAutosave])
+    if (previous.path && previous.path !== active && previous.root === root) void settleAutoNameRef.current(previous.path)
+  }, [active, root, flushAutosave])
   useEffect(() => {
-    const onBlur = (): void => flushAutosave()
+    const onBlur = (): void => {
+      flushAutosave()
+      if (activeRef.current) void settleAutoNameRef.current(activeRef.current)
+    }
     window.addEventListener('blur', onBlur)
     return () => window.removeEventListener('blur', onBlur)
   }, [flushAutosave])
@@ -7113,20 +7164,19 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [closeDocumentFind, documentFindOpen, moveDocumentFind, overlayOpenRef, collectionDir, overlayActive])
 
-  // ⌘, toggles the Settings sheet (Task 17, mockup keyboard map). Deliberately NOT behind the
-  // overlay guard: like ⌘P/⇧⌘P it is an overlay-raising key, so pressing it replaces whatever
-  // sheet is up (the mockup's closeOverlays-then-open) or dismisses its own.
+  // ⌘, opens the Settings window (the frame's Settings… command; the menu shows the chord but does not
+  // register it, so this window's key handler runs it). Deliberately NOT behind the overlay guard: it
+  // raises its own window, whatever sheet is up here.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
-      if (shortcutCaptureActive.current) return // the Keycap Ledger's popover is recording a chord
+      if (shortcutCaptureActive.current) return
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key !== ',') return
-      if (typeof root !== 'string') return // the settings sheet is a workspace-shell surface
       e.preventDefault()
-      overlayActive === 'settings' ? closePalette() : openSettings()
+      openSettings()
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [root, overlayActive, openSettings, closePalette])
+  }, [openSettings])
 
   // `?` opens the keyboard cheat-sheet — when NOT typing (mockup rule): a focused input, select,
   // textarea or the CM contenteditable keeps the literal `?` keystroke. Pressing it on the open
@@ -7204,7 +7254,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         else if (action === 'column-width-in') stepLineWidth(1)
         else if (action === 'column-width-out') stepLineWidth(-1)
       }),
-    [stepProseSize, stepLineWidth, resetProseZoom],
+    [stepProseSize, stepLineWidth, resetProseZoom, toggleSidebar, focusEditor],
   )
 
   // Closing a tab leaves the workspace window open, including when this was its last document.
@@ -7221,6 +7271,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         setWorkbench((current) => (current && widgetWorkbenchTabId(current.documentPath) === path ? null : current))
         return
       }
+      if (isUntitledPiece(path.split('/').at(-1) ?? '')) path = await settleAutoNameRef.current(path)
       // Saving is automatic (ADR-0012): closing a document never prompts and never discards. Flush any
       // pending write first (savePath reads a background tab from EditorPane's cache); only a FAILED write
       // keeps the tab open, so the edits stay recoverable rather than lost. Read the SYNCHRONOUS dirty ref
@@ -7406,19 +7457,22 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
    * document.
    */
   const withRenameScopeSaved = useCallback(
-    async <T,>(path: string, plan: () => Promise<FileRenamePlan>, act: (planned: FileRenamePlan) => Promise<T>): Promise<{ result: T } | null> => {
+    async <T,>(path: string, plan: () => Promise<FileRenamePlan | null>, act: (planned: FileRenamePlan) => Promise<T>): Promise<{ result: T } | null> => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const planned = await plan()
+        if (!planned) return null
         const flushed = await withPathsSaved(
           () => renameMembers([path], planned.repairPaths, documentsUnder('')),
-          async (snapshots): Promise<{ stale: true } | { stale: false; value: T }> => {
+          async (snapshots): Promise<{ kind: 'stale' | 'skipped' } | { kind: 'acted'; value: T }> => {
             const again = await plan()
-            if (again.repairPaths.some((p) => !snapshots.has(p))) return { stale: true }
-            return { stale: false, value: await act(again) }
+            if (!again) return { kind: 'skipped' }
+            if (again.repairPaths.some((p) => !snapshots.has(p))) return { kind: 'stale' }
+            return { kind: 'acted', value: await act(again) }
           },
         )
         if (!flushed) return null
-        if (!flushed.result.stale) return { result: flushed.result.value }
+        if (flushed.result.kind === 'acted') return { result: flushed.result.value }
+        if (flushed.result.kind === 'skipped') return null
       }
       flash('The links to this file kept changing while it was renamed — nothing was moved. Try again.')
       return null
@@ -7446,6 +7500,101 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     }
   }, [owner, autosave, forgetAppTraces, moveExternalDiskNotice, queueAutosave])
   moveHoldRef.current = { withPathsSaved: (paths, act) => withPathsSaved(paths, () => act()), afterMainMoved }
+
+  settleAutoNameRef.current = async (path) => {
+    if (!isUntitledPiece(path.split('/').at(-1) ?? '')) return path
+    const namingRoot = restoredIdentityRoot.current
+    if (!owner.isSaved(path) && !await savePath(path)) return path
+    if (restoredIdentityRoot.current !== namingRoot) return path
+    const current = await requestAutoNameRef.current(path, true)
+    return current === path ? requestAutoNameRef.current(path, true) : current
+  }
+  requestAutoNameRef.current = async (path, departed = false) => {
+    const namingRoot = root
+    const inFlight = namingInFlight.current.get(path)
+    if (inFlight) return inFlight
+    const candidate = namingCandidates.current.get(path)
+    if (!namingRoot || candidate?.root !== namingRoot || bufferNow(path) !== candidate.doc) return path
+    if (!departed && performance.now() < candidate.deadline) {
+      const view = activeRef.current === path && loadedPath.current === path ? editorRef.current?.view() : null
+      const range = candidate.title.range
+      // The saved projection can differ from the display (for example, during tracked edits).
+      if (!range || !view || view.state.doc.toString() !== candidate.doc ||
+        view.state.selection.ranges.some(selection => selection.from <= range.to && selection.to >= range.from)) return path
+    }
+    const finishMove = async (from: string, to: string) => {
+      renameTab(from, to)
+      if (roomTextRef.current === from) setRoomTextPath(to)
+      await refresh()
+    }
+    const run = async (): Promise<string> => {
+      const collisions: string[] = []
+      for (let attempt = 0; attempt < 5 && restoredIdentityRoot.current === namingRoot; attempt++) {
+        const moved = await withRenameScopeSaved(path, () => window.writeflex.planAutoName(path, candidate.title.id, collisions), async (plan) => {
+          if (restoredIdentityRoot.current !== namingRoot || bufferNow(path) !== candidate.doc) return null
+          const result = await window.writeflex.autoName(path, candidate.title.id, plan.newPath, collisions)
+          if (result?.kind === 'renamed' && restoredIdentityRoot.current === namingRoot) afterMainMoved(path, result.renamed.file.path)
+          if (result?.kind === 'collision') collisions.push(plan.newPath.split('/').at(-1)!)
+          return result
+        })
+        if (!moved?.result) return path
+        if (moved.result.kind === 'collision') continue
+        const { renamed } = moved.result
+        const to = renamed.file.path
+        if (restoredIdentityRoot.current !== namingRoot) return to
+        forgetNamingCandidate(path)
+        await finishMove(path, to)
+        if (restoredIdentityRoot.current !== namingRoot) return to
+        flashWithAction(formatRenameRepairMessage(`Renamed to ${renamed.file.name}`, renamed.repair), {
+          label: 'Undo',
+          kind: 'auto-name',
+          run: () => {
+            if (restoredIdentityRoot.current !== namingRoot) return
+            const name = path.split('/').at(-1)!
+            const undoing = withRenameScopeSaved(to, () => window.writeflex.planFileRename(to, name), async () => {
+              const restored = await window.writeflex.undoAutoName(to, path)
+              afterMainMoved(to, restored.file.path)
+              return restored
+            }).then(async result => {
+              if (!result) return to
+              await finishMove(to, result.result.file.path)
+              flash(formatRenameRepairMessage(`Renamed back to ${name}`, result.result.repair))
+              return result.result.file.path
+            }).catch(error => { flash(humanReadableError(error, 'Could not undo the rename.')); return to })
+              .finally(() => namingInFlight.current.delete(to))
+            namingInFlight.current.set(to, undoing)
+          },
+        })
+        return to
+      }
+      if (restoredIdentityRoot.current === namingRoot) flash('Could not find a free name for this document.')
+      return path
+    }
+    // Do not await a rename from the owner's save: the rename takes that same document queue.
+    const moving = run().catch(error => {
+      if (restoredIdentityRoot.current === namingRoot) flash(namingErrorMessage(error))
+      return path
+    }).finally(() => {
+      namingInFlight.current.delete(path)
+      const latest = namingCandidates.current.get(path)
+      if (latest === candidate) forgetNamingCandidate(path)
+      else if (latest) void requestAutoNameRef.current(path)
+    })
+    namingInFlight.current.set(path, moving)
+    return moving
+  }
+
+  const copyFilePath = useCallback((path: string, format: 'absolute' | 'relative' | 'markdown' = 'absolute') => {
+    const absolute = root ? root.replace(/\/$/, '') + '/' + path : path
+    const label = (path.split('/').at(-1) ?? path).replace(/\s+/g, ' ').replace(/[\\[\]*_~]/g, '\\$&')
+    const value = format === 'relative' ? path : format === 'markdown'
+      ? '[' + label + '](writeflex://open?' + new URLSearchParams({ path: absolute }) + ')'
+      : absolute
+    void navigator.clipboard.writeText(value).then(
+      () => flash(format === 'markdown' ? 'Markdown link copied' : 'Path copied'),
+      error => flash(humanReadableError(error, 'Could not copy the file location.')),
+    )
+  }, [root, flash])
 
   const sidebarFileOps: SidebarFileOps = useMemo(
     () => ({
@@ -7525,7 +7674,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           await refresh()
           for (const t of openUnder) open(`${renamed.path}${t.slice(path.length)}`)
           if (wasActive) open(`${renamed.path}${wasActive.slice(path.length)}`)
-          flash(`Renamed folder to ${renamed.path.split('/').at(-1) ?? renamed.path}`)
+          flash(formatFolderRenameRepairMessage(`Renamed folder to ${renamed.path.split('/').at(-1) ?? renamed.path}`, renamed.repair))
           return true
         } catch (error) {
           if (isCollision(error)) return false
@@ -7634,13 +7783,28 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       },
       revealFile: (path) => void window.writeflex.revealFile(path),
       exportFile: (path) => void openExportSheet(path),
-      copyPath: (path) => {
-        void navigator.clipboard.writeText(root ? `${root}/${path}` : path)
-        flash('Path copied')
-      },
+      copyPath: copyFilePath,
     }),
-    [tabs, active, root, refresh, open, flash, owner, cancelAutosaveFor, forgetAppTraces, withPathsSaved, withRenameScopeSaved, afterMainMoved, e2eHoldMove, openExportSheet, documentsUnder],
+    [tabs, active, root, refresh, open, flash, owner, cancelAutosaveFor, forgetAppTraces, withPathsSaved, withRenameScopeSaved, afterMainMoved, e2eHoldMove, openExportSheet, documentsUnder, copyFilePath],
   )
+  runActiveFileCommand.current = (id, path) => {
+    if (activeFileUnavailable || activeFilePath !== path) return
+    switch (id) {
+      case 'file.reveal': sidebarFileOps.revealFile(path); break
+      case 'file.copyPath': sidebarFileOps.copyPath(path); break
+      case 'file.copyRelativePath': copyFilePath(path, 'relative'); break
+      case 'file.copyMarkdownLink': copyFilePath(path, 'markdown'); break
+      case 'file.pin': toggleFavourite(path); break
+      case 'file.openInDefaultApp':
+      case 'folder.reveal':
+        void window.writeflex.openDocumentLocation(path, id === 'folder.reveal' ? 'containing-folder' : 'default-app')
+          .catch(error => flash(humanReadableError(error, 'Could not open the file location.')))
+        break
+      default:
+        revealTreeRow({ key: path, kind: 'file' }, false)
+        setMenuTargetRequest({ id, key: path, kind: 'file' })
+    }
+  }
   // The memoised Files tree (R6) gets every callback under a fixed identity, so typing (an editor
   // snapshot, a session tick) does not re-render it; each still calls App's current closure.
   const stableSidebarFileOps = useStableCallbacks(sidebarFileOps)
@@ -7819,6 +7983,39 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     },
     [acceptThroughOwner, inDocumentQueue, handleAgentWorkspaceChange, reloadChanges],
   )
+  const runElsewhereBatch = async (action: 'accept' | 'reject' | 'clear', targets: BatchTarget[]): Promise<BatchResult> => {
+    const answer: BatchResult = { decided: 0, left: [] }
+    const batchRoot = root
+    if (restoredIdentityRoot.current !== batchRoot) throw new Error('The workspace changed.')
+    if (action !== 'accept') return window.writeflex.decideOutsideBatch(action, targets)
+    const ordered = await window.writeflex.orderOutsideBatch(targets)
+    for (const target of ordered) {
+      try {
+        const resolve = async () => {
+          if (restoredIdentityRoot.current !== batchRoot) throw new Error('The workspace changed.')
+          return window.writeflex.resolveChange(target.id, action, { batchPath: target.path })
+        }
+        const accepted = await acceptThroughOwner(target.path, target.id, resolve)
+        if (accepted.status !== 'acted') {
+          answer.left.push({ ...target, reason: accepted.message })
+          continue
+        }
+        if (!accepted.result.applied) {
+          answer.left.push({ ...target, reason: accepted.result.message ?? 'The change could not be placed.' })
+          continue
+        }
+        answer.decided += 1
+      } catch (error) {
+        answer.left.push({ ...target, reason: humanReadableError(error, 'Could not decide this proposal.') })
+      }
+    }
+    if (restoredIdentityRoot.current === batchRoot) {
+      handleAgentWorkspaceChange()
+      await refreshInlineChangesAfterReconcile().catch(() => {})
+    }
+    return answer
+  }
+
   // Accept all / Decline all from one outside source, across the collection. A document this window holds is
   // accepted through the single click's own route (acceptThroughOwner); main accepts the rest the same way.
   const outsideSourceBulk = useOutsideSourceBulk({
@@ -8626,13 +8823,14 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                   const moved = await withPathsSaved(() => documentsUnder(prefix), async snapshots => {
                     const renamed = await window.writeflex.renameFolder(collectionDir, name)
                     for (const path of snapshots.keys()) afterMainMoved(path, `${renamed.path}${path.slice(collectionDir.length)}`)
-                    return renamed.path
+                    return renamed
                   }, prefix)
                   if (!moved) throw new Error('Could not save the documents. The collection was not renamed.')
                   await refresh()
-                  for (const path of openBefore) openTab(`${moved.result}${path.slice(collectionDir.length)}`)
-                  if (activeBefore) activateTab(activeBefore.startsWith(prefix) ? `${moved.result}${activeBefore.slice(collectionDir.length)}` : activeBefore)
-                  openCollection(moved.result)
+                  for (const path of openBefore) openTab(`${moved.result.path}${path.slice(collectionDir.length)}`)
+                  if (activeBefore) activateTab(activeBefore.startsWith(prefix) ? `${moved.result.path}${activeBefore.slice(collectionDir.length)}` : activeBefore)
+                  openCollection(moved.result.path)
+                  flash(formatFolderRenameRepairMessage(`Renamed folder to ${moved.result.path.split('/').at(-1) ?? moved.result.path}`, moved.result.repair))
                 }}
                 onBulkAction={async (action, paths, value) => {
                   if (action === 'move') {
@@ -8830,7 +9028,11 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             workspaceRoot={root}
             assetBaseUrl={assetBaseUrl}
             onDocChanged={handleDocChanged}
-            onCommandStateChange={() => menuPublisher.schedule()}
+            onCommandStateChange={() => {
+              menuPublisher.schedule()
+              const path = activeRef.current
+              if (path && namingCandidates.current.has(path)) void requestAutoNameRef.current(path)
+            }}
             onDocumentTransaction={pauseReadAloudAtCaret}
             onDocumentPointerDown={pauseReadAloudAtCaret}
             onManualReadAloudScroll={pauseReadAloudOnManualScroll}
@@ -8976,7 +9178,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             onReviewNew={showArrivedInMargin}
             reviewElsewhere={reviewModels ? {
               pieces: reviewModels.unfiltered.otherPieces,
-              folderName: workspaceName ?? '',
+              changes: waitingElsewhere,
+              onBatch: runElsewhereBatch,
+              onBatchSummary: flash,
               onOpen: openPieceAt,
               onNextPiece: nextPieceWithItems,
               nextPieceChord: formatShortcutKey(resolveChord('review.nextPieceWaiting', shortcutOverrides) ?? ''),
@@ -9237,7 +9441,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                     onOpenDigestPiece={open}
                     onManageSkills={openSkillsManager}
                     onRunFolderSkill={runPaletteSkill}
-                    onOpenAccountSettings={() => openSettings('sec-account')}
+                    onOpenAccountSettings={(page) => openSettings(page ?? 'sec-account')}
                     onShowSkillToast={setSkillToast}
                     onOpenReviewing={reviewSkillChanges}
                     onOpenNotes={openSkillNotes}
@@ -9393,31 +9597,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           initialName={skillsManagerInitialName}
           onRegistryChanged={updateSkillsRegistry}
           onClose={closePalette}
-        />
-      )}
-      {/* Settings (Task 17): ⌘, / the sidebar gear / the palette row. closePalette is the shared
-          focus-restoring overlay exit — the keyboard lands back on the editor. */}
-      {overlayActive === 'settings' && (
-        <SettingsWindow
-          values={settings.values}
-          changelog={settings.changelog}
-          voices={speechVoices}
-          selectedVoiceURI={selectedVoiceURI}
-          initialSection={settingsInitialSection}
-          diarySessionRequired={settingsDiarySessionRequired}
-          onSet={settings.set}
-          onRevert={settings.revert}
-          onRefresh={settings.refresh}
-          typewriterOn={typewriterOn}
-          workspaceName={root.split('/').at(-1) ?? root}
-          workspaceRoot={typeof root === 'string' && root !== '' ? root : null}
-          onFlash={flash}
-          onClose={closePalette}
-          onConfigureActionBar={() => setConfigureActionBarOpen(true)}
-          getStarted={{ removed: guideContext.removed, canRestore: guideContext.canRestore }}
-          onRestoreExample={restoreExample}
-          onOpenGuide={() => { closePalette(); openTheGuide() }}
-          onOpenSharingSetup={openSharingSetup}
         />
       )}
       {removeExampleOpen && <RemoveExampleConfirm onClose={() => setRemoveExampleOpen(false)} />}

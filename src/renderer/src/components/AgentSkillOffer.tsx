@@ -109,19 +109,18 @@ function Finished({ report, close }: { report: ActionReport; close: () => void }
 }
 
 /** The later offer: a mark in the status bar, opened to a small notice. Shown once per agent. */
-export function AgentSkillMark(): JSX.Element | null {
+export function AgentSkillMark({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }): JSX.Element | null {
   const [offer, setOffer] = useAgentSkillOffer()
-  const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const api = agentSkillBridge()
   if (!api || !offer || offer.kind !== 'later') return null
   const names = offer.agents.map((a) => a.name)
   const ids = offer.agents.map((a) => a.id)
-  const finish = (): void => { setOpen(false); setOffer(null) }
+  const finish = (): void => { onOpenChange(false); setOffer(null) }
   return (
     <span className="sb-agent-skill" data-sb-resident>
-      <button type="button" className="sb-agent-skill-mark" data-agent-skill-mark aria-expanded={open} title={W.laterMark(names)}
-        onClick={() => { if (!open) void api.offerShown(ids); setOpen((v) => !v) }}>{W.laterMark(names)}</button>
+      <button type="button" className="sb-agent-skill-mark" data-agent-skill-mark aria-haspopup="dialog" aria-expanded={open} aria-label={W.laterMark(names)} title={W.laterMark(names)}
+        onClick={() => { if (!open) void api.offerShown(ids); onOpenChange(!open) }}><Plug className="icon" aria-hidden="true" /></button>
       {open && (
         <div role="dialog" aria-label={W.laterTitle(names)} data-agent-skill-popover className="sb-agent-skill-popover">
           <b>{W.laterTitle(names)}</b>

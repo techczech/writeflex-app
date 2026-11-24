@@ -54,6 +54,14 @@ export class GuardedMoveRefused extends Error {
   }
 }
 
+export type GuardedMoveOptions = {
+  seams?: WriteSeams
+  expect?: PathIdentity
+  beforeCommit?: (commit: MoveCommit) => void
+  /** @internal Test seam for volumes without hard links. */
+  linkFile?: typeof link
+}
+
 type GuardedWorkspace = Pick<Workspace, 'root' | 'classifyPath' | 'absolute' | 'relative'> & Partial<Pick<Workspace, 'exclusiveAll'>>
 
 /** Which file or folder a name stands for: its device and inode, which a rename keeps and a replacement does not. */
@@ -79,7 +87,7 @@ export async function moveDocumentGuarded(
   from: string,
   to: string,
   kind: PathKind,
-  options: { seams?: WriteSeams; expect?: PathIdentity; beforeCommit?: (commit: MoveCommit) => void } = {},
+  options: GuardedMoveOptions = {},
 ): Promise<void> {
   const run = () => moveDocumentGuardedHeld(ws, from, to, kind, options)
   return ws.exclusiveAll ? ws.exclusiveAll(run) : run()
@@ -90,7 +98,7 @@ async function moveDocumentGuardedHeld(
   from: string,
   to: string,
   kind: PathKind,
-  options: { seams?: WriteSeams; expect?: PathIdentity; beforeCommit?: (commit: MoveCommit) => void } = {},
+  options: GuardedMoveOptions = {},
 ): Promise<void> {
   assertCollectionWritable(ws.root)
   const judged = (path: string): string => {
@@ -139,13 +147,20 @@ async function moveDocumentGuardedHeld(
     }
     try {
       // A hard link fails when the name is taken, where a rename would silently replace the file there.
-      await link(realFrom, realTo)
+      await (options.linkFile ?? link)(realFrom, realTo)
     } catch (error) {
       if (errorCode(error) === 'EEXIST') throw new GuardedMoveRefused('exists', to, kind)
       if (!NO_HARD_LINKS.has(errorCode(error) ?? '')) throw error
       // No hard links on this disk (the link made nothing): the name is checked free, and then
       // `beforeCommit` runs again, so that nothing is awaited between it and the rename that commits.
-      if (await lstat(realTo).catch(() => null)) throw new GuardedMoveRefused('exists', to, kind)
+      const fallbackSource = await lstat(realFrom, { bigint: true })
+      if (fallbackSource.dev !== again.dev || fallbackSource.ino !== again.ino || !fallbackSource.isFile()) {
+        throw new GuardedMoveRefused('swapped', from, kind)
+      }
+      if (await lstat(realTo).catch(error => {
+        if (errorCode(error) === 'ENOENT') return null
+        throw error
+      })) throw new GuardedMoveRefused('exists', to, kind)
       options.beforeCommit?.(commit)
       await rename(realFrom, realTo)
       return

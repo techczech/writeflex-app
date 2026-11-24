@@ -25,6 +25,7 @@ import { insertWidgetInText } from '../shared/widget-insert'
 import { OPEN_NOFOLLOW, walkNoFollow, walkNoFollowSync } from './widget-file'
 import { isHiddenWorkspacePath, type Workspace } from './workspace'
 import { pausedMessage } from './collection-write-gate'
+import { noteCreatedFile } from './created-file-record'
 
 /** Largest widget file the agent may create: 1 MiB. Hand-written pages are tens of KiB; the reader's own limit is 16 MiB. */
 export const WIDGET_CREATE_MAX_BYTES = 1024 * 1024
@@ -310,7 +311,11 @@ function createWidgetFileNow(place: Extract<WidgetPlace, { ok: true }>, plannedP
   } finally {
     try { closeSync(fd) } catch { /* the descriptor is gone either way */ }
   }
-  if (!failure && created) return { ok: true, created: { ...created, sha256: createHash('sha256').update(bytes).digest('hex') } }
+  if (!failure && created) {
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    noteCreatedFile(plannedPath, sha256)
+    return { ok: true, created: { ...created, sha256 } }
+  }
   if (!created) return { ok: false, message: `${failure} An empty file may have been left at ${plannedPath}.` }
   const undone = removeCreatedWidgetFile(place.realRoot, created)
   return { ok: false, message: undone.removed ? failure : `${failure} The incomplete file ${created.path} could not be removed (${undone.reason}); it is still in the Workspace.` }

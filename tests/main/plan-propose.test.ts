@@ -355,3 +355,24 @@ test('while another owner holds the Collection, accept and undo are refused and 
     resumeCollectionWrites(root)
   }
 })
+
+// Upkeep ticket 03, review round 1: undo vouches only for the text the step itself wrote. Writing that lands in the
+// Index Note the step created, after the step wrote it and before the accept finished, is not the step's and is kept.
+test('undo of a created Index Note keeps writing that landed in it while the accept was finishing', async () => {
+  await seedReport(null)
+  const { agent, id } = await propose(threeAdds)
+  const proposals = (agent as unknown as { bridle: { proposals: { settleAsHost: (...args: unknown[]) => Promise<unknown> } } }).bridle.proposals
+  const settle = proposals.settleAsHost.bind(proposals)
+  proposals.settleAsHost = async (...args: unknown[]) => {
+    await writeFile(join(root, indexPath), `${await read(indexPath)}\nA paragraph written by another program.\n`)
+    return settle(...args)
+  }
+  expect((await agent.acceptPlanProposal(id)).ok).toBe(true)
+  const withOutside = await read(indexPath)
+  expect(withOutside).toContain('A paragraph written by another program.')
+
+  const undone = await agent.undoPlanProposal(id)
+  expect(undone.ok).toBe(false)
+  expect(undone.ok === false && undone.message).toContain('would delete writing added after it')
+  expect(await read(indexPath)).toBe(withOutside)
+})

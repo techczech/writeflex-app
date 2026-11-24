@@ -5,7 +5,11 @@
     "": {
       "name": "writeflex-app",
       "dependencies": {
+        "@app-patterns/commands": "file:./vendor/app-patterns/app-patterns-commands-0.4.1.tgz",
         "@app-patterns/outline": "file:./vendor/app-patterns/app-patterns-outline-0.3.0.tgz",
+        "@app-patterns/settings": "file:./vendor/app-patterns/app-patterns-settings-0.4.1.tgz",
+        "@app-patterns/settings-electron": "file:./vendor/app-patterns/app-patterns-settings-electron-0.4.1.tgz",
+        "@app-patterns/settings-react": "file:./vendor/app-patterns/app-patterns-settings-react-0.4.1.tgz",
         "@app-patterns/updates": "file:./vendor/app-patterns/app-patterns-updates-0.4.1.tgz",
         "@app-patterns/updates-react": "file:./vendor/app-patterns/app-patterns-updates-react-0.4.1.tgz",
         "@bridle/contract": "file:./vendor/bridle/bridle-contract-0.3.1.tgz",
@@ -64,6 +68,10 @@
     },
   },
   "overrides": {
+    "@app-patterns/commands": "file:./vendor/app-patterns/app-patterns-commands-0.4.1.tgz",
+    "@app-patterns/settings": "file:./vendor/app-patterns/app-patterns-settings-0.4.1.tgz",
+    "@app-patterns/settings-electron": "file:./vendor/app-patterns/app-patterns-settings-electron-0.4.1.tgz",
+    "@app-patterns/settings-react": "file:./vendor/app-patterns/app-patterns-settings-react-0.4.1.tgz",
     "@app-patterns/updates": "file:./vendor/app-patterns/app-patterns-updates-0.4.1.tgz",
     "@bridle/cognition": "file:./vendor/bridle/bridle-cognition-0.1.1.tgz",
     "@bridle/contract": "file:./vendor/bridle/bridle-contract-0.3.1.tgz",
@@ -89,7 +97,15 @@
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.129.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-MH7LB20kNpGLUpPTe2OG5XvL/KhX8HUO9XyBaFjgFk6TLS4Xjt0VPIuMKywe7POKKPslX+QxSlVok9e+8kG5Nw=="],
 
+    "@app-patterns/commands": ["@app-patterns/commands@./vendor/app-patterns/app-patterns-commands-0.4.1.tgz", {}, "sha512-7uTcY17oI5REaXP53jzyBsPrra56YGA6z/DzVV1SOe3d+k7EcmuTpm7cOc60ZY3kMpeFYP10PnfrF+7RTZtRvg=="],
+
     "@app-patterns/outline": ["@app-patterns/outline@./vendor/app-patterns/app-patterns-outline-0.3.0.tgz", { "dependencies": { "@codemirror/language": "^6.12.4", "@codemirror/state": "^6.7.0", "@codemirror/view": "^6.43.3" } }, "sha512-f1mOAN8oEwDZmvm2g/PT6Dydk1J9WLjlrbAFJWqytpoMSjhJ2acIlLnMDmf8utd2aIzLQe4GMk1C8XsDMqAeSA=="],
+
+    "@app-patterns/settings": ["@app-patterns/settings@./vendor/app-patterns/app-patterns-settings-0.4.1.tgz", {}, "sha512-QzzOvkN87Am3N0G4a8NVJVqVD/wIfQXZsDT29P2RTLY+c6gHPrfbJDrntP6cERKkjOZgTf5C/0FxO21AKZp8nw=="],
+
+    "@app-patterns/settings-electron": ["@app-patterns/settings-electron@./vendor/app-patterns/app-patterns-settings-electron-0.4.1.tgz", { "peerDependencies": { "@app-patterns/commands": "^0.4.1", "@app-patterns/settings": "^0.4.1", "@app-patterns/settings-react": "^0.4.1", "electron": ">=30 <43" }, "optionalPeers": ["@app-patterns/commands", "@app-patterns/settings", "@app-patterns/settings-react", "electron"] }, "sha512-EPTZeq7x0FLDO2v9cTtzIOWlqaMxsthwBmTcQkYMOOCQTkFolTf68xGATzJDy3HzdXYgjbQjulxWX8ZziK1rcg=="],
+
+    "@app-patterns/settings-react": ["@app-patterns/settings-react@./vendor/app-patterns/app-patterns-settings-react-0.4.1.tgz", { "peerDependencies": { "@app-patterns/commands": "^0.4.1", "@app-patterns/settings": "^0.4.1", "@app-patterns/updates": "^0.4.1", "@app-patterns/updates-react": "^0.4.1", "lucide-react": ">=0.468.0 <2", "react": ">=18" }, "optionalPeers": ["@app-patterns/updates", "@app-patterns/updates-react"] }, "sha512-YcwA5KdTwq9HvaNozOIYTcn+cVjNcNcRIk8K/W+0trBzWrYoRoONlC07zHl89/564Pin1minktUk5Owe6miz2A=="],
 
     "@app-patterns/updates": ["@app-patterns/updates@./vendor/app-patterns/app-patterns-updates-0.4.1.tgz", {}, "sha512-TzqQvFcc3bRZ2wN75mhiIE8H+Kf4HpX69YVcrw9aAxsLHNDEcrLmoewJylHyyQ3iZKspI4qAsMGolb2I/g+sqw=="],
 

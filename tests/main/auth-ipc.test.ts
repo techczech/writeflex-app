@@ -1,3 +1,4 @@
+import { AuthKeySlots } from '../../src/main/key-slots'
 import { test, expect } from 'bun:test'
 import { BridleAuth } from '@bridle/core'
 import { AUTH_CHANNELS, type AuthUiEvent } from '@bridle/electron'
@@ -58,4 +59,38 @@ test('unknown-provider login finishes with ok:false instead of crashing', async 
   const login = handled.get(AUTH_CHANNELS.login)!
   await login({}, { providerId: 'not-a-provider' })
   expect(events.at(-1)).toMatchObject({ kind: 'login-finished', ok: false })
+})
+
+test('broker credential changes refresh Accounts slots, including logout, and unsubscribe on dispose', async () => {
+  const auth = BridleAuth.inMemory()
+  const handlers = new Map<string, (...args: any[]) => unknown>()
+  let refreshes = 0
+  const registration = registerWriteFlexAuth({ handle: (channel, handler) => { handlers.set(channel, handler) }, removeHandler: (channel) => { handlers.delete(channel) } }, auth, { openExternal: () => {}, emit: () => {} }, () => { refreshes += 1 })
+  await handlers.get(AUTH_CHANNELS.setApiKey)!({}, { providerId: 'zai', key: 'test' })
+  expect(refreshes).toBe(1)
+  await handlers.get(AUTH_CHANNELS.logout)!({}, 'zai')
+  expect(refreshes).toBe(2)
+  registration.dispose()
+  auth.setApiKey('zai', 'later')
+  expect(refreshes).toBe(2)
+})
+
+
+test('successful broker login and logout refresh the Settings account status without reopening it', async () => {
+  const auth = BridleAuth.inMemory()
+  const slots = new AuthKeySlots(auth)
+  const statuses: unknown[] = []
+  const handlers = new Map<string, (...args: any[]) => unknown>()
+  const events: AuthUiEvent[] = []
+  // A network-free login stand-in commits credentials through the broker's auth change seam.
+  auth.login = async () => { auth.setApiKey('openai-codex', 'test-login-result') }
+  const registration = registerWriteFlexAuth({ handle: (channel, handler) => { handlers.set(channel, handler) }, removeHandler: (channel) => { handlers.delete(channel) } }, auth, { openExternal: () => {}, emit: (event) => events.push(event) }, () => { statuses.push(slots.list()) })
+  expect(slots.list().find((slot) => slot.id === 'accounts.chatgpt')?.status).toBe('missing')
+  await handlers.get(AUTH_CHANNELS.login)!({}, { providerId: 'openai-codex' })
+  expect(events.at(-1)).toMatchObject({ kind: 'login-finished', ok: true })
+  expect(statuses.at(-1)).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'accounts.chatgpt', status: 'connected' })]))
+  await handlers.get(AUTH_CHANNELS.logout)!({}, 'openai-codex')
+  expect(statuses.at(-1)).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'accounts.chatgpt', status: 'missing' })]))
+  expect(JSON.stringify(statuses)).not.toContain('test-login-result')
+  registration.dispose()
 })

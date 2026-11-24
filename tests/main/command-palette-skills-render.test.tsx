@@ -65,7 +65,8 @@ test('empty command palette puts recent commands before unpinned skills and keep
   const html = renderPalette('drafts/metaphors.md', commands, ['review-pane'])
 
   expect(html.indexOf('>Recent<')).toBeLessThan(html.indexOf('Skills — on metaphors.md'))
-  expect(html.indexOf('>Commands<')).toBeLessThan(html.indexOf('Skills — on metaphors.md'))
+  expect(html.indexOf('>All commands by task<')).toBeLessThan(html.indexOf('Skills — on metaphors.md'))
+  expect(html.indexOf('>Recent<')).toBeLessThan(html.indexOf('>All commands by task<'))
   expect(html.indexOf('>Copy-edit<')).toBeLessThan(html.indexOf('>Review<'))
   expect(html.indexOf('>Review<')).toBeLessThan(html.indexOf('>Clean-up<'))
   expect(html).toContain('Tightens grammar, punctuation and clarity. Never rewrites your voice.')
@@ -86,7 +87,7 @@ test('future app commands remain visible and cannot be activated', () => {
   const html = renderPalette('draft.md', [
     ...commands,
     { id: 'reading-room-highlights', label: 'Reading Room: Highlights view', group: 'Collect and plan', icon: Command, disabled: true, disabledReason: 'Available when Highlights view ships', run: () => {} },
-  ])
+  ], ['reading-room-highlights'])
 
   expect(html).toContain('Reading Room: Highlights view')
   expect(html).toContain('disabled=""')
@@ -94,7 +95,8 @@ test('future app commands remain visible and cannot be activated', () => {
 })
 
 test('every command-palette row shows its task group because results are flat', () => {
-  const html = renderPalette('draft.md')
+  // Command rows on the empty top level are the Recent ones; the rest sit inside their groups.
+  const html = renderPalette('draft.md', commands, ['copy-path', 'review-pane'])
 
   expect(html).toContain('<span class="pal-command-group">Find and manage files</span>')
   expect(html).toContain('<span class="pal-command-group">Review and versions</span>')

@@ -1,26 +1,16 @@
-/**
- * Sounds: typing + ambient channels played from REAL RECORDINGS, not synthesis.
- *
- * The first version synthesised everything, and it failed its live check on both counts: the
- * typewriter was not recognisably a typewriter, and every keystroke arrived as two taps (the voice
- * table layered a second transient 8–12 ms behind the first), so typing never felt synchronised.
- * Both faults are gone by construction here — each keystroke plays ONE sample, cut from a field
- * recording so that it contains exactly one hit. Sources and licences: resources/sounds/CREDITS.md.
- *
- * The pure part (which sample a voice speaks with, variant choice, jitter, the volume clamp) lives
- * in src/shared/sound-pack.ts so main can use the same table as its IPC allowlist and the tests can
- * exercise it headless. Everything below is the AudioContext work, which only ears can judge.
- */
+/** Recorded one-shots and ambient loops. Provenance is in resources/sounds/CREDITS.md. */
 
 import {
   AMBIENT_SAMPLES,
   ambientSample,
   clampVolume,
+  DEFAULT_TYPING_SCHEME,
   keystrokeVoice,
   nextVariant,
   normaliseTypingScheme,
   strikeJitter,
   SOUND_PACK_FILES,
+  SESSION_CUE_FILES,
   TYPING_SAMPLES,
   typingSamples,
   type AmbientLoop,
@@ -33,6 +23,7 @@ export {
   AMBIENT_SAMPLES,
   ambientSample,
   clampVolume,
+  DEFAULT_TYPING_SCHEME,
   keystrokeVoice,
   nextVariant,
   normaliseTypingScheme,
@@ -50,7 +41,7 @@ const AMBIENT_FADE_S = 0.8
 type AmbientGraph = { source: AudioBufferSourceNode; gain: GainNode; file: string }
 type SessionCue = 'tick' | 'complete'
 type SessionCueState = { running: boolean; timed: boolean; tick: boolean; volume: number }
-const SESSION_CUE_FILES: Record<SessionCue, string> = { tick: 'soft-key-1.wav', complete: 'soft-enter.wav' }
+const MAX_TYPING_VOICES = 6
 
 /**
  * The app-level sound engine (one per window; the blur/focus suspend keeps only the focused window
@@ -64,9 +55,10 @@ export class SoundEngine {
   #buffers = new Map<string, AudioBuffer>()
   #pending = new Map<string, Promise<AudioBuffer | null>>()
   #typingOn = false
-  #scheme: TypingScheme = 'deep'
+  #scheme: TypingScheme = DEFAULT_TYPING_SCHEME
   #typingVolume = 0.6
   #lastVariant = new Map<string, number>()
+  #typingVoices = new Set<AudioBufferSourceNode>()
   #ambientOn = false
   #ambientLoop: AmbientLoop = 'white'
   #ambientVolume = 0.35
@@ -81,7 +73,7 @@ export class SoundEngine {
   ) {}
 
   #context(): AudioContext {
-    if (!this.#ctx) this.#ctx = new AudioContext()
+    if (!this.#ctx) this.#ctx = new AudioContext({ latencyHint: 'interactive' })
     return this.#ctx
   }
 
@@ -112,8 +104,8 @@ export class SoundEngine {
 
   /** Warm every sample a scheme can speak with, so the first keystroke is as tight as the hundredth. */
   #primeTyping(scheme: TypingScheme): void {
-    for (const voice of Object.keys(TYPING_SAMPLES[scheme]) as KeystrokeVoice[]) {
-      for (const file of typingSamples(scheme, voice)) void this.#buffer(file)
+    for (const files of Object.values(TYPING_SAMPLES[scheme])) {
+      for (const file of files) void this.#buffer(file)
     }
   }
 
@@ -121,25 +113,33 @@ export class SoundEngine {
     this.#typingOn = on
     this.#scheme = scheme
     this.#typingVolume = clampVolume(volume, 0.6)
-    if (!on) return
+    if (!on) {
+      this.#stopTypingVoices()
+      return
+    }
     this.#primeTyping(scheme)
     void this.#context().resume()
   }
 
   keystroke(key: string): void {
-    if (!this.#typingOn || this.#typingVolume === 0) return
+    if (!this.#typingOn || this.#typingVolume === 0 || this.#typingVoices.size >= MAX_TYPING_VOICES) return
     const voice = keystrokeVoice(key)
     if (!voice) return
     const ctx = this.#context()
-    if (ctx.state !== 'running') return // blurred/suspended: stay silent rather than queue clicks
+    if (ctx.state !== 'running') {
+      // A persisted preference can be enabled before Chromium grants audio playback. Let this
+      // keystroke unlock the context, without queueing a click to play late.
+      void ctx.resume()
+      return
+    }
     const variants = typingSamples(this.#scheme, voice)
     const slot = `${this.#scheme}/${voice}`
     const index = nextVariant(variants.length, this.#lastVariant.get(slot) ?? -1, Math.random())
-    this.#lastVariant.set(slot, index)
     const buffer = this.#buffers.get(variants[index])
     // Still decoding (the first keystrokes of a freshly enabled channel): skip rather than await.
     // A click that arrives late is worse than one that never arrives.
     if (!buffer) return
+    this.#lastVariant.set(slot, index)
     const jitter = strikeJitter(Math.random)
     const source = ctx.createBufferSource()
     source.buffer = buffer
@@ -148,8 +148,18 @@ export class SoundEngine {
     gain.gain.value = this.#typingVolume * jitter.gain
     source.connect(gain)
     gain.connect(ctx.destination)
-    source.onended = () => gain.disconnect()
-    source.start() // one voice, one hit, now — no scheduled second layer
+    this.#typingVoices.add(source)
+    source.onended = () => {
+      this.#typingVoices.delete(source)
+      source.disconnect()
+      gain.disconnect()
+    }
+    source.start()
+  }
+
+  #stopTypingVoices(): void {
+    for (const source of this.#typingVoices) source.stop()
+    this.#typingVoices.clear()
   }
 
   setAmbient(on: boolean, loop: AmbientLoop, volume: number): void {
@@ -256,6 +266,7 @@ export class SoundEngine {
 
   /** Window blur: pause the clock (ambient falls silent; typing is naturally silent unfocused). */
   suspend(): void {
+    this.#stopTypingVoices()
     if (this.#ctx && this.#ctx.state === 'running') void this.#ctx.suspend()
   }
 

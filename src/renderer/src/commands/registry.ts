@@ -150,7 +150,7 @@ const sheet = (idNamespace: string, group: CommandGroup, column: 0 | 1 | 2, rows
 const STRIKETHROUGH_COMMAND: CommandDefinition = { id: 'edit.strikethrough', label: 'Strikethrough', keywords: ['strike', 'strikethrough', 'delete'], group: 'Writing', surfaces: ['palette', 'sheet'], sheetColumn: 1, run: toggleStrikethrough }
 
 const sheetCommands: CommandDefinition[] = [
-  ...sheet('Files', 'Files and versions', 0, [sheetLiteral('Open folder or file', '⌘O'), sheetLiteral('Checkpoint (save is automatic)', '⌘S'), sheetLiteral('New file', '⌘N'), sheetLiteral('New folder', '⌃⌘N'), sheetLiteral('New window', '⌥⌘N'), sheetLiteral('File menu (sidebar row)', '⌘K'), sheetLiteral('Rename file or folder', 'F2'), sheetLiteral('Move to folder', 'M'), sheetLiteral('Duplicate file', '⌘D'), sheetLiteral('Move to Bin', '⌘⌫'), sheetLiteral('Close tab', '⌘W'), sheetCommand('tab.pin', 'Pin to strip / Unpin from strip')]),
+  ...sheet('Files', 'Files and versions', 0, [sheetCommand('app.open', 'Open folder or file'), sheetCommand('file.checkpoint', 'Checkpoint (save is automatic)'), sheetCommand('file.new', 'New file'), sheetCommand('folder.new', 'New folder'), sheetCommand('window.new', 'New window'), sheetLiteral('File menu (sidebar row)', '⌘K'), sheetLiteral('Rename file or folder', 'F2'), sheetLiteral('Move to folder', 'M'), sheetLiteral('Duplicate file', '⌘D'), sheetLiteral('Move to Bin', '⌘⌫'), sheetCommand('tab.close', 'Close tab'), sheetCommand('tab.pin', 'Pin to strip / Unpin from strip')]),
   ...sheet('Navigation', 'Navigation', 0, [sheetCommand('app.quickOpen', 'Quick-open file or folder'), sheetLiteral('Find in file', '⌘F'), sheetLiteral('Filter the Files pane', '⌘F'), sheetLiteral('Next / previous match', ['⌘G', '⇧⌘G']), sheetLiteral('Show replace', '⌥⌘F'), sheetLiteral('Cycle tabs', '⌃⇥'), sheetCommand('navigation.nextTab', 'Next open tab'), sheetCommand('navigation.previousTab', 'Previous open tab'), sheetCommand('navigation.nextFolderFile', 'Next file in folder'), sheetCommand('navigation.previousFolderFile', 'Previous file in folder'), sheetLiteral('Focus editor', '⌘1'), sheetCommand('view.files', 'Open Files pane'), sheetCommand('view.openTabs', 'Open tabs'), sheetLiteral('Back / forward along link trail', ['⌃⌘←', '⌃⌘→']), sheetCommand('view.outline', 'Open Outline tab'), sheetCommand('app.search', 'Open Search tab'), sheetCommand('view.toggleLeftPane', 'Show/hide left sidebar'), sheetLiteral('Bookmark here', '⌘F2', 'ship2'), sheetLiteral('Next / previous bookmark', ['F3', '⇧F3'], 'ship2'), sheetLiteral('Jump to last change', '⌘4', 'ship2'), sheetLiteral('Outline row menu (outline row)', '⌘K')]),
   ...sheet('Editing', 'Writing', 1, [sheetCommand('edit.selectBodyExceptMetadata', 'Select all text (keep metadata)'), sheetCommand('edit.bold', 'Bold'), sheetCommand('edit.italic', 'Italic'), sheetInline(STRIKETHROUGH_COMMAND), sheetCommand('edit.link', 'Link'), sheetLiteral('Move line up / down', ['⌥↑', '⌥↓']), sheetLiteral('Collapse selection', '⌘5', 'ship2'), sheetCommand('edit.toggleComment', 'Toggle comment'), sheetCommand('edit.mark', 'Mark ==text=='), sheetCommand('edit.selectNextOccurrence', 'Select next occurrence'), sheetCommand('block.duplicate', 'Duplicate block'), sheetCommand('edit.joinLines', 'Join lines'), sheetLiteral('Track my changes', '⌥⌘M'), sheetLiteral('Insert object', '⌘K'), sheetLiteral('Edit block / done', ['↵', '⌘↵']), sheetLiteral('Browse table cells', 'Esc'), sheetLiteral('Move table row / column', '⇧⌘arrows'), sheetLiteral('Next / previous block', ['⌃⌘↓', '⌃⌘↑'])]),
   // Skills took ⌥⌘1/2/3 on 2026-07-19 (OPEN-QUESTIONS #2; usability review confirm pending).
@@ -200,13 +200,37 @@ const sameActionMenuReasons: Readonly<Record<string, string>> = {
   'file.export': 'Same action as export.document in Share > Export and presets',
   'folder.clearFocus': 'Same action as view.clearFolderFocus in File > Files and quick open',
 }
+
+const finderKeywords = ['finder', 'show in finder', 'reveal', 'location', 'path', 'file']
+export const ACTIVE_FILE_COMMANDS = {
+  'file.rename': ['file', 'filename', 'rename'],
+  'file.move': ['file', 'move', 'folder', 'location'],
+  'file.duplicate': ['file', 'duplicate', 'copy'],
+  'file.pin': ['file', 'pin', 'favourite'],
+  'file.reveal': finderKeywords,
+  'file.copyPath': ['file', 'path', 'full path', 'absolute path', 'location', 'clipboard'],
+  'file.copyRelativePath': ['file', 'path', 'relative path', 'vault', 'location', 'clipboard'],
+  'file.copyMarkdownLink': ['file', 'path', 'markdown link', 'clipboard'],
+  'file.openInDefaultApp': ['file', 'open with', 'default app', 'external', 'finder'],
+  'file.trash': ['file', 'trash', 'delete', 'remove'],
+  'folder.reveal': finderKeywords,
+}
+export type ActiveFileCommand = keyof typeof ACTIVE_FILE_COMMANDS
+export function isActiveFileCommand(id: string): id is ActiveFileCommand {
+  return Object.prototype.hasOwnProperty.call(ACTIVE_FILE_COMMANDS, id)
+}
+
 const menuCommands: CommandDefinition[] = [
   ['file.open','Open','↵','Files and versions'],['file.rename','Rename','F2','Files and versions'],['file.move','Move to folder…','M','Files and versions'],['file.duplicate','Duplicate','⌘D','Files and versions'],['file.pin','Pin favourite',undefined,'Files and versions'],['file.export','Export…',undefined,'Files and versions'],['file.reveal','Reveal in Finder',undefined,'Files and versions'],['file.copyPath','Copy file path',undefined,'Files and versions'],['file.trash','Move to Bin…','⌘⌫','Files and versions'],
-  ['folder.newFile','New file here','⌘N','Files and versions'],['folder.newFolder','New subfolder…',undefined,'Files and versions'],['folder.rename','Rename folder','F2','Files and versions'],['folder.reveal','Reveal in Finder',undefined,'Files and versions'],['folder.trash','Delete folder…',undefined,'Files and versions'],['folder.focus','Focus',undefined,'Navigation'],['folder.clearFocus','Clear focus',undefined,'Navigation'],['folder.helpWithReport','Help with this report',undefined,'Skills'],
+  ['file.copyRelativePath','Copy relative path',undefined,'Files and versions'],['file.copyMarkdownLink','Copy as Markdown link',undefined,'Files and versions'],['file.openInDefaultApp','Open in default app',undefined,'Files and versions'],
+  ['folder.newFile','New file here','⌘N','Files and versions'],['folder.newFolder','New subfolder…',undefined,'Files and versions'],['folder.rename','Rename folder','F2','Files and versions'],['folder.reveal','Reveal containing folder in Finder',undefined,'Files and versions'],['folder.trash','Delete folder…',undefined,'Files and versions'],['folder.focus','Focus',undefined,'Navigation'],['folder.clearFocus','Clear focus',undefined,'Navigation'],['folder.helpWithReport','Help with this report',undefined,'Skills'],
   ['insert.reference','Reference…',undefined,'Capture and ideas'],['insert.metadata','Metadata',undefined,'Writing'],['insert.image','Image…',undefined,'Writing'],['insert.widget','Insert widget…',undefined,'Writing',{ surfaces: ['palette', 'menu'], keywords: ['widget', 'simulation', 'interactive', 'embed', 'html', 'insert'] }],['insert.code','Code block',undefined,'Writing'],['insert.mermaid','Flow diagram',undefined,'Writing'],['insert.markmap','Mind map',undefined,'Writing'],['insert.svg','SVG',undefined,'Writing'],['insert.divider','Divider',undefined,'Writing'],['insert.footnote','Footnote',undefined,'Writing'],
   ['block.edit','Edit','↵','Writing'],['block.copy','Copy source',undefined,'Writing'],['block.delete','Delete block',undefined,'Writing'],
   ['table.alignLeft',TABLE_COMMAND_LABELS.alignLeft,undefined,'Writing'],['table.alignCentre',TABLE_COMMAND_LABELS.alignCentre,undefined,'Writing'],['table.alignRight',TABLE_COMMAND_LABELS.alignRight,undefined,'Writing'],['table.insertLeft',TABLE_COMMAND_LABELS.insertLeft,undefined,'Writing'],['table.insertRight',TABLE_COMMAND_LABELS.insertRight,undefined,'Writing'],['table.delete',TABLE_COMMAND_LABELS.delete,undefined,'Writing'],
 ].map(([id,label,keys,group,extra]) => ({ id: id as string, label: label as string, ...(keys ? { keys: keys as string } : {}), group: group as CommandGroup, surfaces: ['menu'] as CommandSurface[], keysPlaceBound: Boolean(keys), ...(sameActionMenuReasons[id as string] ? { noMenu: sameActionMenuReasons[id as string] } : {}), ...(extra as Partial<CommandDefinition> | undefined) }))
+  .map(command => isActiveFileCommand(command.id)
+    ? { ...command, surfaces: ['palette', 'menu'] as CommandSurface[], keywords: ACTIVE_FILE_COMMANDS[command.id] }
+    : command)
 
 const commandDefinitions: CommandDefinition[] = [
   // keyboard-sheet.ts lists every palette command; the legacy column export stays unchanged.
@@ -278,7 +302,7 @@ const commandDefinitions: CommandDefinition[] = [
   { id: 'file.clearDocument', label: 'Clear document…', group: 'Files and versions', surfaces: ['palette'] },
   // Round B export (T6/T7, ADR-0029): the Export sheet — format, and inside a Collection the scope.
   // Keyless by the same pre-v1 ruling; App supplies the run. Copy never opens the sheet.
-  { id: 'export.document', label: 'Export…', keys: '⌥⌘E', group: 'Files and versions', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
+  { id: 'export.document', label: 'Export…', keys: '⌥⌘E', keywords: ['file', 'export', 'download'], group: 'Files and versions', surfaces: ['palette', 'sheet'], sheetColumn: 0 },
   { id: 'exportPresets.apply', label: 'Apply export preset', group: 'Files and versions', surfaces: ['palette'] },
   { id: 'exportPresets.update', label: 'Update export preset', group: 'Files and versions', surfaces: ['palette'] },
   { id: 'exportPresets.saveAs', label: 'Save export preset as…', group: 'Files and versions', surfaces: ['palette'] },
@@ -680,7 +704,7 @@ export const commandRegistry: Command[] = commandDefinitions.map((command) => ({
   ...commandAnnotations[command.id],
   // Running-order and Details keys belong to the Folio surface, including when rebound.
   keysPlaceBound: command.keysPlaceBound || command.id.startsWith('plan.'),
-  ...taskGroupOf(command.id),
+  ...taskGroupOf(command.sheetSource?.kind === 'command' ? command.sheetSource.commandId : command.id),
   places: placesOf(command.sheetSource?.kind === 'command' ? command.sheetSource.commandId : command.id),
 }))
 

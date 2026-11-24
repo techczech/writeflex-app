@@ -71,21 +71,18 @@ export function SyncPanel({ controller, selectedPath }: { controller: SyncStatus
 }
 export function SyncTitleStatus({ controller, onOpenSync, open, onOpenChange }: { controller: SyncStatusController; onOpenSync: () => void; open: boolean; onOpenChange: (open: boolean) => void }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
-  const button = useRef<HTMLButtonElement>(null)
   const p = useSyncDisplay(controller)
   useEffect(() => {
     if (!open) return
     const outside = (event: PointerEvent): void => { if (!ref.current?.contains(event.target as Node)) onOpenChange(false) }
-    const escape = (event: KeyboardEvent): void => { if (event.key === 'Escape') { event.stopPropagation(); onOpenChange(false); button.current?.focus() } }
     document.addEventListener('pointerdown', outside)
-    document.addEventListener('keydown', escape, true)
     const dialog = ref.current?.querySelector<HTMLElement>('.sync-popover')
     ;(dialog?.querySelector<HTMLElement>('button:not(:disabled):not([aria-disabled="true"])') ?? dialog)?.focus()
-    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape, true) }
+    return () => document.removeEventListener('pointerdown', outside)
   }, [open, onOpenChange])
   return <div className="sync-title-status" ref={ref}>
     <span className="sync-announcement" role="status" aria-live="polite">{controller.error ? 'Sync status could not be read' : syncAnnouncement(controller.input)}</span>
-    <button ref={button} type="button" className={`sync-status-button ${p.tone}`} aria-label={`Sync status: ${p.label}`} title="Sync status" aria-haspopup="dialog" aria-expanded={open} onClick={() => onOpenChange(!open)}><i className={`sync-dot ${p.tone}`} aria-hidden="true" /><span className="sync-label">{p.label}</span></button>
+    <button type="button" className={`sync-status-button ${p.tone}`} aria-label={`Sync status: ${p.label}`} title="Sync status" aria-haspopup="dialog" aria-expanded={open} onClick={() => onOpenChange(!open)}><i className={`sync-dot ${p.tone}`} aria-hidden="true" /><span className="sync-label">{p.label}</span></button>
     {open && <div className="sync-popover" tabIndex={-1} role="dialog" aria-label="Sync status"><strong>{p.label}</strong>{p.summary && <p>{p.summary}</p>}<p>{p.facts.local}</p><p>{p.facts.backup}</p><p>{p.facts.branch}</p>{controller.coverageExplanation && <p className="sync-coverage">{controller.coverageExplanation}</p>}{controller.error && <p role="alert">{controller.error}</p>}
       <div className="sync-actions"><Action controller={controller} action="syncNow">Sync now</Action><Action controller={controller} action="check">Check</Action><Action controller={controller} action="history">History</Action></div>
       <button type="button" className="sync-open" onClick={() => { onOpenChange(false); onOpenSync() }}>Open Sync</button>

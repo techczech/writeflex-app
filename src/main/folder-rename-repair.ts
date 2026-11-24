@@ -1,3 +1,4 @@
+import { movedDocumentLinks } from './moved-document-links'
 import { lstatSync } from 'node:fs'
 import { posix } from 'node:path'
 import { pathLinkTargetsFor, scanMarkdownCodeRanges } from './rename-repair'
@@ -78,8 +79,18 @@ export async function planFolderRenameRepair(workspace: Workspace, fromFolder: s
   const beforeIndex = buildWikilinkCandidateIndex(before)
   const afterIndex = buildWikilinkCandidateIndex(after)
   for (const { path } of before) {
-    if (under(fromFolder, path)) continue
     const source = (await workspace.readFile(path)).content
+    if (under(fromFolder, path)) {
+      const destination = movedPath(fromFolder, toFolder, path)
+      const outgoing = await movedDocumentLinks(workspace, source, path, destination,
+        (target) => movedPath(fromFolder, toFolder, target))
+      plan.unrepairedReferences.push(...outgoing.unrepairedReferences)
+      if (outgoing.content !== source) {
+        plan.writes.push({ path: destination, current: source, content: outgoing.content, destinations: outgoing.destinations })
+        plan.plannedReferences.push(...outgoing.references)
+      }
+      continue
+    }
     const skipped = scanMarkdownCodeRanges(source)
     let next = source
     const repaired: string[] = []

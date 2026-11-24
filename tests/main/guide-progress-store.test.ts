@@ -20,16 +20,16 @@ function fresh(): { dir: string; file: string; settings: SettingsStore; store: G
   return { dir, file, settings, store, changes }
 }
 
-test('events are saved under one key, announced once each, and a repeat changes and announces nothing', () => {
+test('events are saved under one key, announced once each, and a repeat changes and announces nothing', async () => {
   const { dir, file, store, changes } = fresh()
   try {
-    store.commandRan('fold.current')
-    store.commandRan('fold.current')
-    store.chapterOpened('Shape the document')
-    store.chapterOpened('Not a chapter')
-    store.commandRan('')
-    store.stepDone('folder', 'walking-book')
-    store.stepDone('example')
+    await store.commandRan('fold.current')
+    await store.commandRan('fold.current')
+    await store.chapterOpened('Shape the document')
+    await store.chapterOpened('Not a chapter')
+    await store.commandRan('')
+    await store.stepDone('folder', 'walking-book')
+    await store.stepDone('example')
     expect(changes).toEqual([GUIDE_PROGRESS_KEY, GUIDE_PROGRESS_KEY, GUIDE_PROGRESS_KEY, GUIDE_PROGRESS_KEY])
     const saved = JSON.parse(readFileSync(file, 'utf8'))
     expect(Object.keys(saved.values)).toEqual(['agent.mode', GUIDE_PROGRESS_KEY])
@@ -39,14 +39,14 @@ test('events are saved under one key, announced once each, and a repeat changes 
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('the record is read again by a new store on the same file (a restart), and the example key plays no part', () => {
+test('the record is read again by a new store on the same file (a restart), and the example key plays no part', async () => {
   const { dir, file, settings, store } = fresh()
   try {
-    store.commandRan('fold.all')
+    await store.commandRan('fold.all')
     settings.setExampleState('removed')
     const again = new GuideProgressStore(new SettingsStore(file))
     expect(again.read().ran).toEqual(['fold.all'])
-    store.chapterFinished('Listen')
+    await store.chapterFinished('Listen')
     expect(new GuideProgressStore(new SettingsStore(file)).read().finished.Listen).toBeGreaterThan(0)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
@@ -72,12 +72,12 @@ test('the narrow-window rule: the editor keeps 560px, so a 900px window with a 3
   expect(guideNeedsRoom({ viewportWidth: 1167, leftWidth: 268, rightWidth: 340 })).toBe(true)
 })
 
-test('a topic read is saved under the same key, announced once, and is still there with no example folder (ticket 08)', () => {
+test('a topic read is saved under the same key, announced once, and is still there with no example folder (ticket 08)', async () => {
   const { dir, file, store, changes } = fresh()
   try {
-    store.topicRead('how.3')
-    store.topicRead('how.3')
-    store.topicRead('not-a-topic')
+    await store.topicRead('how.3')
+    await store.topicRead('how.3')
+    await store.topicRead('not-a-topic')
     expect(changes).toEqual([GUIDE_PROGRESS_KEY])
     const saved = JSON.parse(readFileSync(file, 'utf8'))
     expect(Object.keys(saved.values)).toEqual(['agent.mode', GUIDE_PROGRESS_KEY])

@@ -19,7 +19,7 @@ import { basisAllows, isSaveBasis, type SaveBasis } from '../shared/save-basis'
 import { classifyDocumentPath, isListedPath, type PathKind, type PathVerdict } from './document-path'
 import { assertCollectionWritable } from './collection-write-gate'
 import { DocumentReadRefused, asFileSystemError, readDocumentBytesGuarded, readDocumentFile } from './guarded-document-read'
-import { GuardedMoveRefused, moveDocumentGuarded } from './guarded-document-move'
+import { GuardedMoveRefused, moveDocumentGuarded, type PathIdentity } from './guarded-document-move'
 import { recordMainProcessDiagnostic } from './shutdown'
 import { GuardedWriteRefused, carryLeftover, documentSaveSeams, standsAsPinnedFolder, writeDocumentGuarded, type CommitTarget, type FolderIdentity } from './guarded-document-write'
 import { CollectionWriteTurn } from './collection-write-turn'
@@ -820,7 +820,7 @@ export class Workspace {
    *  writeFile truncates BEFORE it writes, so an app quit (or kill) racing a save could leave the
    *  document 0 bytes on disk — which is exactly how walk-sample.md was wiped on 2026-07-11. Rename
    *  is atomic on one filesystem: the file is always either the old text or the new, never empty. */
-  async #writeAtomic(absolute: string, content: string | Uint8Array, beforeCommit?: () => void, exclusive = false, saveReceipt?: SaveReceiptHandle, folioOptions = this.#folioWriteOptions()): Promise<{ seq: number }> {
+  async #writeAtomic(absolute: string, content: string | Uint8Array, beforeCommit?: (target?: CommitTarget) => void, exclusive = false, saveReceipt?: SaveReceiptHandle, folioOptions = this.#folioWriteOptions()): Promise<{ seq: number }> {
     this.assertWritable()
     const folioCommit = await guardFolioWrite(this, this.relative(absolute), content, folioOptions)
     const tmp = `${absolute}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`
@@ -850,7 +850,7 @@ export class Workspace {
       // Set only once a receipt authorised the copy fallback: from then on its end is reported to it.
       const fallback: { copy: Extract<NonAtomicDecision, { kind: 'copy' }> | null } = { copy: null }
       try {
-        beforeCommit?.()
+        beforeCommit?.({ folder: dirname(absolute), staged })
         before = this.#textBeforeOperationWrite(absolute, true)
         // A hard link keeps the inode; the copy below makes a new one, so its event is delivered.
         this.recordOwnWrite(this.relative(absolute), staged)
@@ -893,7 +893,7 @@ export class Workspace {
     }
     if (beforeCommit) {
       // One tick from here to the rename: the check, then the commit syscall, nothing awaited in between.
-      try { beforeCommit() } catch (refusal) {
+      try { beforeCommit({ folder: dirname(absolute), staged }) } catch (refusal) {
         try { unlinkSync(tmp) } catch { /* a stray temp file is not a changed document */ }
         throw refusal
       }
@@ -1046,11 +1046,12 @@ export class Workspace {
   }
 
   /** The guarded move for a `documentOnly` rename (guarded-document-move.ts), its refusals in this Workspace's own errors. */
-  async #moveDocument(from: string, to: string, kind: PathKind): Promise<void> {
+  async #moveDocument(from: string, to: string, kind: PathKind, expectedSource?: PathIdentity): Promise<void> {
     try {
       // A move that fails after its records were made forgets them: the old name is not left empty.
       await this.#forgettingOnFailure([from], () => moveDocumentGuarded(this, from, to, kind, {
         seams: documentSaveSeams,
+        ...(expectedSource ? { expect: expectedSource } : {}),
         // The old name is left empty (or, for a change of letter case only, still names the file); the new one holds
         // what was moved, as it was immediately before the move (D-WATCH-1).
         beforeCommit: ({ moved, sameName }) => { this.recordOwnWrite(from, sameName ? moved : 'absent'); this.recordOwnWrite(to, moved) },
@@ -1063,6 +1064,7 @@ export class Workspace {
         throw new NotADocumentPathError(path, verdict === 'document' ? 'outside' : verdict)
       }
       if (code === 'missing') throw new Error(kind === 'file' ? `File not found: ${path}` : `Not a folder: ${path}`)
+      if (code === 'exists' && expectedSource) throw new NameTaken(path)
       if (code === 'exists') throw new Error(kind === 'file' ? `File already exists: ${path}` : `A folder named “${basename(path)}” already exists here.`)
       throw error
     }
@@ -1559,13 +1561,13 @@ export class Workspace {
    * never replace a file that appeared there meanwhile. `requireExistingDirectory` skips directory
    * creation for Collection bulk moves, including when a destination disappears after validation.
    */
-  async renameFile(path: string, newPath: string, options: Pick<SaveFileOptions, 'documentOnly'> & { requireExistingDirectory?: boolean } = {}): Promise<FileReadResult> {
+  async renameFile(path: string, newPath: string, options: Pick<SaveFileOptions, 'documentOnly'> & { requireExistingDirectory?: boolean; expectedSource?: PathIdentity } = {}): Promise<FileReadResult> {
     this.assertWritable()
     // One turn: neither name is being saved while the file changes its name.
-    return this.exclusive([path, this.relative(this.renameTarget(path, newPath))], () => this.#renameFileHeld(path, newPath, options.documentOnly === true, options.requireExistingDirectory === true))
+    return this.exclusive([path, this.relative(this.renameTarget(path, newPath))], () => this.#renameFileHeld(path, newPath, options.documentOnly === true, options.requireExistingDirectory === true, options.expectedSource))
   }
 
-  async #renameFileHeld(path: string, newPath: string, documentOnly: boolean, requireExistingDirectory: boolean): Promise<FileReadResult> {
+  async #renameFileHeld(path: string, newPath: string, documentOnly: boolean, requireExistingDirectory: boolean, expectedSource?: PathIdentity): Promise<FileReadResult> {
     this.assertWritable() // asked again inside the turn: it may have waited
     const absolute = this.absolute(path)
     const target = this.renameTarget(path, newPath)
@@ -1574,7 +1576,7 @@ export class Workspace {
       if (absolute === target) return this.#readDocument(path)
       this.assertDocumentPath(this.relative(target))
       if (!requireExistingDirectory) await mkdir(dirname(target), { recursive: true })
-      await this.#moveDocument(this.relative(absolute), this.relative(target), 'file')
+      await this.#moveDocument(this.relative(absolute), this.relative(target), 'file', expectedSource)
       return this.#readDocument(this.relative(target))
     }
     guardFolioRemoval(this, path)

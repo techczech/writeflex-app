@@ -4,6 +4,7 @@ import { credentialMode, receiveHostBridge } from './github-credentials'
 import { completionTarget, writeCompletion, type CompletionTarget } from './github-auth-receipts'
 import { fileURLToPath } from 'node:url'
 import { WRITEFLEX_PROJECTIONS } from './projections'
+import { gitRefusal } from './git-refusal'
 const args = process.argv.slice(2)
 let receipt: CompletionTarget | undefined
 if (args[0] === '--github-exposure') {
@@ -16,6 +17,8 @@ const certify = () => { if (receipt) { try { writeCompletion(receipt) } catch { 
 if (args[0] === 'credential') {
   process.exit(await credentialMode(args.length === 2 ? args[1]! : 'invalid'))
 } else if (args[0] === '--github-credentials') {
+  const refused = gitRefusal(args.slice(1))
+  if (refused) { certify(); process.stderr.write(refused + '\n'); process.exit(2) }
   let bridge: Awaited<ReturnType<typeof receiveHostBridge>>
   try { bridge = await receiveHostBridge(process.execPath, fileURLToPath(import.meta.url)) }
   catch { certify(); process.stderr.write('GitHub credential bridge refused\n'); process.exit(2) }
@@ -32,5 +35,7 @@ if (args[0] === 'credential') {
     process.exit(code)
   } catch { bridge.close(); process.stderr.write('GitHub helper work outcome uncertain\n'); process.exit(2) }
 } else {
+  const refused = gitRefusal(args)
+  if (refused) { process.stderr.write(refused + '\n'); process.exit(2) }
   runCli(args, { projections: WRITEFLEX_PROJECTIONS })
 }

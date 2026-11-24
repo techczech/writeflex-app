@@ -1,5 +1,5 @@
-import { Compartment, Facet, type Extension } from '@codemirror/state'
-import { EditorView, scrollPastEnd } from '@codemirror/view'
+import { Compartment, Facet, StateField, type Extension, type StateEffect } from '@codemirror/state'
+import { EditorView, ViewPlugin, scrollPastEnd } from '@codemirror/view'
 import { fixedLineMargin, getFixedLine } from './fixed-line'
 
 /**
@@ -18,6 +18,53 @@ export const typewriterFollowFacet = Facet.define<boolean, boolean>({ combine: (
 /** Shared vertical room that lets a driven position reach the viewport centre/top near document end. */
 export const typewriterScrollSupport: Extension = scrollPastEnd()
 
+const TOP_ROOM = '--wf-fixed-line-top'
+const TOP_ROOM_CLASS = 'wf-fixed-line-room'
+
+// A stable key for each cached document keeps layout memory across tab switches.
+export const typewriterTopRoomKey = StateField.define<object>({
+  create: () => ({}),
+  update: key => key,
+})
+const documentsWithTopRoom = new WeakSet<object>()
+
+function shortPage(view: EditorView): boolean {
+  const { top, bottom } = view.documentPadding
+  return view.contentHeight - top - bottom <= view.scrollDOM.clientHeight
+}
+
+const topRoom = ViewPlugin.define((view) => {
+  const documentKey = view.state.field(typewriterTopRoomKey, false) ?? {}
+  const read = (): number | null => {
+    if (!documentsWithTopRoom.has(documentKey) && !view.state.facet(typewriterFollowFacet) && !shortPage(view)) return null
+    return fixedLineMargin(getFixedLine(), view.scrollDOM.clientHeight)
+  }
+  const write = (room: number | null): void => {
+    const scroller = view.scrollDOM
+    scroller.classList.toggle(TOP_ROOM_CLASS, room !== null)
+    if (room === null) scroller.style.removeProperty(TOP_ROOM)
+    else {
+      documentsWithTopRoom.add(documentKey)
+      scroller.style.setProperty(TOP_ROOM, `${room}px`)
+    }
+  }
+  write(read())
+  return {
+    update(update) {
+      if (update.geometryChanged || update.startState.facet(typewriterFollowFacet) !== update.state.facet(typewriterFollowFacet)) {
+        view.requestMeasure({ key: write, read, write })
+      }
+    },
+    destroy() { write(null) },
+  }
+})
+
+/** Short pages and the following band need room above line one, even at scrollTop zero. */
+export const typewriterTopRoom: Extension = [
+  topRoom,
+  EditorView.theme({ [`.cm-scroller.${TOP_ROOM_CLASS} > .cm-content`]: { paddingTop: `var(${TOP_ROOM}) !important` } }),
+]
+
 /** Feel-tuned values the user may want to change after more real writing. */
 export const TYPEWRITER_RUN_THRESHOLD = 5
 export const TYPEWRITER_RUN_PAUSE_MS = 1_200
@@ -33,7 +80,13 @@ export function typewriterScrollEffect(position: number, yMargin: number) {
 
 /** The scroll effect that puts `position` on the fixed line of THIS view, at this instant. */
 export function fixedLineScrollEffect(view: EditorView, position: number) {
-  return typewriterScrollEffect(position, fixedLineMargin(getFixedLine(), view.scrollDOM.clientHeight))
+  const margin = fixedLineMargin(getFixedLine(), view.scrollDOM.clientHeight)
+  // A drag changes the chosen fraction before the next layout pass.
+  if (view.scrollDOM.classList.contains(TOP_ROOM_CLASS)) {
+    const room = `${margin}px`
+    if (view.scrollDOM.style.getPropertyValue(TOP_ROOM) !== room) view.scrollDOM.style.setProperty(TOP_ROOM, room)
+  }
+  return typewriterScrollEffect(position, margin)
 }
 
 /**
@@ -59,6 +112,7 @@ export function typewriterExtension(): Extension {
   let lastTypingAt = 0
   const instance: Extension = [
     typewriterScrollSupport,
+    typewriterTopRoom,
     EditorView.updateListener.of((update) => {
       let typedUnits = 0
       for (const transaction of update.transactions) {
@@ -107,7 +161,11 @@ export function typewriterExtension(): Extension {
 
 /** Toggle typewriter mode on `view` by reconfiguring the (already-installed) compartment. */
 export function setTypewriter(view: EditorView, on: boolean): void {
-  view.dispatch({
-    effects: typewriterCompartment.reconfigure(on ? typewriterExtension() : []),
-  })
+  const effects: StateEffect<unknown>[] = [typewriterCompartment.reconfigure(on ? typewriterExtension() : [])]
+  // A short page has nowhere to scroll until the top room is added. Align it on entry while
+  // leaving long pages to the existing sustained-typing rule.
+  if (on && !view.state.facet(typewriterFollowFacet) && shortPage(view)) {
+    effects.push(fixedLineScrollEffect(view, view.state.selection.main.head))
+  }
+  view.dispatch({ effects })
 }

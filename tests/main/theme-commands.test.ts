@@ -6,7 +6,7 @@ import { fuzzyScore } from '../../src/renderer/src/fuzzy'
 import { runThemeCommand, THEME_COMMANDS, THEME_SETTING } from '../../src/renderer/src/commands/theme-commands'
 
 // Requirement: "I don't know how to switch to dark theme — no command for it."
-// `appearance.theme` holds 'light' | 'dark' only (SettingsWindow VALUE_DISPLAY), so there is no
+// `appearance.theme` holds 'light' | 'dark' only (the settings schema's choice, src/shared/settings-schema.ts), so there is no
 // "Follow system theme" command.
 
 test('Use dark theme and Use light theme are keyless, palette-only settings commands', () => {

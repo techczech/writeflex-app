@@ -16,9 +16,12 @@ export const WRITEFLEX_AUTH_PROVIDERS = ['openai-codex', 'anthropic', 'zai'] as 
 export function registerWriteFlexAuth(
   ipcMain: IpcMainLike,
   auth: BridleAuth,
-  io: AuthBrokerIo
+  io: AuthBrokerIo,
+  slotsChanged: () => void = () => {},
 ): { broker: AuthFlowBroker; dispose: () => void } {
   const broker = new AuthFlowBroker(auth, io, { include: [...WRITEFLEX_AUTH_PROVIDERS] })
-  const dispose = registerAuthIpc(ipcMain, broker)
+  const stopChanges = auth.onChange(slotsChanged)
+  const unregister = registerAuthIpc(ipcMain, broker)
+  const dispose = (): void => { stopChanges(); unregister() }
   return { broker, dispose }
 }

@@ -20,18 +20,18 @@ export class GuideProgressStore {
     return parseGuideProgress(this.settings.get(GUIDE_PROGRESS_KEY))
   }
 
-  #apply(change: (progress: GuideProgress) => GuideProgress): void {
+  async #apply(change: (progress: GuideProgress) => GuideProgress): Promise<void> {
     const before = this.read()
     const after = change(before)
     if (after === before) return
     // log:false — a tick is not "a change made in Settings", so it stays out of the changelog.
-    this.settings.set(GUIDE_PROGRESS_KEY, serialiseGuideProgress(after), 'Guide progress', { log: false })
+    await this.settings.set(GUIDE_PROGRESS_KEY, serialiseGuideProgress(after), 'Guide progress', { log: false })
     this.onChange(GUIDE_PROGRESS_KEY)
   }
 
-  commandRan(id: unknown): void { this.#apply((progress) => withCommandRan(progress, id)) }
-  chapterOpened(chapter: unknown): void { this.#apply((progress) => withChapterOpened(progress, chapter)) }
-  chapterFinished(chapter: unknown): void { this.#apply((progress) => withChapterFinished(progress, chapter, Date.now())) }
-  topicRead(id: unknown): void { this.#apply((progress) => withTopicRead(progress, id)) }
-  stepDone(step: GuideStep, detail?: string): void { this.#apply((progress) => withStepDone(progress, step, detail)) }
+  commandRan(id: unknown): Promise<void> { return this.#apply((progress) => withCommandRan(progress, id)) }
+  chapterOpened(chapter: unknown): Promise<void> { return this.#apply((progress) => withChapterOpened(progress, chapter)) }
+  chapterFinished(chapter: unknown): Promise<void> { return this.#apply((progress) => withChapterFinished(progress, chapter, Date.now())) }
+  topicRead(id: unknown): Promise<void> { return this.#apply((progress) => withTopicRead(progress, id)) }
+  stepDone(step: GuideStep, detail?: string): Promise<void> { return this.#apply((progress) => withStepDone(progress, step, detail)) }
 }

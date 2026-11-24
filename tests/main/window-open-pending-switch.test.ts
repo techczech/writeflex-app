@@ -149,8 +149,8 @@ const probe = String.raw`
   process.exit(0)
 `
 
-async function runProbe(): Promise<Record<string, unknown>> {
-  const child = Bun.spawn([process.execPath, '-e', probe], { cwd: new URL('../..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe' })
+async function runProbe(hidden = false): Promise<Record<string, unknown>> {
+  const child = Bun.spawn([process.execPath, '-e', probe], { cwd: new URL('../..', import.meta.url).pathname, env: { ...process.env, WRITEFLEX_E2E: hidden ? '1' : '0' }, stdout: 'pipe', stderr: 'pipe' })
   const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   if (exitCode !== 0) throw new Error(`The open-folder probe failed: ${stderr}`)
   return JSON.parse(stdout.trim().split('\n').at(-1)!) as Record<string, unknown>
@@ -188,4 +188,13 @@ test('round 3 (T1): a reused start-screen window that bound keeps the claim when
   expect(result.unboundClaimHeld).toBe(false)
   expect(result.unboundWorkspace).toBeNull()
   expect(result.unboundLog).toEqual([])
+}, 20_000)
+
+// Electron is faked in this unit probe; no native window or app is launched.
+test('hidden automation keeps existing and pending-switch windows unfocused while still delivering status', async () => {
+  const result = await runProbe(true)
+  expect(result.pendingResult).toBeNull()
+  expect(result.pendingLog).toEqual(['source send window:status Switching to Notes…'])
+  expect(result.shownIsHidden).toBe(true)
+  expect(result.shownLog).toEqual([])
 }, 20_000)

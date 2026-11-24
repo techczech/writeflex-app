@@ -22,6 +22,21 @@ export const TASK_GROUPS = [
 ] as const
 export type TaskGroup = typeof TASK_GROUPS[number]
 
+/** Lucide icon names (the renderer's icon set), one per task group, for any surface that draws the groups. */
+export type TaskGroupIconName = 'PenLine' | 'ListTree' | 'Target' | 'Headphones' | 'History' | 'FolderSearch' | 'Inbox' | 'Sparkles' | 'Share2' | 'Settings'
+export const TASK_GROUP_ICONS: Readonly<Record<TaskGroup, TaskGroupIconName>> = {
+  'Write': 'PenLine',
+  'Shape the document': 'ListTree',
+  'Stay focused': 'Target',
+  'Listen': 'Headphones',
+  'Review and versions': 'History',
+  'Find and manage files': 'FolderSearch',
+  'Collect and plan': 'Inbox',
+  'Work with the agent': 'Sparkles',
+  'Share and export': 'Share2',
+  'Set up WriteFlex': 'Settings',
+}
+
 /**
  * The order of a task group's sub-groups where the drawing fixes one (SHAPE_SUBGROUPS in
  * build-mockup-onboarding-hifi-v2.mjs: "Fold · Move blocks and sections · Headings and levels ·
@@ -343,6 +358,9 @@ export const commandTaskGroups: Readonly<Record<string, readonly [TaskGroup, str
   'file.pin': ['Find and manage files', 'Files and quick open'],
   'file.reveal': ['Find and manage files', 'Files and quick open'],
   'file.copyPath': ['Find and manage files', 'Files and quick open'],
+  'file.copyRelativePath': ['Find and manage files', 'Files and quick open'],
+  'file.copyMarkdownLink': ['Find and manage files', 'Files and quick open'],
+  'file.openInDefaultApp': ['Find and manage files', 'Files and quick open'],
   'file.trash': ['Find and manage files', 'Files and quick open'],
   'folder.newFile': ['Find and manage files', 'Files and quick open'],
   'folder.newFolder': ['Find and manage files', 'Files and quick open'],

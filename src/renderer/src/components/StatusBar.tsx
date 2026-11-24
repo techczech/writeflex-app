@@ -2,7 +2,7 @@ import { DROP_OBSERVED, syncDroppedChips, type DropBar } from './status-bar-drop
 import { UpdateMarks } from './UpdateNotices'
 import { registerFolioSlot, registerNoticeSlot, registerScratchpadSlot } from './notice-slot'
 import { readingChip } from '../../../shared/folio-versions-view'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { cloneElement, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, X, ChevronDown, ChevronUp, Files, Glasses, History, Lock, MessageSquare, Pause, Pencil, TextCursorInput, Volume2, Sparkles } from 'lucide-react'
 import { countUnits, type UnitCounts } from '../editor/word-count'
 import { activeHeadingIndex } from '../editor/outline'
@@ -18,8 +18,11 @@ import { StatusBarDisclosure } from './StatusBarDisclosure'
 import { AgentSkillMark } from './AgentSkillOffer'
 import { ReviewCountMenu } from './ReviewCountMenu'
 import { ReviewAskPopover, type ReviewAsk } from './ReviewBulkPopovers'
+import { REVIEW_ELSEWHERE_HELP } from './status-bar-model'
+import { useStatusBarPopovers } from './status-bar-popovers'
 import { ElsewherePopover, type ElsewhereControls } from './ReviewElsewherePopover'
 import { NotPlacedPopover, type NotPlacedControls } from './ReviewNotPlacedPopover'
+import type { FlashAction } from '../app/folio-running-order'
 import type { CountMenuAction, CountMenuRow } from '../app/margin-count-menu'
 import { NARROW_REASON } from '../app/margin-count-menu'
 import {
@@ -139,7 +142,7 @@ export type StatusBarProps = {
   /** The transient action flash (the mockup's #statusFlash), shown in the right cluster. */
   status: string
   /** One button on the flash (Undo after a running-order change). */
-  statusAction?: { label: string; run: () => void; kind?: 'folio-order' | 'scratchpad' } | null
+  statusAction?: FlashAction | null
   onStatusHover?: (hovered: boolean) => void
   /**
    * Highlights a drain can still hand to Zotero. The status-bar slot is deliberately the only place
@@ -330,35 +333,87 @@ export function StatusBar({
     noticeRef.current.getBoundingClientRect()
     onStatusHover?.(noticeRef.current.matches(':hover'))
   }, [status, statusAction, onStatusHover, layout])
-  const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
+  type LocalPopover = 'session' | 'reviewCount' | 'notPlaced' | 'elsewhere' | 'skill' | 'update'
+  type SyncSlot = { open: boolean; onOpenChange: (open: boolean) => void }
+  const syncSlot = isValidElement<SyncSlot>(noticeSlot) && typeof noticeSlot.props.onOpenChange === 'function' ? noticeSlot : null
+  const syncOpen = syncSlot?.props.open === true
+  const [popover, setPopover] = useState<LocalPopover | null>(null)
+  const syncChange = useRef(syncSlot?.props.onOpenChange)
+  syncChange.current = syncSlot?.props.onOpenChange
+
+  const dismissForeign = (except?: 'sync' | 'overlay' | 'ask'): void => {
+    if (syncOpen && except !== 'sync') syncSlot?.props.onOpenChange(false)
+    if (activePopover && except !== 'overlay') onClosePopover()
+    if (reviewAsk && except !== 'ask') {
+      if (reviewAsk.kind === 'outside-source') reviewAsk.sheet.onCancel()
+      else reviewAsk.onCancel()
+    }
+  }
+  const dismissForeignRef = useRef(dismissForeign)
+  dismissForeignRef.current = dismissForeign
+  const changeSyncOpen = useCallback((open: boolean) => {
+    if (open) { dismissForeignRef.current('sync'); setPopover(null) }
+    syncChange.current?.(open)
+  }, [])
+  const selectPopover = (next: LocalPopover, open: boolean): void => {
+    if (open) dismissForeign()
+    setPopover(current => open ? next : current === next ? null : current)
+  }
+  const previous = useRef({ syncOpen: false, activePopover: null as typeof activePopover, ask: undefined as ReviewAsk['kind'] | undefined })
+  useStatusBarLayoutEffect(() => {
+    const before = previous.current
+    previous.current = { syncOpen, activePopover, ask: reviewAsk?.kind }
+    const opened = syncOpen && !before.syncOpen ? 'sync'
+      : activePopover && activePopover !== before.activePopover ? 'overlay'
+      : reviewAsk && reviewAsk.kind !== before.ask ? 'ask' : null
+    if (opened) {
+      setPopover(null)
+      dismissForeign(opened)
+    }
+  }, [syncOpen, activePopover, reviewAsk?.kind])
+  useStatusBarPopovers(barRef, (restore, trigger) => {
+    dismissForeign()
+    setPopover(null)
+    if (restore) {
+      if (trigger && (syncOpen || popover === 'update' || popover === 'skill' || popover === 'session')) trigger.focus()
+      else onRestoreEditorFocus()
+    }
+  })
+  const openExternalPopover = (next: 'statusDisclosure' | 'statusEvents'): void => {
+    dismissForeign('overlay')
+    setPopover(null)
+    onOpenPopover(next)
+  }
+  const sessionMenuOpen = popover === 'session'
+  const setSessionMenuOpen = (open: boolean): void => selectPopover('session', open)
   const [adjustingTarget, setAdjustingTarget] = useState(false)
   const [targetText, setTargetText] = useState('')
   const consumedSessionMenuRequest = useRef(0)
 
   // Restore the workspace's last-picked unit when a root binds/changes.
   useEffect(() => setUnit(loadUnit(workspaceRoot)), [workspaceRoot])
-  const [countMenuOpen, setCountMenuOpen] = useState(false)
-  const closeCountMenu = useCallback(() => { setCountMenuOpen(false); onRestoreEditorFocus() }, [onRestoreEditorFocus])
-  useEffect(() => { if (!review || review.hereless) setCountMenuOpen(false) }, [review])
-  const [notPlacedOpen, setNotPlacedOpen] = useState(false)
-  const closeNotPlaced = useCallback(() => { setNotPlacedOpen(false); onRestoreEditorFocus() }, [onRestoreEditorFocus])
-  useEffect(() => { if (!review?.notPlacedText) setNotPlacedOpen(false) }, [review?.notPlacedText])
+  const countMenuOpen = popover === 'reviewCount'
+  const closeCountMenu = useCallback(() => { setPopover(current => current === 'reviewCount' ? null : current); onRestoreEditorFocus() }, [onRestoreEditorFocus])
+  useEffect(() => { if (!review || review.hereless) setPopover(current => current === 'reviewCount' ? null : current) }, [review])
+  const notPlacedOpen = popover === 'notPlaced'
+  const closeNotPlaced = useCallback(() => { setPopover(current => current === 'notPlaced' ? null : current); onRestoreEditorFocus() }, [onRestoreEditorFocus])
+  useEffect(() => { if (!review?.notPlacedText) setPopover(current => current === 'notPlaced' ? null : current) }, [review?.notPlacedText])
   // "N could not be placed" and its popover (ticket 06, frame `stale`), at the end of the review line.
   const notPlacedPart = review?.notPlacedText ? (
     <span className="sb-review-menu-wrap sb-review-np-wrap">
-      <button type="button" className="sb-review-np" data-testid="status-review-not-placed" aria-haspopup="dialog" aria-expanded={notPlacedOpen} onMouseDown={(event) => event.preventDefault()} onClick={() => setNotPlacedOpen((open) => !open)}>
+      <button type="button" className="sb-review-np" data-testid="status-review-not-placed" aria-haspopup="dialog" aria-expanded={notPlacedOpen} onMouseDown={(event) => event.preventDefault()} onClick={() => selectPopover('notPlaced', !notPlacedOpen)}>
         <AlertTriangle className="icon" aria-hidden="true" />{review.notPlacedText}
       </button>
       {notPlacedOpen && reviewNotPlaced && <NotPlacedPopover controls={reviewNotPlaced} onClose={closeNotPlaced} />}
     </span>
   ) : null
-  const [elsewhereOpen, setElsewhereOpen] = useState(false)
-  const closeElsewhere = useCallback(() => { setElsewhereOpen(false); onRestoreEditorFocus() }, [onRestoreEditorFocus])
-  useEffect(() => { if (!review?.elsewhereText) setElsewhereOpen(false) }, [review?.elsewhereText])
+  const elsewhereOpen = popover === 'elsewhere'
+  const closeElsewhere = useCallback(() => { setPopover(current => current === 'elsewhere' ? null : current); onRestoreEditorFocus() }, [onRestoreEditorFocus])
+  useEffect(() => { if (!review?.elsewhereText) setPopover(current => current === 'elsewhere' ? null : current) }, [review?.elsewhereText])
   // "Waiting in N other pieces" and its popover (ticket 07, frame `elsewhere`).
   const elsewherePart = review?.elsewhereText ? (
     <span className="sb-review-menu-wrap sb-review-else-wrap">
-      <button type="button" className="sb-review-else" data-testid="status-review-elsewhere" aria-haspopup="dialog" aria-expanded={elsewhereOpen} title="Pieces with items waiting" onMouseDown={(event) => event.preventDefault()} onClick={() => setElsewhereOpen((open) => !open)}>
+      <button type="button" className="sb-review-else" data-testid="status-review-elsewhere" aria-haspopup="dialog" aria-expanded={elsewhereOpen} title={REVIEW_ELSEWHERE_HELP} onMouseDown={(event) => event.preventDefault()} onClick={() => selectPopover('elsewhere', !elsewhereOpen)}>
         <Files className="icon" aria-hidden="true" />{review.elsewhereText}
       </button>
       {elsewhereOpen && reviewElsewhere && <ElsewherePopover controls={reviewElsewhere} onClose={closeElsewhere} />}
@@ -596,11 +651,11 @@ export function StatusBar({
         absorbedModes={absorbedModes}
         openRequest={disclosureOpenRequest}
         open={activePopover === 'statusDisclosure'}
-        onOpen={() => onOpenPopover('statusDisclosure')}
+        onOpen={() => openExternalPopover('statusDisclosure')}
         onClose={onClosePopover}
         onRestoreEditorFocus={onRestoreEditorFocus}
       />
-      {!eventAbsorbed && <StatusBarEvents events={events} open={activePopover === 'statusEvents'} onOpen={() => onOpenPopover('statusEvents')} onClose={onClosePopover} onRestoreEditorFocus={onRestoreEditorFocus} />}
+      {!eventAbsorbed && <StatusBarEvents events={events} open={activePopover === 'statusEvents'} onOpen={() => openExternalPopover('statusEvents')} onClose={onClosePopover} onRestoreEditorFocus={onRestoreEditorFocus} />}
       {readingVersionName !== null && (
         <span className="reading-chip" data-testid="reading-chip" role="status"><Lock className="icon" aria-hidden="true" /><span>{readingChip(readingVersionName)}</span></span>
       )}
@@ -663,12 +718,13 @@ export function StatusBar({
             className={`goal-gauge explicit-session-instrument${explicitInstrument.reached ? ' done' : ''}`}
             style={{ '--p': `${explicitInstrument.fillPercent ?? 0}%` } as React.CSSProperties}
             aria-label={`${explicitInstrument.label}${explicitInstrument.reached ? ', reached' : ''}${explicitSession.status === 'running' ? '. Click for session actions' : ''}`}
+            aria-expanded={explicitSession.status === 'running' ? sessionMenuOpen : undefined}
             aria-haspopup={explicitSession.status === 'running' ? 'menu' : undefined}
             onClick={() => {
               if (explicitSession.status === 'completed') { onDismissCompletedSession?.(); return }
               if (explicitSession.status !== 'running') return
               setAdjustingTarget(false)
-              setSessionMenuOpen((open) => !open)
+              setSessionMenuOpen(!sessionMenuOpen)
             }}
           >
             {explicitInstrument.fillPercent !== null && <i className="fill" aria-hidden="true" />}
@@ -759,13 +815,13 @@ export function StatusBar({
                   aria-haspopup="menu"
                   aria-expanded={countMenuOpen}
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setCountMenuOpen((open) => !open)}
+                  onClick={() => selectPopover('reviewCount', !countMenuOpen)}
                 >
                   {review.mode.kind === 'settled' ? <History className="icon" aria-hidden="true" /> : <Pencil className="icon" aria-hidden="true" />}
                   <b>{review.mode.label} · {review.mode.text}</b>
                 </button>
                 {countMenuOpen && reviewMenu && (
-                  <ReviewCountMenu rows={reviewMenu()} onClose={closeCountMenu} onPick={(action) => { setCountMenuOpen(false); onReviewMenuPick?.(action) }} />
+                  <ReviewCountMenu rows={reviewMenu()} onClose={closeCountMenu} onPick={(action) => { setPopover(current => current === 'reviewCount' ? null : current); onReviewMenuPick?.(action) }} />
                 )}
                 {reviewAsk && <ReviewAskPopover ask={reviewAsk} />}
               </span>
@@ -802,14 +858,14 @@ export function StatusBar({
                   aria-haspopup="menu"
                   aria-expanded={countMenuOpen}
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setCountMenuOpen((open) => !open)}
+                  onClick={() => selectPopover('reviewCount', !countMenuOpen)}
                 >
                   <MessageSquare className="icon" aria-hidden="true" />
                   <b>{review.countText}</b>
                   <ChevronDown className="icon chev" aria-hidden="true" />
                 </button>
                 {countMenuOpen && reviewMenu && (
-                  <ReviewCountMenu rows={reviewMenu()} onClose={closeCountMenu} onPick={(action) => { setCountMenuOpen(false); onReviewMenuPick?.(action) }} />
+                  <ReviewCountMenu rows={reviewMenu()} onClose={closeCountMenu} onPick={(action) => { setPopover(current => current === 'reviewCount' ? null : current); onReviewMenuPick?.(action) }} />
                 )}
                 {reviewAsk && <ReviewAskPopover ask={reviewAsk} />}
               </span>
@@ -906,13 +962,13 @@ export function StatusBar({
         </button>
       )}
       {status && (
-        <span ref={noticeRef} className={`status-flash${statusAction ? ' status-flash-inline' : ''}`} role="status" data-sb-resident onMouseEnter={() => onStatusHover?.(true)} onMouseLeave={() => onStatusHover?.(false)}>
+        <span ref={noticeRef} className={`status-flash${statusAction?.kind === 'auto-name' ? ' status-flash-rename' : statusAction ? ' status-flash-inline' : ''}`} role="status" data-sb-resident={statusAction?.kind !== 'auto-name' ? true : undefined} onMouseEnter={() => onStatusHover?.(true)} onMouseLeave={() => onStatusHover?.(false)}>
           <span className="status-flash-message" title={status}>{status}</span>
           {statusAction && <button type="button" className="status-flash-undo" onClick={statusAction.run}>{statusAction.label}</button>}
         </span>
       )}
-      <AgentSkillMark />
-      <span className="sb-notice-slot" ref={registerNoticeSlot} data-testid="status-notice-slot">{noticeSlot}<UpdateMarks /></span>
+      <AgentSkillMark open={popover === 'skill'} onOpenChange={open => selectPopover('skill', open)} />
+      <span className="sb-notice-slot" ref={registerNoticeSlot} data-testid="status-notice-slot">{syncSlot ? cloneElement(syncSlot, { onOpenChange: changeSyncOpen }) : noticeSlot}<UpdateMarks open={popover === 'update'} onOpenChange={open => selectPopover('update', open)} /></span>
       {development && version && (
         <span className="sb-version" data-sb-resident title={`WriteFlex ${version}`} aria-label={`WriteFlex version ${version}`}>
           v{version}

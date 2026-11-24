@@ -16,15 +16,47 @@ type FixedLineMarkerProps = {
   lineStep?: number
   /** Escape or a cancelled pointer during a drag: abandon it without committing. Without it a cancel commits. */
   onCancel?: () => void
+  autoHide?: boolean
 }
 
 /**
  * The marker in the editor's left margin that shows, and sets, the height of the fixed line. Drag it
  * or focus it and press ↑/↓ (2% a step). The caller renders it only in read-aloud and typewriter mode.
  */
-export function FixedLineMarker({ fraction, bounds, onChange, onCommit, lineStep, onCancel }: FixedLineMarkerProps): React.JSX.Element {
+export function FixedLineMarker({ fraction, bounds, onChange, onCommit, lineStep, onCancel, autoHide = false }: FixedLineMarkerProps): React.JSX.Element {
   const [engaged, setEngaged] = useState(false)
   const [dragging, setDragging] = useState(false)
+  const [nearEdge, setNearEdge] = useState(false)
+  const [focused, setFocused] = useState(false)
+  const [idle, setIdle] = useState(false)
+  const markerRef = useRef<HTMLDivElement>(null)
+  const inUse = nearEdge || engaged || focused || dragging
+
+  useEffect(() => {
+    setIdle(false)
+    if (!autoHide || inUse) return
+    const timer = window.setTimeout(() => setIdle(true), 30_000)
+    return () => window.clearTimeout(timer)
+  }, [autoHide, inUse])
+
+  useEffect(() => {
+    if (!autoHide) return
+    const pane = markerRef.current?.parentElement
+    if (!pane) return
+    const move = (event: globalThis.PointerEvent): void => {
+      setNearEdge(event.clientX - pane.getBoundingClientRect().left < 48)
+    }
+    const leave = (): void => setNearEdge(false)
+    pane.addEventListener('pointermove', move, true)
+    pane.addEventListener('pointerleave', leave)
+    return () => {
+      pane.removeEventListener('pointermove', move, true)
+      pane.removeEventListener('pointerleave', leave)
+      setNearEdge(false)
+    }
+  }, [autoHide])
+
+  const fade = autoHide ? ` can-fade${idle && !inUse ? ' is-idle' : ''}` : ''
   const lastRef = useRef(fraction)
   const y = bounds.top + fraction * bounds.height
   const ghost = lineStep === undefined && fixedLinePreset(fraction) !== 'middle'
@@ -80,10 +112,10 @@ export function FixedLineMarker({ fraction, bounds, onChange, onCommit, lineStep
 
   return (
     <>
-      {lineStep === undefined && <div className={`fixed-line-rule${engaged || dragging ? ' on' : ''}`} style={{ top: y }} aria-hidden="true" />}
+      {lineStep === undefined && <div className={`fixed-line-rule${engaged || focused || dragging ? ' on' : ''}`} style={{ top: y }} aria-hidden="true" />}
       {ghost && (
         <div
-          className="fixed-line-marker ghost"
+          className={`fixed-line-marker ghost${fade}`}
           style={{ top: bounds.top + FIXED_LINE_PRESETS.middle * bounds.height }}
           aria-hidden="true"
           data-testid="fixed-line-marker-ghost"
@@ -92,7 +124,8 @@ export function FixedLineMarker({ fraction, bounds, onChange, onCommit, lineStep
         </div>
       )}
       <div
-        className="fixed-line-marker"
+        className={`fixed-line-marker${fade}`}
+        ref={markerRef}
         data-testid="fixed-line-marker"
         role="slider"
         tabIndex={0}
@@ -110,8 +143,8 @@ export function FixedLineMarker({ fraction, bounds, onChange, onCommit, lineStep
         onPointerCancel={cancelDrag}
         onPointerEnter={() => setEngaged(true)}
         onPointerLeave={() => setEngaged(false)}
-        onFocus={() => setEngaged(true)}
-        onBlur={() => setEngaged(false)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onKeyDown={onKeyDown}
       >
         ≡

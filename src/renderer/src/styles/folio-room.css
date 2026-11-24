@@ -452,7 +452,6 @@ textarea.fr-syn{resize:vertical;box-sizing:border-box}.fr-edit:focus-visible,.fr
 .fvr-prose{max-width:760px;margin:0 auto;font:17px/1.55 var(--prose);color:var(--ink);user-select:text;-webkit-user-select:text;cursor:text}
 .fvr-prose h1{font-size:25px;line-height:1.25;margin:0 0 .6em}.fvr-prose h2{font-size:21px}.fvr-prose h3{font-size:18px}
 .fvr-prose p{margin:0 0 .85em}
-.fvr-prose ::selection{background:#d9cdf5}
 .fvr-cards{padding:16px 18px 100px}
 .fvr-card{cursor:default}
 .fvr-rowlock{width:11px!important;height:11px!important;margin-left:auto;color:var(--ink-4)!important;flex:none}

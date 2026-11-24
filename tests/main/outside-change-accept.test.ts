@@ -240,3 +240,34 @@ test('a rename made by the in-app agent\'s own rename capability carries an unde
   expect(await agent.resolveChange(change.id, 'accept')).toMatchObject({ applied: true })
   expect(await read('talks/a-2026.md')).toContain('Renamed by the agent, then changed.')
 })
+
+test('batch accept leaves a proposal pending if its document disappeared after preview', async () => {
+  await write('a.md', DOC)
+  const [outcome] = await file(['replace', { path: 'a.md', target: 'The first sentence stays.', with: 'It stays.', source: 'codex' }])
+  const proposal = await changeOf(outcome)
+  await rename(join(root, 'a.md'), join(root, 'moved.md'))
+
+  expect(await agent.resolveChange(proposal.id, 'accept', { sweep: false, batchPath: proposal.path })).toMatchObject({ applied: false })
+  expect((await changes.get(proposal.id))?.status).toBe('pending')
+  expect(await snapshotsOf('a.md')).toEqual([])
+  expect(await read('moved.md')).toBe(DOC)
+})
+
+test('clearing missing records rechecks each confirmed path and touches only its pending records', async () => {
+  await write('a.md', DOC)
+  await write('b.md', DOC)
+  const filed = await file(
+    ['replace', { path: 'a.md', target: 'The first sentence stays.', with: 'It stays.', source: 'codex' }],
+    ['replace', { path: 'a.md', target: 'The last sentence ends it.', with: 'The end.', source: 'codex' }],
+    ['replace', { path: 'b.md', target: 'The first sentence stays.', with: 'It stays.', source: 'codex' }],
+  )
+  const [chosen, unchosen, available] = await Promise.all(filed.map(changeOf))
+  await rename(join(root, 'a.md'), join(root, 'moved.md'))
+  const cleared = await changes.decideOutsideBatch([chosen, available], 'clear')
+  expect(cleared.decided).toBe(1)
+  expect(cleared.left.map(item => item.id)).toEqual([available.id])
+  expect(await changes.get(chosen.id)).toMatchObject({ status: 'rejected', closedCode: 'file-missing', closedReason: 'Document missing when cleared.' })
+  for (const proposal of [unchosen, available]) expect((await changes.get(proposal.id))?.status).toBe('pending')
+  expect(await read('b.md')).toBe(DOC)
+  expect(await read('moved.md')).toBe(DOC)
+})

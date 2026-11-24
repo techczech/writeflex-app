@@ -2,7 +2,7 @@
  * The action bar's persisted state (ADR-0040).
  *
  * Visibility is one global app setting, remembered across restarts. Every open window shows
- * the same bar: a toggle in one window reaches the others through the `settings:changed` broadcast,
+ * the same bar: a toggle in one window reaches the others through the `wf-settings:changed` broadcast,
  * so two windows can never disagree.
  *
  * The value lives in the app-level settings store (`src/main/settings.ts` →
@@ -32,7 +32,7 @@ export function actionBarVisibleFrom(stored: unknown): boolean {
 //
 // What is ON the bar, and in what order, persists BESIDE the visibility boolean in the same
 // app-level settings file, under its own key — global to the app exactly as visibility is, and
-// riding the same `settings:changed` broadcast, so a second window redraws its bar the moment the
+// riding the same `wf-settings:changed` broadcast, so a second window redraws its bar the moment the
 // sheet changes one here and two windows can never disagree.
 //
 // The stored value is a JSON array of strings: a registry command id, or the separator token. It is

@@ -1,4 +1,5 @@
 import { escapePlanLink } from '../shared/plan-line'
+import { movedDocumentLinks } from './moved-document-links'
 import { stat } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { indexNotePath, MANIFEST_NAME, readManifest, resolveManifestFilePath, type Folio } from './folio'
@@ -667,8 +668,9 @@ async function buildRenameRepairPlan(
   afterFiles: CachedMarkdown[],
   renamedContent: string,
   initialIssues: string[],
-  ignore?: (path: string) => boolean,
+  options: RenameRepairPlanOptions = {},
 ): Promise<RenameRepairPlan> {
+  const ignore = options.ignore
   const folders = await workspace.listFolders()
   const readThrough = cachedReads(workspace)
   const afterCandidateList = await collectionCandidates(cachedWorkspace(workspace, afterFiles, readThrough), '')
@@ -763,6 +765,12 @@ async function buildRenameRepairPlan(
       next = `${next.slice(0, link.from)}[[${repaired}]]${next.slice(link.to)}`
       repairedReferences.unshift(`${file.path}: ${link.raw}`)
     }
+    if (file.path === toPath && !options.outgoingLinksCarried) {
+      const outgoing = await movedDocumentLinks(workspace, next, fromPath, toPath)
+      issues.push(...outgoing.unrepairedReferences)
+      next = outgoing.content
+      repairedReferences.push(...outgoing.references)
+    }
     plannedReferences.push(...repairedReferences)
     if (next !== source) writes.push({ path: file.path, current: source, content: next, kind: 'markdown' })
   }
@@ -788,7 +796,7 @@ async function planRenameRepairBeforeRename(
   fromPath: string,
   toPath: string,
   files: CachedMarkdown[],
-  ignore?: (path: string) => boolean,
+  options: RenameRepairPlanOptions,
 ): Promise<RenameRepairPlan> {
   const renamedFile = files.find(({ file }) => file.path === fromPath)
   if (!renamedFile) throw new Error(`Cannot prepare Rename Repair because ${fromPath} is not in the Workspace file list.`)
@@ -799,7 +807,7 @@ async function planRenameRepairBeforeRename(
   const issues = workspace.isVisiblePath(toPath)
     ? []
     : [`${toPath}: The renamed file is outside the Workspace file list, so its references cannot be repaired.`]
-  return buildRenameRepairPlan(workspace, fromPath, toPath, files, afterFiles, renamedFile.content, issues, ignore)
+  return buildRenameRepairPlan(workspace, fromPath, toPath, files, afterFiles, renamedFile.content, issues, options)
 }
 
 async function planRenameRepairAfterRename(
@@ -807,7 +815,7 @@ async function planRenameRepairAfterRename(
   fromPath: string,
   toPath: string,
   files: CachedMarkdown[],
-  ignore?: (path: string) => boolean,
+  options: RenameRepairPlanOptions,
 ): Promise<RenameRepairPlan> {
   const listedRenamedFile = files.find(({ file }) => file.path === toPath)
   const renamedOutsideFileList = !listedRenamedFile && await workspacePathExists(workspace, toPath)
@@ -818,7 +826,15 @@ async function planRenameRepairAfterRename(
   const issues = renamedOutsideFileList
     ? [`${toPath}: The renamed file is outside the Workspace file list, so its references cannot be repaired.`]
     : []
-  return buildRenameRepairPlan(workspace, fromPath, toPath, beforeFiles, files, renamedFile.content, issues, ignore)
+  return buildRenameRepairPlan(workspace, fromPath, toPath, beforeFiles, files, renamedFile.content, issues, options)
+}
+
+export type RenameRepairPlanOptions = {
+  ignore?: (path: string) => boolean
+  /** The moved document's own relative links already point where they should from its new place: a step that
+   *  moves several documents together copies each with its links carried by the whole batch's from→to map
+   *  (standard-widgets/own-folder.ts), so a second pass that knows only this one move would undo that. */
+  outgoingLinksCarried?: boolean
 }
 
 /**
@@ -829,9 +845,8 @@ export async function planRenameRepair(
   workspace: Workspace,
   fromPath: string,
   toPath: string,
-  options: { ignore?: (path: string) => boolean } = {},
+  options: RenameRepairPlanOptions = {},
 ): Promise<RenameRepairPlan> {
-  const ignore = options.ignore
   fromPath = canonicalWorkspacePath(workspace, fromPath)
   toPath = canonicalWorkspacePath(workspace, toPath)
   const listedFiles = await workspace.listFiles()
@@ -840,8 +855,8 @@ export async function planRenameRepair(
     content: (await workspace.readFile(file.path)).content,
   })))
   return files.some(({ file }) => file.path === fromPath)
-    ? planRenameRepairBeforeRename(workspace, fromPath, toPath, files, ignore)
-    : planRenameRepairAfterRename(workspace, fromPath, toPath, files, ignore)
+    ? planRenameRepairBeforeRename(workspace, fromPath, toPath, files, options)
+    : planRenameRepairAfterRename(workspace, fromPath, toPath, files, options)
 }
 
 /** Preserve the plan's reference identity when applying it fails after the structural rename. */

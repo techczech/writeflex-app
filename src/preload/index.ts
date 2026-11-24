@@ -1,4 +1,5 @@
 import type { MenuCommand, MenuFocus } from '../shared/command-menu'
+import type { CollectionNamingCandidate } from '../shared/collection-naming-title'
 import type { PeopleChange, PeopleResult } from '../shared/sharing-people'
 import type { DiaryGlance } from '../shared/diary-glance'
 import type { ReaderLease } from '../shared/reading-room-channel'
@@ -76,6 +77,7 @@ export type { FolioRoomModel, RoomPart, RoomState, RoomSurface, RoomView } from 
 import { RENAME_REPAIR_ISSUE_KINDS } from '../shared/rename-repair-message'
 import { e2eWriteHooksFromProcess } from '../shared/e2e-write-hooks'
 import type { OutsideBulkAccept, OutsideChangeFields, OutsideSource, OutsideSummary } from '../shared/outside-source'
+import type { BatchResult, BatchTarget } from '../shared/outside-batch-review'
 import type { ClosedCode } from '../shared/closed-code'
 import type { BoardStatus } from '../shared/collection-status'
 import type { ClipboardKind } from '../main/clipboard'
@@ -147,7 +149,7 @@ export type FileSaveNameTaken = { refused: 'name-taken'; path: string; message: 
 /** A save main made, or found already made: `content` is the file read back, `written` the text the
  *  buffer is based on from now (what was written, or found when nothing was). They differ only when
  *  another program wrote the file between the commit and the readback: an outside change. */
-export type FileSaveWritten = FileReadResult & { written: string; seq?: number }
+export type FileSaveWritten = FileReadResult & { written: string; seq?: number; naming?: CollectionNamingCandidate; nameError?: string }
 /** The receipt of one write call main made to an open document (document-owner plan, parcel 1): the text
  *  THAT call wrote (`written`) and its place in the workspace's order of writes (`seq`). */
 export type WriteReceipt = { written: string; seq: number }
@@ -946,14 +948,18 @@ export type WriteFlexApi = {
   createFile: (name: string, directory?: string) => Promise<FileReadResult>
   planFileRename: (path: string, newName: string, directory?: string | null) => Promise<FileRenamePlan>
   renameFile: (path: string, newPath: string) => Promise<RenameFileResult>
+  planAutoName: (path: string, id: number, collisions: string[]) => Promise<FileRenamePlan | null>
+  autoName: (path: string, id: number, newPath: string, collisions: string[]) => Promise<{ kind: 'renamed'; renamed: RenameFileResult } | { kind: 'collision' } | null>
+  undoAutoName: (path: string, oldPath: string) => Promise<RenameFileResult>
   moveFile: (path: string, newPath: string, collectionDir?: string) => Promise<RenameFileResult>
   duplicateFile: (path: string) => Promise<FileReadResult>
   pickImage: () => Promise<{ path: string } | null>
   saveImage: (bytes: ArrayBuffer | Uint8Array, ext: string) => Promise<{ path: string }>
   trashFile: (path: string) => Promise<{ path: string }>
   revealFile: (path: string) => Promise<void>
+  openDocumentLocation: (path: string, location: 'default-app' | 'containing-folder') => Promise<void>
   createFolder: (path: string) => Promise<{ path: string }>
-  renameFolder: (path: string, newName: string) => Promise<{ path: string }>
+  renameFolder: (path: string, newName: string) => Promise<{ path: string; repair?: { writtenPaths: string[]; unrepairedReferences: string[] } }>
   trashFolder: (path: string) => Promise<{ path: string }>
   /** Scraps (Task 20): file-native cuttings in scraps/<origin>-SCRAPS.md. Every mutation pushes
    *  `scraps:changed` (onScrapsChanged) so the pane re-lists and the file tree refreshes. */
@@ -974,12 +980,15 @@ export type WriteFlexApi = {
   releaseReaderClaim: (id: string) => Promise<boolean>
   replyToReader: (id: string, text: string) => Promise<Change>
   classifyChange: (id: string, editClass: EditClass) => Promise<Change>
+  missingOutsideBatchPaths: (paths: string[]) => Promise<string[]>
+  orderOutsideBatch: (targets: BatchTarget[]) => Promise<BatchTarget[]>
+  decideOutsideBatch: (action: 'clear' | 'reject', targets: BatchTarget[]) => Promise<BatchResult>
   /** Accept/Reject a change from the dock — routed through the live suggestion (disk write) when one
    *  exists, else a direct status move or stored-diff replay. `applied` is false when it could NOT resolve
    *  honestly. Accept may return the rewritten file so the renderer can reconcile a fallback apply. */
   /** `written`: the text main wrote to the change's file in this call, when it wrote one; `file` is the
    *  file read back after, which differs from `written` only when another program wrote it between. */
-  resolveChange: (id: string, action: 'accept' | 'reject', options?: { sweep?: false }) => Promise<{ applied: boolean; file?: FileReadResult; written?: string; seq?: number; message?: string; closed?: true; changedOnDisk?: { path: string; diskText: string | null }; scratchPlacement?: ScratchPlacementReceipt }>
+  resolveChange: (id: string, action: 'accept' | 'reject', options?: { sweep?: false; batchPath?: string }) => Promise<{ applied: boolean; file?: FileReadResult; written?: string; seq?: number; message?: string; closed?: true; changedOnDisk?: { path: string; diskText: string | null }; scratchPlacement?: ScratchPlacementReceipt }>
   /** How many undecided Changes from outside the ledger holds (in all, per source, per request), the
    *  limits, and what the app's last look at the command line's inbox did. */
   outsideSummary: () => Promise<OutsideSummary>
@@ -1512,9 +1521,12 @@ export type WriteFlexApi = {
    *  transcript, models) — binding no longer waits for the agent, so this replaces "ready at bind". */
   onAgentReady: (fn: () => void) => () => void
   publishCommandMenu: (commands: MenuCommand[], focus?: MenuFocus) => Promise<void>
-  onMenuCommand: (fn: (id: string) => void) => () => void
   runNativeMenuCommand: (id: string) => Promise<void>
   onMenuAction: (fn: (a: MenuAction) => void) => () => void
+  /** A menu-bar click on a registry command (the menu is generated from the registry): the renderer command id to run. */
+  onMenuCommand: (fn: (id: string) => void) => () => void
+  /** Opens the Settings window (its own window, settings-host.ts), at a section or page when one is named. */
+  openSettings: (section?: string) => Promise<void>
   /** A queued file-open focus; `line` (1-based) when a writeflex:// link named one. */
   onFocusFile: (fn: (path: string, line?: number) => void) => () => void
   /** Fires only when the Electron BrowserWindow becomes frontmost, never for iframe focus. */
@@ -1559,9 +1571,10 @@ ipcRenderer.on('window:close-requested', () => {
 })
 
 const subscribeMenuAction = multiplexIpcChannel<MenuAction>(ipcRenderer, 'menu:action')
+const subscribeMenuCommand = multiplexIpcChannel<string>(ipcRenderer, 'menu:command')
 const subscribeExampleChanged = multiplexIpcChannel<{ change: 'removed' | 'restored' }>(ipcRenderer, 'example:changed')
 const subscribeGuideShow = multiplexIpcChannel<null>(ipcRenderer, 'guide:show')
-const subscribeSettingChanged = multiplexIpcChannel<{ key: string; value: SettingValue | null }>(ipcRenderer, 'settings:changed')
+const subscribeSettingChanged = multiplexIpcChannel<{ key: string; value: SettingValue | null }>(ipcRenderer, 'wf-settings:changed')
 const subscribeVaultChanged = multiplexIpcChannel<VaultChangedEvent>(ipcRenderer, 'vault:changed')
 const subscribeCollectionQueryChanged = multiplexIpcChannel<CollectionQueryInvalidation>(ipcRenderer, 'collection:query-changed')
 let collectionQueryCount = 0
@@ -1841,12 +1854,16 @@ const api: WriteFlexApi = {
     .invoke('file:rename-repair-paths', { path, newName, directory })
     .then(validateFileRenamePlan),
   renameFile: (path, newPath) => ipcRenderer.invoke('file:rename', { path, newPath }).then(validateFileRenameResult),
+  planAutoName: (path, id, collisions) => ipcRenderer.invoke('file:auto-name-plan', { path, id, collisions }).then(value => value === null ? null : validateFileRenamePlan(value)),
+  autoName: (path, id, newPath, collisions) => ipcRenderer.invoke('file:auto-name', { path, id, newPath, collisions }),
+  undoAutoName: (path, oldPath) => ipcRenderer.invoke('file:undo-auto-name', { path, oldPath }).then(validateFileRenameResult),
   moveFile: (path, newPath, collectionDir) => ipcRenderer.invoke('file:move', { path, newPath, collectionDir }).then(validateFileRenameResult),
   duplicateFile: (path) => ipcRenderer.invoke('file:duplicate', { path }),
   pickImage: () => ipcRenderer.invoke('assets:pick-image'),
   saveImage: (bytes, ext) => ipcRenderer.invoke('assets:save-image', { bytes, ext }),
   trashFile: (path) => ipcRenderer.invoke('file:trash', { path }),
   revealFile: (path) => ipcRenderer.invoke('file:reveal', { path }),
+  openDocumentLocation: (path, location) => ipcRenderer.invoke('file:open-location', { path, location }),
   createFolder: (path) => ipcRenderer.invoke('folder:create', { path }),
   renameFolder: (path, newName) => ipcRenderer.invoke('folder:rename', { path, newName }),
   trashFolder: (path) => ipcRenderer.invoke('folder:trash', { path }),
@@ -1895,7 +1912,10 @@ const api: WriteFlexApi = {
   releaseReaderClaim: (id) => ipcRenderer.invoke('changes:release-reader-claim', id),
   replyToReader: (id, text) => ipcRenderer.invoke('changes:reader-reply', { id, text }),
   classifyChange: (id, editClass) => ipcRenderer.invoke('changes:classify', { id, editClass }),
-  resolveChange: (id, action, options) => ipcRenderer.invoke('changes:resolve', { id, action, ...(options?.sweep === false ? { sweep: false } : {}) }),
+  missingOutsideBatchPaths: (paths) => ipcRenderer.invoke('changes:batch-missing', paths),
+  orderOutsideBatch: (targets) => ipcRenderer.invoke('changes:batch-order', targets),
+  decideOutsideBatch: (action, targets) => ipcRenderer.invoke(action === 'clear' ? 'changes:batch-clear' : 'changes:batch-reject', targets),
+  resolveChange: (id, action, options) => ipcRenderer.invoke('changes:resolve', { id, action, ...options }),
   outsideSummary: () => ipcRenderer.invoke('changes:outside-summary'),
   rejectOutsideChanges: (which) => ipcRenderer.invoke('changes:reject-outside', which),
   acceptOutsideChanges: (which) => ipcRenderer.invoke('changes:accept-outside', which),
@@ -2102,10 +2122,10 @@ const api: WriteFlexApi = {
     onActivity: on('agent:turn-activity'),
   },
   restoreLastTurn: () => ipcRenderer.invoke('agent:restore-last-turn'),
-  getSettings: () => ipcRenderer.invoke('settings:get'),
-  setSetting: (key, value, label, opts) => ipcRenderer.invoke('settings:set', { key, value, label, ...(opts?.log === false ? { log: false } : {}) }),
-  getSettingsChangelog: () => ipcRenderer.invoke('settings:changelog'),
-  revertSetting: (index) => ipcRenderer.invoke('settings:revert', index),
+  getSettings: () => ipcRenderer.invoke('wf-settings:get'),
+  setSetting: (key, value, label, opts) => ipcRenderer.invoke('wf-settings:set', { key, value, label, ...(opts?.log === false ? { log: false } : {}) }),
+  getSettingsChangelog: () => ipcRenderer.invoke('wf-settings:changelog'),
+  revertSetting: (index) => ipcRenderer.invoke('wf-settings:revert', index),
   onSettingChanged: subscribeSettingChanged,
   readingRoom: {
     createReaderLease: (input) => ipcRenderer.invoke('reading-room:create-reader-lease', input),
@@ -2188,9 +2208,10 @@ const api: WriteFlexApi = {
   onApproval: on('agent:approval'),
   onSuggestions: on('agent:suggestions'),
   publishCommandMenu: (commands, focus: MenuFocus = 'other') => ipcRenderer.invoke('menu:model', commands, focus),
-  onMenuCommand: on<string>('menu:command'),
   runNativeMenuCommand: id => ipcRenderer.invoke('menu:native-command', id),
   onMenuAction: subscribeMenuAction,
+  onMenuCommand: subscribeMenuCommand,
+  openSettings: (section) => ipcRenderer.invoke('wf-open-settings', section) as Promise<void>,
   onFocusFile: (fn) => {
     // The payload is the bare relative path, or { path, line } when a link named a line.
     const listener = (_e: Electron.IpcRendererEvent, payload: string | { path: string; line: number }): void =>

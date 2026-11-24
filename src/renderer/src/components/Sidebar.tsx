@@ -101,7 +101,7 @@ export type SidebarProps = {
   version: string | null
   focusFilterTick: number
   fileOps: SidebarFileOps
-  /** Native menu requests use the active document's explicit row; context menus retain their own target. */
+  /** Menu and palette commands name their target explicitly; context menus retain their own target. */
   menuTargetRequest?: { id: string; key: string; kind: 'file' | 'folder' } | null
   onMenuTargetHandled?: () => void
   /** App-driven creation (⌘N / ⌃⌘N): bump tick to start a ghost row of `kind` in `directory`. */
@@ -1257,6 +1257,10 @@ function SidebarView({
   const menuNode = menu ? nodeFor(menu.key) : null
   const moveNode = movePick ? nodeFor(movePick.key) : null
   const binNode = binAsk ? nodeFor(binAsk.key) : null
+  // Writing only and Titles can hide the row of a document already open in the editor.
+  const hiddenRename = renaming?.kind === 'file' && !renaming.isNew && !visibleRows.some(row => row.key === renaming.key)
+    ? nodeFor(renaming.key)
+    : null
   const hiddenNow = isVault && prefs.writingOnly && vaultIndex ? vaultIndex.hidden.paths.length : 0
   const moveOptions = movePick
     ? [
@@ -1422,6 +1426,7 @@ function SidebarView({
         }}
       >
         <>
+            {hiddenRename?.kind === 'file' && renameRow('file', 0, hiddenRename.name, hiddenRename.path)}
             {shownTree.length > 0 || renaming?.isNew ? (
               hasFilter ? shownTree.map((node) => node.kind === 'folder' ? (node.work ? workFolderRow(node, 0) : folderRow(node, 0)) : fileRow(node, 0)) : renderNodes(shownTree, 0, '')
             ) : hasFilter || !focusPath ? (

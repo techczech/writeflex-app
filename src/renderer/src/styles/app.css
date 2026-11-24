@@ -975,11 +975,15 @@ button.bsrc-ico:hover,button.bsrc-ico:focus-visible{color:var(--accent);border-c
    .cm-scroller so there is exactly one scroll container; the mockup's padding (56px 72px 30vh) and
    its smooth scrolling therefore move into the editor theme (src/renderer/src/editor/theme.ts —
    mockup rule for reference: flex:1;overflow-y:auto;padding:56px 72px 30vh;scroll-behavior:smooth). */
+::selection{background-color:var(--text-selection);color:var(--ink)}
+/* CodeMirror delegates native selection in its widgets to the platform colour by default. */
+.editor-scroll .cm-editor .cm-content :is(input,textarea):focus::selection{background-color:var(--text-selection)!important}
 .editor-scroll{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;position:relative}
 .editor-host{flex:1;min-height:0;display:flex;flex-direction:column}
 .editor-scroll .cm-editor{flex:1;min-height:0}
 .findbox{position:absolute;top:10px;right:14px;z-index:8;width:326px;background:var(--bg-elev);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(20,25,40,.20),0 1px 3px rgba(20,25,40,.10);overflow:hidden}.find-line{display:flex;align-items:center;gap:6px;padding:6px 6px 6px 8px}.find-field{flex:1;min-width:0}.find-field .fcount{flex:none;font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}.find-disc{display:flex;align-items:center;justify-content:center;width:20px;height:30px;border-radius:6px;color:var(--ink-3);flex:none}.find-disc:hover{background:var(--hover);color:var(--ink)}.find-disc[aria-expanded="true"]{color:var(--accent)}.find-disc[aria-expanded="true"] svg{transform:rotate(90deg)}.fnav{display:flex;align-items:center;gap:1px;flex:none}.fbtn{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;color:var(--ink-2);flex:none}.fbtn:hover{background:var(--hover);color:var(--ink)}.find-rep{display:flex;align-items:center;gap:6px;padding:0 6px 7px 8px}.find-indent{width:20px;flex:none}.find-rep .find-field{border-color:var(--line);box-shadow:none}.rbtn{display:flex;align-items:center;justify-content:center;height:24px;padding:0 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg-elev);font-size:11px;font-weight:600;color:var(--ink-2);flex:none}.rbtn:hover{background:var(--hover);color:var(--ink)}.find-foot{display:flex;align-items:center;gap:9px;padding:5px 9px;border-top:1px solid var(--line-soft);background:var(--bg-sunk);font-size:10px;color:var(--ink-4)}.find-foot .fk{display:flex;align-items:center;gap:4px}.find-foot kbd{font-size:8.5px;padding:0 3px;border-bottom-width:1px}.find-foot .sp{flex:1}.find-foot .scope{font-family:var(--mono);font-size:9px;color:var(--ink-3)}
 .window.df .toolbar,.window.df .actionbar,.window.df .statusbar{display:none}.window.df .df-pane~.editor-wrap .editor-scroll{padding-right:216px}.window.df .cm-content{max-width:600px;margin:0 auto;padding:56px 20px 40px;font-family:var(--prose);font-size:var(--prose-size,18.5px);line-height:1.75}.moderail{position:absolute;top:12px;right:14px;z-index:9;display:flex;flex-direction:column;align-items:flex-end;gap:4px;padding:7px 8px;border-radius:9px;background:var(--bg-elev);border:1px solid var(--line);box-shadow:0 4px 16px rgba(20,25,40,.10)}.moderail .rl{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-4)}.rseg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--bg-elev)}.rseg button{display:flex;align-items:center;gap:4px;padding:0 5px;height:26px;font-size:10.5px;font-weight:600;color:var(--ink-3);white-space:nowrap}.rseg button svg{width:12px;height:12px;color:var(--ink-4)}.rseg button[aria-pressed="true"]{background:var(--pill);color:var(--ink)}.rseg button[aria-pressed="true"] svg{color:var(--ink-2)}.moderail .rk{font-family:var(--mono);font-size:8px;color:var(--ink-4)}.df-exit{position:absolute;top:14px;left:16px;z-index:9;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-3);padding:5px 8px;border-radius:8px;background:var(--bg-elev);border:1px solid var(--line)}.df-exit:hover{color:var(--ink)}.df-pane{width:238px!important;flex:none;background:var(--bg-side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}.right-pane.df-pane{border-right:0;border-left:1px solid var(--line)}.df-ph{display:flex;align-items:center;gap:7px;padding:13px 12px 8px 16px;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}.df-ph .gap{flex:1}.df-ph .x{display:flex;padding:2px;border-radius:5px;color:var(--ink-3)}.df-ph .x:hover{background:var(--hover);color:var(--ink)}
+.window.df .editor-scroll .lp-frontmatter{display:none}
 .window.df .rseg button{gap:5px;padding:0 9px;font-size:11.5px}
 /* No open tab: keep the view mounted (per-path buffer cache lives in it) but invisible, so nothing
    can be typed into a buffer that belongs to no file. */
@@ -1714,6 +1718,17 @@ table.gfm-style td{border-bottom:1px solid var(--line);padding:5px 10px}
 .pal-ask .icon{color:var(--accent)}
 .pal-empty{padding:22px 14px;font-size:12.5px;color:var(--ink-3);text-align:center}
 .palette-footer{padding:8px 16px;border-top:1px solid var(--line-soft);background:var(--bg-sunk);font-size:10.5px;color:var(--ink-3)}
+.pal-group-row{min-height:44px;gap:12px}
+.pal-group-row .pal-name{font-weight:600;font-size:13.5px}
+.pal-group-tile{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:7px;background:var(--accent-soft);color:var(--accent)}
+.pal-group-count{flex:none;padding:1px 8px;border:1px solid var(--line);border-radius:999px;font-size:11px;line-height:16px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.pal-group-open{flex:none;color:var(--ink-3)}
+.pal-crumb{flex:none;max-width:45%;display:inline-flex;align-items:center;gap:6px;overflow:hidden}
+.pal-crumb>span{overflow:hidden;text-overflow:ellipsis}
+.pal-crumb .icon{color:var(--accent);flex:none}
+.pal-subsec{user-select:none;cursor:default}
+.pal-group-tile .icon{color:var(--accent)}
+.icon.pal-group-glyph{width:11px;height:11px;margin-right:4px;vertical-align:-1px;color:inherit}
 .folder-piece-chooser{width:min(420px,calc(100vw - 40px));margin-top:18vh;overflow:hidden}
 .folder-piece-chooser header{display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid var(--line-soft);font-size:13px}
 .folder-piece-choice-list{padding:6px}
@@ -2479,6 +2494,9 @@ table.gfm-style td{border-bottom:1px solid var(--line);padding:5px 10px}
    at the fixed line's height; a faint dashed rule crosses the text while it is hovered, focused or
    dragged. The dashed ghost shows the old middle position. */
 .fixed-line-marker{position:absolute;left:14px;z-index:6;width:26px;height:14px;margin-top:-7px;border-radius:7px;background:var(--accent);color:#fff;font:700 8px/14px var(--ui);text-align:center;cursor:ns-resize;box-shadow:0 2px 6px rgba(46,107,230,.4);touch-action:none;user-select:none}
+.fixed-line-marker.can-fade{transition:opacity 180ms ease}
+.fixed-line-marker.is-idle{opacity:0;pointer-events:none}
+@media(prefers-reduced-motion:reduce){.fixed-line-marker.can-fade{transition:none}}
 .fixed-line-marker:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .fixed-line-marker.ghost{background:transparent;border:1px dashed var(--accent);color:var(--accent);box-shadow:none;cursor:default;pointer-events:none}
 .fixed-line-rule{position:absolute;left:0;right:0;z-index:5;height:0;border-top:1px dashed color-mix(in srgb,var(--accent) 45%,transparent);pointer-events:none;opacity:0;transition:opacity .12s}
@@ -3909,12 +3927,13 @@ button.folio-agent-pill[data-state=none],button.folio-agent-pill[data-state=part
 
 /* Running-order confirmation stays within the footer's reserved height, below the prose. */
 .status-flash.status-flash-inline{position:static;flex:0 1 560px;min-width:0;display:flex;align-items:center;max-width:560px;height:24px;box-sizing:border-box;padding:1px 6px;margin-left:auto;box-shadow:none;white-space:nowrap;overflow:hidden;line-height:20px}
-.status-flash-inline .status-flash-message{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.status-flash-inline .status-flash-undo{flex:none;margin-left:6px}
+.status-flash.status-flash-rename{display:flex;align-items:center;white-space:nowrap}
+:is(.status-flash-inline,.status-flash-rename) .status-flash-message{min-width:0;overflow:hidden;text-overflow:ellipsis}
+:is(.status-flash-inline,.status-flash-rename) .status-flash-undo{flex:none;margin-left:6px}
 /* The later agent-skill offer (design element 19): one quiet mark in the status bar, opening a small notice above it. */
-.sb-agent-skill{position:relative;flex:0 1 auto;min-width:0;display:inline-flex}
-.sb-agent-skill-mark{font:inherit;color:var(--accent);background:transparent;border:none;padding:0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px}
-.sb-agent-skill-mark:hover{text-decoration:underline}
+.sb-agent-skill{position:relative;flex:none;display:inline-flex}
+.sb-agent-skill-mark{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:5px;color:var(--accent);cursor:pointer}.sb-agent-skill-mark .icon{width:14px;height:14px}
+.sb-agent-skill-mark:hover{background:var(--hover)}
 .sb-agent-skill-popover{position:absolute;bottom:calc(100% + 8px);left:0;width:340px;background:var(--bg-elev);color:var(--ink);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 36px rgba(15,20,35,.25);padding:14px;z-index:90;white-space:normal;font-size:12.5px}
 .sb-agent-skill-popover p{margin:4px 0 10px;color:var(--ink-3)}
 .sb-agent-skill-popover small{display:block;margin-top:8px;color:var(--ink-3);font-size:11.5px}
@@ -4027,3 +4046,15 @@ button.folio-agent-pill[data-state=none],button.folio-agent-pill[data-state=part
 .lv-head>.fdash{flex:none;width:26px;height:26px;padding:0;margin:0;justify-content:center}
 .lv-head>.fdash .rb-lbl{display:none}
 .lv-head>.fdash .rb-ico{display:block;width:13px;height:13px}
+
+
+/* All status-bar panels share the window bounds measured at their trigger. */
+.statusbar [data-status-popup]{
+  position:fixed!important;inset:auto!important;
+  left:var(--status-popup-left,8px)!important;top:var(--status-popup-top,8px)!important;
+  min-width:min(var(--status-popup-width),140px);max-width:var(--status-popup-width)!important;
+  max-height:var(--status-popup-height,calc(100vh - 16px))!important;
+  color-scheme:var(--editor-color-scheme,light);
+  overflow:auto;overscroll-behavior:contain;z-index:95;margin:0;
+}
+.statusbar [data-status-popup]::after{display:none}

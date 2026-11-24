@@ -1,0 +1,36 @@
+/* Frame of the Settings window: a drag strip under the hidden-inset title bar, then the shared window. */
+html, body, #root { height: 100%; margin: 0; overflow: hidden; background: #ececf0; }
+#root { display: flex; flex-direction: column; }
+.wf-titlebar {
+  height: 40px; flex: none; display: flex; align-items: center; justify-content: center;
+  background: #f6f6f8; border-bottom: 1px solid #cfd1d8; -webkit-app-region: drag;
+  font: 600 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: #1d1d1f; user-select: none;
+}
+.bsw-root.wf-settings { flex: 1; height: auto; min-height: 0; }
+/* WriteFlex's terracotta, from the main window's palette */
+.bsw-root.wf-settings {
+  --bsw-accent: #b0563a; --bsw-accent-dark: #8f4430; --bsw-accent-tint: #f1ddd5;
+  --bsw-accent-ink: #8f4430; --bsw-accent-wash: #fbf4f1; --bsw-accent-hover: #f5e6df;
+}
+/* WriteFlex's own pages inside the shared pane */
+.wf-page { font: 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: #1d1d1f; padding: 4px 2px 24px; }
+.wf-page-note { color: #6e6e73; margin: 0 0 12px; }
+.wf-page-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #e5e5ea; }
+.wf-page-row .grow { flex: 1; min-width: 0; }
+.wf-page-row .sub { color: #6e6e73; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-current-page { color: var(--ink); font: .8125rem var(--ui); }
+.wf-current-page .set-sec { margin: 0 0 1.5rem; }
+.wf-current-page h3 { font-size: .9rem; margin: 0 0 .5rem; }
+.wf-current-page .card { border: 1px solid var(--line); border-radius: .5rem; overflow: hidden; }
+.wf-current-page .crow { display: flex; gap: .7rem; align-items: center; padding: .7rem; border-bottom: 1px solid var(--line-soft); }
+.wf-current-page .grow { flex: 1; min-width: 0; }
+.wf-current-page .sub, .wf-current-page small { color: var(--ink-2); display: block; font-size: .75rem; line-height: 1.5; margin: .25rem 0; }
+.wf-current-page .icon { height: 1rem; width: 1rem; flex: none; }
+.wf-current-page button, .wf-page button, .wf-page select, .wf-page input { font: inherit; padding: .4rem .7rem; border: 1px solid #b8bbc2; border-radius: .4rem; background: white; color: #1d1d1f; }
+.wf-current-page button:focus-visible, .wf-page :focus-visible { outline: 2px solid var(--bsw-accent,#b0563a); outline-offset: 2px; }
+.wf-current-page button:disabled { opacity: .5; }
+.wf-current-page .about-release-toggle { width: 100%; text-align: left; }
+.wf-current-page .about-release-body { padding: .75rem; }
+.wf-current-page ul { padding-left: 1.25rem; }
+.wf-current-page .about-version { font-size: 1.5rem; }
+.wf-current-page .sp-settings-vault { display: flex; gap: .5rem; align-items: center; }

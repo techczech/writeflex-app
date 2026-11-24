@@ -13,6 +13,7 @@
  */
 import { isAbsolute, relative, sep } from 'node:path'
 import { RestoreIncompleteError, RestoreRefusedError } from '@bridle/core'
+import { LATER_WRITING } from './restore-keeps-later-writing'
 
 export type RestoreFailure = {
   kind: 'refused' | 'incomplete' | 'failed'
@@ -43,6 +44,9 @@ export function restoreFailure(error: unknown, root?: string): RestoreFailure {
     const notRestored = error.refusals.map((refusal) => refusal.path)
     const why = error.refusals.slice(0, 5).map((refusal) => `${shown(refusal.path)} (${refusal.reason})`).join('; ')
     const more = error.refusals.length > 5 ? `; and ${error.refusals.length - 5} more` : ''
+    if (error.reason === LATER_WRITING) {
+      return { kind: 'refused', restored: [], notRestored, message: `The earlier state was not put back, and no file was changed by the attempt, because it would delete writing added after it: ${why}${more}.` }
+    }
     return { kind: 'refused', restored: [], notRestored, message: `The earlier state was not put back, and no file was changed by the attempt, because it includes a file WriteFlex will not write: ${why}${more}.` }
   }
   if (error instanceof RestoreIncompleteError) {

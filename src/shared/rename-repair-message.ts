@@ -47,3 +47,11 @@ export function formatRenameRepairMessage(success: string, repair: RenameRepairD
   const repairMessage = [warning, outcomeNotice, preservedNotice, availableNotice].filter(Boolean).join(' ')
   return success ? `${success}. ${repairMessage}` : repairMessage
 }
+
+/** Folder repair reports independent per-file refusals through the same display as file moves. */
+export function formatFolderRenameRepairMessage(success: string, repair?: { writtenPaths: string[]; unrepairedReferences: string[] }): string {
+  return formatRenameRepairMessage(success, {
+    writtenPaths: repair?.writtenPaths ?? [],
+    issues: (repair?.unrepairedReferences ?? []).map(text => ({ kind: 'reference', text })),
+  })
+}

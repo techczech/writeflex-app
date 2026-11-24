@@ -13,7 +13,9 @@
 import type { JournalEntry } from '@bridle/core'
 import { assertCollectionWritable } from './collection-write-gate'
 import { snapshotBytes, type SnapshotBytesMeta } from './snapshot-bytes'
+import { guardRestorePlans, refuseRestoreOverLaterWriting, type WrittenFile } from './restore-keeps-later-writing'
 
+type StoreRestoreOptions = { origin?: 'turn' | 'host' }
 type SnapshotMeta = { sessionId?: string; capability?: string; toolCallId?: string; attemptId?: string; origin?: 'turn' | 'host' }
 
 /** The part of Bridle's SnapshotStore this app calls. */
@@ -24,11 +26,21 @@ export type CollectionSnapshots = {
   snapshotFile(absPath: string, meta: SnapshotMeta): Promise<JournalEntry>
   /** `snapshotFile` for bytes already in hand: stores exactly these bytes and never reads the file (snapshot-bytes.ts). */
   snapshotBytes(absPath: string, bytes: Uint8Array, meta: SnapshotBytesMeta): Promise<JournalEntry>
-  restoreTo(restorePointId: string, opts?: { origin?: 'turn' | 'host' }): Promise<string[]>
+  /**
+   * Put the restore point back. Refused whole, before any file changes, when it would delete a file
+   * holding writing added after the point (restore-keeps-later-writing.ts). `written` (this app's own
+   * option, not passed to Bridle): files the caller wrote, with the bytes it wrote, that it has just
+   * checked are unchanged, so a created file still holding them is deleted.
+   */
+  restoreTo(restorePointId: string, opts?: { origin?: 'turn' | 'host'; written?: readonly WrittenFile[] }): Promise<string[]>
 }
 
 /** `store`, with every write refused while the Collection at `root` may not be written. */
-export function gatedSnapshots(root: string, store: Omit<CollectionSnapshots, 'snapshotBytes'>): CollectionSnapshots {
+export function gatedSnapshots(
+  root: string,
+  store: Omit<CollectionSnapshots, 'snapshotBytes' | 'restoreTo'> & { restoreTo(restorePointId: string, opts?: StoreRestoreOptions): Promise<string[]> },
+): CollectionSnapshots {
+  const asked = guardRestorePlans(store)
   return {
     entries: () => store.entries(),
     readSnapshotContent: (entryId) => store.readSnapshotContent(entryId),
@@ -46,7 +58,15 @@ export function gatedSnapshots(root: string, store: Omit<CollectionSnapshots, 's
     },
     restoreTo: async (restorePointId, opts) => {
       assertCollectionWritable(root)
-      return store.restoreTo(restorePointId, opts)
+      const { written = [], ...storeOpts } = opts ?? {}
+      // Judged inside Bridle's own planning step when the store has one, else from the journal just before.
+      if (asked === null) await refuseRestoreOverLaterWriting(await store.entries(), restorePointId, { ...storeOpts, written })
+      asked?.set(restorePointId, written)
+      try {
+        return await store.restoreTo(restorePointId, opts === undefined ? undefined : storeOpts)
+      } finally {
+        asked?.delete(restorePointId)
+      }
     },
   }
 }

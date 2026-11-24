@@ -10,6 +10,7 @@
  * overwrite something that changed afterwards.
  */
 
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { readFile, rm } from 'node:fs/promises'
 import { posix } from 'node:path'
@@ -22,6 +23,7 @@ import type { OperationWrite, Workspace } from './workspace'
 import { rollBackOperationWrites, rollbackMessage } from './operation-rollback'
 import { collectionWritesPaused, pausedMessage } from './collection-write-gate'
 import { restoreFailure, type RestoreFailure } from './restore-failure'
+import type { WrittenFile } from './restore-keeps-later-writing'
 import {
   driftedFiles,
   resolveProposal,
@@ -58,7 +60,7 @@ export type PlanDeskBridle = {
   snapshots: {
     beginRestorePoint(label: string, sessionId?: string, meta?: { proposalId?: string }): Promise<string>
     snapshotFile(absPath: string, meta: { sessionId?: string; capability?: string; origin?: 'turn' | 'host' }): Promise<unknown>
-    restoreTo(restorePointId: string, opts?: { origin?: 'turn' | 'host' }): Promise<string[]>
+    restoreTo(restorePointId: string, opts?: { origin?: 'turn' | 'host'; written?: readonly WrittenFile[] }): Promise<string[]>
     entries(): Promise<JournalEntry[]>
   }
   sessionId(): string
@@ -73,6 +75,9 @@ type AcceptRecord = {
   /** How every written file and every part file stood right after the step. */
   after: Fingerprint[]
   extra: string[]
+  /** Every file the step wrote, with the hash of the text it wrote (from its own write log, never re-read):
+   *  what its undo vouches for, so writing that lands in a created file meanwhile is never taken as the step's. */
+  wrote: WrittenFile[]
   /** The backups this step created (absent before it), with the bytes it wrote into them. */
   backups: StepBackup[]
   summary: AcceptedSummary
@@ -244,7 +249,11 @@ export class PlanProposalDesk {
     }
     const referenced = finalParts.flatMap((part) => (part.path && !prepared.writes.includes(part.path) ? [part.path] : []))
     const after = await fingerprintsFor(this.workspace, prepared.writes, referenced)
-    this.accepted.set(id, { restorePointId, dir, targets, after, extra: prepared.writes, backups, summary })
+    const lastWrite = new Map(written.map((write) => [write.path, write.after]))
+    const wrote = [...lastWrite].flatMap(([path, text]) => text === null ? [] : [{
+      file: this.workspace.absolute(path), sha256: createHash('sha256').update(text, 'utf8').digest('hex'),
+    }])
+    this.accepted.set(id, { restorePointId, dir, targets, after, extra: prepared.writes, wrote, backups, summary })
     this.captured.delete(id)
     return { ok: true, accepted: summary, paths: [...new Set([...prepared.writes, ...result.created])] }
   }
@@ -293,7 +302,8 @@ export class PlanProposalDesk {
     if (paused) return { ok: false, message: `Can't put the order back: ${paused}` }
     let restored: string[]
     try {
-      restored = await this.bridle.snapshots.restoreTo(record.restorePointId, { origin: 'turn' })
+      // What the step itself wrote: a file it created and still holding exactly that is removed.
+      restored = await this.bridle.snapshots.restoreTo(record.restorePointId, { origin: 'turn', written: record.wrote })
     } catch (error) {
       // Refused: nothing was written and the undo is still held. Stopped part-way: the order is
       // half put back, and the writer is told which files were and were not.

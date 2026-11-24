@@ -60,9 +60,9 @@ function liftedBody(text: string): { body: string; footnoteLabels: string[] } {
 }
 
 /** The first top-level heading node of a parsed body, if any. */
-function firstHeading(root: SyntaxNode): SyntaxNode | null {
+function firstHeading(root: SyntaxNode, level?: 1): SyntaxNode | null {
   for (let child = root.firstChild; child; child = child.nextSibling) {
-    if (HEADING_NODES.has(child.name)) return child
+    if (HEADING_NODES.has(child.name) && (level === undefined || child.name.endsWith('1'))) return child
   }
   return null
 }
@@ -100,10 +100,10 @@ function definitionsAppendix(root: SyntaxNode, body: string, footnoteLabels: str
 }
 
 /** The whole-document reading: lift footnotes, parse every block, resolve against every definition. */
-function wholeDocumentTitle(text: string, path: string): string {
+function wholeDocumentTitle(text: string, path: string, level?: 1): string {
   const { body, footnoteLabels } = liftedBody(text)
   const root = parseMarkdownBlocks(body).topNode
-  const heading = firstHeading(root)
+  const heading = firstHeading(root, level)
   if (!heading) return fileStem(path)
   let source = body.slice(heading.from, heading.to)
   // A `[label]` or `[^label]` resolves against definitions anywhere in the document; carry them
@@ -121,18 +121,18 @@ function wholeDocumentTitle(text: string, path: string): string {
  * the candidate sits in code or a list, a footnote definition comes before it, or its text has a
  * bracket that may resolve against a definition further down — reads the whole document instead.
  */
-export function listingTitle(content: string, path: string): string {
+export function listingTitle(content: string, path: string, level?: 1): string {
   const text = cleanedSource(content)
   const candidate = HEADING_CANDIDATE.exec(text)
   if (!candidate) return fileStem(path) // lifting footnotes only removes lines: still no candidate
   const lineEnd = text.indexOf('\n', candidate.index)
   const end = lineEnd === -1 ? text.length : lineEnd
   const opener = FOOTNOTE_OPENER.exec(text)
-  if (opener && opener.index < end) return wholeDocumentTitle(text, path)
+  if (opener && opener.index < end) return wholeDocumentTitle(text, path, level)
   const prefix = text.slice(0, end).replace(/\n{3,}/g, '\n\n')
-  const heading = firstHeading(parseMarkdownBlocks(prefix).topNode)
-  if (!heading) return wholeDocumentTitle(text, path)
+  const heading = firstHeading(parseMarkdownBlocks(prefix).topNode, level)
+  if (!heading) return wholeDocumentTitle(text, path, level)
   const source = prefix.slice(heading.from, heading.to)
-  if (source.includes('[')) return wholeDocumentTitle(text, path)
+  if (source.includes('[')) return wholeDocumentTitle(text, path, level)
   return headingText(source) || fileStem(path)
 }

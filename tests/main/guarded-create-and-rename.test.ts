@@ -5,14 +5,14 @@
  * methods, with `documentSaveSeams.betweenCheckAndWrite` standing where another program would act.
  */
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { documentOnlyView } from '../../src/main/document-only-workspace'
-import { GuardedMoveRefused } from '../../src/main/guarded-document-move'
+import { GuardedMoveRefused, moveDocumentGuarded } from '../../src/main/guarded-document-move'
 import { documentSaveSeams } from '../../src/main/guarded-document-write'
-import { NotADocumentPathError, Workspace } from '../../src/main/workspace'
+import { NameTaken, NotADocumentPathError, Workspace } from '../../src/main/workspace'
 
 const DOC = '# Draft\n\nThe document itself.\n'
 let root: string
@@ -74,6 +74,38 @@ test('an agent\'s rename never replaces a file that appeared at the new name, an
   expect((refused as Error).message).toBe('File already exists: notes/final.md')
   expect(await readFile(join(root, 'notes/final.md'), 'utf8')).toBe('SOMEBODY ELSE\n')
   expect(await readFile(join(root, 'notes/draft.md'), 'utf8')).toBe(DOC)
+})
+
+test('automatic naming returns a typed collision if another file takes the target before commit', async () => {
+  const identity = await lstat(join(root, 'notes/draft.md'))
+  documentSaveSeams.betweenCheckAndWrite = async () => {
+    delete documentSaveSeams.betweenCheckAndWrite
+    await writeFile(join(root, 'notes/final.md'), 'NEW SIBLING\n')
+  }
+  const options = { documentOnly: true, requireExistingDirectory: true, expectedSource: identity }
+  await expect(ws.renameFile('notes/draft.md', 'final.md', options)).rejects.toBeInstanceOf(NameTaken)
+  expect(await readFile(join(root, 'notes/final.md'), 'utf8')).toBe('NEW SIBLING\n')
+  expect((await ws.renameFile('notes/draft.md', 'final-2.md', options)).content).toBe(DOC)
+})
+
+test('automatic naming can use the checked fallback when the volume refuses hard links', async () => {
+  const source = 'notes/draft.md'
+  const target = 'notes/final.md'
+  const expectSource = await lstat(join(root, source))
+  const unsupported = Object.assign(new Error('Hard links unsupported'), { code: 'ENOTSUP' })
+  const collide = async () => {
+    await writeFile(join(root, target), 'ARRIVED WHILE LINKING\n')
+    throw unsupported
+  }
+  await expect(moveDocumentGuarded(ws, source, target, 'file', { expect: expectSource, linkFile: collide }))
+    .rejects.toMatchObject({ code: 'exists' })
+  expect(await readFile(join(root, target), 'utf8')).toBe('ARRIVED WHILE LINKING\n')
+  expect(await readFile(join(root, source), 'utf8')).toBe(DOC)
+  await moveDocumentGuarded(ws, source, 'notes/final-2.md', 'file', {
+    expect: expectSource, linkFile: async () => { throw unsupported },
+  })
+  expect(await readFile(join(root, 'notes/final-2.md'), 'utf8')).toBe(DOC)
+  expect(existsSync(join(root, source))).toBe(false)
 })
 
 test('an agent\'s rename moves nothing through a swapped folder, never moves a link, and never moves a file swapped in at the old name', async () => {

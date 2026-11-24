@@ -241,14 +241,17 @@ test('a stored non-boolean never breaks the bar', () => {
 test('every window hears a settings change, so a second window cannot disagree with the first', () => {
   const ipc = readFileSync(new URL('../../src/main/ipc.ts', import.meta.url), 'utf8')
   // The write fans out to every open window, carrying what the store holds AFTER the write.
-  expect(ipc).toMatch(/const broadcastSettingChange = \(key: string\): void => \{\s*for \(const state of allStates\(\)\) sendSafe\(state, 'settings:changed', \{ key, value: settings\.get\(key\) \}\)/)
-  const setHandler = ipc.slice(ipc.indexOf("ipcMain.handle('settings:set'"), ipc.indexOf("ipcMain.handle('settings:changelog'"))
+  expect(ipc).toMatch(/const broadcastSettingChange = \(key: string\): void => \{\s*for \(const state of allStates\(\)\) sendSafe\(state, 'wf-settings:changed', \{ key, value: settings\.get\(key\) \}\)/)
+  const setHandler = ipc.slice(ipc.indexOf("ipcMain.handle('wf-settings:set'"), ipc.indexOf("ipcMain.handle('wf-settings:changelog'"))
   expect(setHandler).toContain('broadcastSettingChange(input.key)')
-  const revertHandler = ipc.slice(ipc.indexOf("ipcMain.handle('settings:revert'"), ipc.indexOf("ipcMain.handle('export-presets:get'"))
-  expect(revertHandler).toContain('broadcastSettingChange(entry.key)')
+  const revertHandler = ipc.slice(ipc.indexOf("ipcMain.handle('wf-settings:revert'"), ipc.indexOf("ipcMain.handle('export-presets:get'"))
+  expect(revertHandler).toContain('revertSetting(index)')
+  // Counted Collections uses the same filesystem-aware reset; both routes retain the broadcast.
+  const revert = ipc.slice(ipc.indexOf('const revertSetting = async'), ipc.indexOf("ipcMain.handle('wf-settings:revert'"))
+  expect(revert).toContain('broadcastSettingChange(entry.key)')
 
   const preload = readFileSync(new URL('../../src/preload/index.ts', import.meta.url), 'utf8')
-  expect(preload).toContain("multiplexIpcChannel<{ key: string; value: SettingValue | null }>(ipcRenderer, 'settings:changed')")
+  expect(preload).toContain("multiplexIpcChannel<{ key: string; value: SettingValue | null }>(ipcRenderer, 'wf-settings:changed')")
   expect(preload).toContain('onSettingChanged: subscribeSettingChanged,')
 
   const hook = readFileSync(new URL('../../src/renderer/src/hooks/useSettings.ts', import.meta.url), 'utf8')

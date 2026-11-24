@@ -4,13 +4,14 @@ import { createHash } from 'node:crypto'
 import { lstat, realpath } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { GIT_CANDIDATES } from './enrolment'
+import { isAppleToolStub } from '../apple-tool-stub'
 import { isGitWorktreeRoot } from './trial-config'
 export type OriginIdentity = { realRoot: string; exactRemote: string; destination: string; marker: string }
 async function trustedGit(): Promise<string> {
   for (const candidate of GIT_CANDIDATES) {
     try {
       const path = await realpath(candidate), st = await lstat(path)
-      if (!st.isFile() || !(st.mode & 0o111)) continue
+      if (!st.isFile() || !(st.mode & 0o111) || isAppleToolStub(path)) continue
       for (let p = path; p !== '/'; p = dirname(p)) {
         const s = await lstat(p)
         if (s.isSymbolicLink() || (s.mode & 0o022) || (s.uid !== 0 && s.uid !== process.getuid?.())) throw Error('untrusted')

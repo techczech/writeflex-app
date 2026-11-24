@@ -10,13 +10,18 @@ import { onDocumentsChanged, onDocumentsChangedOutside, onSharingIdentityChanged
 import { installUpdateNotices } from './update-notices'
 import { SettingsStore } from './settings'
 import { WindowManager } from './windows'
-import { buildAppMenu, noteFocusedWindow, updateCollectionMenu } from './menu'
+import { buildAppMenu, noteFocusedWindow, noteSettingsMenuFocus, updateCollectionMenu } from './menu'
 import { agentDisposalsPending, allStates, isQuitting, onQuitCancelled, setQuitting, stateForSender, waitForAgentDisposals, type WindowState } from './state'
 import { duringRestartHold, restartHeld } from './restart-holds'
 import { UPDATE_TEST_BUILD, updateTestHeld } from './update-test-build'
 import { restartBlockers } from '../shared/update-install'
 import { createBackupRestartActivity, type BackupRestartActivity } from './backup-restart-activity'
 import { createRestartClose } from './restart-windows'
+import { closeSettingsForRestart } from './settings-restart'
+import { openMain } from './window-presentation'
+import { CUSTOM_PAGES, MENU_COMMAND_CHANNEL, OPEN_SETTINGS_CHANNEL, SETTINGS_PAGE_COMMANDS, installSettingsHost, openSharedSettings, type SettingsApp } from './settings-host'
+import { schema as settingsSchema } from '../shared/settings-schema'
+import { AuthKeySlots } from './key-slots'
 import { registerAssetProtocol } from './wf-asset'
 import { configureMainProcessDiagnostics, recordMainProcessDiagnostic, waitForCleanupWithTimeout } from './shutdown'
 import { classifyOpenPath, parseWriteflexUrl } from './writeflex-url'
@@ -108,12 +113,16 @@ const ENTRY_FILE = fileURLToPath(import.meta.url)
 // bootstrap.js is the package entry and sits beside index.js; it is the app's own script too.
 const BOOTSTRAP_FILE = join(dirname(ENTRY_FILE), 'bootstrap.js')
 
+/** Every page the Settings window may be opened at: the schema's sections and WriteFlex's custom pages. */
+const SETTINGS_SECTIONS: ReadonlySet<string> = new Set([...settingsSchema.sections.map((section) => section.id), ...CUSTOM_PAGES])
+
 // One instance owns the Snapshot Store per Workspace; a second launch hands its paths to the first.
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   let manager: WindowManager | null = null
   let settings: SettingsStore | null = null
+  let closeSettings = async (): Promise<void> => {}
   let readingRoom: { close(): void } | null = null
   // macOS delivers open-file before `ready`; buffer those paths until the manager exists.
   const bufferedFiles: string[] = []
@@ -192,6 +201,21 @@ if (!app.requestSingleInstanceLock()) {
     const readySettings = new SettingsStore(join(app.getPath('userData'), 'settings.json'), {
       shownExampleRoot: () => example?.shownRoot() ?? null,
     })
+    // Shared settings (0.27): preferences move to userData/settings-v2.json before anything reads one.
+    // settings.json stays the app's state file (recents, pins, favourites …) and the old version's file.
+    const sharedSettings = await openSharedSettings(readySettings, (line) => { void recordMainProcessDiagnostic('settings', { line }) })
+    let settingsApp: SettingsApp | null = null
+    let settingsContext: { sender: number; root: string | null } | null = null
+    let retireSettingsContext = (): void => {}
+    const settingsContents = () => settingsApp?.settingsWebContents() ?? null
+    const settingsRoot = (): string | null => {
+      if (!settingsContext) return null
+      try {
+        const current = stateForSender(settingsContext.sender)
+        return !current.window.isDestroyed() && current.workspace?.root === settingsContext.root ? settingsContext.root : null
+      } catch { return null }
+    }
+    onWindowWorkspaceBound((sender) => { if (settingsContext?.sender === sender) { retireSettingsContext(); settingsContext = null } })
     const exampleDocumentsDir = (): string | null => resolveExampleDocumentsDir({
       isPackaged: app.isPackaged,
       env: process.env,
@@ -255,7 +279,7 @@ if (!app.requestSingleInstanceLock()) {
       packaged: app.isPackaged,
       env: process.env,
     })
-    const isAppWindow = (senderId: number): boolean => { try { stateForSender(senderId); return true } catch { return false } }
+    const isAppWindow = (senderId: number): boolean => { if (settingsContents()?.id === senderId) return true; try { stateForSender(senderId); return true } catch { return false } }
     registerSharingIpc(ipcMain, sharingSetup, {
       openExternal: (url) => { if (process.env.WRITEFLEX_E2E !== '1') void shell.openExternal(url) },
       // Only a renderer WriteFlex registered as one of its windows (state.ts) is answered.
@@ -359,7 +383,7 @@ if (!app.requestSingleInstanceLock()) {
     // The app's side of the commit (restart-windows.ts): close every window, wait for their work, stop the helper
     // last, but only while the attempt is live; on call-off abandon what can be recalled and recover (idempotent).
     const restartClose = createRestartClose({
-      closeEach: () => manager?.closeAllForRestart() ?? [],
+      closeEach: () => [...(manager?.closeAllForRestart() ?? []), ...closeSettingsForRestart(settingsApp?.settingsWindow() ?? null)],
       finishWork: () => waitForCleanupWithTimeout(waitForAgentDisposals(), 10_000, () => {
         recordMainProcessDiagnostic('update.restart.cleanup-timeout', { timeoutMs: 10_000 })
       }).then(() => {}),
@@ -371,7 +395,7 @@ if (!app.requestSingleInstanceLock()) {
     })
     onQuitCancelled(() => restartClose.quitCancelled())
     const updateNotices = installUpdateNotices({
-      editorWindows: () => allStates().map(state => state.window),
+      editorWindows: () => [...allStates().map(state => state.window), ...(settingsApp?.settingsWindow() ? [settingsApp.settingsWindow()!] : [])],
       isProtectedNow: () => protectedWriters.size > 0,
       // Read at the moment of asking: before the hand-over to Squirrel.Mac and in the same turn as the native quit.
       restartBlockers: () => {
@@ -442,11 +466,57 @@ if (!app.requestSingleInstanceLock()) {
       appVersionLabel: `${app.getVersion()}${appVariant.versionLabelSuffix}`,
       guide,
       zoteroFound: () => probeZotero({ databasePath: zoteroDatabasePath, exists: existsSync }),
-      onSettingChanged: (key) => {
-        if (key === 'shortcuts.overrides') manager?.refreshMenu?.()
-      },
+      isSettingsSender: (event) => Boolean(settingsApp?.isSettingsSender(event)),
+      settingsWebContents: () => settingsApp?.settingsWebContents() ?? null,
+      onAuthChanged: () => settingsApp?.slotsChanged(),
     })
     app.once('will-quit', ipc.dispose)
+    sharedSettings.onPreferencesChanged((keys) => { for (const key of keys) readySettings.notifySharedChange(key); ipc.preferencesChanged(keys) })
+    const windowManager = manager
+    // The main window a menu command goes to: the focused one, else the last one focused, else a new one.
+    let lastMainWindow: BrowserWindow | null = null
+    const isMainWindow = (window: BrowserWindow | null): window is BrowserWindow =>
+      Boolean(window && !window.isDestroyed() && allStates().some((state) => state.window === window))
+    app.on('browser-window-focus', (_event, window) => { if (isMainWindow(window)) lastMainWindow = window })
+    const mainWindow = (): BrowserWindow => {
+      const focused = BrowserWindow.getFocusedWindow()
+      if (isMainWindow(focused)) return focused
+      if (isMainWindow(lastMainWindow)) return lastMainWindow
+      return allStates().find((state) => !state.window.isDestroyed())?.window ?? windowManager.createWindow().window
+    }
+    settingsApp = installSettingsHost({
+      shared: sharedSettings,
+      slots: new AuthKeySlots(ipc.auth, () => settingsApp?.slotsChanged()),
+      mainWindow,
+      log: (line) => { void recordMainProcessDiagnostic('settings', { line }) },
+    })
+    manager.openSettings = (section) => {
+      const source = allStates().find(state => state.window === BrowserWindow.getFocusedWindow())
+        ?? allStates().find(state => state.window === lastMainWindow) ?? allStates()[0]
+      retireSettingsContext()
+      settingsContext = source ? { sender: source.window.webContents.id, root: source.workspace?.root ?? null } : null
+      settingsApp?.openSettings(section)
+      settingsApp?.settingsWebContents()?.send('wf-settings-window:context-changed')
+    }
+    closeSettings = () => settingsApp?.dispose() ?? Promise.resolve()
+    // A main window asks for Settings (⌘, in the renderer, the palette, Read aloud settings…, a sign-in
+    // button): the Settings window opens at the section named, when it is one of its pages.
+    ipcMain.handle(OPEN_SETTINGS_CHANNEL, (event, section: unknown) => {
+      if (event.senderFrame !== event.sender.mainFrame) throw new Error('Open Settings from the app window.')
+      const source = stateForSender(event.sender.id)
+      retireSettingsContext()
+      settingsContext = { sender: event.sender.id, root: source.workspace?.root ?? null }
+      settingsApp?.openSettings(typeof section === 'string' && SETTINGS_SECTIONS.has(section) ? section : undefined)
+      settingsApp?.settingsWebContents()?.send('wf-settings-window:context-changed')
+    })
+    // The Settings window's Get started and Action bar rows run these app commands in the main window.
+    ipcMain.handle('wf-settings-window:run-command', (event, id: unknown) => {
+      if (!settingsApp?.isSettingsSender(event)) throw new Error('Only the Settings window may ask for this.')
+      if (typeof id !== 'string' || !SETTINGS_PAGE_COMMANDS.has(id)) throw new Error('Unknown command.')
+      const window = mainWindow()
+      openMain(window)
+      window.webContents.send(MENU_COMMAND_CHANNEL, id)
+    })
     // Copies of widget files opened in the browser live only as long as the app (widget-open.ts).
     app.once('will-quit', removeOpenedWidgetCopiesSync)
     // Automatic backup (backup-helper/enrolment.ts): off unless this Mac's user turned it on for a folder in
@@ -455,7 +525,7 @@ if (!app.requestSingleInstanceLock()) {
     // none registered they answer `disabled`, no socket is opened, no helper runs and every save is as before.
     // A window's folder is main's own state. A window's receipt owner is retired when its page is replaced,
     // its renderer dies, it closes or a Collection is bound to it, so a later call from it gets a new owner.
-    const windowRoot = (senderId: number): string | null => { try { return stateForSender(senderId).workspace?.root ?? null } catch { return null } }
+    const windowRoot = (senderId: number): string | null => { if (settingsContents()?.id === senderId) return settingsRoot(); try { return stateForSender(senderId).workspace?.root ?? null } catch { return null } }
     const backupServices = createActiveBackupServices({
       make: (trial) => ({
         helper: createBackupHelperService({ trial, windowRoot }),
@@ -473,6 +543,7 @@ if (!app.requestSingleInstanceLock()) {
     const githubBindings = new Map<number, number>()
     const trustedGitHubBinding = (senderId: number): string | null => {
       try {
+        if (settingsContents()?.id === senderId) return `${senderId}:${githubBindings.get(senderId) ?? 0}:${settingsRoot() ?? ''}`
         const state = stateForSender(senderId), contents = state.window.webContents
         const expected = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '../renderer/index.html')).toString()
         if (state.window.isDestroyed() || contents.isDestroyed() || contents.getURL() !== expected) return null
@@ -489,6 +560,7 @@ if (!app.requestSingleInstanceLock()) {
       holdBackups: () => backupServices.holdCopyGuard(),
       open: url => shell.openExternal(url), copy: () => {},
       changed: () => {
+        settingsContents()?.send(BACKUP_GITHUB_CHANNELS.changed)
         for (const state of allStates()) if (!state.window.isDestroyed()) state.window.webContents.send(BACKUP_GITHUB_CHANNELS.changed)
         const gate = githubStore.gate.state(), generation = gate ? `${gate.epoch}:${gate.generation}:${gate.phase}` : 'unknown'
         if (generation !== lastAuthGeneration) {
@@ -527,7 +599,7 @@ if (!app.requestSingleInstanceLock()) {
       },
     }
     registerGitHubIpc(ipcMain, githubAuth, event => {
-      try { return trustedGitHubBinding(event.sender.id) !== null && stateForSender(event.sender.id).window.webContents === event.sender } catch { return false }
+      try { return Boolean(settingsApp?.isSettingsSender(event as Electron.IpcMainInvokeEvent)) || (trustedGitHubBinding(event.sender.id) !== null && stateForSender(event.sender.id).window.webContents === event.sender) } catch { return false }
     })
     const retireGitHubSender = (id: number) => { githubBindings.set(id, (githubBindings.get(id) ?? 0) + 1); githubAuth.retireSender(id) }
     backupEnrolment = createBackupEnrolment({
@@ -539,6 +611,19 @@ if (!app.requestSingleInstanceLock()) {
       githubUncertainty: () => githubStore.blocked() || githubStore.gate.debts().length > 0 || githubSupervisor.ownedChildren().length > 0,
       services: backupServices,
       shortRuntimeBase: join(tmpdir(), `writeflex-backup-${process.getuid?.() ?? 0}`),
+    })
+    retireSettingsContext = () => {
+      const id = settingsContents()?.id
+      if (id !== undefined) { backupEnrolment.retireSender(id); retireGitHubSender(id) }
+    }
+    ipcMain.handle('wf-settings-window:menu-focus', (event, plain: unknown) => {
+      if (!settingsApp?.isSettingsSender(event)) throw new Error('Only Settings may publish its focus.')
+      const window = BrowserWindow.fromWebContents(event.sender)
+      if (window) noteSettingsMenuFocus(window, plain === true ? 'plain-text-field' : 'other')
+    })
+    ipcMain.handle('wf-settings-window:context', (event) => {
+      if (!settingsApp?.isSettingsSender(event)) throw new Error('Only Settings may read its context.')
+      return { root: settingsRoot() }
     })
     registerBackupEnrolmentIpc(ipcMain, backupEnrolment)
     app.once('will-quit', () => { githubAuth.quit(); backupEnrolment.quit(); void backupServices.dispose() })
@@ -568,6 +653,7 @@ if (!app.requestSingleInstanceLock()) {
     app.on('browser-window-focus', (_event, window) => { noteFocusedWindow(window); updateCollectionMenu() })
     app.on('browser-window-blur', updateCollectionMenu)
     app.on('browser-window-created', (_event, window) => {
+      window.once('closed', updateCollectionMenu)
       window.on('enter-full-screen', updateCollectionMenu)
       window.on('leave-full-screen', updateCollectionMenu)
     })
@@ -640,11 +726,15 @@ if (!app.requestSingleInstanceLock()) {
       await waitForCleanupWithTimeout(manager?.openCollections.closeAll() ?? Promise.resolve(), 1000, () => {
         recordMainProcessDiagnostic('app.will-quit.close-collections-timeout', { timeoutMs: 1000 })
       })
-      agentShutdownFlushed = true
-      // The packaged smoke runs with piped stdio; Electron can retain the process after app.exit even
-      // though its window and cleanup work have finished. End only this fenced process after the same
-      // awaited cleanup and durable diagnostic that a normal quit uses.
-      app.quit()
+      try { await closeSettings() }
+      catch { await recordMainProcessDiagnostic('settings.close.failed', { message: 'Settings flush failed during quit' }) }
+      finally {
+        agentShutdownFlushed = true
+        // The packaged smoke runs with piped stdio; Electron can retain the process after app.exit even
+        // though its window and cleanup work have finished. End only this fenced process after the same
+        // awaited cleanup and durable diagnostic that a normal quit uses.
+        app.quit()
+      }
     })
   })
 }

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, Folder, Search, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ChevronRight, FileText, Folder, Search, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import type { MarkdownFile, SkillMeta } from '../../../preload'
 import { isPathInSearchScope } from '../../../shared/search-scope'
 import { fuzzyFilter, fuzzyScore } from '../fuzzy'
@@ -9,6 +9,8 @@ import { launchesAgent } from './agent-icon'
 import type { TaskGroup } from '../commands/command-task-groups'
 import { NO_CHECKLIST_PROGRESS, type ChecklistProgressMap } from '../hooks/useChecklistProgress'
 import { ChecklistProgressChip } from './ChecklistProgressChip'
+import { TaskGroupIcon } from './task-group-icon'
+import { TOP_VIEW, commandCountText, groupCrumb, groupRowKey, groupSubsections, paletteFooterHint, paletteKeyAction, taskGroupCounts, type PaletteView } from './palette-groups'
 
 /**
  * A palette-facing command. App builds the list (mapping the editor's `paletteCommands` plus its own
@@ -90,11 +92,20 @@ export type PaletteItem =
   | { kind: 'file'; key: string; file: MarkdownFile; title?: string | null; hidden?: boolean }
   | { kind: 'folder'; key: string; path: string; name: string }
   | { kind: 'command'; key: string; command: AppCommand }
+  /** A task group on the top level: opens to that group's commands. */
+  | { kind: 'group'; key: string; group: TaskGroup; count: number }
   | { kind: 'skill'; key: string; skill: SkillMeta; disabled: boolean }
   | { kind: 'manage-skills'; key: string }
   | { kind: 'ask'; key: string; query: string }
 
-export type PaletteSection = { label: string; items: PaletteItem[] }
+export type PaletteSection = {
+  label: string
+  items: PaletteItem[]
+  /** Cross-group search results: each row's group label carries its group's icon. */
+  groupIcons?: boolean
+  /** A sub-group heading inside an opened group. */
+  subgroup?: boolean
+}
 
 export type RankableEntry<T> = {
   item: T
@@ -144,7 +155,10 @@ export function buildCommandPaletteSections({
   recentIds,
   titles,
   hiddenPaths,
+  view = TOP_VIEW,
 }: {
+  /** Commands mode: the top level, or one opened task group. */
+  view?: PaletteView
   titles?: Readonly<Record<string, string>>
   hiddenPaths?: readonly string[]
   mode: 'files' | 'commands'
@@ -178,6 +192,10 @@ export function buildCommandPaletteSections({
     skill,
     disabled: skill.input === 'document' && activeFile === null,
   })
+  const commandItem = (command: AppCommand): PaletteItem => ({ kind: 'command', key: command.id, command })
+  if (view.kind === 'group') {
+    return groupSubsections(commands, view.group, q).map((section) => ({ label: section.label, items: section.commands.map(commandItem), subgroup: true }))
+  }
   if (q) {
     const ranked = rankPaletteEntries(q, [
       ...commands.map((command, order) => ({
@@ -197,7 +215,7 @@ export function buildCommandPaletteSections({
         order: commands.length + order,
       })),
     ])
-    const out: PaletteSection[] = ranked.length ? [{ label: 'Results', items: ranked }] : []
+    const out: PaletteSection[] = ranked.length ? [{ label: 'Results', items: ranked, groupIcons: true }] : []
     out.push({ label: 'Agent', items: [{ kind: 'ask', key: '__ask', query: q }] })
     return out
   }
@@ -211,12 +229,14 @@ export function buildCommandPaletteSections({
   const recent = commands
     .filter((command) => recentRank.has(command.id))
     .sort((a, b) => (recentRank.get(a.id) ?? 0) - (recentRank.get(b.id) ?? 0))
-  const rest = commands.filter((command) => !recentRank.has(command.id))
   const out: PaletteSection[] = []
   if (recent.length) {
-    out.push({ label: 'Recent', items: recent.map((command) => ({ kind: 'command', key: command.id, command })) })
+    out.push({ label: 'Recent', items: recent.map(commandItem) })
   }
-  out.push({ label: 'Commands', items: rest.map((command) => ({ kind: 'command', key: command.id, command })) })
+  out.push({
+    label: 'All commands by task',
+    items: taskGroupCounts(commands).map(({ group, count }) => ({ kind: 'group', key: groupRowKey(group), group, count })),
+  })
   out.push({
     label: activeName ? `Skills — on ${activeName}` : 'Skills',
     items: skillRows,
@@ -255,6 +275,9 @@ export function CommandPalette({
 }: CommandPaletteProps): JSX.Element {
   const [query, setQuery] = useState(initialQuery)
   const [selected, setSelected] = useState(0)
+  const [view, setView] = useState<PaletteView>(TOP_VIEW)
+  /** The row to select once the next list renders (the group row you came back from). */
+  const selectKeyRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
@@ -265,15 +288,34 @@ export function CommandPalette({
   }, [])
 
   const sections = useMemo(() => buildCommandPaletteSections({
-    mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths,
-  }), [mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths])
+    mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths, view,
+  }), [mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths, view])
 
   const flatItems = useMemo(() => sections.flatMap((section) => section.items), [sections])
 
-  // A new query (or mode) re-ranks the list — start the highlight at the top again.
-  useEffect(() => {
-    setSelected(0)
-  }, [query, mode])
+  // A new query, mode or view re-ranks the list — start the highlight at the top again, unless a
+  // step back names the group row to land on. Before paint, so no frame shows the old highlight.
+  useLayoutEffect(() => {
+    const key = selectKeyRef.current
+    selectKeyRef.current = null
+    const index = key ? flatItems.findIndex((item) => item.key === key) : -1
+    setSelected(index < 0 ? 0 : index)
+    inputRef.current?.focus()
+    // flatItems is read only to place the highlight after a view change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, mode, view])
+
+  function openGroup(group: TaskGroup): void {
+    setQuery('')
+    setView({ kind: 'group', group })
+  }
+
+  function backToTop(): void {
+    if (view.kind !== 'group') return
+    selectKeyRef.current = groupRowKey(view.group)
+    setQuery('')
+    setView(TOP_VIEW)
+  }
 
   // Keep the highlighted row scrolled into view as arrows move it past the sheet's fold.
   useEffect(() => {
@@ -283,6 +325,7 @@ export function CommandPalette({
   function activate(item: PaletteItem, options: { reveal?: boolean; alternate?: boolean } = {}): void {
     if (item.kind === 'file') options.reveal ? onRevealFile(item.file.path) : onOpenFile(item.file.path)
     else if (item.kind === 'folder') options.reveal && onFocusFolder ? onFocusFolder(item.path) : onRevealFolder(item.path)
+    else if (item.kind === 'group') openGroup(item.group)
     else if (item.kind === 'ask') onAskAgent(item.query)
     else if (item.kind === 'command') {
       if (!item.command.disabled) onRun(item.command)
@@ -292,6 +335,22 @@ export function CommandPalette({
   }
 
   function onInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
+    // While an input method is composing, Enter, Esc and the arrows belong to it, not to the palette.
+    if (e.nativeEvent.isComposing) return
+    if (mode === 'commands' && e.key !== 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      const current = flatItems[selected]
+      const action = paletteKeyAction({ view, query, key: e.key, selectedIsGroup: current?.kind === 'group' })
+      if (action === 'open-group' && current?.kind === 'group') {
+        e.preventDefault()
+        openGroup(current.group)
+        return
+      }
+      if (action === 'back') {
+        e.preventDefault()
+        backToTop()
+        return
+      }
+    }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       setSelected((s) => Math.min(s + 1, flatItems.length - 1))
@@ -314,9 +373,12 @@ export function CommandPalette({
   // focus loops between the input and the rows rather than walking out to the toolbar behind the
   // backdrop — the standard modal focus loop.
   function onDialogKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
+    if (e.nativeEvent.isComposing) return
     if (e.key === 'Escape') {
       e.preventDefault()
-      onClose()
+      // Inside a group Esc steps back to the groups once; at the top level it closes.
+      if (mode === 'commands' && paletteKeyAction({ view, query, key: 'Escape', selectedIsGroup: false }) === 'back') backToTop()
+      else onClose()
       return
     }
     if (e.key !== 'Tab') return
@@ -354,6 +416,9 @@ export function CommandPalette({
       <div className="sheet palette-sheet">
         <div className="pal-input">
           <Search className="icon" />
+          {mode === 'commands' && view.kind === 'group' && (
+            <span className="wf-pal-step pal-crumb" data-testid="palette-group-crumb"><TaskGroupIcon group={view.group} /><span>{groupCrumb(view.group)}</span></span>
+          )}
           <input
             ref={inputRef}
             type="text"
@@ -362,6 +427,7 @@ export function CommandPalette({
             onKeyDown={onInputKeyDown}
             placeholder={mode === 'files' ? 'Find a file by title or name…' : 'Type a command, or ask the agent…'}
             aria-label={mode === 'files' ? 'File or folder name' : 'Command'}
+            aria-description={mode === 'commands' && view.kind === 'group' ? `Searching in ${view.group}` : undefined}
           />
           <kbd>esc</kbd>
         </div>
@@ -371,7 +437,7 @@ export function CommandPalette({
           )}
           {sections.map((section) => (
             <div key={section.label}>
-              <div className="pal-sec">{section.label}</div>
+              <div className={`pal-sec${section.subgroup ? ' pal-subsec' : ''}`}>{section.label}</div>
               {section.items.map((item) => {
                 flatIndex += 1
                 const index = flatIndex
@@ -379,7 +445,7 @@ export function CommandPalette({
                 return (
                   <button
                     key={item.key}
-                    className={`pal-row${item.kind === 'ask' ? ' pal-ask' : ''}${item.kind === 'skill' ? ' pal-skill-row' : ''}${item.kind === 'manage-skills' ? ' pal-manage-skills' : ''}`}
+                    className={`pal-row${item.kind === 'group' ? ' pal-group-row' : ''}${item.kind === 'ask' ? ' pal-ask' : ''}${item.kind === 'skill' ? ' pal-skill-row' : ''}${item.kind === 'manage-skills' ? ' pal-manage-skills' : ''}`}
                     aria-selected={isSelected}
                     aria-pressed={item.kind === 'command' && item.command.checked !== undefined ? item.command.checked : undefined}
                     disabled={(item.kind === 'skill' && item.disabled) || (item.kind === 'command' && item.command.disabled)}
@@ -390,6 +456,7 @@ export function CommandPalette({
                           ? item.command.disabledReason
                           : undefined
                     }
+                    aria-label={item.kind === 'group' ? `${item.group}, ${commandCountText(item.count)}` : undefined}
                     onMouseMove={() => setSelected(index)}
                     onClick={() => activate(item)}
                   >
@@ -427,6 +494,13 @@ export function CommandPalette({
                           </span>
                         )}
                       </>
+                    ) : item.kind === 'group' ? (
+                      <>
+                        <span className="pal-group-tile"><TaskGroupIcon group={item.group} /></span>
+                        <span className="grow"><span className="pal-name">{item.group}</span></span>
+                        <span className="pal-group-count" aria-hidden="true">{commandCountText(item.count)}</span>
+                        <ChevronRight className="icon sm pal-group-open" aria-hidden="true" />
+                      </>
                     ) : item.kind === 'ask' ? (
                       <>
                         <Sparkles className="icon sm" />
@@ -439,7 +513,7 @@ export function CommandPalette({
                         {launchesAgent(item.command.id) ? <AgentLaunchIcon /> : <item.command.icon className="icon sm" />}
                         <span className="grow pal-command-copy">
                           <span className="pal-name">{item.command.label}</span>
-                          <span className="pal-command-group">{item.command.hint ?? item.command.group}</span>
+                          {(!section.subgroup || item.command.hint) && <span className="pal-command-group">{section.groupIcons && !item.command.hint && <TaskGroupIcon group={item.command.group} className="icon pal-group-glyph" />}{item.command.hint ?? item.command.group}</span>}
                         </span>
                         {item.command.checked !== undefined && (
                           <span className={`pal-state${item.command.checked ? ' on' : ''}`} aria-label={item.command.checked ? 'on' : 'off'}>{item.command.checked ? 'On' : 'Off'}</span>
@@ -474,6 +548,9 @@ export function CommandPalette({
               ? (onFocusFolder ? '↵ reveal in Files · ⌘↵ focus' : '↵ reveal in Files')
               : '↵ open · ⌘↵ reveal in Files'}
           </div>
+        )}
+        {mode === 'commands' && (
+          <div className="palette-footer" data-testid="palette-footer">{paletteFooterHint(view, query)}</div>
         )}
       </div>
     </div>

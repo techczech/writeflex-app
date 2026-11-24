@@ -1,7 +1,7 @@
 import type { EditorState } from '@codemirror/state'
 import { toAccelerator, type MenuCommand } from '../../../shared/command-menu'
 import { effectiveChords, type OverrideMap } from './chords'
-import { commandLabel, commandRegistry, type Command } from './registry'
+import { commandLabel, commandRegistry, isActiveFileCommand, type Command } from './registry'
 
 type LiveRow = { id: string; disabled?: boolean; checked?: boolean; labelName?: string }
 function available(command: Command, row: LiveRow | undefined, state: EditorState | undefined, hasDocument: boolean): boolean {
@@ -15,7 +15,8 @@ function available(command: Command, row: LiveRow | undefined, state: EditorStat
 /** Only advertise keys that run this command from the document editor. Place-owned keys stay on their own surfaces. */
 export function menuChord(command: Command, overrides: OverrideMap): string | undefined {
   // The named-skill keys open particular threads; this menu item opens the chooser.
-  if (command.keysPlaceBound || command.claimsChord === false || command.id === 'skills.openThread') return undefined
+  const isPlaceOnly = command.keysPlaceBound && !(isActiveFileCommand(command.id) && overrides[command.id] !== undefined)
+  if (isPlaceOnly || command.claimsChord === false || command.id === 'skills.openThread') return undefined
   return effectiveChords(command, overrides).find(k => toAccelerator(k) !== undefined)
 }
 
