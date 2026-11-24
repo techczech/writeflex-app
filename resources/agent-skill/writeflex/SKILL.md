@@ -62,6 +62,7 @@ Exit codes: 0 done or filed; 1 refused, failed, needs-writer or not verified; 2 
 - Active files keep one stable name (`section-results.md`). Dates and versions go in metadata, not in file names. Dated names belong in `offcuts/` or `archive/`.
 - Use the writer's declared order for a Folio. Preserve unknown manifest fields. Never replace a malformed manifest as though it were absent.
 - Never delete a Folio file or touch `.folio-bin/`. To take a part out, remove its running-order and manifest entries. Never hand-write a Folio's `AGENTS.md` block.
+- Never add or widen an ignore rule (`.gitignore` at any level, `.git/info/exclude`) that leaves out documents, notes, `*.writeflex-backup` files or their `.writeflex-backup.json` records, `.folio-bin/`, or the `.writeflex` and `.bridle` folders. They are the writer's writing, recovery copies and history; an ignored file never reaches any backup and the writer is not told.
 - Never write under dot-folders (`.writeflex`, `.bridle`, `.git`). Never edit Collection files directly to get round a refusal or a missing operation. Say what cannot be done.
 - Keep content and presentation separate. Exports are output, not source: do not edit them to change the source.
 - Read before proposing: `search`, `files`, `read <path> --section "<heading>"`. `replace --target` and `insert --after` need text that is unique in the document and current; zero or several matches are refused at once.

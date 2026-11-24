@@ -41,6 +41,20 @@ test('entry preflight: a good entry passes', async () => {
   }))).toBeNull()
 })
 
+test('entry preflight verifies the fixed EPUB bootstrap entry and its packaged resources', async () => {
+  const files = {
+    'package.json': goodManifest,
+    'out/main/bootstrap.js': VALID + '\nawait import(new URL("./publication-epub-worker.js", import.meta.url).href);',
+    'node_modules/@readflex/sidecar/package.json': '{}',
+    'out/main/publication-epub-worker.js': '',
+    'out/main/publication-epub-commit.js': '',
+    'out/preload/publication-epub-worker.js': '',
+    'out/renderer/publication-epub-worker.html': '<script type="module" src="./assets/worker.js"></script>',
+  }
+  expect(await checkPackagedEntry('/x/WriteFlex.app', fakeAsar(files))).toContain('EPUB worker script missing')
+  expect(await checkPackagedEntry('/x/WriteFlex.app', fakeAsar({ ...files, 'out/renderer/assets/worker.js': '' }))).toBeNull()
+})
+
 test('entry preflight: missing entry, syntax error and unshipped file: dependency refuse', async () => {
   expect(await checkPackagedEntry('/x/WriteFlex.app', fakeAsar({ 'package.json': goodManifest }))).toContain('not found')
   expect(await checkPackagedEntry('/x/WriteFlex.app', fakeAsar({ 'package.json': goodManifest, 'out/main/bootstrap.js': 'import {' }))).toContain('failed')

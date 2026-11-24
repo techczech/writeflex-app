@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { testWithChromium } from '../helpers/isolated-browser-test'
 import { expect, test } from 'bun:test'
 import { renderToStaticMarkup as render } from 'react-dom/server'
 import { ModeChip, TurnStrip, TurnSelection } from '../../src/renderer/src/components/AssistantTurns'
@@ -55,7 +56,7 @@ test('store notices ignore renewal and explain both read-only reasons; group sto
 })
 
 
-test('strip tiles keep equal bounded widths for one, four and thirteen turns', async () => {
+testWithChromium('strip tiles keep equal bounded widths for one, four and thirteen turns', async () => {
   const browser = await chromium.launch({ headless: true })
   try {
     const page = await browser.newPage()

@@ -37,6 +37,10 @@ export function ActionBar({ groups, onConfigure }: ActionBarProps): JSX.Element 
   const choicesRef = useRef<HTMLDivElement | null>(null)
   const choicesButtonRef = useRef<HTMLButtonElement | null>(null)
 
+  // The icon buttons and their optional menu arrows have fixed widths. Command state or handler
+  // changes leave the geometry alone, even when they produce a new groups array.
+  const widthKey = groups.map(group => `${group.items.length}:${group.items.filter(item => item.menu).length}`).join(',')
+  const hasConfigureButton = onConfigure !== undefined
   // Widths come from a hidden copy of every group, measured in the real layout: a group already
   // moved into the … menu is not on screen to measure, so measuring the live row would ratchet.
   useLayoutEffectWhenPainted(() => {
@@ -66,7 +70,7 @@ export function ActionBar({ groups, onConfigure }: ActionBarProps): JSX.Element 
     const observer = new ResizeObserver(replan)
     observer.observe(bar)
     return () => observer.disconnect()
-  }, [groups])
+  }, [widthKey, hasConfigureButton])
 
   const shown = groups.slice(0, visibleGroups)
   const overflowed = groups.slice(visibleGroups)

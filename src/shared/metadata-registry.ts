@@ -30,6 +30,8 @@ export const METADATA_REGISTRY: readonly MetadataEntry[] = [
   field('folio', 'Folio page', 'Set section on a section opening. Every later contents part belongs to it until the next section page.', { options: [{ value: 'section', label: 'Section page', explanation: 'Start a section here.' }] }),
   field('section-title-pages', 'Section title pages', 'On the Index Note, set true to put each section opening on its own page in paged HTML or print.'),
   field('section-contents', 'Section contents', 'On the Index Note, set true to show links to a section’s parts at its opening in HTML.'),
+  field('epub-cover', 'EPUB cover', 'The path to the Folio’s chosen EPUB cover image, relative to its Index Note or title page.', { system: true }),
+  field('epub-alternatives', 'EPUB written alternatives', 'Written replacements for interactive content in EPUB. Each entry gives the source, then =>, then the path to its replacement.', { system: true, list: true }),
   field('heading', 'Heading', 'Set none to omit a Folio part heading; otherwise the document heading determines its title.', { system: true }),
   field('year', 'Publication year', 'The publication year used when matching author–year citations to research notes.', { type: 'number' }),
   field('published', 'Published', 'A publication date used as a fallback year for research note citation matching.', { type: 'date' }),

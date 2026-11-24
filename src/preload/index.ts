@@ -1,3 +1,5 @@
+import type { EpubPrepareRequest, EpubPrepareReply, EpubSaveReply } from '../shared/publication-export'
+import type { GitSyncAppPort } from '../shared/git-sync-view'
 import type { MenuCommand, MenuFocus } from '../shared/command-menu'
 import type { CollectionNamingCandidate } from '../shared/collection-naming-title'
 import type { PeopleChange, PeopleResult } from '../shared/sharing-people'
@@ -16,8 +18,9 @@ import type { AmbientSnapshot } from '../main/ambient'
 import type { FolioSaveChangedAnswer, FolioSheetFacts } from '../main/folio-version-sheet'
 import type { SavedFolioVersion } from '../main/folio-version-save'
 import type { ModelDiscoveryReason, ModelRefreshResult, ModelsChecked } from '../shared/model-refresh'
+import { repairReceiptsOf, type RepairReceipt } from '../shared/repair-receipt'
 export type { AmbientSnapshot } from '../main/ambient'
-import { clipboard, contextBridge, ipcRenderer, webUtils } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { createAuthTransport } from '@bridle/electron/preload'
 import type { AuthTransport } from '@bridle/electron'
 import { invokeTurnBackAfterNotifications, multiplexIpcChannel } from './subscriptions'
@@ -121,11 +124,12 @@ import type { Skill, SkillInput, SkillLoadError } from '@bridle/core'
 export type MarkdownFile = { path: string; name: string; directory: string; modifiedAt: number; size: number }
 /** A checklist note's "done / total" (Files tree and Quick Open chips). */
 export type ChecklistProgress = { path: string; done: number; total: number }
+export type WorkspaceContext = { root: string | null; assetBaseUrl: string | null; canRestoreTabsEarly: boolean }
 export type WorkspaceState = { root: string | null; files: MarkdownFile[]; folders: string[]; assetBaseUrl: string | null }
 export type FileReadResult = { file: MarkdownFile; content: string }
 export type RenameRepairIssue = { kind: 'reference' | 'file' | 'reason' | 'outcome'; text: string }
 export type RenameFileResult = FileReadResult & {
-  repair: { writtenPaths: string[]; unrepairedReferences: string[]; issues: RenameRepairIssue[] }
+  repair: { writtenPaths: string[]; unrepairedReferences: string[]; issues: RenameRepairIssue[]; receipts: RepairReceipt[] }
 }
 export type FileRenamePlan = { newPath: string; repairPaths: string[] }
 export type FileSaveRefusal = {
@@ -679,6 +683,7 @@ export type WriteFlexApi = {
   }
   /** Backup helper trial (disabled by default): this window's own vault only. Neither call takes an
    *  argument, and no answer is a protection claim (src/shared/backup-helper.ts). */
+  gitSync: GitSyncAppPort
   backupHelper: {
     status: () => Promise<BackupHelperStatusAnswer>
     syncNow: () => Promise<BackupHelperSyncAnswer>
@@ -767,6 +772,8 @@ export type WriteFlexApi = {
   e2eEnabled: boolean
   /** A test run that wants the real first open (right sidebar closed, Versions first); otherwise a test run keeps the earlier shell (open, Agent first), as before house rule R6. */
   e2eFreshSidebars: boolean
+  /** Test-only: keydowns (JSON KeyboardEventInit[]) the page sends itself before the app mounts, so a spec can put a press in that gap for certain. Empty outside e2e. */
+  e2eEarlyKeys: string
   /** The e2e write hooks (held, failed or interleaved writes): true only when main passed the argument,
    *  which it does only in an unpackaged e2e run (shared/e2e-write-hooks.ts). */
   e2eWriteHooks: boolean
@@ -775,6 +782,8 @@ export type WriteFlexApi = {
   resetE2eCollectionQueryCount: () => void
   /** Synchronous clipboard read for editor commands that must dispatch against their live state. */
   clipboardText: () => string
+  widgetDocumentUrl: (html: string) => string | null
+  releaseWidgetDocumentUrl: (url: string) => void
   /** Copy (Round B T5): write `markdown` to the clipboard in every flavour `kind` implies — `rich`
    *  puts RTF, HTML and plain text on it TOGETHER, which is the whole point (Word, Teams and Outlook
    *  take RTF as authoritative and reinterpret an HTML-only paste). Only the main process can write
@@ -794,6 +803,14 @@ export type WriteFlexApi = {
   /** `keepTocDepth`: the writer chose the Contents depth in the sheet; an HTML export uses exactly
    *  `html.tocDepth` (absent: Default) and main then saves it with the exported document or the Folio's
    *  Index Note (`outcome.tocDepthSave`; a refusal never fails the export). */
+  folioEpub: {
+    prepare: (input: EpubPrepareRequest) => Promise<EpubPrepareReply>
+    save: (token: string) => Promise<EpubSaveReply>
+    cancel: (token: string | null) => Promise<void>
+    release: (token: string | null) => Promise<void>
+    open: () => Promise<void>
+    reveal: () => Promise<void>
+  }
   exportDocument: (input: { path: string; format: ExportFormat; target: string; html?: HtmlExportOptions; keepTocDepth?: boolean }) => Promise<ExportOutcome>
   exportBundle: (input: { dir: string; format: ExportFormat; target: string; html?: HtmlExportOptions; keepTocDepth?: boolean }) => Promise<ExportOutcome>
   revealExport: () => Promise<void>
@@ -807,6 +824,8 @@ export type WriteFlexApi = {
   openDialog: (droppedPath?: string) => Promise<WorkspaceState | null>
   metadataValues: (exclude?: string) => Promise<MetadataValues>
   setCollectionPageActive: (active: boolean, folio?: boolean, canStart?: boolean) => Promise<void>
+  getWorkspaceContext: () => Promise<WorkspaceContext>
+  checkStartupTabs: (root: string, paths: string[]) => Promise<string[]>
   getWorkspace: () => Promise<WorkspaceState>
   /** Every checklist note's progress, read from main's search content cache (no file is read twice). */
   /** With `paths`, just those files' rows (a save patched them in the listing: no walk of the tree). */
@@ -878,6 +897,8 @@ export type WriteFlexApi = {
   listFavourites: () => Promise<string[]>
   toggleFavourite: (path: string) => Promise<string[]>
   readFile: (path: string) => Promise<FileReadResult>
+  /** Establishes the editable buffer's disk baseline and registers it for startup watch catch-up. */
+  readEditorFile: (path: string) => Promise<FileReadResult>
   /** A widget's HTML for the embed line `rawPath` in the workspace document `documentPath`, resolved and
    *  read in main (inside the workspace only); a refusal names why. Run it only through widget-frame. */
   readWidget: (documentPath: string, rawPath: string) => Promise<WidgetReadResult>
@@ -959,7 +980,7 @@ export type WriteFlexApi = {
   revealFile: (path: string) => Promise<void>
   openDocumentLocation: (path: string, location: 'default-app' | 'containing-folder') => Promise<void>
   createFolder: (path: string) => Promise<{ path: string }>
-  renameFolder: (path: string, newName: string) => Promise<{ path: string; repair?: { writtenPaths: string[]; unrepairedReferences: string[] } }>
+  renameFolder: (path: string, newName: string) => Promise<{ path: string; repair?: { writtenPaths: string[]; unrepairedReferences: string[]; receipts?: RepairReceipt[] } }>
   trashFolder: (path: string) => Promise<{ path: string }>
   /** Scraps (Task 20): file-native cuttings in scraps/<origin>-SCRAPS.md. Every mutation pushes
    *  `scraps:changed` (onScrapsChanged) so the pane re-lists and the file tree refreshes. */
@@ -1632,7 +1653,7 @@ function validateFileRenameResult(value: unknown): RenameFileResult {
   if (!candidate.repair || typeof candidate.repair !== 'object') {
     throw new Error('Invalid file rename result received from the main process.')
   }
-  const repair = candidate.repair as { writtenPaths?: unknown; unrepairedReferences?: unknown; issues?: unknown }
+  const repair = candidate.repair as { writtenPaths?: unknown; unrepairedReferences?: unknown; issues?: unknown; receipts?: unknown }
   const validIssue = (issue: unknown): issue is RenameRepairIssue => {
     if (!issue || typeof issue !== 'object') return false
     const item = issue as { kind?: unknown; text?: unknown }
@@ -1657,6 +1678,7 @@ function validateFileRenameResult(value: unknown): RenameFileResult {
       writtenPaths: [...repair.writtenPaths],
       unrepairedReferences: [...repair.unrepairedReferences],
       issues: repair.issues.map((issue) => ({ kind: issue.kind, text: issue.text })),
+      receipts: repairReceiptsOf(repair.receipts, isWorkspaceRelativePath),
     },
   }
 }
@@ -1683,6 +1705,7 @@ const api: WriteFlexApi = {
     answerOffer: (answer) => ipcRenderer.invoke('agent-skill:answer-offer', answer),
     offerShown: (ids) => ipcRenderer.invoke('agent-skill:offer-shown', ids),
   },
+  gitSync: { call: input => ipcRenderer.invoke('git-sync:call', input), buffers: input => ipcRenderer.invoke('git-sync:buffers', input), onPrepare: callback => { const listener = (_event: unknown, input: { id: string; root: string }) => callback(input); ipcRenderer.on('git-sync:prepare', listener); return () => ipcRenderer.removeListener('git-sync:prepare', listener) } },
   backupHelper: {
     status: () => ipcRenderer.invoke(BACKUP_HELPER_CHANNELS.status),
     syncNow: () => ipcRenderer.invoke(BACKUP_HELPER_CHANNELS.syncNow),
@@ -1764,13 +1787,24 @@ const api: WriteFlexApi = {
   setWindowTitle: (title) => ipcRenderer.invoke('window:set-title', title),
   e2eEnabled: process.env.WRITEFLEX_E2E === '1',
   e2eFreshSidebars: process.env.WRITEFLEX_E2E === '1' && process.env.WRITEFLEX_E2E_FRESH_SIDEBARS === '1',
+  e2eEarlyKeys: process.env.WRITEFLEX_E2E === '1' ? process.env.WRITEFLEX_E2E_EARLY_KEYS ?? '' : '',
   e2eWriteHooks: e2eWriteHooksFromProcess(process.argv, process.env),
   e2eCollectionQueryCount: () => collectionQueryCount,
   resetE2eCollectionQueryCount: () => { collectionQueryCount = 0 },
-  clipboardText: () => clipboard.readText(),
+  clipboardText: () => ipcRenderer.sendSync('clipboard:read-text') ?? '',
+  widgetDocumentUrl: (html) => ipcRenderer.sendSync('widget:document-url', html),
+  releaseWidgetDocumentUrl: (url) => ipcRenderer.send('widget:release-document-url', url),
   copyToClipboard: (markdown, kind, path) => ipcRenderer.invoke('clipboard:copy', { markdown, kind, path }),
   exportTitle: (input) => ipcRenderer.invoke('export:title', input),
   chooseExportTarget: (input) => ipcRenderer.invoke('export:choose', input),
+  folioEpub: {
+    prepare: input => ipcRenderer.invoke('folio-epub:prepare', input),
+    save: token => ipcRenderer.invoke('folio-epub:save', token),
+    cancel: token => ipcRenderer.invoke('folio-epub:cancel', token),
+    release: token => ipcRenderer.invoke('folio-epub:release', token),
+    open: () => ipcRenderer.invoke('folio-epub:open'),
+    reveal: () => ipcRenderer.invoke('folio-epub:reveal')
+  },
   exportDocument: (input) => ipcRenderer.invoke('export:document', input),
   exportBundle: (input) => ipcRenderer.invoke('export:bundle', input),
   revealExport: () => ipcRenderer.invoke('export:reveal'),
@@ -1780,6 +1814,8 @@ const api: WriteFlexApi = {
   openDialog: (droppedPath) => ipcRenderer.invoke('workspace:open-dialog', droppedPath),
   metadataValues: (exclude) => ipcRenderer.invoke('metadata:values', exclude),
   setCollectionPageActive: (active, folio = false, canStart = true) => ipcRenderer.invoke('menu:collection-active', { active, folio, canStart }),
+  getWorkspaceContext: () => ipcRenderer.invoke('workspace:context'),
+  checkStartupTabs: (root, paths) => ipcRenderer.invoke('workspace:check-startup-tabs', root, paths),
   getWorkspace: () => ipcRenderer.invoke('workspace:get'),
   getChecklistProgress: (input) => ipcRenderer.invoke('workspace:checklist-progress', input),
   getVaultIndex: () => ipcRenderer.invoke('vault:index'),
@@ -1818,6 +1854,7 @@ const api: WriteFlexApi = {
   listFavourites: () => ipcRenderer.invoke('workspace:favourites:list'),
   toggleFavourite: (path) => ipcRenderer.invoke('workspace:favourites:toggle', path),
   readFile: (path) => ipcRenderer.invoke('file:read', path),
+  readEditorFile: (path) => ipcRenderer.invoke('file:read', path, 'editor'),
   readWidget: (documentPath, rawPath) => ipcRenderer.invoke('widget:read', { documentPath, rawPath }),
   listWidgetChoices: (documentPath) => ipcRenderer.invoke('widget:list-choices', { documentPath }),
   resolveWidgetDrop: (documentPath, file) => {

@@ -6,13 +6,18 @@ import { waitForRequestDisposals } from './request-inbox-watch'
 import { bindWorkspace, flushPendingFocus, type OpenPathRouter } from './ipc'
 import { normaliseRoot, resolveWorkspaceRoot, WorkspaceRootError } from './root-resolution'
 import { createCloseController, shouldGuardClose, type CloseStallKind } from './window-close'
+import { THEME_SETTING } from '../shared/appearance'
+import { windowBackgrounds } from './window-appearance'
+import { TRAFFIC_LIGHT_POSITION } from '../shared/window-chrome'
 import type { SettingsStore } from './settings'
 import { forwardBrowserWindowFocus } from './window-focus'
+import { ownsWidgetDocument } from './widget-protocol'
 import { decideFrameNavigation, decideNavigation, navigationRefusalReason, type NavigationInitiator } from './navigation'
 import { recordMainProcessDiagnostic } from './shutdown'
 import { readerFrameOrigin, readerRegistry } from './reading-room-policy'
 import { applyWidgetNetworkPolicy } from './widget-network'
 import { attachKeyboardGate, mainOwnKeyHooks } from './widget-keyboard'
+import { registerRenderer } from './renderer-boundary'
 import { isMarkdownPath } from './writeflex-url'
 import type { ExampleCollection } from './example-collection'
 import { EXAMPLE_OBJECTS_FILE, OBJECTS_LESSON } from '../shared/example-files'
@@ -103,14 +108,12 @@ export class WindowManager {
       ...(placement ? placement.bounds : {}),
       // The pre-paint frame colour follows the persisted theme (Task 17) so a dark-mode relaunch
       // never flashes a light window while the renderer boots.
-      title: 'WriteFlex', backgroundColor: this.settings.get('appearance.theme') === 'dark' ? '#1a1a1e' : '#f6f5f1',
-      // Chrome 0.6 shelf (ADR-0026): x:16 follows the 12px padding + 4px inset; y:16 centres
-      // the native 12px traffic lights in the 44px toolbar.
+      title: 'WriteFlex', backgroundColor: windowBackgrounds(this.settings.get(THEME_SETTING)).editor,
       titleBarStyle: 'hiddenInset',
-      trafficLightPosition: { x: 16, y: 16 },
+      ...(process.platform === 'darwin' ? { trafficLightPosition: TRAFFIC_LIGHT_POSITION } : {}),
       webPreferences: {
-        preload: join(__dirname, '../preload/index.mjs'),
-        nodeIntegration: false, contextIsolation: true, sandbox: false,
+        preload: join(__dirname, '../preload/index.cjs'),
+        nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
         // The e2e write hooks (holds, failed saves) reach the renderer only in an unpackaged e2e run.
         additionalArguments: e2eWriteHooksArguments(process.env, app.isPackaged),
         ...(e2e ? { backgroundThrottling: false } : {})
@@ -119,7 +122,9 @@ export class WindowManager {
     const state = registerWindow(window)
     const webContentsId = window.webContents.id
     forwardBrowserWindowFocus(window)
-    const shellURL = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, '../renderer/index.html')).toString()
+    const devURL = !app.isPackaged && process.env.ELECTRON_RENDERER_URL
+    const shellURL = devURL || pathToFileURL(join(__dirname, '../renderer/index.html')).href
+    registerRenderer(window.webContents, shellURL, 'editor')
     let initialLoadFinished = false
     let lastEscapeRecovery = 0
     // Hidden e2e drives the real navigation decision but must not bring an external browser to the
@@ -204,6 +209,16 @@ export class WindowManager {
     // Frames inside the window: a widget's frame goes nowhere that would reach the network.
     window.webContents.on('will-frame-navigate', (event) => {
       if (event.isMainFrame) return // will-navigate above
+      if (event.url.startsWith('wf-widget:')) {
+        const frame = event.frame
+        const initiator = initiatorOf(event.initiator)
+        const reloading = frame && (event.initiator === frame || initiator === 'none') &&
+          frame.url.split('#', 1)[0] === event.url.split('#', 1)[0]
+        if (ownsWidgetDocument(window.webContents, event.url) && !parentIsOpaque(frame) &&
+          (initiator === 'top' || reloading)) return
+        event.preventDefault()
+        return
+      }
       const decision = decideFrameNavigation({
         isMainFrame: false,
         isSameDocument: event.isSameDocument,
@@ -313,8 +328,7 @@ export class WindowManager {
       this.#releasing.set(root, after)
       void after.then(() => { if (this.#releasing.get(root) === after) this.#releasing.delete(root) })
     })
-    if (process.env.ELECTRON_RENDERER_URL) void window.loadURL(process.env.ELECTRON_RENDERER_URL)
-    else void window.loadFile(join(__dirname, '../renderer/index.html'))
+    void window.loadURL(shellURL)
     return state
   }
 
@@ -450,7 +464,7 @@ export class WindowManager {
       const opened = await this.openFolder(null, candidate, { placement })
       if (!opened) return { kind: 'busy' }
       if (before.has(opened)) return { kind: 'existing', window: opened }
-      // A fresh window carries the file until its renderer pulls workspace:get (as openFile does).
+      // A fresh window carries the file until its renderer pulls its workspace context.
       if (focusFile) {
         opened.pendingFocusFile = focusFile
         opened.pendingFocusLine = null
@@ -595,7 +609,7 @@ export class WindowManager {
     state.pendingFocusFile = relative(root, canonicalPath)
     state.pendingFocusLine = line ?? null
     if (alreadyMounted) flushPendingFocus(state)
-    // Fresh windows carry pendingFocusFile until their renderer pulls workspace:get (see ipc.ts).
+    // Fresh windows carry pendingFocusFile until their renderer pulls its workspace context.
     return state
   }
 

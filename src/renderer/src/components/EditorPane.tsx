@@ -208,6 +208,8 @@ export type EditorHandle = {
   enterSessionRecall(path: string, content: string, records: WriterPendingChange[]): void
   /** Return from a historical snapshot to the exact live buffer state captured on entry. */
   exitHistorical(): void
+  /** A past version (or session recall) is shown in place of the live buffer. */
+  showingHistorical(): boolean
   /** Insert text at the caret, frontmatter-safe, giving a block its own blank lines. The path a
    *  citation takes into the draft (ReadFlex ADR-0003) — App owns the Markdown, the editor owns
    *  where it lands and returning the keyboard to the prose. */
@@ -979,7 +981,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   )
 
   useEffect(() => {
-    const view = new EditorView({ parent: hostRef.current ?? undefined, state: buildState('') })
+    const view = new EditorView({ parent: hostRef.current ?? undefined, state: buildState('', true) })
     viewRef.current = view
     // The Folio line lives in CM's scroll element, before the content: it scrolls with the text and is
     // outside the document. The host is out of flow (absolute), so the text column does not move.
@@ -1525,6 +1527,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
         const historicalState = buildState(content, true)
         view.setState(historicalState.update(materialiseRecordsTransaction(records, content)).state)
       },
+      showingHistorical: () => historicalRef.current !== null,
       exitHistorical: () => {
         const view = viewRef.current
         const historical = historicalRef.current

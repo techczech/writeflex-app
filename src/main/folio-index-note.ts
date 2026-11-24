@@ -21,7 +21,7 @@ import type { Workspace } from './workspace'
 export const INDEX_NOTE_EXISTS = (file: string): string => `This folder already has its Index Note, ${file}. Nothing was created.`
 
 /** Whether anything at all stands at the workspace path (a file, a folder, a link, even a broken one). */
-export function pathIsTaken(ws: Workspace, path: string): boolean {
+export function pathIsTaken(ws: Pick<Workspace, 'absolute'>, path: string): boolean {
   try {
     lstatSync(ws.absolute(path))
     return true

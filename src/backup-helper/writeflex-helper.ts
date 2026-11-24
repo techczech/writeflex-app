@@ -20,7 +20,10 @@ if (args[0] === 'credential') {
   const refused = gitRefusal(args.slice(1))
   if (refused) { certify(); process.stderr.write(refused + '\n'); process.exit(2) }
   let bridge: Awaited<ReturnType<typeof receiveHostBridge>>
-  try { bridge = await receiveHostBridge(process.execPath, fileURLToPath(import.meta.url)) }
+  try {
+    const standalone = process.getBuiltinModule('node:sea')?.isSea()
+    bridge = await receiveHostBridge(process.execPath, standalone ? undefined : fileURLToPath(import.meta.url))
+  }
   catch { certify(); process.stderr.write('GitHub credential bridge refused\n'); process.exit(2) }
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.once(signal, () => bridge.close())
   try {

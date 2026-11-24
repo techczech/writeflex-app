@@ -154,17 +154,6 @@ export type BackupEnrolment = {
   quit(): void
 }
 
-/**
- * The helper's runnable entry: the WriteFlex helper (src/backup-helper/writeflex-helper.ts, the generic
- * helper built with WriteFlex's named-version projection), bundled to one file by
- * scripts/build-backup-helper.ts. In a packaged app `Resources/vault-sync-helper/writeflex-backup-helper.js`
- * (staged by electron-builder outside app.asar); in development the built file under `out/backup-helper`.
- * Never a source file. The generic `bin.js` is not used: it refuses vaults that require named versions.
- */
-export function backupHelperEntry(packaged: boolean, resourcesPath: string, appPath: string): string {
-  return packaged ? join(resourcesPath, 'vault-sync-helper', 'writeflex-backup-helper.js') : join(appPath, 'out', 'backup-helper', 'writeflex-backup-helper.js')
-}
-
 const firstFile = (candidates: readonly string[]): string | null => {
   for (const c of candidates) {
     // A link (Homebrew's or a hand-made one) to Apple's `/usr/bin` stub would open the install dialog: never chosen.

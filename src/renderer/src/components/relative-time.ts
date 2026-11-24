@@ -10,3 +10,14 @@ export function relativeTime(ts: number): string {
   if (days < 7) return `${days} days ago`
   return new Date(ts).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 }
+
+/** Sync receipts retain precise local calendar times after the first hour. */
+export function calendarTime(ts: number): string {
+  if (Date.now() - ts < 60 * 60000) return relativeTime(ts)
+  const date = new Date(ts), today = new Date(), yesterday = new Date()
+  yesterday.setDate(today.getDate() - 1)
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  if (date.toDateString() === today.toDateString()) return `today ${time}`
+  if (date.toDateString() === yesterday.toDateString()) return `yesterday ${time}`
+  return date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+}

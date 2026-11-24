@@ -66,7 +66,7 @@ test('Settings frame openMain uses the guard and still dispatches editor command
   const probe = String.raw`
     import { mock } from 'bun:test'
     mock.module('electron', () => ({
-      app: { isPackaged: false }, BrowserWindow: class {}, dialog: {}, Menu: {},
+      app: { isPackaged: false }, BrowserWindow: class {}, dialog: {}, Menu: {}, shell: {},
       ipcMain: { handle() {}, removeHandler() {} },
     }))
     let options

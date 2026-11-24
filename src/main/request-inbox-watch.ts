@@ -12,7 +12,7 @@
  * The executor is bound to one Collection for its life (it holds that Collection's Workspace and
  * stores, given when it was made). Disposing the watch disposes the executor with it.
  */
-import { watch, type FSWatcher } from 'node:fs'
+import { watchFolder, type FolderWatch } from './shared-folder-watch'
 import { rememberUpTo } from './cli/request-files'
 import { MAX_ENTRIES_LISTED, MAX_NAMES_REMEMBERED } from './cli/review-format'
 import type { DrainResult, RequestExecutor } from './request-executor'
@@ -61,7 +61,7 @@ export class ToldOnce {
 
 export function watchRequestInbox(executor: RequestExecutor, options: RequestInboxWatchOptions = {}): RequestInboxWatch {
   let disposed = false
-  let watcher: FSWatcher | null = null
+  let watcher: FolderWatch | null = null
   let running = false
   let again = false
   /** Ignored files and failures already told, so a file that stays is reported once. */
@@ -94,7 +94,7 @@ export function watchRequestInbox(executor: RequestExecutor, options: RequestInb
   void executor.inbox().then((inbox) => {
     if (disposed) return
     try {
-      watcher = watch(inbox, () => look())
+      watcher = watchFolder(inbox, { anchor: executor.root }, () => look())
       watcher.on('error', () => { watcher?.close(); watcher = null }) // the poll below carries on
     } catch { /* no folder watch here: the poll below carries on */ }
   }, () => { /* reported by the first look */ })

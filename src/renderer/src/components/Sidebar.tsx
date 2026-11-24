@@ -8,6 +8,7 @@ import {
   BookMarked,
   Sparkles,
   ChevronDown,
+  ChevronRight,
   ChevronsUpDown,
   FileText,
   Folder,
@@ -40,6 +41,7 @@ import { useVaultSidebarPrefs } from '../hooks/useVaultSidebarPrefs'
 import { VaultSwitcherMenu, type SwitcherChoice } from './VaultSwitcherMenu'
 import { useVaultSidebar } from '../hooks/useVaultSidebar'
 import { migrateFavouritesToPins, movePin, pinnedRows } from '../vault-pins'
+import { folioPathText, readFoliosCollapsed, vaultFolios, writeFoliosCollapsed } from '../vault-folios'
 import { PIN_DOCUMENT_EXTENSION, type VaultWriteResult } from '../../../shared/vault'
 import type { ActionRow } from '../commands/actions-here'
 import { BinPopover, MoveFolderPicker } from './file-menu'
@@ -65,6 +67,7 @@ export type SidebarFileOps = {
 }
 
 export type SidebarProps = {
+  listingReady?: boolean
   files: MarkdownFile[]
   /** Checklist notes' "done / total" (checkbox-lists frame 8); a file absent from it has no chip. */
   checklistProgress?: ChecklistProgressMap
@@ -227,6 +230,7 @@ function SidebarView({
   waitingCounts,
   syncMarks,
   folders,
+  listingReady = true,
   pieceCount,
   folderPiecePaths = new Set(),
   favourites,
@@ -264,7 +268,7 @@ function SidebarView({
     [files, favSet],
   )
 
-  const { vault, index: vaultIndex } = useVaultSidebar(root)
+  const { vault, index: vaultIndex } = useVaultSidebar(root, listingReady)
   const isVault = vault !== null
   const [prefs, choosePrefs] = useVaultSidebarPrefs(root)
   // The vault switcher hangs under the root name; where it opens is read from the name when it opens.
@@ -296,6 +300,8 @@ function SidebarView({
   const [focusKey, setFocusKey] = useState<string | null>(null)
   const [menu, setMenu] = useState<Anchored | null>(null)
   const [movePick, setMovePick] = useState<Anchored | null>(null)
+  /** The move in flight, if any; `dismissed` once Escape closed its picker meanwhile. */
+  const movingRef = useRef<{ dismissed: boolean } | null>(null)
   const [binAsk, setBinAsk] = useState<Anchored | null>(null)
   const [renaming, setRenaming] = useState<Renaming | null>(null)
   const [shakeKey, setShakeKey] = useState<string | null>(null)
@@ -414,6 +420,12 @@ function SidebarView({
   /** Can this tree row be pinned? Any folder of a vault; a document only when it is a `.md` file (main's rule). */
   const pinnable = (path: string, kind: 'file' | 'folder'): boolean => isVault && path !== '' && (kind === 'folder' || PIN_DOCUMENT_EXTENSION.test(path))
   const showPinned = isVault && pinRows.length > 0 && !hasFilter
+  // The Folios section (Dominik, 10 Nov 2026: "the folios are hard to find … in a mixed file/folio vault"): every Folio
+  // of the vault by its own title, its folder path under it, above the tree. Folded state is this Mac's convenience.
+  const folioRows = useMemo(() => (isVault ? vaultFolios(vaultIndex) : []), [isVault, vaultIndex])
+  const [foliosCollapsed, setFoliosCollapsed] = useState(() => readFoliosCollapsed(root))
+  useEffect(() => { setFoliosCollapsed(readFoliosCollapsed(root)) }, [root])
+  const showFolios = folioRows.length > 0 && !hasFilter
   /** Every pin operation goes through the vault store; a refusal is told in the status line. */
   const pinOp = useCallback(async (run: () => Promise<VaultWriteResult>): Promise<void> => {
     try {
@@ -738,12 +750,24 @@ function SidebarView({
         setMovePick(null)
         return // dropping onto its own parent is a no-op (Codex #7)
       }
-      const ok = await fileOps.moveFile(key, dir)
-      if (!ok) return
-      setMovePick(null)
-      if (dir) setFolderCollapsed(dir, false)
-      const name = key.split('/').at(-1) ?? key
-      focusRow(dir ? `${dir}/${name}` : name)
+      // One move at a time: a second pick (or drop) while one is in flight would race it on the same key and
+      // flash "File not found" over a move that succeeded. A ref, not state: two picks can land in one frame.
+      if (movingRef.current) return
+      const run = { dismissed: false }
+      movingRef.current = run
+      try {
+        const ok = await fileOps.moveFile(key, dir)
+        // Settled either way: the picker closes. A falsy result can follow a move main completed (a refresh
+        // that threw), so the picker's key may be stale; keeping it open would dead-end the next pick.
+        setMovePick((pick) => (pick?.key === key ? null : pick))
+        // Escape during the move closed the picker and put focus back; the completed move does not take it.
+        if (!ok || run.dismissed) return
+        if (dir) setFolderCollapsed(dir, false)
+        const name = key.split('/').at(-1) ?? key
+        focusRow(dir ? `${dir}/${name}` : name)
+      } finally {
+        movingRef.current = null
+      }
     },
     [fileOps, setFolderCollapsed, focusRow],
   )
@@ -1013,7 +1037,10 @@ function SidebarView({
       >
         <span className="gtr">{syncMark(node.path, true)}</span>
         {workRowIcon(true, node.work) === 'folio' ? <BookMarked className="icon sm" aria-label="Folio" /> : <Folder className="icon sm" aria-label="Folder piece" />}
-        <span className="flex-name">{node.label ?? node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Vault root'}</span>}</span>
+        {node.work === 'folio'
+          // A Folio is told apart by its own title; its folder path is the second line, in the tree and in search results alike.
+          ? <span className="flex-name">{node.label ?? node.name}<span className="file-result-path" data-folio-path>{folioPathText(node.path)}</span></span>
+          : <span className="flex-name">{node.label ?? node.name}{hasFilter && <span className="file-result-path">{node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/')) : 'Vault root'}</span>}</span>}
         {pinButton(node.path, node.label ?? node.name, true)}
       </button>
     )
@@ -1119,6 +1146,54 @@ function SidebarView({
 
   /** The PINNED section: grip, pin glyph, name, count (folders) or icon and name (documents), one shared order;
    *  a missing folder or document reads `not found` with Remove. */
+  function foliosSection(): JSX.Element {
+    const toggle = (): void => {
+      const next = !foliosCollapsed
+      setFoliosCollapsed(next)
+      writeFoliosCollapsed(root, next)
+    }
+    const step = (event: React.KeyboardEvent<HTMLElement>): void => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+      const rows = [...(event.currentTarget.closest('[data-testid="vault-folios"]')?.querySelectorAll<HTMLElement>('[data-folios-step]') ?? [])]
+      const at = rows.indexOf(event.currentTarget)
+      const next = rows[at + (event.key === 'ArrowDown' ? 1 : -1)]
+      if (!next) return
+      event.preventDefault()
+      next.focus()
+    }
+    return (
+      <div className="vd-folios" role="group" aria-label="Folios in this vault" data-testid="vault-folios">
+        <button type="button" className="vd-folios-head" aria-expanded={!foliosCollapsed} data-folios-step onKeyDown={step} onClick={toggle} title={foliosCollapsed ? 'Show the Folios' : 'Fold the Folios away'}>
+          {foliosCollapsed ? <ChevronRight className="icon sm" aria-hidden="true" /> : <ChevronDown className="icon sm" aria-hidden="true" />}
+          <span>Folios</span>
+          <span className="cnt">{folioRows.length}</span>
+        </button>
+        {!foliosCollapsed && (
+          <div className="vd-folios-list">
+            {folioRows.map((row) => (
+              <button
+                key={row.path}
+                type="button"
+                className={`trow lv-work lv-folio${dashboardDir === row.path ? ' dash-on' : ''}`}
+                style={{ paddingLeft: 8 }}
+                data-folio-row={row.path}
+                data-folios-step
+                aria-current={dashboardDir === row.path ? 'true' : undefined}
+                aria-label={`${row.title}, Folio in ${folioPathText(row.path)}`}
+                title={row.path || 'Vault root'}
+                onKeyDown={step}
+                onClick={() => onOpenCollection(row.path)}
+              >
+                <BookMarked className="icon sm" aria-hidden="true" />
+                <span className="flex-name">{row.title}<span className="file-result-path">{folioPathText(row.path)}</span></span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   function pinnedSection(): JSX.Element {
     return (
       <>
@@ -1411,6 +1486,7 @@ function SidebarView({
 
       <div className="tree-region" ref={treeRef} onKeyDown={onTreeKeyDown}>
       {showPinned && <div className={`tree-pinned${isVault ? ' lv-vault' : ''}`}>{pinnedSection()}</div>}
+      {showFolios && <div className="tree-pinned tree-folios lv-vault">{foliosSection()}</div>}
       <div
         className={`tree${hasFilter ? ' file-search-results' : ''}${isVault ? ' lv-vault' : ''}`}
         onDragOver={(e) => {
@@ -1429,6 +1505,8 @@ function SidebarView({
             {hiddenRename?.kind === 'file' && renameRow('file', 0, hiddenRename.name, hiddenRename.path)}
             {shownTree.length > 0 || renaming?.isNew ? (
               hasFilter ? shownTree.map((node) => node.kind === 'folder' ? (node.work ? workFolderRow(node, 0) : folderRow(node, 0)) : fileRow(node, 0)) : renderNodes(shownTree, 0, '')
+            ) : !listingReady ? (
+              <div className="filter-empty" role="status">Loading files…</div>
             ) : hasFilter || !focusPath ? (
               <div className="filter-empty">
                 No names match <span>{filterQuery.trim()}</span>.
@@ -1511,6 +1589,7 @@ function SidebarView({
           options={moveOptions}
           onPick={(dir) => void moveRowTo(movePick.key, dir)}
           onClose={() => {
+            if (movingRef.current) movingRef.current.dismissed = true
             setMovePick(null)
             if (focusKey) focusRow(focusKey)
           }}

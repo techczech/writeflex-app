@@ -125,12 +125,12 @@ export function presentSync(input: SyncInput, now: number): SyncPresentation {
   const offlineLabel = `Offline · ${check ? `last checked ${syncTime(check.observedAt, now)}` : 'not yet checked'}`
   const description = input.availability !== 'ready'
     ? `${availabilityWords[input.availability]}. Your local writing remains available.`
-    : input.connection === 'offline' ? `${offlineLabel}. ${saved ? 'Your writing is saved here' : 'Some local changes are not yet saved'} but the latest edits may not be backed up.`
+    : input.connection === 'offline' ? `${offlineLabel}. ${saved ? 'Your writing is saved on this Mac' : 'Some changes are not yet saved on this Mac'}, but the latest edits may not be backed up.`
       : [pending.length && `${pending.length} waiting to send`, incoming && `${input.documents.filter(d => d.incoming).length} came in`, review && `${input.documents.filter(d => d.review).length} needs review`].filter(Boolean).join(' · ')
         || (fresh ? 'Your saved writing matches the last successful remote check.' : 'Check the remote before relying on this vault being up to date.')
   return { label, summary: [pending.length && `${pending.length} waiting to send${Number.isFinite(oldest) ? ` · oldest ${minutes(oldest, now)} min` : ' · age unknown'}`, incoming && `${input.documents.filter(d => d.incoming).length} incoming`, review && `${input.documents.filter(d => d.review).length} needs review`, recovery && 'Recovery needed'].filter(Boolean).join(' · '), heading: recovery ? 'Recovery needed' : overdue ? heading : input.availability !== 'ready' ? label : heading, description, tone, checked, groups, marks,
     unchangedDocuments: currentCheck && saved && input.connection === 'online' && input.availability === 'ready' && Number.isSafeInteger(check?.unchangedDocuments) && check!.unchangedDocuments! >= 0 ? check!.unchangedDocuments! : null,
-    facts: { local: saved ? 'Saved here' : input.local.dirtyPaths.length ? `${input.local.dirtyPaths.length} documents have unsaved changes here` : 'Local save coverage unknown',
+    facts: { local: saved ? 'Saved on this Mac (not a backup)' : input.local.dirtyPaths.length ? `${input.local.dirtyPaths.length} documents have unsaved changes on this Mac` : 'Local save coverage unknown',
       backup: proof?.revision === null ? `Remote backup verified ${syncTime(proof.verifiedAt, now)} · editor coverage unknown` : proof ? `Remote backup verified ${syncTime(proof.verifiedAt, now)} · ${proof.protectedThrough && dated(proof.protectedThrough, proof.verifiedAt) ? `Protected through ${syncTime(proof.protectedThrough, now)}` : 'Protected-through time unknown'}` : 'Remote backup not verified',
       branch: check ? `${checked}${currentCheck ? '' : ' · a new check is needed'}` : 'Remote branch not yet checked' } }
 }

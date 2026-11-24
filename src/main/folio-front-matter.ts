@@ -10,8 +10,7 @@
 
 import { manifestPartEntries, readManifest, titleMatterPath, type Folio } from './folio'
 import { parseFrontmatter } from './frontmatter'
-import { readPlan, type Plan } from './plan'
-import type { Workspace } from './workspace'
+import { readPlan, type Plan, type PlanReadWorkspace } from './plan'
 import { isAgentInstructionsName } from '../shared/folio-agent-files'
 import { headerSaysTitlePage, isFrontMatterPart, partIsFrontMatter } from '../shared/folio-front-matter'
 
@@ -35,7 +34,7 @@ type Options = {
 }
 
 /** The front matter of the Folio at `dir`; none when the folder declares no manifest and its running order tags none. */
-export async function folioFrontMatter(ws: Workspace, dir: string, { findTitlePage = true, plan }: Options = {}): Promise<FolioFrontMatter> {
+export async function folioFrontMatter(ws: PlanReadWorkspace, dir: string, { findTitlePage = true, plan }: Options = {}): Promise<FolioFrontMatter> {
   const manifest = await readManifest(ws, dir)
   const read = plan === undefined ? await readPlan(ws, dir).catch(() => null) : plan
   const present = manifest ? new Set((await ws.listFilesIn(dir)).map((file) => file.path)) : new Set<string>()

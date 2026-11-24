@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { fuzzyScore, fuzzyFilter } from '../../src/renderer/src/fuzzy'
+import { fuzzyScore, fuzzyFilter, prepareFuzzyScore } from '../../src/renderer/src/fuzzy'
 
 test('subsequence required', () => {
   expect(fuzzyScore('abc', 'a-b-c.md')).not.toBeNull()
@@ -50,4 +50,13 @@ test('multi-word ranking prefers word-boundary hits', () => {
 
 test('a whitespace-only query behaves as an empty query', () => {
   expect(fuzzyFilter('   ', ['a.md', 'b.md'], 1)).toEqual(['a.md'])
+})
+
+test('prepared ranking folds mixed case and accents while preserving original segment positions', () => {
+  const scoreCandidate = prepareFuzzyScore('B á')
+  expect(scoreCandidate('Á-B')).toBe(8)
+  expect(scoreCandidate('A_B')).toBe(8)
+  expect(scoreCandidate('Áb')).toBe(5)
+  expect(scoreCandidate('A/Ç')).toBeNull()
+  expect(fuzzyScore('ab', 'a\u0301-b')).toBe(4)
 })

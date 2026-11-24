@@ -174,8 +174,10 @@ export function createWidgetFocusGuard(options: WidgetFocusGuardOptions): Widget
       if (options.enabled?.() === false) return
       if (presses !== pressCount || pressing || options.inUse()) return
       const active = doc.activeElement
-      if (active === frame) { check(); return }
-      if (active && mayNotHoldFocus(active)) return
+      // Chromium can keep naming the frame while a focus change is in flight. The
+      // focus watcher will try again. Retrying here can queue another microtask
+      // before Chromium gets a turn to apply the change.
+      if (active === frame || (active && mayNotHoldFocus(active))) return
       reassert()
     }
     soon(confirm)

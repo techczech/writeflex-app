@@ -1,4 +1,5 @@
 const SEGMENT_BOUNDARIES = new Set(['/', '-', '_', '.', ' '])
+const NON_ASCII = /[^\x00-\x7f]/
 const COMBINING_MARK = /^\p{M}$/u
 
 /**
@@ -15,6 +16,7 @@ function foldCharacter(character: string): string {
 }
 
 function foldForFuzzyMatch(value: string): string {
+  if (!NON_ASCII.test(value)) return value.toLowerCase()
   let folded = ''
   for (let index = 0; index < value.length; index += 1) folded += foldCharacter(value[index])
   return folded
@@ -33,10 +35,7 @@ function isSegmentStart(candidate: string, pos: number): boolean {
  * Scored via DP over (query index, candidate position) rather than a leftmost greedy match, so a
  * cheap early match can't block a later, higher-scoring alignment (e.g. a segment-start run).
  */
-function subsequenceScore(query: string, candidate: string): number | null {
-  if (query.length === 0) return 0
-  const q = foldForFuzzyMatch(query)
-  const c = foldForFuzzyMatch(candidate)
+function subsequenceScore(q: string, c: string, candidate: string): number | null {
   const m = q.length
   const n = c.length
   if (m > n) return null
@@ -77,8 +76,7 @@ export function fuzzyTokens(query: string): string[] {
 /** +2 when a whole token sits as one run starting at a segment boundary of the candidate. */
 const WORD_BOUNDARY_BONUS = 2
 
-function startsSegmentRun(token: string, candidate: string): boolean {
-  const folded = foldForFuzzyMatch(candidate)
+function startsSegmentRun(token: string, folded: string, candidate: string): boolean {
   let at = folded.indexOf(token)
   while (at !== -1) {
     if (isSegmentStart(candidate, at)) return true
@@ -94,17 +92,26 @@ function startsSegmentRun(token: string, candidate: string): boolean {
  * order. Score = sum of token scores, plus a bonus per token that sits whole at a word boundary.
  * A single-token query scores exactly as the plain subsequence scorer did.
  */
-export function fuzzyScore(query: string, candidate: string): number | null {
-  const tokens = fuzzyTokens(query)
-  if (tokens.length === 0) return 0
-  if (tokens.length === 1) return subsequenceScore(tokens[0], candidate)
-  let total = 0
-  for (const token of tokens) {
-    const score = subsequenceScore(token, candidate)
-    if (score === null) return null
-    total += score + (startsSegmentRun(foldForFuzzyMatch(token), candidate) ? WORD_BOUNDARY_BONUS : 0)
+export function prepareFuzzyScore(query: string): (candidate: string) => number | null {
+  const tokens = fuzzyTokens(query).map(foldForFuzzyMatch)
+  if (tokens.length === 0) return () => 0
+  if (tokens.length === 1) {
+    return (candidate) => subsequenceScore(tokens[0], foldForFuzzyMatch(candidate), candidate)
   }
-  return total
+  return (candidate) => {
+    const folded = foldForFuzzyMatch(candidate)
+    let total = 0
+    for (const token of tokens) {
+      const score = subsequenceScore(token, folded, candidate)
+      if (score === null) return null
+      total += score + (startsSegmentRun(token, folded, candidate) ? WORD_BOUNDARY_BONUS : 0)
+    }
+    return total
+  }
+}
+
+export function fuzzyScore(query: string, candidate: string): number | null {
+  return prepareFuzzyScore(query)(candidate)
 }
 
 /**
@@ -116,8 +123,9 @@ export function fuzzyFilter(query: string, paths: string[], limit = 50): string[
   if (fuzzyTokens(query).length === 0) return paths.slice(0, limit)
 
   const scored: Array<{ path: string; score: number }> = []
+  const scoreCandidate = prepareFuzzyScore(query)
   for (const path of paths) {
-    const score = fuzzyScore(query, path)
+    const score = scoreCandidate(path)
     if (score !== null) scored.push({ path, score })
   }
   scored.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.path.length - b.path.length))

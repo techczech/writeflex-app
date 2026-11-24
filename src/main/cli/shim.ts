@@ -3,7 +3,7 @@
  * also uses (agent-skill/shim.ts). There is one shim, one script text and one write path; connecting an agent
  * and the Settings button both end there. This module keeps the names the rest of WriteFlex and its tests know
  * (`generateShim(bundleId)`, `installShim({ bundleId })`) and fixes WriteFlex's facts: the command is `writeflex`,
- * and it runs the app's own binary in Node mode on the bundled command-line entry (`ELECTRON_RUN_AS_NODE=1`).
+ * and it selects the app's bundled command-line entry with `--writeflex-cli`.
  * No Electron dependency; the Settings button reaches this through one IPC handler.
  *
  * Which copy runs, since several bundles can carry the identifier (preview builds in Documents, a copy in

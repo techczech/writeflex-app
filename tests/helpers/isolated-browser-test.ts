@@ -1,6 +1,12 @@
 import { expect, test } from 'bun:test'
+import { existsSync } from 'node:fs'
+import { chromium } from 'playwright'
+import { testRequiring } from './built-output'
 import { spawn } from 'node:child_process'
 import { text as consumeText } from 'node:stream/consumers'
+
+const missingChromium = existsSync(chromium.executablePath()) ? undefined : 'run bunx playwright install chromium'
+export const testWithChromium = testRequiring(missingChromium)
 
 // Isolate the complete Bun/Playwright lifecycle: compiler-only isolation still
 // timed out in the second browser test on Bun 1.3.10 (see release evidence).
@@ -9,7 +15,7 @@ export function isolatedBrowserTest(entryPath: string, name: string, body: () =>
     test(name, body, timeout)
     return
   }
-  test(name, async () => {
+  testWithChromium(name, async () => {
     const child = spawn(process.execPath, ['test', entryPath], {
       env: { ...process.env, WRITEFLEX_BROWSER_TEST_CHILD: entryPath },
       stdio: ['ignore', 'pipe', 'pipe'],

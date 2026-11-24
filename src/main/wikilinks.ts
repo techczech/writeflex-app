@@ -162,14 +162,22 @@ async function candidatesFrom(ws: Pick<Workspace, 'readFile'>, listing: Awaited<
       onUnreadable(file.path)
       return null
     }
-    const { title, aliases } = facts.derive('wikilinks:candidate', (content) => ({
-      title: candidateTitle(content, file.path),
-      aliases: aliasesOf(parseFrontmatter(content)?.extra ?? {}),
-    }))
-    const basename = posix.basename(file.path).replace(/\.(?:md|markdown|mdx)$/i, '')
-    return { path: file.path, title, basename, aliases: [...aliases] }
+    const candidate = facts.derive('wikilinks:candidate', (content) => candidateFromMarkdown(file.path, content))
+    return { ...candidate, aliases: [...candidate.aliases] }
   })
   return candidates.filter((candidate): candidate is Candidate => candidate !== null)
+}
+
+/** Candidate facts for a path and its exact Markdown text. */
+export function candidateFromMarkdown(path: string, content: string): Candidate {
+  const basename = withoutMarkdownExtension(posix.basename(path))
+  const frontmatter = parseFrontmatter(content)
+  return {
+    path,
+    title: frontmatter?.title?.trim() || h1(content) || basename,
+    basename,
+    aliases: aliasesOf(frontmatter?.extra ?? {}),
+  }
 }
 
 /** A piece's title as a wikilink candidate carries it: frontmatter title, else first level-1 heading, else file name. */

@@ -181,10 +181,10 @@ export function withoutDeclarativeShadow(html: string): string {
 }
 
 /** The widget's document: the page's text with the lead in place. */
-export function withWidgetLead(html: string): string {
+export function withWidgetLead(html: string, options: { ownDocument?: boolean } = {}): string {
   const text = withoutDeclarativeShadow(html)
   const at = widgetLeadPosition(text)
-  return text.slice(0, at) + widgetDocumentLead({ ownBase: widgetHasOwnBase(text) }) + text.slice(at)
+  return text.slice(0, at) + widgetDocumentLead({ ownBase: options.ownDocument || widgetHasOwnBase(text) }) + text.slice(at)
 }
 
 export const WIDGET_TITLE_MAX = 80

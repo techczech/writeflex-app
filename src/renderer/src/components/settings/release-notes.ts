@@ -65,6 +65,7 @@ export function parseReleaseNotes(source: string, currentVersion: string | null,
 
   const safeLimit = Math.max(0, Math.floor(limit))
   const releases = parsed.slice(0, safeLimit)
-  const currentRelease = currentVersion ? releases.find((entry) => entry.version === currentVersion) ?? null : null
+  // Look for this build's release among all of them: an older build's entry can sit past the listed few.
+  const currentRelease = currentVersion ? parsed.find((entry) => entry.version === currentVersion) ?? null : null
   return { releases, currentRelease, hasEarlierReleases: parsed.length > releases.length }
 }

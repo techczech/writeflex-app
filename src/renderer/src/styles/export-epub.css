@@ -1,0 +1,49 @@
+.export-epub-details {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: .5rem;
+}
+.export-epub-field {
+  display: grid;
+  grid-template-columns: minmax(4rem, 24%) 1fr;
+  align-items: baseline;
+  gap: .35rem .75rem;
+}
+.export-epub-field input {
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: .3rem;
+  padding: .3rem .5rem;
+}
+.export-epub-field small { grid-column: 2; }
+.export-epub-contents {
+  border-block: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  padding: .45rem 0;
+}
+.export-epub-contents summary { cursor: pointer; }
+.export-epub-contents summary span { padding-inline-start: .5rem; }
+.export-epub-contents ul { list-style: none; margin: .35rem 0 0; padding: 0; }
+.export-epub-contents li { display: flex; justify-content: space-between; gap: .75rem; padding-block: .24rem; }
+.export-epub-contents small { text-align: end; }
+.export-sheet .export-epub-checkbox {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+}
+.export-sheet .export-epub-checkbox input {
+  inline-size: 1rem;
+  block-size: 1rem;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.export-epub-fields-group { display: grid; gap: .65rem; }
+@media (prefers-reduced-motion: reduce) {
+  .export-sheet .export-spin { animation: none; }
+}

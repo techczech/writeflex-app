@@ -120,6 +120,15 @@ test('absolute() refuses symlinks that escape the workspace', async () => {
   }
 })
 
+test('startup admits the same Markdown paths as the Files listing', async () => {
+  await symlink(join(root, 'notes'), join(root, 'linked'))
+  await symlink(join(root, 'notes', 'beta.md'), join(root, 'alias.md'))
+  const known = new Set((await ws.listFiles()).map(file => file.path))
+  for (const path of [...known, 'linked/beta.md', 'alias.md', './notes/beta.md', 'notes/../notes/beta.md', 'missing.md']) {
+    expect(await ws.hasListedDocument(path)).toBe(known.has(path))
+  }
+})
+
 // listFilesIn must list exactly what listFiles filtered to the folder lists. The whole-workspace walk
 // never enters a symlink, so a folder that is one, or lies beneath one, has no listed files.
 const seedTree = async (): Promise<void> => {

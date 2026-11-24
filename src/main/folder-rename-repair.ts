@@ -1,4 +1,4 @@
-import { movedDocumentLinks } from './moved-document-links'
+import { mappedLocator, movedDocumentLinks } from './moved-document-links'
 import { lstatSync } from 'node:fs'
 import { posix } from 'node:path'
 import { pathLinkTargetsFor, scanMarkdownCodeRanges } from './rename-repair'
@@ -12,6 +12,7 @@ import {
   type CandidateIndex,
 } from './wikilinks'
 import { SavedButNotReadBack, type Workspace } from './workspace'
+import { repairReceipt, type RepairReceipt } from '../shared/repair-receipt'
 
 /**
  * Folder rename repair (Sol round 4): a `./` path link (`[[./contents/a]]`) names a file by where it is, so renaming a
@@ -33,7 +34,12 @@ export type FolderRenameRepairPlan = {
   unrepairedReferences: string[]
 }
 
-export type FolderRenameRepairResult = { writtenPaths: string[]; unrepairedReferences: string[] }
+export type FolderRenameRepairResult = {
+  writtenPaths: string[]
+  unrepairedReferences: string[]
+  /** Exactly what the repair replaced and wrote in each file it wrote (shared/repair-receipt.ts). */
+  receipts?: RepairReceipt[]
+}
 
 function under(folder: string, path: string): boolean {
   return folder === '' || path.startsWith(`${folder}/`)
@@ -83,7 +89,7 @@ export async function planFolderRenameRepair(workspace: Workspace, fromFolder: s
     if (under(fromFolder, path)) {
       const destination = movedPath(fromFolder, toFolder, path)
       const outgoing = await movedDocumentLinks(workspace, source, path, destination,
-        (target) => movedPath(fromFolder, toFolder, target))
+        mappedLocator(workspace, (target) => movedPath(fromFolder, toFolder, target)))
       plan.unrepairedReferences.push(...outgoing.unrepairedReferences)
       if (outgoing.content !== source) {
         plan.writes.push({ path: destination, current: source, content: outgoing.content, destinations: outgoing.destinations })
@@ -91,18 +97,19 @@ export async function planFolderRenameRepair(workspace: Workspace, fromFolder: s
       }
       continue
     }
-    const skipped = scanMarkdownCodeRanges(source)
+    let skipped: ReturnType<typeof scanMarkdownCodeRanges> | undefined
     let next = source
     const repaired: string[] = []
     const destinations = new Set<string>()
     for (const link of [...extractWikilinks(source)].reverse()) {
       if (!isPathLink(link.target)) continue
-      if (skipped.some((range) => link.from >= range.from && link.to <= range.to)) continue
       if (source.slice(link.from, link.to) !== link.raw) continue
       const was = resolveWikilinkPath(path, link.target, beforeIndex)
       if (!was || !under(fromFolder, was)) continue
       const now = movedPath(fromFolder, toFolder, was)
       if (resolveWikilinkPath(path, link.target, afterIndex) === now) continue
+      skipped ??= scanMarkdownCodeRanges(source)
+      if (skipped.some((range) => link.from >= range.from && link.to <= range.to)) continue
       const inner = source.slice(link.from + 2, link.to - 2)
       // Written only when the link as written parses, by the app's own reader, to exactly the moved file: a folder
       // name holding `#`, `|` or `]` would otherwise turn into an anchor, a label or a broken link (Sol round 5).
@@ -135,6 +142,7 @@ export async function applyFolderRenameRepair(
   beforeWrite: (path: string) => Promise<void> = async () => undefined,
 ): Promise<FolderRenameRepairResult> {
   const writtenPaths: string[] = []
+  const receipts: RepairReceipt[] = []
   const unrepairedReferences = [...plan.unrepairedReferences]
   for (const write of plan.writes) {
     try {
@@ -149,6 +157,7 @@ export async function applyFolderRenameRepair(
         if (!(error instanceof SavedButNotReadBack)) throw error // written; only the read-back failed
       }
       writtenPaths.push(write.path)
+      receipts.push(await repairReceipt(write.path, write.current, write.content))
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       unrepairedReferences.push(
@@ -158,5 +167,5 @@ export async function applyFolderRenameRepair(
       )
     }
   }
-  return { writtenPaths, unrepairedReferences }
+  return { writtenPaths, unrepairedReferences, receipts }
 }

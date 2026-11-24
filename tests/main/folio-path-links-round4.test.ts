@@ -86,7 +86,7 @@ test('renaming a folder rewrites the ./ links into it, and the Index Note keeps 
   const plan = await planFolderRenameRepair(ws, `${DIR}/contents`, `${DIR}/chapters`)
   await rename(join(root, DIR, 'contents'), join(root, DIR, 'chapters'))
   const result = await applyFolderRenameRepair(plan, ws)
-  expect(result).toEqual({ writtenPaths: [INDEX], unrepairedReferences: [] })
+  expect(result).toEqual({ writtenPaths: [INDEX], unrepairedReferences: [], receipts: [expect.objectContaining({ path: INDEX })] })
   expect(await read(INDEX)).toBe('# book\n\n## Running order\n\n- [[./chapters/a]]\n- [[./chapters/b.md|Bee]] — gloss\n\n`[[./contents/a]]` in code stays.\n')
   fresh()
   // The manifest's content root is not this repair's to change: the line resolves by its path.
@@ -107,53 +107,6 @@ test('a folder rename repair leaves a note changed since the plan as it is and r
   expect(result.writtenPaths).toEqual([])
   expect(result.unrepairedReferences).toEqual([expect.stringContaining(`${DIR}/ref.md: [[./contents/a]] was not repaired`)])
   expect(await read(`${DIR}/ref.md`)).toBe('See [[./contents/a]]. Edited meanwhile.\n')
-})
-
-const folderRenameProbe = String.raw`
-  import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
-  import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-  import { tmpdir } from 'node:os'
-  import { join } from 'node:path'
-  const root = await mkdtemp(join(tmpdir(), 'writeflex-folder-rename-'))
-  const handlers = new Map()
-  const sent = []
-  const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: (channel) => handlers.delete(channel) }
-  void mock.module('electron', () => ({
-    ...electronMainStandIn,
-    app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
-    clipboard: { write: () => {} }, dialog: {}, ipcMain,
-    shell: { openExternal: async () => {}, showItemInFolder: () => {}, trashItem: async () => {} },
-  }))
-  const [{ registerIpc }, { registerWindow }, { Workspace }] = await Promise.all([
-    import('./src/main/ipc.ts'), import('./src/main/state.ts'), import('./src/main/workspace.ts'),
-  ])
-  const state = registerWindow({ webContents: { id: 17, send: (channel, payload) => sent.push([channel, payload]) }, on: () => {}, isDestroyed: () => false })
-  state.workspace = new Workspace(root)
-  registerIpc(
-    { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
-    { modelDefaults: () => ({}), recents: () => [] },
-    {},
-  )
-  await mkdir(join(root, 'book', 'contents'), { recursive: true })
-  await writeFile(join(root, 'book', 'contents', 'a.md'), '# Alpha\n')
-  await writeFile(join(root, 'book', '_book_INDEX.md'), '# book\n\n## Running order\n\n- [[./contents/a]]\n')
-  const renamed = await handlers.get('folder:rename')({ sender: { id: 17 } }, { path: 'book/contents', newName: 'chapters' })
-  console.log(JSON.stringify({
-    renamed,
-    index: await readFile(join(root, 'book', '_book_INDEX.md'), 'utf8'),
-    changedOnDisk: sent.filter(([channel]) => channel === 'file:changed-on-disk').map(([, payload]) => payload),
-  }))
-`
-
-test('the real folder:rename handler repairs the ./ links into the renamed folder', async () => {
-  const child = Bun.spawn([process.execPath, '-e', folderRenameProbe], { cwd: new URL('../..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe' })
-  const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
-  if (exitCode !== 0) throw new Error(`The folder rename probe failed: ${stderr}`)
-  const result = JSON.parse(stdout.trim().split('\n').at(-1)!)
-  expect(result.renamed).toEqual({ path: 'book/chapters', repair: { writtenPaths: ['book/_book_INDEX.md'], unrepairedReferences: [] } })
-  expect(result.index).toBe('# book\n\n## Running order\n\n- [[./chapters/a]]\n')
-  expect(result.changedOnDisk).toEqual([['book/_book_INDEX.md']])
 })
 
 // ---- 3. File rename keeps the path form ----

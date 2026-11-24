@@ -2,6 +2,7 @@
    (docs/design/writeflex-main-window/mockup/writeflex-mockup-v4.html, ADR-0009).
    Names and values are the spec; change only via a new design ruling. */
 :root{
+  color-scheme:light;
   --ink:#1d1d1f; --ink-2:#55555b; --ink-3:#87878d; --ink-4:#a8a8ad;
   --line:rgba(0,0,0,.10); --line-soft:rgba(0,0,0,.06);
   --bg-toolbar:#f6f6f5; --bg-side:#f4f4f2; --bg-pane:#ffffff; --bg-sunk:#faf9f7;
@@ -56,6 +57,7 @@
    light tokens: same hue relationships, inverted value ladder, accent/green/danger lifted for
    contrast on dark panes. A usability review look item until the user has eyeballed it live. */
 [data-theme="dark"]{
+  color-scheme:dark;
   --ink:#e7e7ea; --ink-2:#a6a6ae; --ink-3:#92929b; --ink-4:#5f5f68;
   --line:rgba(255,255,255,.13); --line-soft:rgba(255,255,255,.07);
   --bg-toolbar:#242427; --bg-side:#212124; --bg-pane:var(--bg-side); --bg-sunk:#202024;

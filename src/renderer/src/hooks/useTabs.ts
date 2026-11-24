@@ -43,8 +43,8 @@ export type UseTabs = {
 
 /**
  * React wrapper over the pure tab-state logic (tab-state.ts). Persists {tabs, active} per workspace
- * root in localStorage and, on first resolve of a workspace root, reconciles the persisted set
- * against the live file list so tabs for files deleted/renamed since last run drop out.
+ * root in localStorage and reconciles saved paths against disk. The first bound window can
+ * check just those paths while the Collection's full listing is still being built.
  *
  * `root`/`files` are ARGUMENTS, fed from App's single `useWorkspace` — never a private instance.
  * A private instance pulls `workspace:get` once on mount and never again, so a window that binds
@@ -52,7 +52,7 @@ export type UseTabs = {
  * instance) would leave this hook rootless forever: no hydration, and the pre-hydration guard
  * below would swallow every open() (fix wave 1). One workspace source, one truth.
  */
-export function useTabs(root: string | null | undefined, files: MarkdownFile[], boardDir = '', keepTab: (path: string) => boolean = () => false, onRestored?: (path: string) => void): UseTabs {
+export function useTabs(root: string | null | undefined, files: MarkdownFile[], listingReady: boolean, canRestoreTabsEarly: boolean, boardDir = '', keepTab: (path: string) => boolean = () => false, onRestored?: (path: string) => void): UseTabs {
   // A tab whose file left the tree is kept while `keepTab` says so (its buffer holds unsaved text that the
   // writer has to resolve: review round 1, Sol S6). Read when the file list changes.
   const restoredRef = useRef(onRestored)
@@ -70,12 +70,8 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
   // The hydration setState below and this render's persist effect commit together; without this
   // guard the persist effect would write the still-empty pre-hydration state back over storage.
   const skipPersist = useRef(false)
-  // An open() can arrive BEFORE hydration: a file-open focus (workspace:focus-file) is flushed by
-  // main during the first workspace:get pull, ahead of the reply that resolves root/files (Task 6,
-  // T2 seam) — and a post-mount bind has the same shape (root not yet a string, or hydration for
-  // the current root not yet applied). Opening into the pre-hydration state would be wiped by
-  // hydration's replacing setState, so open() stashes the path and the hydration for the CURRENT
-  // root folds it into the reconciled state instead.
+  // A file-open focus or a held chord can arrive before hydration. Fold the last requested
+  // path into the state for this root so restoring the saved tabs cannot wipe out the request.
   const pendingOpen = useRef<string | null>(null)
   // The strip follows the open file: groups are derived in main from each tab's path and never
   // stored, so the persisted TabState is exactly what it was before direction D.
@@ -86,25 +82,52 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
 
   useEffect(() => {
     if (typeof root !== 'string') return
-    const known = files.map((f) => f.path)
-    if (loadedRoot.current !== root) {
+    if (loadedRoot.current === root) {
+      if (listingReady) {
+        // Same workspace, file list changed (create/delete/rename) — prune any now-stale tabs.
+        const known = files.map(file => file.path)
+        setState((prev) => reconcileTabs(prev, [...known, ...prev.tabs.filter(tab => keepTabRef.current(tab))]))
+      }
+      return
+    }
+
+    const saved = parseTabState(localStorage.getItem(tabStorageKey(root)))
+    const hydrate = (known: Set<string>, inEffect: boolean): void => {
       loadedRoot.current = root
-      skipPersist.current = true
-      const hydrated = reconcileTabs(parseTabState(localStorage.getItem(tabStorageKey(root))), known)
+      skipPersist.current = inEffect
+      const hydrated = reconcileTabs(saved, known)
       const queued = pendingOpen.current
       pendingOpen.current = null
-      // Same containment contract as reconcileTabs (which also admits BOARD_TAB_ID): never open a path
-      // the file list doesn't hold — but the Board sentinel is a valid non-file tab, so a pre-hydration
-      // ⇧⌘B (queued before this root loaded) must replay, not be silently dropped.
-      const openable = queued !== null && (known.includes(queued) || queued === BOARD_TAB_ID || (isWidgetWorkbenchTabId(queued) && known.includes(workbenchDocumentOf(queued))))
-      setState(openable ? openTab(hydrated, queued as string) : hydrated)
-      // This is hydration, never ordinary tab activation or a queued URL/file-open request.
-      if (!openable && hydrated.active) restoredRef.current?.(hydrated.active)
-    } else {
-      // Same workspace, file list changed (create/delete/rename) — prune any now-stale tabs.
-      setState((prev) => reconcileTabs(prev, [...known, ...prev.tabs.filter((tab) => keepTabRef.current(tab))]))
+      if (queued !== null && (known.has(queued) || queued === BOARD_TAB_ID
+        || (isWidgetWorkbenchTabId(queued) && known.has(workbenchDocumentOf(queued))))) {
+        setState(openTab(hydrated, queued))
+      } else {
+        setState(hydrated)
+        if (hydrated.active) restoredRef.current?.(hydrated.active)
+      }
     }
-  }, [root, files])
+    if (listingReady) {
+      hydrate(new Set(files.map(file => file.path)), true)
+      return
+    }
+    if (!canRestoreTabsEarly) return
+
+    let live = true
+    const documentPath = (path: string): string => isWidgetWorkbenchTabId(path) ? workbenchDocumentOf(path) : path
+    const restore = async (): Promise<void> => {
+      const paths = new Set(saved.tabs.filter(path => path !== BOARD_TAB_ID).map(documentPath))
+      const queued = pendingOpen.current
+      if (queued !== null && queued !== BOARD_TAB_ID) paths.add(documentPath(queued))
+      const known = new Set(paths.size ? await window.writeflex.checkStartupTabs(root, [...paths]) : [])
+      // A focus arriving during the checks is still entitled to open. If it wasn't checked, the
+      // full listing will validate it and finish hydration.
+      const latest = pendingOpen.current
+      if (!live || (latest !== null && latest !== BOARD_TAB_ID && !paths.has(documentPath(latest)))) return
+      hydrate(known, paths.size === 0)
+    }
+    void restore().catch(() => { /* Fall back to hydration from the full listing. */ })
+    return () => { live = false }
+  }, [root, files, listingReady, canRestoreTabsEarly])
 
   useEffect(() => {
     if (typeof root !== 'string' || loadedRoot.current !== root) return

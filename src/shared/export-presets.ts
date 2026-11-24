@@ -9,16 +9,18 @@ export const EXPORT_PRESET_FIELDS = [
   'tocDepth',
   'frontmatterFields',
   'format',
+  'keepLineBreaks',
 ] as const
 
 export type ExportPresetField = (typeof EXPORT_PRESET_FIELDS)[number]
-export type ExportPresetFormat = 'html' | 'docx'
+export type ExportPresetFormat = 'html' | 'docx' | 'epub'
 export type ExportPresetDesign = 'a' | 'b'
 export const EXPORT_PRESET_MASTHEAD_FIELDS = ['date', 'status', 'author', 'purpose', 'tags', 'series'] as const
 export type ExportPresetMastheadField = (typeof EXPORT_PRESET_MASTHEAD_FIELDS)[number]
 
 export type ExportPresetChoice = {
   format: ExportPresetFormat
+  keepLineBreaks?: boolean
   sidebar: boolean
   titleBlock: boolean
   readerNotes: boolean
@@ -79,7 +81,8 @@ export const isTocDepth = (value: unknown): value is number =>
 function normaliseChoice(value: unknown): ExportPresetChoice | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const input = value as Record<string, unknown>
-  if ((input.format !== 'html' && input.format !== 'docx')
+  if ((input.format !== 'html' && input.format !== 'docx' && input.format !== 'epub')
+    || (input.keepLineBreaks !== undefined && typeof input.keepLineBreaks !== 'boolean')
     || typeof input.sidebar !== 'boolean'
     || typeof input.titleBlock !== 'boolean'
     || typeof input.readerNotes !== 'boolean'
@@ -92,6 +95,7 @@ function normaliseChoice(value: unknown): ExportPresetChoice | null {
     || !input.frontmatterFields.every(isMastheadField)) return null
   return {
     format: input.format,
+    ...(input.keepLineBreaks === undefined ? {} : { keepLineBreaks: input.keepLineBreaks }),
     sidebar: input.sidebar,
     titleBlock: input.titleBlock,
     readerNotes: input.readerNotes,
@@ -136,7 +140,7 @@ const sameArray = (left: readonly string[], right: readonly string[]): boolean =
 export function changedExportPresetFields(choice: ExportPresetChoice, preset: ExportPresetChoice): ExportPresetField[] {
   return EXPORT_PRESET_FIELDS.filter((field) => field === 'frontmatterFields'
     ? !sameArray(choice.frontmatterFields, preset.frontmatterFields)
-    : choice[field] !== preset[field])
+    : field === 'keepLineBreaks' ? (choice[field] ?? true) !== (preset[field] ?? true) : choice[field] !== preset[field])
 }
 
 export type ExportPresetMode = 'sheet' | 'saving-as' | 'managing'

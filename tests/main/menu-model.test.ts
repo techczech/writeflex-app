@@ -4,6 +4,7 @@ import { EditorState } from '@codemirror/state'
 import { readFileSync } from 'node:fs'
 import { dispatchMenuCommand, menuChord, menuCommands, sameMenuModel } from '../../src/renderer/src/commands/menu-model'
 import { commandRegistry, registryCommand } from '../../src/renderer/src/commands/registry'
+import { commandCheckStore, createDebouncedPublisher } from '../../src/renderer/src/commands/menu-command-state'
 
 test('the renderer projection keeps missing rows disabled and uses the shared effective chord resolver', () => {
   const state = EditorState.create({ doc: 'A paragraph' })
@@ -98,4 +99,38 @@ test('target commands are retained disabled, then dispatch the supplied active-t
     dispatchMenuCommand(id, [row], EditorState.create(), true, item => runs.push(item.id), () => {})
     expect(runs).toEqual([id])
   }
+})
+
+test('mounted command owners publish live checks and release only their own state', () => {
+  const store = commandCheckStore()
+  let notifications = 0
+  const off = store.subscribe(() => { notifications++ })
+  const first = store.publish({ 'focus.ruler': true })
+  expect(store.snapshot()).toEqual({ 'focus.ruler': true })
+  const second = store.publish({ 'focus.ruler': false, 'board.toggleSources': true })
+  expect(store.snapshot()).toEqual({ 'focus.ruler': false, 'board.toggleSources': true })
+  first()
+  expect(store.snapshot()).toEqual({ 'focus.ruler': false, 'board.toggleSources': true })
+  second()
+  expect(store.snapshot()).toEqual({})
+  expect(notifications).toBe(3)
+  off()
+})
+
+test('publishing trails a burst by the delay, restarts on each schedule, and flushes at once', async () => {
+  let published = 0
+  const publisher = createDebouncedPublisher(() => { published++ }, 20)
+  for (let i = 0; i < 10; i++) publisher.schedule()
+  expect(published).toBe(0)
+  await new Promise(resolve => setTimeout(resolve, 60))
+  expect(published).toBe(1)
+  publisher.schedule()
+  publisher.flush()
+  expect(published).toBe(2)
+  await new Promise(resolve => setTimeout(resolve, 40))
+  expect(published).toBe(2)
+  publisher.schedule()
+  publisher.cancel()
+  await new Promise(resolve => setTimeout(resolve, 40))
+  expect(published).toBe(2)
 })

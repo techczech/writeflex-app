@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { formatRenameRepairMessage, type RenameRepairDisplay } from '../../src/shared/rename-repair-message'
+import { planDriftMessage } from '../../src/main/rename-repair-apply'
 
 function repair(overrides: Partial<RenameRepairDisplay> = {}): RenameRepairDisplay {
   return { writtenPaths: [], issues: [], ...overrides }
@@ -99,4 +100,17 @@ test('formats an outcome-only repair without calling it a failure', () => {
 
 test('an empty result produces no message when there is no success text', () => {
   expect(formatRenameRepairMessage('', repair())).toBe('')
+})
+
+test('a rename refused because a sync landed 200 files names the count and the first three, not every path', () => {
+  const added = Array.from({ length: 200 }, (_, i) => `synced/from-the-other-mac/document-${i + 1}.md`)
+  const references = Array.from({ length: 40 }, (_, i) => `ref-${i}.md: [[old]]`)
+  const message = planDriftMessage(added, references)
+
+  expect(message).toContain('200 files were added or removed while the rename was prepared (first three: '
+    + 'synced/from-the-other-mac/document-1.md, synced/from-the-other-mac/document-2.md, synced/from-the-other-mac/document-3.md).')
+  expect(message).not.toContain('document-4.md')
+  expect(message).toContain('and 37 more.')
+  expect(planDriftMessage(added).length).toBeLessThan(300)
+  expect(planDriftMessage(['one.md'])).toContain('1 file was added or removed while the rename was prepared (one.md).')
 })

@@ -19,6 +19,8 @@ export interface ShimSpec {
    * mode (ELECTRON_RUN_AS_NODE=1) on that script (WriteFlex's command line). Absent: the binary itself runs with the arguments.
    */
   nodeEntry?: string
+  /** Fixed app switch for a packaged headless command. */
+  appArgument?: string
   /** Say on standard error which copy runs when it is found outside both Applications folders (WriteFlex's shim does). */
   announceElsewhere?: boolean
 }
@@ -53,7 +55,12 @@ export function generateShim(spec: ShimSpec, lookup: ShimLookup = {}): string {
 fi
 `
     : ''
-  const run = spec.nodeEntry === undefined
+  if (spec.appArgument !== undefined && (!/^--[a-z][a-z0-9-]*$/.test(spec.appArgument) || spec.nodeEntry !== undefined)) {
+    throw new Error('invalid app argument')
+  }
+  const run = spec.appArgument
+    ? `exec "$app/Contents/MacOS/$exe" ${spec.appArgument} "$@"`
+    : spec.nodeEntry === undefined
     ? 'exec "$app/Contents/MacOS/$exe" "$@"'
     : `ELECTRON_RUN_AS_NODE=1 exec "$app/Contents/MacOS/$exe" "$app/${spec.nodeEntry}" "$@"`
   return `#!/bin/sh

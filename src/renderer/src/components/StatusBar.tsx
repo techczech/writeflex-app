@@ -604,7 +604,7 @@ export function StatusBar({
     { label: 'wpm', value: String(session.wpm) },
     { label: 'characters', value: counts.characters.toLocaleString() },
     { label: 'heading', value: ctx?.heading ?? '—' },
-    { label: 'autosaved', value: autosaveAge },
+    { label: 'saved on this Mac', value: autosaveAge },
     { label: 'session', value: `${session.elapsedLabel} elapsed · ${signedWords} words` },
   ]
   const residentCollection = collectionName ?? workspaceRoot?.split('/').filter(Boolean).at(-1) ?? ''

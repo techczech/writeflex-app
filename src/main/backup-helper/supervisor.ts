@@ -2,7 +2,7 @@
  * The backup helper as a child of this app, for as long as the app runs. Nothing here installs, registers
  * or schedules anything: no launch agent, login item or background service. The helper is the reviewed
  * command line of @app-patterns/vault-sync (`bin.js run`), started as its own process with this app's
- * binary in Node mode (ELECTRON_RUN_AS_NODE=1, as the `writeflex` command-line shim does); its engine and
+ * binary on the fixed helper entry; packaged bootstrap selects it and development uses Node mode. Its engine and
  * server are never loaded into this process.
  *
  * - One child at a time. Credential-bearing children also retain ownership until `close`, so two helpers of
@@ -59,10 +59,10 @@ export type SupervisorState =
   | { state: 'stop-overdue'; pid: number }
 
 export type HelperLaunch = {
-  /** The app binary run in Node mode. */
+  /** Absolute path of the standalone binary, or the development Electron binary. */
   command: string
-  /** Absolute path of the helper's `bin.js`. */
-  entry: string
+  /** Development only: absolute path of the helper's JS bundle. */
+  entry?: string
   /** The environment base: HOME, USER, LOGNAME, TMPDIR are copied from it; nothing else. */
   baseEnv?: NodeJS.ProcessEnv
   /** Fixed app-owned private approval path; never taken from baseEnv or vault config. */
@@ -101,8 +101,9 @@ export type SupervisorOptions = HelperLaunch & {
 }
 
 /** The child's whole environment. */
-export function helperEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const env: Record<string, string> = { ELECTRON_RUN_AS_NODE: '1', LC_ALL: 'C', PATH: '/usr/bin:/bin:/usr/sbin:/sbin' }
+export function helperEnv(base: NodeJS.ProcessEnv = process.env, nodeMode = true): Record<string, string> {
+  const env: Record<string, string> = { LC_ALL: 'C', PATH: '/usr/bin:/bin:/usr/sbin:/sbin' }
+  if (nodeMode) env.ELECTRON_RUN_AS_NODE = '1'
   for (const key of ['HOME', 'USER', 'LOGNAME', 'TMPDIR']) {
     const value = base[key]
     if (typeof value === 'string' && value !== '' && !value.includes('\0')) env[key] = value
@@ -127,7 +128,8 @@ export function createHelperSupervisor(options: SupervisorOptions): ManagedHelpe
   const clearTimer = options.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
   const maxRuntimeMs = options.maxRuntimeMs ?? HELPER_MAX_RUNTIME_MS
   const stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS
-  const env = helperEnv(options.baseEnv)
+  const entryArgs = options.entry ? [options.entry] : []
+  const env = helperEnv(options.baseEnv, entryArgs.length > 0)
   if (options.historyApprovalFile) env[HISTORY_APPROVAL_ENV] = options.historyApprovalFile
   const owned = new Map<ChildProcess, { kind: 'run' | 'once'; generation: number | null; done: Promise<void>; closeStreams: () => void }>()
   let draining = 0
@@ -182,7 +184,7 @@ export function createHelperSupervisor(options: SupervisorOptions): ManagedHelpe
     if (!wanted || child || !admission || awaitingForegroundClose()) return
     const intent = wanted
     const { configFile, runtimeDir } = intent
-    const args = [options.entry, 'run', '--config', configFile, '--runtime-dir', runtimeDir, '--max-runtime-ms', String(maxRuntimeMs), '--shutdown-grace-ms', String(HELPER_GRACE_MS), '--hard-stop-ms', String(HELPER_HARD_STOP_MS)]
+    const args = ['run', '--config', configFile, '--runtime-dir', runtimeDir, '--max-runtime-ms', String(maxRuntimeMs), '--shutdown-grace-ms', String(HELPER_GRACE_MS), '--hard-stop-ms', String(HELPER_HARD_STOP_MS)]
     const startedAt = now()
     let runningSince: number | null = null
     let stoppingReason: string | null = null
@@ -191,16 +193,16 @@ export function createHelperSupervisor(options: SupervisorOptions): ManagedHelpe
     let input: ChildCredentialInput | null | undefined
     let exposure: CompletionTarget | undefined
     try {
-      input = options.credentials ? await options.credentials(args.slice(1)) : null
-      credentials = input ? await prepareConfiguredCredentials(input, args.slice(1), now()) : null
+      input = options.credentials ? await options.credentials(args) : null
+      credentials = input ? await prepareConfiguredCredentials(input, args, now()) : null
       if (wanted !== intent || !admission || child || awaitingForegroundClose()) return
       if (credentials && intent.admit && !intent.admit()) { wanted = null; set({ state: 'stopped' }); return }
       if (credentials) {
         args[args.indexOf('--max-runtime-ms') + 1] = String(Math.min(maxRuntimeMs, credentials.runtimeMs))
-        args.splice(1, 0, '--github-credentials')
+        args.unshift('--github-credentials')
       }
-      if (credentials && input && options.exposure) { exposure = options.exposure.reserve(input); args.splice(1, 0, '--github-exposure', Buffer.from(JSON.stringify(exposure)).toString('base64url')) }
-      proc = spawn(options.command, args, { env, stdio: credentials ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'ignore', 'pipe'], detached: false })
+      if (credentials && input && options.exposure) { exposure = options.exposure.reserve(input); args.unshift('--github-exposure', Buffer.from(JSON.stringify(exposure)).toString('base64url')) }
+      proc = spawn(options.command, [...entryArgs, ...args], { env, stdio: credentials ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'ignore', 'pipe'], detached: false })
     } catch (error) {
       if (wanted !== intent || !admission) return
       lastError = options.credentials ? 'GitHub credential bridge refused' : describe(error instanceof Error ? error.message : String(error))
@@ -391,7 +393,7 @@ export function createHelperSupervisor(options: SupervisorOptions): ManagedHelpe
         let proc: ChildProcess
         try {
           if (credentials && input && options.exposure) exposure = options.exposure.reserve(input)
-          proc = spawn(options.command, [options.entry, ...(exposure ? ['--github-exposure', Buffer.from(JSON.stringify(exposure)).toString('base64url')] : []), ...(credentials ? ['--github-credentials'] : []), ...args], { env, stdio: credentials ? ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'], detached: false })
+          proc = spawn(options.command, [...entryArgs, ...(exposure ? ['--github-exposure', Buffer.from(JSON.stringify(exposure)).toString('base64url')] : []), ...(credentials ? ['--github-credentials'] : []), ...args], { env, stdio: credentials ? ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'], detached: false })
         } catch (error) {
           resolve({ code: null, stdout: '', stderr: describe(error instanceof Error ? error.message : String(error)) })
           return

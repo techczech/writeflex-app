@@ -437,14 +437,17 @@ export class Workspace {
   onWriteNotice: ((message: string) => void) | undefined
   /** Content cache behind `search` (search-index.ts). Public so the watcher can invalidate paths and
    *  tests can count reads at the seam. */
-  readonly searchIndex = new SearchIndex(
-    (path) => readFile(this.absolute(path), 'utf8'),
-    extractFrontmatterTags,
-    SEARCH_INDEX_READ_CONCURRENCY,
-    pieceTitle,
-  )
+  readonly searchIndex: SearchIndex
 
-  constructor(readonly root: string) {}
+  constructor(readonly root: string, options: { searchCacheDir?: string } = {}) {
+    this.searchIndex = new SearchIndex(
+      (path) => readFile(this.absolute(path), 'utf8'),
+      extractFrontmatterTags,
+      SEARCH_INDEX_READ_CONCURRENCY,
+      pieceTitle,
+      options.searchCacheDir ? { root, dir: options.searchCacheDir } : undefined,
+    )
+  }
 
   absolute(path: string): string {
     const resolved = resolve(this.root, path)
@@ -721,11 +724,13 @@ export class Workspace {
 
   /** Every directory under the root (same ignore rules as the file walk), so the sidebar can show
    *  EMPTY folders too — a just-created folder must be visible before it holds a file (ADR-0017,
-   *  TalkWeaver's folder-completion rule). Relative POSIX paths, sorted. */
-  async listFolders(): Promise<string[]> {
+   *  TalkWeaver's folder-completion rule). Relative POSIX paths, sorted. A visitor may also use the
+   *  entry names already read, including those at the root (directory `''`). */
+  async listFolders(visit?: (directory: string, entries: readonly { name: string }[]) => void): Promise<string[]> {
     const out: string[] = []
     const walk = async (base: string): Promise<void> => {
       const entries = await readdir(base, { withFileTypes: true })
+      visit?.(this.relative(base), entries)
       for (const entry of entries) {
         const absolute = join(base, entry.name)
         if (!entry.isDirectory() || !this.isVisiblePath(`${this.relative(absolute)}/file.md`)) continue
@@ -803,6 +808,20 @@ export class Workspace {
       files.push({ name: entry.name, path: this.relative(absolute), kind: sourceKind(entry.name), size: info.size })
     }
     return files
+  }
+
+  /** Check a saved tab against the Markdown walk's rules without reading the rest of the tree. */
+  async hasListedDocument(path: string): Promise<boolean> {
+    if (!MARKDOWN_EXTENSION.test(path) || !this.isVisiblePath(path)) return false
+    try {
+      const absolute = this.absolute(path)
+      if (this.relative(absolute) !== path) return false
+      // The walker sees the exact directory entries and does not follow links.
+      if (!(await lstat(absolute)).isFile()) return false
+      return relative(realpathSync.native(this.root), realpathSync.native(absolute)) === path
+    } catch {
+      return false
+    }
   }
 
   async readFile(path: string): Promise<FileReadResult> {
@@ -1520,8 +1539,11 @@ export class Workspace {
   }
 
   /** Rename a folder in place. Refuses collisions — same policy as file rename. With `documentOnly`
-   *  the rename is the guarded move (guarded-document-move.ts), which states the window that remains. */
-  async renameFolder(path: string, newName: string, options: Pick<SaveFileOptions, 'documentOnly'> = {}): Promise<{ path: string }> {
+   *  the rename is the guarded move (guarded-document-move.ts), which states the window that remains.
+   *  With `renameIndexNote` the folder's Index Note, named after the folder (folio.ts `indexNotePath`), is renamed
+   *  with it, as the command line's folder move does: judged before anything moves, and refused when the folder
+   *  already holds a file of the new name. The answer then says where it went (`indexNote`). */
+  async renameFolder(path: string, newName: string, options: Pick<SaveFileOptions, 'documentOnly'> & { renameIndexNote?: boolean } = {}): Promise<{ path: string; indexNote?: { from: string; to: string } }> {
     this.assertWritable()
     // Every document under the folder changes its path: nothing else in this app writes meanwhile.
     return this.exclusiveAll(async () => {
@@ -1537,12 +1559,43 @@ export class Workspace {
         if (target !== absolute) await this.#moveDocument(this.relative(absolute), this.relative(target), 'folder')
         return { path: this.relative(target) }
       }
-      await guardFolioFolderMove(this, this.relative(absolute), this.relative(target))
+      const from = this.relative(absolute)
+      const to = this.relative(target)
+      const indexNote = options.renameIndexNote ? this.#indexNoteRename(from, to) : null
+      await guardFolioFolderMove(this, from, to, indexNote !== null)
       this.#recordMove(absolute, target, false)
-      await this.#forgettingOnFailure([this.relative(absolute)], () => withVersionMove(this.root, this.relative(absolute), this.relative(target), () => rename(absolute, target)))
-      await finishFolioMove(this, this.relative(absolute), this.relative(target))
-      return { path: this.relative(target) }
+      await this.#forgettingOnFailure([from], () => withVersionMove(this.root, from, to, () => rename(absolute, target)))
+      if (indexNote) {
+        // The folder has moved; its Index Note now takes the folder's new name inside it, with its history.
+        const carried = this.absolute(indexNote.from)
+        const renamed = this.absolute(indexNote.to)
+        this.#recordMove(carried, renamed, carried.toLowerCase() === renamed.toLowerCase())
+        await this.#forgettingOnFailure([indexNote.from], () => withVersionMove(this.root, indexNote.from, indexNote.to, () => rename(carried, renamed)))
+      }
+      await finishFolioMove(this, from, to)
+      return indexNote ? { path: to, indexNote } : { path: to }
     })
+  }
+
+  /** The Index Note move a folder rename carries: from where the folder move leaves it (`<to>/_<old>_INDEX.md`) to its
+   *  new name (`<to>/_<new>_INDEX.md`). Null when the names agree or the folder has no Index Note (a plain file, not a
+   *  link). Throws, before anything moves, when another file already holds the new name. */
+  #indexNoteRename(from: string, to: string): { from: string; to: string } | null {
+    const oldName = `_${posix.basename(from)}_INDEX.md`
+    const newName = `_${posix.basename(to)}_INDEX.md`
+    if (oldName === newName) return null
+    const source = this.absolute(posix.join(from, oldName))
+    let sourceStat
+    try { sourceStat = lstatSync(source) } catch { return null }
+    if (!sourceStat.isFile()) return null
+    const inTheWay = this.absolute(posix.join(from, newName))
+    let other
+    try { other = lstatSync(inTheWay) } catch { other = null }
+    // On a case-insensitive disk a change of case finds the same file under the new name: that is no collision.
+    if (other && !(other.ino === sourceStat.ino && other.dev === sourceStat.dev)) {
+      throw new Error(`The folder was not renamed: its Index Note ${oldName} would be renamed to ${newName} with it, and the folder already holds a file of that name. Nothing was changed. Rename or move that file first.`)
+    }
+    return { from: posix.join(to, oldName), to: posix.join(to, newName) }
   }
 
   /** Absolute destination a rename would write to (bare names stay in the source file's folder). */

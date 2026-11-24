@@ -12,7 +12,7 @@ const READING_ROOM: Frame = { origin: 'file://', processId: 1, routingId: 4 }
 const key = (k: string, type: 'keyDown' | 'keyUp' = 'keyDown', mods: Partial<{ shift: boolean; control: boolean; alt: boolean; meta: boolean }> = {}) =>
   ({ type, key: k, shift: false, control: false, alt: false, meta: false, ...mods })
 
-function fakeWindow(options: { reclaimWorks?: boolean; reclaimNeverReturns?: boolean; markerPort?: boolean } = {}) {
+function fakeWindow(options: { reclaimWorks?: boolean; reclaimNeverReturns?: boolean; markerPort?: boolean; reclaimHeldFrom?: number } = {}) {
   let focused: Frame | 'unreadable' | null = TOP
   let clock = 1000
   const sent: Array<{ type: string; keyCode: string; modifiers: string[] }> = []
@@ -25,14 +25,25 @@ function fakeWindow(options: { reclaimWorks?: boolean; reclaimNeverReturns?: boo
   // The top frame's listener for main's marker key, and the bound on main's wait for it.
   let markerSeen: ((seen: boolean) => void) | null = null
   let markers = 0
+  // Listeners main has put in the top frame, and those still there.
+  let watches = 0
+  let liveWatches = 0
+  // A reclaim from the nth on waits until the test lets it return.
+  const heldReclaims: Array<() => void> = []
   // Every wait of DELIVERY_WAIT_MS that is running: the bound on a held ⌘Q, and the wait for the marker.
   const expireWaits: Array<() => void> = []
   let longWaits = 0
   const host: KeyboardGateHost = {
     ...(options.markerPort === false ? {} : {
       watchMarker: async () => {
-        const seen = new Promise<boolean>((resolve) => { markerSeen = resolve })
-        return () => seen
+        watches += 1
+        liveWatches += 1
+        let live = true
+        const finish = (value: boolean) => { if (!live) return; live = false; liveWatches -= 1; markerSeen = null; settleSeen(value) }
+        let settleSeen: (value: boolean) => void = () => {}
+        const seen = new Promise<boolean>((resolve) => { settleSeen = resolve })
+        markerSeen = (value) => finish(value)
+        return { seen: () => seen, end: () => finish(false) }
       },
     }),
     onHeld: (input) => { if (input.type === 'keyDown' && input.meta) heldMeta.push(input.key) },
@@ -46,6 +57,7 @@ function fakeWindow(options: { reclaimWorks?: boolean; reclaimNeverReturns?: boo
     reclaim: async () => {
       reclaims += 1
       if (options.reclaimNeverReturns) await new Promise<void>(() => {}) // the top frame is stuck: its script never answers
+      if (options.reclaimHeldFrom !== undefined && reclaims >= options.reclaimHeldFrom) await new Promise<void>((resolve) => { heldReclaims.push(resolve) })
       if (options.reclaimWorks !== false) focused = TOP
     },
     send: (event) => { sent.push(event) },
@@ -66,12 +78,12 @@ function fakeWindow(options: { reclaimWorks?: boolean; reclaimNeverReturns?: boo
     // The marker reaches the frame with the focus; the top frame's listener stops it and reports it.
     if (input.key === DELIVERY_MARKER.keyCode && markerSeen) {
       markers += 1
-      if (focused === TOP) { markerSeen(true); markerSeen = null; return }
+      if (focused === TOP) { markerSeen(true); return }
     }
     delivered.push(`${name()}:${input.type}:${input.key}`)
   }
-  const replay = (): void => {
-    while (sent.length > 0) {
+  const replay = (limit = Infinity): void => {
+    for (let n = 0; n < limit && sent.length > 0; n += 1) {
       const event = sent.shift()!
       if (event.type === 'char') { if (!suppress) delivered.push(`${name()}:char:${event.keyCode}`); continue }
       const k = event.keyCode === 'Space' ? ' ' : event.keyCode
@@ -85,6 +97,8 @@ function fakeWindow(options: { reclaimWorks?: boolean; reclaimNeverReturns?: boo
     get reclaims() { return reclaims }, get dropped() { return dropped },
     get quits() { return quits }, get tabCloses() { return tabCloses }, heldMeta,
     get markers() { return markers },
+    get watches() { return watches }, get liveWatches() { return liveWatches },
+    releaseReclaims: () => { for (const release of heldReclaims.splice(0)) release() },
     expireDeliveryWait: () => { for (const expire of expireWaits.splice(0)) expire() },
     get longWaits() { return longWaits },
   }
@@ -341,6 +355,62 @@ test('the marker is main’s own: a widget that takes the keyboard back is not g
   for (let i = 0; i < 5; i += 1) await settle()
   expect(w.quits).toBe(1)
   expect(w.delivered.filter((d) => d.startsWith('widget:'))).toEqual([])
+})
+
+test('a widget that takes the keyboard after the keys sent again, before the marker: main takes it back and sends a new marker', async () => {
+  const w = fakeWindow()
+  w.setFocus(WIDGET)
+  w.press(key('a'))
+  w.press(key('q', 'keyDown', { meta: true }))
+  await settle()
+  w.replay(2) // "a" and its character reach the document
+  w.setFocus(WIDGET) // the widget takes the keyboard again
+  w.replay(1) // the marker: held back from the widget
+  expect(w.delivered.filter((d) => d.startsWith('widget:'))).toEqual([])
+  for (let i = 0; i < 5; i += 1) await settle()
+  expect(w.reclaims).toBe(2)
+  w.replay() // the new marker reaches the top frame
+  for (let i = 0; i < 5; i += 1) await settle()
+  // Main quit on the new marker, without waiting out its bound.
+  expect(w.quits).toBe(1)
+  expect(w.delivered).toEqual(['top:keyDown:a', 'top:char:a', 'main:quit'])
+})
+
+// PR 278 review: a retry for a new marker belongs to its own attempt, and ends with it.
+test('a reset while a held marker waits for its retry: the replaced document is not asked to take the keyboard back', async () => {
+  const w = fakeWindow()
+  w.setFocus(WIDGET)
+  w.press(key('a'))
+  w.press(key('q', 'keyDown', { meta: true }))
+  await settle()
+  w.replay(2)
+  w.setFocus(WIDGET)
+  w.replay(1) // the marker is held back from the widget
+  w.gate.reset() // a new document, before main's retry runs
+  for (let i = 0; i < 5; i += 1) await settle()
+  expect(w.reclaims).toBe(1)
+  expect(w.quits).toBe(0) // the ⌘Q held for the old document is not acted on
+})
+
+test('a retry that comes back after the bound ran out puts no new marker listener in the page, and none is left', async () => {
+  const w = fakeWindow({ reclaimHeldFrom: 2 })
+  w.setFocus(WIDGET)
+  w.press(key('a'))
+  w.press(key('q', 'keyDown', { meta: true }))
+  await settle()
+  w.replay(2)
+  w.setFocus(WIDGET)
+  w.replay(1) // the marker is held; main's second reclaim does not return yet
+  for (let i = 0; i < 5; i += 1) await settle()
+  expect(w.reclaims).toBe(2)
+  w.expireDeliveryWait() // the bound runs out
+  for (let i = 0; i < 5; i += 1) await settle()
+  expect(w.quits).toBe(1)
+  w.releaseReclaims() // the stuck reclaim returns at last
+  for (let i = 0; i < 5; i += 1) await settle()
+  expect(w.watches).toBe(1)
+  expect(w.liveWatches).toBe(0)
+  expect(w.quits).toBe(1)
 })
 
 test('an F24 key-down that is not main’s marker is an ordinary key', async () => {

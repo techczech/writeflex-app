@@ -30,20 +30,14 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .app-shell:focus,.app-shell:focus-visible{outline:none}
 
 /* ---------- toolbar ---------- */
-.toolbar{height:44px;background:var(--bg-toolbar);border-bottom:1px solid var(--line);display:flex;align-items:flex-end;gap:6px;padding:0 12px;flex:none;position:relative}
-/* Electron: the toolbar is the window drag region; every control opts back out. */
-.toolbar{-webkit-app-region:drag}
-.toolbar button,.toolbar input{-webkit-app-region:no-drag}
-/* Electron: reserve the mockup's 60px traffic-light footprint. windows.ts positions the native
-   lights at x:16 y:16, centred in the 44px shelf. */
-.traffic-spacer{width:60px;flex:none;align-self:center}
-.tbtn{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:7px 7px 0 0;position:relative;flex:none}
+.toolbar{--toolbar-control-height:30px;height:44px;background:var(--bg-toolbar);border-bottom:1px solid var(--line);display:flex;align-items:flex-end;gap:6px;padding-inline-end:12px;flex:none;position:relative}
+.tbtn{display:flex;align-items:center;justify-content:center;width:30px;height:var(--toolbar-control-height,30px);border-radius:7px 7px 0 0;position:relative;flex:none}
 .tbtn:hover{background:var(--hover)}
 .tbtn[aria-pressed="true"]{background:var(--pill)}
 /* The strip owns the shelf remainder. Tabs themselves never shrink; S2 spills whole tabs instead. */
 .tabstrip{display:flex;align-items:flex-end;flex:1;min-width:0;gap:2px;overflow:hidden;-webkit-app-region:no-drag}
 .tabstrip::-webkit-scrollbar{height:0}
-.tab{display:flex;align-items:center;gap:6px;padding:0 7px 0 9px;height:30px;border:1px solid transparent;border-bottom:none;
+.tab{display:flex;align-items:center;gap:6px;padding:0 7px 0 9px;height:var(--toolbar-control-height,30px);border:1px solid transparent;border-bottom:none;
   border-radius:8px 8px 0 0;color:var(--ink-2);flex:0 0 auto;min-width:0;max-width:190px;position:relative}
 .tab .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px;min-width:0;flex:1}
 /* When pins plus the active tab overflow the strip, only the active unpinned tab gives up width: its name
@@ -61,7 +55,7 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .tab.pinned:hover{background:color-mix(in srgb,var(--pill) 82%,var(--ink) 8%)}
 .tab.pinned>.icon{color:var(--amber)}
 .pinsep{width:1px;height:20px;background:var(--line);flex:none;margin:0 5px 5px;align-self:flex-end}
-.tab-more{display:flex;align-items:center;gap:4px;height:30px;padding:0 7px;border-radius:8px 8px 0 0;color:var(--ink-3);flex:none;position:relative}
+.tab-more{display:flex;align-items:center;gap:4px;height:var(--toolbar-control-height,30px);padding:0 7px;border-radius:8px 8px 0 0;color:var(--ink-3);flex:none;position:relative}
 .tab-more:hover{background:var(--hover);color:var(--ink-2)}
 .tab-more .n{font-family:var(--mono);font-size:9.5px;font-weight:600;color:var(--ink-3);background:var(--bg-elev);border:1px solid var(--line);border-radius:20px;padding:0 5px;line-height:14px}
 .tab-measure{position:fixed;left:-10000px;top:-10000px;display:flex;width:max-content;height:30px;gap:2px;visibility:hidden;pointer-events:none}
@@ -83,13 +77,13 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .tb-right{display:flex;align-items:center;gap:6px}
 .chord{position:absolute;bottom:1px;right:1px;font-family:var(--mono);font-size:7.5px;color:var(--ink-4);letter-spacing:-.2px;pointer-events:none}
 .tbsep{width:1px;height:30px;background:var(--line);flex:none;margin:0 1px}
-.modebtn{display:flex;align-items:center;gap:6px;height:30px;padding:0 9px;border:1px solid var(--line);border-radius:8px 8px 0 0;background:var(--bg-elev);color:var(--ink);font-size:12px;font-weight:600;flex:none;position:relative;width:150px}
+.modebtn{display:flex;align-items:center;gap:6px;height:var(--toolbar-control-height,30px);padding:0 9px;border:1px solid var(--line);border-radius:8px 8px 0 0;background:var(--bg-elev);color:var(--ink);font-size:12px;font-weight:600;flex:none;position:relative;width:150px}
 .modebtn:hover{background:var(--hover)}
 .modebtn.reviewing{border-color:color-mix(in srgb,var(--review) 40%,transparent);background:var(--review-bg);color:var(--review)}
 .modebtn .mn{flex:1;white-space:nowrap}.modebtn .cv{color:var(--ink-3);width:12px;height:12px}.modebtn[aria-expanded="true"]{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .modemenu{position:absolute;right:98px;top:47px;z-index:40;width:252px;background:var(--bg-elev);border:1px solid var(--line);border-radius:10px;box-shadow:0 16px 40px rgba(20,25,40,.22),0 2px 6px rgba(20,25,40,.08);padding:5px;overflow:hidden;outline:none}
 .mm-h{display:flex;align-items:center;gap:6px;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding:7px 8px 4px}.mm-h .ln{flex:1;height:1px;background:var(--line-soft)}.mm-h kbd{font-size:8.5px;padding:0 3px;border-bottom-width:1px}
-.mm-i{display:flex;align-items:center;gap:9px;width:100%;border-radius:7px;padding:6px 8px;font-size:12.5px;color:var(--ink);text-align:left}.mm-i:hover{background:var(--hover)}.mm-i .tick{width:13px;height:13px;flex:none;color:var(--accent);opacity:0}.mm-i.on .tick{opacity:1}.mm-i .mt{flex:1;min-width:0}.mm-i .mt b{display:block;font-weight:600;font-size:12.5px}.mm-i .mt small{display:block;font-size:10.5px;color:var(--ink-3);line-height:1.35;margin-top:1px}.mm-i.hi{background:var(--accent);color:#fff}.mm-i.hi svg{color:#fff}.mm-i.hi .mt small{color:rgba(255,255,255,.78)}.mm-i.hi .tick{color:#fff}.modemenu hr{border:none;border-top:1px solid var(--line-soft);margin:4px 6px}.mm-foot{padding:5px 9px 4px;font-size:10px;color:var(--ink-4);display:flex;gap:9px;align-items:center;border-top:1px solid var(--line-soft);margin-top:4px}.mm-foot .fk{display:flex;align-items:center;gap:4px}.mm-foot kbd{font-size:8.5px;padding:0 3px;border-bottom-width:1px}
+.mm-i{display:flex;align-items:center;gap:9px;width:100%;height:28px;border-radius:7px;padding:6px 8px;font-size:12.5px;color:var(--ink);text-align:left}.mm-i:hover{background:var(--hover)}.mm-i .tick{width:15px;height:15px;flex:none;color:var(--accent);opacity:0}.mm-i.on .tick{opacity:1}.mm-i .mt{flex:1;min-width:0}.mm-i .mt b{display:block;font-weight:600;font-size:12.5px}.mm-i .mt small{display:block;font-size:10.5px;color:var(--ink-3);line-height:1.35;margin-top:1px}.mm-i.hi{background:var(--accent);color:#fff}.mm-i.hi svg{color:#fff}.mm-i.hi .mt small{color:rgba(255,255,255,.78)}.mm-i.hi .tick{color:#fff}.modemenu hr{border:none;border-top:1px solid var(--line-soft);margin:4px 6px}.mm-foot{padding:5px 9px 4px;font-size:10px;color:var(--ink-4);display:flex;gap:9px;align-items:center;border-top:1px solid var(--line-soft);margin-top:4px}.mm-foot .fk{display:flex;align-items:center;gap:4px}.mm-foot kbd{font-size:8.5px;padding:0 3px;border-bottom-width:1px}
 
 /* Open documents live as a section of the one left sidebar. Rows retain the mature vertical-tab
    affordances while the separate tab column and its layout setting are retired. */
@@ -129,7 +123,7 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .open-tabs-section .tab-time{margin-left:auto;flex:none;font-family:var(--mono);font-size:9.5px;color:var(--ink-4);font-variant-numeric:tabular-nums}
 .open-tabs-section .tab.nested{margin-left:14px;width:calc(100% - 14px)}
 .open-tabs-section .tab.spill{background:var(--accent-soft)}
-.board-filter{display:flex;align-items:center;gap:7px;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px 8px 0 0;height:30px;padding:0 8px 0 9px;width:230px;color:var(--ink-3)}
+.board-filter{display:flex;align-items:center;gap:7px;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px 8px 0 0;height:var(--toolbar-control-height,30px);padding:0 8px 0 9px;width:230px;color:var(--ink-3)}
 .board-filter input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--ink);font:12.5px var(--ui)}
 .board-filter input::-webkit-search-cancel-button{display:none}
 .board-filter-clear{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;color:var(--ink-3);flex:none}
@@ -253,7 +247,7 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
    so no selector for a real tab ever finds it) lays every tab out at rest, off screen. */
 .right-pane .pane-tabs{overflow:clip}
 .pane-tab.more{margin-left:auto}
-.pane-tabs .sidebar-fold{margin-left:auto;flex:none;align-self:center;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-bottom:4px;border:0;border-radius:6px;background:transparent;color:var(--ink-3)}
+.pane-tabs .sidebar-fold{margin-left:auto;flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:30px;border:0;border-radius:6px;background:transparent;color:var(--ink-3)}
 .pane-tabs .sidebar-fold:hover{background:var(--hover);color:var(--ink-2)}
 .pane-tabs .sidebar-fold:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .pane-tabs .sidebar-fold svg{width:12px;height:12px}
@@ -382,6 +376,14 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .lv-seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
 .trow.lv-work{cursor:pointer}
 .lv-sideLabel{display:block;padding:2px 16px 4px}
+/* The Folios section above the tree (rough edges, 24 Nov 2026): a foldable header with the count, then one row per Folio:
+   its title, and its folder path as the second line. */
+.tree-folios .vd-folios-list{max-height:220px;overflow-y:auto}
+.vd-folios-head{display:flex;align-items:center;gap:5px;width:100%;border:0;background:transparent;padding:4px 8px;border-radius:7px;font:600 11px var(--ui);letter-spacing:.02em;color:var(--ink-3);text-align:left;cursor:pointer}
+.vd-folios-head:hover{background:var(--hover);color:var(--ink-2)}
+.vd-folios-head .cnt{font-weight:400}
+.trow.lv-folio,.trow[data-work="folio"]{align-items:flex-start}
+.trow.lv-folio .icon,.trow[data-work="folio"] > .icon{margin-top:2px}
 /* Pinned folders and documents (vaults ticket 05, documents 0.24; locked drawing locked-vault-sidebar-pinned-*.png): grip, amber pin,
    name, count (a document row: its file icon after the pin, no count); the Pin button at a tree row's end; the accent drop line while
    a pin is dragged. */
@@ -982,9 +984,20 @@ button.bsrc-ico:hover,button.bsrc-ico:focus-visible{color:var(--accent);border-c
 .editor-host{flex:1;min-height:0;display:flex;flex-direction:column}
 .editor-scroll .cm-editor{flex:1;min-height:0}
 .findbox{position:absolute;top:10px;right:14px;z-index:8;width:326px;background:var(--bg-elev);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(20,25,40,.20),0 1px 3px rgba(20,25,40,.10);overflow:hidden}.find-line{display:flex;align-items:center;gap:6px;padding:6px 6px 6px 8px}.find-field{flex:1;min-width:0}.find-field .fcount{flex:none;font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}.find-disc{display:flex;align-items:center;justify-content:center;width:20px;height:30px;border-radius:6px;color:var(--ink-3);flex:none}.find-disc:hover{background:var(--hover);color:var(--ink)}.find-disc[aria-expanded="true"]{color:var(--accent)}.find-disc[aria-expanded="true"] svg{transform:rotate(90deg)}.fnav{display:flex;align-items:center;gap:1px;flex:none}.fbtn{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;color:var(--ink-2);flex:none}.fbtn:hover{background:var(--hover);color:var(--ink)}.find-rep{display:flex;align-items:center;gap:6px;padding:0 6px 7px 8px}.find-indent{width:20px;flex:none}.find-rep .find-field{border-color:var(--line);box-shadow:none}.rbtn{display:flex;align-items:center;justify-content:center;height:24px;padding:0 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg-elev);font-size:11px;font-weight:600;color:var(--ink-2);flex:none}.rbtn:hover{background:var(--hover);color:var(--ink)}.find-foot{display:flex;align-items:center;gap:9px;padding:5px 9px;border-top:1px solid var(--line-soft);background:var(--bg-sunk);font-size:10px;color:var(--ink-4)}.find-foot .fk{display:flex;align-items:center;gap:4px}.find-foot kbd{font-size:8.5px;padding:0 3px;border-bottom-width:1px}.find-foot .sp{flex:1}.find-foot .scope{font-family:var(--mono);font-size:9px;color:var(--ink-3)}
-.window.df .toolbar,.window.df .actionbar,.window.df .statusbar{display:none}.window.df .df-pane~.editor-wrap .editor-scroll{padding-right:216px}.window.df .cm-content{max-width:600px;margin:0 auto;padding:56px 20px 40px;font-family:var(--prose);font-size:var(--prose-size,18.5px);line-height:1.75}.moderail{position:absolute;top:12px;right:14px;z-index:9;display:flex;flex-direction:column;align-items:flex-end;gap:4px;padding:7px 8px;border-radius:9px;background:var(--bg-elev);border:1px solid var(--line);box-shadow:0 4px 16px rgba(20,25,40,.10)}.moderail .rl{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-4)}.rseg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--bg-elev)}.rseg button{display:flex;align-items:center;gap:4px;padding:0 5px;height:26px;font-size:10.5px;font-weight:600;color:var(--ink-3);white-space:nowrap}.rseg button svg{width:12px;height:12px;color:var(--ink-4)}.rseg button[aria-pressed="true"]{background:var(--pill);color:var(--ink)}.rseg button[aria-pressed="true"] svg{color:var(--ink-2)}.moderail .rk{font-family:var(--mono);font-size:8px;color:var(--ink-4)}.df-exit{position:absolute;top:14px;left:16px;z-index:9;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-3);padding:5px 8px;border-radius:8px;background:var(--bg-elev);border:1px solid var(--line)}.df-exit:hover{color:var(--ink)}.df-pane{width:238px!important;flex:none;background:var(--bg-side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}.right-pane.df-pane{border-right:0;border-left:1px solid var(--line)}.df-ph{display:flex;align-items:center;gap:7px;padding:13px 12px 8px 16px;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}.df-ph .gap{flex:1}.df-ph .x{display:flex;padding:2px;border-radius:5px;color:var(--ink-3)}.df-ph .x:hover{background:var(--hover);color:var(--ink)}
+.window.df .toolbar,.window.df .actionbar,.window.df .statusbar{display:none}
+.window.df .df-pane~.editor-wrap .editor-scroll{padding-right:216px}
+.window.df .cm-content{max-width:600px;margin:0 auto;padding:12px 20px 40px;font-family:var(--prose);font-size:var(--prose-size,18.5px);line-height:1.75}
+.df-titlebar{display:flex;align-items:center;justify-content:space-between;padding-inline-end:14px}
+.df-titlebar button{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg-elev);font-size:11.5px;color:var(--ink-2)}
+.df-titlebar button:hover{background:var(--hover);color:var(--ink)}
+.df-titlebar button[aria-pressed="true"]{background:var(--pill);color:var(--ink)}
+.df-pane{width:238px!important;flex:none;background:var(--bg-side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.right-pane.df-pane{border-right:0;border-left:1px solid var(--line)}
+.df-ph{display:flex;align-items:center;gap:7px;padding:13px 12px 8px 16px;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}
+.df-ph .gap{flex:1}
+.df-ph .x{display:flex;padding:2px;border-radius:5px;color:var(--ink-3)}
+.df-ph .x:hover{background:var(--hover);color:var(--ink)}
 .window.df .editor-scroll .lp-frontmatter{display:none}
-.window.df .rseg button{gap:5px;padding:0 9px;font-size:11.5px}
 /* No open tab: keep the view mounted (per-path buffer cache lives in it) but invisible, so nothing
    can be typed into a buffer that belongs to no file. */
 .editor-scroll.no-doc .cm-editor{visibility:hidden}
@@ -1543,6 +1556,7 @@ button.bsrc-ico:hover,button.bsrc-ico:focus-visible{color:var(--accent);border-c
 .oe-outline{display:flex;flex-direction:column;gap:2px}.oe-node{display:flex;align-items:center;gap:7px;padding-left:calc(var(--depth) * 22px)}.oe-node-dot{color:var(--accent);font-size:16px}.oe-node input{flex:1;border:0;border-bottom:1px solid transparent;background:transparent;padding:6px 4px;color:var(--ink);font:12.5px var(--ui);outline:none}.oe-node input:focus{border-bottom-color:var(--accent)}
 @media(max-width:760px){.oe-mermaid,.oe-svg{grid-template-columns:1fr}}
 .lp-image img{display:block;max-width:100%;max-height:420px;object-fit:contain;border-radius:8px;margin:2px auto}
+.lp-image-blocked{display:block;padding:6px 8px;color:var(--ink-2);font-size:.875rem}
 .lp-render-failed{white-space:pre-wrap;font-family:var(--mono);font-size:12px}
 .lp-rendering{display:block;padding:18px;text-align:center;color:var(--ink-3);font:12px var(--ui)}
 .lp-mermaid,.lp-markmap,.lp-svg{min-height:52px;overflow:visible;text-align:center}
@@ -3151,7 +3165,7 @@ button.psrc-title:hover,button.psrc-title:focus-visible{color:var(--accent)}
 .ak-row.sel .icon.sm{color:var(--ink-2)}
 
 /* Open the Plan from a Folio piece: the title-bar button and the line above the text. */
-.planbtn{display:flex;align-items:center;gap:7px;height:30px;padding:0 10px 0 9px;border:1px solid var(--line);border-radius:8px 8px 0 0;background:var(--bg-elev);color:var(--ink);font-size:12px;flex:none;min-width:0;max-width:230px;position:relative;-webkit-app-region:no-drag}
+.planbtn{display:flex;align-items:center;gap:7px;height:var(--toolbar-control-height,30px);padding:0 10px 0 9px;border:1px solid var(--line);border-radius:8px 8px 0 0;background:var(--bg-elev);color:var(--ink);font-size:12px;flex:none;min-width:0;max-width:230px;position:relative;-webkit-app-region:no-drag}
 .planbtn .icon{color:var(--accent);flex:none}
 .planbtn .pb-plan{font-weight:600;flex:none}
 .planbtn .pb-name{color:var(--ink-2);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;padding-left:8px;border-left:1px solid var(--line)}
@@ -3159,7 +3173,7 @@ button.psrc-title:hover,button.psrc-title:focus-visible{color:var(--accent)}
 @media (max-width:1199px){.planbtn{max-width:132px}}
 @media (max-width:1039px){.planbtn .pb-name{display:none}}
 /* R3 collapse order, step 2: title-bar labels become icons (chord labels are gone from the bar already). */
-@media (max-width:1099px){.planbtn .pb-plan,.planbtn .pb-name{display:none}.planbtn{padding:0 8px;min-width:0}.modebtn .mn,.modebtn .cv{display:none}.modebtn{padding:0 8px}}
+@media (max-width:1099px){.planbtn .pb-plan,.planbtn .pb-name{display:none}.planbtn{padding:0 8px;min-width:0}.modebtn .mn,.modebtn .cv{display:none}.modebtn{width:30px;justify-content:center;padding:0}}
 .folio-line-host{position:absolute;top:0;left:0;right:0;height:0;z-index:1;pointer-events:none}
 .folio-line{--fl-inset:calc(max(0px,(100% - (var(--prose-measure,660px) + 2 * 72px)) / 2) + 72px);pointer-events:auto;position:absolute;left:var(--fl-inset);right:var(--fl-inset);top:15px;height:26px;display:flex;align-items:center;gap:6px;font:12px/1 var(--ui);color:var(--ink-2);-webkit-user-select:none;user-select:none;cursor:default}
 .folio-line button{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 7px;border-radius:6px;color:var(--ink-2);font:inherit;min-width:0;max-width:100%}

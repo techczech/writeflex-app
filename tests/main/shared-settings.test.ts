@@ -151,6 +151,8 @@ test('a settings file from elsewhere never sets the Diary folder (set on this Ma
   const source = new SharedStore({ ...storeOptions(from, '0.27.0'), watch: false, log: () => {} })
   await source.ready
   await source.set('diary.folder', '/Users/someone/elsewhere')
+  await source.set('backupTool.records', '/base/someone/.toolname')
+  expect(source.view().settings['backupTool.records']).toBe('/base/someone/.toolname')
   await source.set('appearance.theme', 'dark')
   const file = source.exportFile({ hostName: 'other' })
   await source.close()
@@ -162,6 +164,7 @@ test('a settings file from elsewhere never sets the Diary folder (set on this Ma
   const applied = await target.applyImport(preview, { file: 'other.json' })
   expect(applied.ok).toBe(true)
   expect(target.view().settings['diary.folder']).toBeUndefined()
+  expect(target.view().settings['backupTool.records']).toBeUndefined()
   expect(target.view().settings['appearance.theme']).toBe('dark')
   await target.close()
 })

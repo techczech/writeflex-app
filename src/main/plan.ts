@@ -301,7 +301,9 @@ function assertIndex(index: number, length: number, allowEnd: boolean): void {
   if (!Number.isInteger(index) || index < 0 || index > upper) throw new Error('Folio outline part index is out of range.')
 }
 
-async function readOptional(ws: Workspace, path: string): Promise<string | null> {
+export type PlanReadWorkspace = Pick<Workspace, 'root' | 'absolute' | 'readFile' | 'listFiles' | 'listFilesIn'>
+
+async function readOptional(ws: Pick<Workspace, 'readFile'>, path: string): Promise<string | null> {
   try {
     return (await ws.readFile(path)).content
   } catch {
@@ -323,7 +325,7 @@ function textNow(ws: Workspace, path: string): string | null {
   }
 }
 
-async function manifestState(ws: Workspace, dir: string): Promise<{ manifest: Folio | null; source: string | null; exists: boolean }> {
+async function manifestState(ws: Pick<Workspace, 'absolute' | 'readFile'>, dir: string): Promise<{ manifest: Folio | null; source: string | null; exists: boolean }> {
   const path = inDir(dir, MANIFEST_NAME)
   const exists = existsSync(ws.absolute(path))
   const source = await readOptional(ws, path)
@@ -353,7 +355,7 @@ type PlanCandidates = {
   folder: Candidate[]
 }
 
-async function planCandidates(ws: Workspace, dir: string, manifest: Folio | null): Promise<PlanCandidates> {
+async function planCandidates(ws: Pick<Workspace, 'root' | 'listFiles' | 'readFile'>, dir: string, manifest: Folio | null): Promise<PlanCandidates> {
   const root = candidateRoot(dir, manifest)
   const present = new Set((await ws.listFiles()).map((file) => file.path))
   const listed = new Set(manifest ? manifestPartEntries(dir, manifest, present).flatMap(({ path }) => (path ? [path] : [])) : [])
@@ -456,7 +458,7 @@ function planLinkTarget(indexPath: string, path: string, title: string, index: C
 }
 
 /** A genuinely absent document, with no symlink or unlisted existing object on the way. */
-function missingPlanPath(ws: Workspace, path: string): boolean {
+function missingPlanPath(ws: Pick<Workspace, 'root' | 'absolute'>, path: string): boolean {
   if (!isListedPath(path, 'file')) return false
   try {
     ws.absolute(path)
@@ -475,13 +477,13 @@ function missingPlanPath(ws: Workspace, path: string): boolean {
 }
 
 /** An unresolved entry is missing only when both permitted readings are genuinely absent. */
-function missingManifestEntry(ws: Workspace, dir: string, manifest: Folio, file: Pick<FolioFile, 'path'>): boolean {
+function missingManifestEntry(ws: Pick<Workspace, 'root' | 'absolute'>, dir: string, manifest: Folio, file: Pick<FolioFile, 'path'>): boolean {
   const candidates = manifestFilePathCandidates(dir, manifest, file)
   return candidates.length > 0 && candidates.every(path => missingPlanPath(ws, path))
 }
 
 async function parseLoaded(
-  ws: Workspace,
+  ws: PlanReadWorkspace,
   dir: string,
   path: string,
   source: string,
@@ -1364,7 +1366,7 @@ function headerRole(content: string): unknown {
  * no such file. `state.source` stays the bytes on disk, so every write still checks the Index Note against what was
  * read.
  */
-async function withManifestOrder(ws: Workspace, state: LoadedPlan, candidates: PlanCandidates, present: ReadonlySet<string>): Promise<LoadedPlan> {
+async function withManifestOrder(ws: PlanReadWorkspace, state: LoadedPlan, candidates: PlanCandidates, present: ReadonlySet<string>): Promise<LoadedPlan> {
   const { manifest } = state
   if (state.entries.length > 0 || !manifest) return state
   const dir = state.plan.dir
@@ -1438,7 +1440,7 @@ async function withManifestOrder(ws: Workspace, state: LoadedPlan, candidates: P
  * `'as-new'` (`readFolioPlan`): for a folder with a manifest, the Plan its first Index Note would give
  * (`indexNoteStarterText`), flagged `indexNoteAbsent`; never written by the read.
  */
-async function loadPlan(ws: Workspace, dir: string, absent: 'none' | 'as-new' = 'none'): Promise<LoadedPlan | null> {
+async function loadPlan(ws: PlanReadWorkspace, dir: string, absent: 'none' | 'as-new' = 'none'): Promise<LoadedPlan | null> {
   const path = indexNotePath(ws, dir)
   const listing = await ws.listFiles()
   const listedIndex = listing.some((file) => file.path === path)
@@ -1632,7 +1634,7 @@ export async function readFolioFrontMatter(ws: Workspace, dir: string, listing?:
  * A part in `frontMatter` gets no heading checks (shared/folio-front-matter.ts `asFrontMatterTitle`).
  */
 async function attachHeadingFacts(
-  ws: Workspace,
+  ws: Pick<Workspace, 'readFile'>,
   parts: PlanPart[],
   frontMatter: ReadonlySet<string>,
   known: Map<string, string> = new Map(),
@@ -1827,7 +1829,7 @@ function assertPutBackKeepsExistingLines(state: LoadedPlan, chosen: PlanPart[], 
 }
 
 /** A stateless read: every binding comes from this Index Note, its manifest and the current files. */
-export async function readPlan(ws: Workspace, dir: string): Promise<Plan | null> {
+export async function readPlan(ws: PlanReadWorkspace, dir: string): Promise<Plan | null> {
   return (await loadPlan(ws, dir, 'none'))?.plan ?? null
 }
 

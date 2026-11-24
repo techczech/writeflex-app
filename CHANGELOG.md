@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.29.0-alpha.3] — 2026-11-24
+
+An alpha: early, and it can break.
+
+### Added
+- Folios are named by their own titles everywhere they are listed, with the folder underneath. A Folios section at the top of the sidebar lists them all.
+- Open a Folio… in the command palette and the Collect menu, and Quick Open lists matching Folios first.
+- All comments in this Folio: one tab with every waiting comment and suggested edit across the Folio's parts, in running order.
+- Match system appearance: the editor and Settings follow your Mac's light or dark mode.
+- Backup status for a Git vault: if a backup tool outside WriteFlex keeps verification records, name its settings folder in Settings › Advanced › Backup › Backup tool records, and the status bar and Sync tab say whether this folder's last upload was verified.
+
+### Changed
+- The editor and Settings keep clear of the Mac's window buttons, and toolbar controls line up.
+- Renaming and moving documents and folders, Quick Open, and opening WriteFlex are faster in large vaults.
+- The app runs with stricter security settings.
+- Saved-locally wording no longer suggests a backup: the status bar says "Saved on this Mac (not a backup)".
+
+### Fixed
+- Quitting no longer stalls for seconds after the window closes.
+- The first keyboard shortcut pressed right after launch is no longer lost.
+- Moving a document keeps the relative paths in its front matter working, and repairing links after a rename no longer interrupts your typing with a changed-on-disk notice.
+
+### Not yet
+- Vault sync with Git is included but switched off by default. It is experimental and not yet proven between two Macs. The switch is in Settings › Advanced and takes effect the next time WriteFlex starts.
+
 ## [0.29.0-alpha.2] — 2026-11-21
 
 An alpha: early, and it can break.

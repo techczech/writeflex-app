@@ -22,6 +22,8 @@ export type UseSettings = {
   revert: (index: number) => void
   /** Re-read values and changelog after a main-owned setting action (for example a Counted mark). */
   refresh: () => void
+  /** The stored values have been read once (or the read failed and the defaults stand). */
+  loaded: boolean
 }
 
 /**
@@ -36,6 +38,7 @@ export function useSettings(apply: (key: string, value: SettingValue | null) => 
   const valuesRef = useRef<SettingsRecord>({})
   valuesRef.current = values
   const [changelog, setChangelog] = useState<SettingsChangeEntry[]>([])
+  const [loaded, setLoaded] = useState(false)
   // The applier routes through a ref so this hook's callbacks stay stable while App re-renders.
   const applyRef = useRef(apply)
   applyRef.current = apply
@@ -47,11 +50,13 @@ export function useSettings(apply: (key: string, value: SettingValue | null) => 
         if (cancelled) return
         setValues(record)
         setChangelog(log)
+        setLoaded(true)
         // Boot-time application: every persisted choice takes effect on this window now.
         for (const [key, value] of Object.entries(record)) applyRef.current(key, value)
       })
       .catch(() => {
         /* settings are convenience state — a failed pull leaves every surface on its default */
+        if (!cancelled) setLoaded(true)
       })
     return () => { cancelled = true }
   }, [])
@@ -122,5 +127,5 @@ export function useSettings(apply: (key: string, value: SettingValue | null) => 
       .catch((error: unknown) => onError?.(error))
   }, [onError])
 
-  return { values, changelog, set, revert, refresh: () => { void refresh() } }
+  return { values, changelog, set, revert, refresh: () => { void refresh() }, loaded }
 }

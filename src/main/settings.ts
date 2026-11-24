@@ -1,3 +1,4 @@
+import { SYNC_VAULTS_KEY, syncVaultPreferences, syncPreferenceKey } from '../shared/git-sync-settings'
 import type { SharingWorkspaceRoots } from './sharing-local-roots'
 import { folioKey, normalisedFolioDir } from './folio-dir'
 import {
@@ -178,6 +179,7 @@ export class SettingsStore {
   #path: string
   #data: SettingsData
   #shared: SharedPreferences | null = null
+  #syncWrites: Promise<unknown> = Promise.resolve()
   #needsMigration = false
   #listeners = new Set<(key: string) => void>()
   #shownExampleRoot: () => string | null
@@ -686,6 +688,8 @@ export class SettingsStore {
 
   /** The stored value for `key`, or null when unset (the renderer applies that surface's default). */
   get(key: string): SettingValue | null {
+    const sync = syncPreferenceKey(key)
+    if (sync && this.#shared) return syncVaultPreferences(this.#shared.get(SYNC_VAULTS_KEY))[sync.id]?.[sync.field] ?? (sync.field === 'enabled' ? false : 3)
     if (key.startsWith('accounts.') || schema.def(key)?.type === 'secret') return null
     if (this.#shared?.owns(key)) return this.#shared.get(key)
     return this.#data.values[key] ?? null
@@ -741,9 +745,39 @@ export class SettingsStore {
     return entry ? { ...entry } : null
   }
 
+  /** A machine value whose loss matters (Git sync's next-open intent): set without a changelog entry and report whether
+   *  it reached settings.json. A failed write keeps the value in memory, as `set` does; the caller decides how to recover.
+   *  Machine values only: preferences go through `set`, which owns their shared-store path. */
+  async setDurable(key: string, value: SettingValue | null, _label: string): Promise<boolean> {
+    if (syncPreferenceKey(key) || this.#shared?.owns(key)) throw new Error('A preference is not a machine value.')
+    if (key.startsWith('accounts.') || schema.def(key)?.type === 'secret' || key === APP_KEYS_SETTING || RETIRED_SETTING_KEYS.has(key)) throw new Error('Change this setting in Settings.')
+    if (value === null) delete this.#data.values[key]
+    else this.#data.values[key] = value
+    const written = this.#persist()
+    for (const listener of this.#listeners) listener(key)
+    return written
+  }
+
+  /** One writer for entry-level changes; read only after earlier persistence completed. */
+  updateSyncVault(id: string, patch: Partial<import('../shared/git-sync-settings').SyncVaultPreference>): Promise<void> {
+    if(!/^[a-f0-9]{64}$/.test(id))return Promise.reject(new Error('Invalid sync vault.'))
+    const work=this.#syncWrites.catch(()=>undefined).then(async()=>{
+      const entries=syncVaultPreferences(this.get(SYNC_VAULTS_KEY))
+      entries[id]={...(entries[id]??{enabled:false,wait:3}),...patch}
+      if(this.#shared)await this.#shared.persist(SYNC_VAULTS_KEY,JSON.stringify(entries))
+      else this.#setLegacy(SYNC_VAULTS_KEY,JSON.stringify(entries),'Git sync preferences',{log:false})
+    })
+    this.#syncWrites=work;return work
+  }
+
   /** IPC writers await this method; a shared preference never falls back to settings.json. */
   async setPersisted(key: string, value: SettingValue | null, label: string, opts?: { log?: boolean }): Promise<ChangelogEntry | null> {
     if (key.startsWith('accounts.') || schema.def(key)?.type === 'secret' || key === APP_KEYS_SETTING) throw new Error('Change this setting in Settings.')
+    const sync = syncPreferenceKey(key)
+    if (sync && this.#shared) {
+      await this.updateSyncVault(sync.id,sync.field==='enabled'?{enabled:value===true}:{wait:([1,3,10].includes(Number(value))?Number(value):3) as 1|3|10})
+      return null
+    }
     if (this.#shared?.owns(key)) {
       await this.#shared.persist(key, value)
       return null

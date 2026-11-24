@@ -10,6 +10,7 @@
  * reached from here: the restore point it begins for each agent turn, the snapshot its executor takes
  * before a capability writes, and the restore points its proposal store begins and discards.
  */
+import { protectSnapshotAppends } from './git-vault-sync-private-history'
 import type { JournalEntry } from '@bridle/core'
 import { assertCollectionWritable } from './collection-write-gate'
 import { snapshotBytes, type SnapshotBytesMeta } from './snapshot-bytes'
@@ -40,6 +41,7 @@ export function gatedSnapshots(
   root: string,
   store: Omit<CollectionSnapshots, 'snapshotBytes' | 'restoreTo'> & { restoreTo(restorePointId: string, opts?: StoreRestoreOptions): Promise<string[]> },
 ): CollectionSnapshots {
+  protectSnapshotAppends(store)
   const asked = guardRestorePlans(store)
   return {
     entries: () => store.entries(),

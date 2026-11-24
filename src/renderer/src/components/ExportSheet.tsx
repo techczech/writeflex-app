@@ -1,5 +1,8 @@
+import '../styles/export-epub.css'
+import { ExportEpubFields, useEpubExport } from './ExportEpubFields'
+import { EPUB_EXPORT_AVAILABLE } from '../../../shared/epub-feature'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { Download, FileCode2, FileText, History } from 'lucide-react'
+import { BookOpen, Download, FileCode2, FileText, History } from 'lucide-react'
 import { cueChipText, cueTotal } from '../../../shared/folio-version-changes'
 import { useFolioCues } from '../plan/folio-cues-store'
 import type { ExportFormat, HtmlExportOptions } from '../../../preload'
@@ -31,6 +34,7 @@ import {
   snapshotExportPresetLastUsed,
   snapshotExportPresetSettings,
   type ExportPresetAction,
+  type ExportPresetFormat,
   type ExportPresetState,
 } from '../../../shared/export-presets'
 
@@ -95,6 +99,7 @@ export type ExportSheetProps = {
   collection: { name: string; pieces: number; htmlPieces?: number; leftOut?: ExportLeftOut[]; dir?: string } | null
   onExport: (choice: { scope: ExportScope; format: ExportFormat; html?: HtmlExportOptions; keepTocDepth?: true }) => Promise<ExportSheetOutcome>
   onReveal: () => void
+  prepareEpub?: Parameters<typeof useEpubExport>[0]
   onClose: () => void
   /** Palette commands reopen the sheet directly at the action's owning mode. */
   initialPresetAction?: ExportPresetOpenAction
@@ -113,9 +118,11 @@ type TocDepthHomes = Record<ExportScope, ExportTocDepthHome | null>
 
 export type ExportPresetOpenAction = 'apply' | 'update' | 'save-as' | 'manage' | 'rename' | 'delete' | 'move-up' | 'move-down'
 
-const FORMATS: ExportFormat[] = ['html', 'docx']
-const FORMAT_LABELS: Record<ExportFormat, string> = { html: 'HTML', docx: 'Word' }
-const FORMAT_HINTS: Record<ExportFormat, string> = {
+// A build without EPUB export (the public source) offers HTML and Word only.
+const FORMATS: ExportPresetFormat[] = EPUB_EXPORT_AVAILABLE ? ['html', 'docx', 'epub'] : ['html', 'docx']
+const FORMAT_LABELS: Record<ExportPresetFormat, string> = { html: 'HTML', docx: 'Word', epub: 'EPUB' }
+const FORMAT_HINTS: Record<ExportPresetFormat, string> = {
+  epub: 'One ebook for your reading app.',
   html: 'One self-contained file — styles and images travel inside it, so it opens anywhere, offline.',
   docx: 'A real Word document — headings, lists and tables as Word’s own styles, with the images inside it.',
 }
@@ -165,7 +172,7 @@ function useUnsavedDraft(dir: string | null): string | null {
   return cueTotal(cues) > 0 ? `The working draft has changes no saved version holds: ${cueChipText(cues)}.` : null
 }
 
-export function ExportSheet({ workspaceRoot, title, words, collection, onExport, onReveal, onClose, initialPresetAction, tocDepthHomes, inFolio = false, onSaveFolioVersionFirst }: ExportSheetProps): JSX.Element {
+export function ExportSheet({ workspaceRoot, title, words, collection, onExport, onReveal, onClose, initialPresetAction, tocDepthHomes, inFolio = false, onSaveFolioVersionFirst, prepareEpub }: ExportSheetProps): JSX.Element {
   // Read once at mount: the parent keys the sheet per open, so each open starts from its own file's default.
   const [scope, setScope] = useState<ExportScope>(() => defaultExportScope({ hasCollection: collection !== null, inFolio }))
   // The Contents depth's home per scope. A scope with a home shows and exports the file's value (Default
@@ -244,7 +251,14 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
     }
   }, [workspaceRoot])
 
-  const format = presetState?.choice.format ?? 'html'
+  const chosenFormat = presetState?.choice.format ?? 'html'
+  const format = FORMATS.includes(chosenFormat) ? chosenFormat : 'html'
+  const isEpub = format === 'epub'
+  const keepLineBreaks = presetState?.choice.keepLineBreaks !== false
+  const epub = useEpubExport(isEpub ? prepareEpub : undefined, keepLineBreaks, order.said?.text)
+  const ebookBusy = epub.saving || epub.cancelling
+  const modalBusy = busy || ebookBusy
+  const ebookComplete = isEpub && epub.complete !== null
   // After Make export follow the running order, the count is the one main reports for the repaired manifest.
   const collectionPieces = collection ? order.pieces ?? (format === 'html' ? collection.htmlPieces ?? collection.pieces : collection.pieces) : 0
   // Only HTML follows a Folio's manifest, so only HTML can leave a listed entry out.
@@ -262,7 +276,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
     : []
 
   const setOptions = useCallback((next: ExportSheetOptions): void => {
-    if (!presetState) return
+    if (!presetState || format === 'epub') return
     if (home) {
       // Kept in this sheet only; the export carries it and main saves it with the file as it runs.
       if (next.tocDepth !== options.tocDepth) {
@@ -272,15 +286,16 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
       const { tocDepth: _shown, ...rest } = next
       next = lastUsedDepth === undefined ? rest : { ...rest, tocDepth: lastUsedDepth }
     }
-    dispatchPreset({ type: 'change', choice: exportPresetChoice(format, next) })
+    dispatchPreset({ type: 'change', choice: { ...exportPresetChoice(format, next), keepLineBreaks: presetState.choice.keepLineBreaks } })
   }, [dispatchPreset, format, home, homeScope, lastUsedDepth, options.tocDepth, presetState])
 
-  const setFormat = useCallback((next: ExportFormat): void => {
+  const setFormat = useCallback((next: ExportPresetFormat): void => {
     if (!presetState) return
     dispatchPreset({ type: 'change', choice: { ...presetState.choice, format: next } })
   }, [dispatchPreset, presetState])
 
   const run = useCallback(() => {
+    if (format === 'epub') { void epub.save(); return }
     if (running.current) return
     // The whole Folio goes out as it stands now, not as any saved version: offer to keep it first (ticket 11).
     if (scope === 'collection' && unsaved !== null && saveOffer === 'idle') { setSaveOffer('asking'); return }
@@ -299,7 +314,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
         running.current = false
         setBusy(false)
       })
-  }, [collection, format, home, onExport, options, saveOffer, scope, unsaved])
+  }, [collection, epub.save, format, home, onExport, options, saveOffer, scope, unsaved])
 
   // ADR-0029: "↵ is Choose where…". The scope rows and Format buttons are type="button", so a plain ↵ on
   // one would only re-press it; on these choice fields ↵ submits the sheet, as a native radio does.
@@ -313,7 +328,11 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
   const move = (event: KeyboardEvent, forward: boolean, list: 'scope' | 'format'): void => {
     event.preventDefault()
     if (list === 'format') {
-      setFormat(FORMATS[(FORMATS.indexOf(format) + (forward ? 1 : FORMATS.length - 1)) % FORMATS.length])
+      const available = prepareEpub ? FORMATS : FORMATS.filter(candidate => candidate !== 'epub')
+      const index = available.indexOf(format)
+      const next = available[(index + (forward ? 1 : available.length - 1)) % available.length]
+      setFormat(next)
+      formRef.current?.querySelector<HTMLButtonElement>('[data-export-format="' + next + '"]')?.focus()
       return
     }
     if (collection) setScope(forward ? 'collection' : 'piece')
@@ -326,11 +345,12 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
       event.preventDefault()
       // Esc steps back from preset naming/managing to the sheet, and otherwise cancels (ADR-0029) —
       // including while the choices are still loading, when there is no sub-mode to step back from.
+      if (isEpub && (ebookBusy || epub.preparing)) { epub.cancel(); return }
       if (!busy && presetState !== null && presetState.mode !== 'sheet') dispatchPreset({ type: 'show-sheet' })
       else if (!busy) onClose()
       return
     }
-    if (presetState?.mode === 'sheet' && /^[1-9]$/.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (!(event.target instanceof HTMLInputElement) && presetState?.mode === 'sheet' && /^[1-9]$/.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
       const preset = presetState.presets[Number(event.key) - 1]
       if (preset) { event.preventDefault(); dispatchPreset({ type: 'apply', presetId: preset.id }) }
     }
@@ -344,7 +364,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
       : <><b>{title}</b> · {count(words)} words</>
 
   return (
-    <div className="version-modal-backdrop" role="presentation" onMouseDown={() => { if (!busy) onClose() }}>
+    <div className="version-modal-backdrop" role="presentation" onMouseDown={() => { if (!modalBusy) onClose() }}>
       <form
         ref={formRef}
         tabIndex={-1}
@@ -353,25 +373,25 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
         aria-modal="true"
         aria-labelledby="export-sheet-title"
         onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={(event) => { event.preventDefault(); if (done) onClose(); else if (!busy && !order.busy) run() }}
+        onSubmit={(event) => { event.preventDefault(); if (done || ebookComplete) onClose(); else if (!modalBusy && !order.busy) run() }}
         onKeyDown={keys}
       >
         <div className="vm-head">
           <Download className="icon" aria-hidden="true" />
           <h2 id="export-sheet-title">{presetState?.mode === 'managing' ? 'Export · Manage presets' : 'Export'}</h2>
-          <button className="export-close" type="button" aria-label="Close export sheet" onClick={() => { if (!busy) onClose() }}>×</button>
+          <button className="export-close" type="button" aria-label="Close export sheet" onClick={() => { if (!modalBusy) onClose() }}>×</button>
         </div>
         <p className="export-subject">
           {presetState?.mode === 'saving-as'
             ? <>Current export choices remain in place</>
             : presetState?.mode === 'managing'
               ? <>All presets are editable. Their order becomes the order in the export sheet.</>
-              : subject}
+              : isEpub && collection ? <b>{collection.name}</b> : subject}
         </p>
 
         {done === null && presetState === null && <p className="export-loading" role="status">Loading export choices…</p>}
 
-        {done === null && presetState !== null && (
+        {done === null && !ebookComplete && presetState !== null && (
           <>
             <div className="export-fields">
               <ExportPresetControls
@@ -380,8 +400,8 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
                 initialManagementAction={initialPresetAction === 'rename' ? 'rename' : undefined}
               />
               {presetState.mode === 'sheet' && <>
-              <ExportOptionControls format={format} options={options} changedFields={changedFields} onChange={setOptions} tocDepthHome={home} />
-              {collection && (
+              {!isEpub && <ExportOptionControls format={format} options={options} changedFields={changedFields} onChange={setOptions} tocDepthHome={home} />}
+              {!isEpub && collection && (
                 <div className="export-field">
                   <div className="export-flabel" id="export-scope-label">What</div>
                   <div className="export-scope" role="radiogroup" aria-labelledby="export-scope-label">
@@ -435,6 +455,15 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
                   )}
                 </div>
               )}
+              {isEpub && prepareEpub && collection && <div className="export-epub-fields-group">
+                <ExportEpubFields folio={collection.name} summary={epub.ready} metadata={epub.metadata}
+                  setMetadata={epub.setMetadata} keepLineBreaks={keepLineBreaks}
+                  setKeepLineBreaks={keep => dispatchPreset({ type: 'change', choice: { ...presetState.choice, keepLineBreaks: keep } })}
+                  disabled={ebookBusy} omissions={epub.omissions} setOmissions={epub.setOmissions} />
+                <ExportOrderNotice state={order} disabled={ebookBusy} onExportAnyway={() => { order.dismiss(); epub.useExportOrder() }} />
+                {epub.ready?.problems.filter(item => !['unwritten', 'metadata'].includes(item.code) && (item.code !== 'order' || !order.line)).map(item =>
+                  <p key={item.message} className="export-error" role="alert">{item.message}</p>)}
+              </div>}
               <div className="export-field">
                 <div className="export-flabel" id="export-format-label">Format</div>
                 <div className="sw-seg export-seg" role="group" aria-labelledby="export-format-label">
@@ -442,6 +471,8 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
                     <button
                       key={candidate}
                       type="button"
+                      data-export-format={candidate}
+                      disabled={ebookBusy || (candidate === 'epub' && !prepareEpub)}
                       aria-pressed={format === candidate}
                       onClick={() => setFormat(candidate)}
                       onKeyDown={(event) => {
@@ -451,17 +482,19 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
                     >
                       {candidate === 'html'
                         ? <FileCode2 className="ic" aria-hidden="true" />
-                        : <FileText className="ic" aria-hidden="true" />}
+                        : candidate === 'epub' ? <BookOpen className="ic" aria-hidden="true" />
+                          : <FileText className="ic" aria-hidden="true" />}
                       {FORMAT_LABELS[candidate]}
                     </button>
                   ))}
                 </div>
-                <div className="export-fhint">{FORMAT_HINTS[format]}</div>
+                <div className="export-fhint">{isEpub && !prepareEpub ? 'EPUB export is available for a Folio.' : FORMAT_HINTS[format]}</div>
+                {EPUB_EXPORT_AVAILABLE && !prepareEpub && !isEpub && <div className="export-fhint">Open a Folio to export an EPUB.</div>}
               </div>
               </>}
             </div>
             {/* The honest line is derived from the current payload, so it cannot drift from the file. */}
-            {presetState.mode === 'sheet' && <p className="export-leaves" aria-live="polite">{exportDisclosure(format, options)}</p>}
+            {presetState.mode === 'sheet' && <p className="export-leaves" aria-live="polite">{format === 'epub' ? 'Comments, private flags and research stay behind. Footnotes and written alternatives come with it.' : exportDisclosure(format, options)}</p>}
           </>
         )}
 
@@ -481,15 +514,24 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
           </p>
         )}
         {done !== null && done.tocDepthNote && <p className="export-toc-note" role="status">{done.tocDepthNote}</p>}
+        {isEpub && epub.problem && <p className="export-error" role="alert">{epub.problem.message}</p>}
+        {isEpub && epub.cancelled && <p className="export-warn" role="status">Export cancelled. No new ebook was saved.</p>}
+        {isEpub && epub.complete && <p className="export-done" role="status">
+          <b>EPUB saved.</b> {epub.complete.name}{epub.complete.warning && <> · {epub.complete.warning}</>}
+        </p>}
         {problem !== null && <p className="export-error" role="alert">{problem}</p>}
 
-        {done === null && saveOffer === 'asking' && unsaved !== null && collection?.dir !== undefined && (
+        {!isEpub && done === null && saveOffer === 'asking' && unsaved !== null && collection?.dir !== undefined && (
           <div className="export-offer" role="group" aria-labelledby="export-offer-head" data-testid="export-save-offer">
             <b id="export-offer-head">Save a Folio version first?</b>
             <span>{unsaved} A saved version keeps exactly what you are about to send, so you can compare it, export it again or come back to it.</span>
           </div>
         )}
         <div className="vm-actions">
+          {isEpub && (ebookBusy || epub.preparing) && <span className="export-working" role="status">
+            <span className="export-spin" aria-hidden="true" />
+            {epub.cancelling ? 'Cancelling…' : epub.saving ? 'Creating EPUB…' : 'Checking Folio…'}
+          </span>}
           {busy && (
             <span className="export-working" role="status">
               <span className="export-spin" aria-hidden="true" />
@@ -497,7 +539,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
             </span>
           )}
           <span className="grow" aria-hidden="true" />
-          {done === null && presetState?.mode === 'sheet' && saveOffer === 'asking' && unsaved !== null && collection?.dir !== undefined && (
+          {!isEpub && done === null && presetState?.mode === 'sheet' && saveOffer === 'asking' && unsaved !== null && collection?.dir !== undefined && (
             <>
               <button className="btn ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button>
               <button className="btn ghost" type="button" data-testid="export-save-decline" disabled={busy} onClick={() => { setSaveOffer('declined'); run() }}>Export without saving</button>
@@ -507,7 +549,7 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
               </button>
             </>
           )}
-          {done === null && presetState?.mode === 'sheet' && !(saveOffer === 'asking' && unsaved !== null && collection?.dir !== undefined) && (
+          {!isEpub && done === null && presetState?.mode === 'sheet' && !(saveOffer === 'asking' && unsaved !== null && collection?.dir !== undefined) && (
             <>
               <button className="btn ghost" type="button" onClick={onClose} disabled={busy}>Cancel</button>
               {/* Off while Make export follow the running order runs: the export would read a manifest being rewritten. */}
@@ -517,6 +559,22 @@ export function ExportSheet({ workspaceRoot, title, words, collection, onExport,
               </button>
             </>
           )}
+          {isEpub && presetState?.mode === 'sheet' && !ebookComplete && <>
+            {ebookBusy || epub.preparing
+              ? <button className="btn ghost" type="button" disabled={epub.cancelling} onClick={epub.cancel}>Cancel export</button>
+              : <button className="btn ghost" type="button" onClick={onClose}>Cancel</button>}
+            {((epub.problem && ['source', 'stale'].includes(epub.problem.code)) || epub.cancelled || epub.ready?.problems.some(item => ['image', 'alternative', 'empty', 'generation'].includes(item.code))) &&
+              <button className="btn ghost" type="button" disabled={ebookBusy || epub.preparing} onClick={epub.checkAgain}>Check again</button>}
+            <button className="btn primary" type="submit" disabled={!epub.valid || order.busy}>
+              <Download className="icon" aria-hidden="true" />
+              {epub.problem?.code === 'destination' ? 'Choose another location…' : 'Choose where…'}
+            </button>
+          </>}
+          {ebookComplete && <>
+            <button className="btn ghost" type="button" onClick={() => void window.writeflex.folioEpub.reveal().catch(() => setProblem('The saved ebook has moved or changed.'))}>Show in Finder</button>
+            <button className="btn ghost" type="button" onClick={() => void window.writeflex.folioEpub.open().catch(() => setProblem('The ebook could not be opened.'))}>Open ebook</button>
+            <button className="btn primary" type="submit" autoFocus>Done</button>
+          </>}
           {done !== null && (
             <>
               {left(done) > 0 && (

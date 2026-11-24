@@ -194,6 +194,7 @@ export function registerWindow(window: BrowserWindow): WindowState {
   const webContentsId = window.webContents.id
   states.set(webContentsId, state)
   window.on('closed', () => {
+    const teardownStartedAt = Date.now()
     recordMainProcessDiagnostic('window.closed', { windowId: webContentsId, hasAgent: Boolean(state.agent), hasAgentReady: Boolean(state.agentReady) })
     state.bindGeneration += 1 // a still-booting agent disposes itself on arrival (generation mismatch)
     state.workspaceWatcher?.dispose()
@@ -241,6 +242,9 @@ export function registerWindow(window: BrowserWindow): WindowState {
     else if (state.agent) trackAgentDisposal(state.agent, webContentsId, closeWork)
     states.delete(webContentsId)
     notifyWindowReleased()
+    // This handler runs synchronously between the window going and quit starting: how long it held the
+    // main process (closing folder watches once took seconds here; shared-folder-watch.ts).
+    recordMainProcessDiagnostic('window.closed.teardown', { windowId: webContentsId, elapsedMs: Date.now() - teardownStartedAt })
   })
   return state
 }

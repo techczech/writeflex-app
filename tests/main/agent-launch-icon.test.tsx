@@ -6,6 +6,7 @@ import { commandRegistry } from '../../src/renderer/src/commands/registry'
 import { renderActionsHere, renderedRows } from '../helpers/actions-here-render'
 import { PlanProjectionNav } from '../../src/renderer/src/components/PlanView'
 import { CommandPalette, type AppCommand } from '../../src/renderer/src/components/CommandPalette'
+import { groupSubsections } from '../../src/renderer/src/components/palette-groups'
 import { ArmedSkillCard, SkillThreadBanner, ThreadSwitcherPopover } from '../../src/renderer/src/components/AgentSkillSurfaces'
 import { RightPaneTabs } from '../../src/renderer/src/components/RightPaneTabs'
 import { AGENT_ICON, launchesAgent } from '../../src/renderer/src/components/agent-icon'
@@ -89,9 +90,10 @@ test("the Folio outline pane's Help with this report shows the agent icon, not t
   expect(button).not.toContain('lucide-list-ordered')
 })
 
-const renderPalette = (commands: AppCommand[], skills: SkillMeta[] = [], activeFile: string | null = 'notes/a.md'): string => renderToStaticMarkup(
+const renderPalette = (commands: AppCommand[], skills: SkillMeta[] = [], activeFile: string | null = 'notes/a.md', initialQuery = ''): string => renderToStaticMarkup(
   <CommandPalette
     mode="commands"
+    initialQuery={initialQuery}
     files={[]}
     folders={[]}
     commands={commands}
@@ -121,16 +123,19 @@ const paletteRows = (html: string): Map<string, string> => {
 }
 
 test('the palette row for the report skill shows the agent icon; other commands keep theirs', () => {
-  // Handed a non-agent icon, as App could: the palette still draws the agent's for an agent launch.
-  const rows = paletteRows(renderPalette([
-    { id: REPORT_SKILL_COMMAND, label: 'Help with this report', group: 'Skills', icon: ListOrdered, run: () => {} },
-    { id: 'plan.open', label: 'Open Folio outline', group: 'Navigation', icon: ListOrdered, run: () => {} },
-  ]))
-  const report = rows.get('Help with this report')
+  // As App hands them: the registry's task group and sub-group, and a non-agent icon the palette must not draw.
+  const commands: AppCommand[] = [
+    { id: REPORT_SKILL_COMMAND, label: 'Help with this report', group: 'Work with the agent', subgroup: 'Skills', icon: ListOrdered, run: () => {} },
+    { id: 'plan.open', label: 'Open Folio outline', group: 'Collect and plan', subgroup: 'Collections, Board and Folio outline', icon: ListOrdered, run: () => {} },
+  ]
+  // The palette opens on task groups: opening Work with the agent lists the report skill under Skills.
+  expect(groupSubsections(commands, 'Work with the agent').map((section) => [section.label, section.commands.map((command) => command.id)])).toEqual([['Skills', [REPORT_SKILL_COMMAND]]])
+  // Its row, reached by typing its name, is drawn by the same command-row branch as in the opened group.
+  const report = paletteRows(renderPalette(commands, [], 'notes/a.md', 'Help with this report')).get('Help with this report')
   expect(report).toContain(AGENT)
   expect(report).toContain('agent-icon')
   expect(report).not.toContain('lucide-list-ordered')
-  const plan = rows.get('Open Folio outline')
+  const plan = paletteRows(renderPalette(commands, [], 'notes/a.md', 'Open Folio outline')).get('Open Folio outline')
   expect(plan).toContain('lucide-list-ordered')
   expect(plan).not.toContain(AGENT)
 })

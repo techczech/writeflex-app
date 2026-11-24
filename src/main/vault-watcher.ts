@@ -3,7 +3,7 @@
  * git bringing another Mac's edit), on its own: it does not depend on the document watcher, so it works
  * when Settings turns `workspace.watchExternalChanges` off.
  *
- * Two non-recursive native watches: the root itself, so that a `.writeflex` folder appearing, vanishing
+ * Two non-recursive watches (served from the root's one shared native watch, shared-folder-watch.ts): the root itself, so that a `.writeflex` folder appearing, vanishing
  * or being replaced re-attaches the second; and the `.writeflex` folder, where only the name
  * `vault.json` counts (the app's own temporary files and other store files are ignored). Every touch is
  * passed to `onTouched` through a debounce with a maximum wait, so a steady stream of events still
@@ -15,7 +15,8 @@
  * or a watch that cannot be made on a folder that is there) is closed and attached again after 1 s,
  * 5 s, 30 s and then every 30 s, until the watcher is disposed; each re-attach makes the store look.
  */
-import { lstatSync, watch as nativeWatch, type FSWatcher } from 'node:fs'
+import { lstatSync } from 'node:fs'
+import { watchFolder, type FolderWatch } from './shared-folder-watch.ts'
 import { join } from 'node:path'
 
 export const VAULT_NOTICE_DEBOUNCE_MS = 220
@@ -55,10 +56,11 @@ export function boundedDebounce(fn: () => void, waitMs: number, maxWaitMs: numbe
 export type VaultFileWatch = { dispose: () => void }
 
 /** The native watch, injectable for tests: `(path, listener) => watcher`, non-recursive. */
-export type WatchFunction = (path: string, listener: (filename: string | null) => void) => Pick<FSWatcher, 'close' | 'on'>
+export type WatchFunction = (path: string, listener: (filename: string | null) => void) => Pick<FolderWatch, 'close' | 'on'>
 
-const defaultWatch: WatchFunction = (path, listener) =>
-  nativeWatch(path, { encoding: 'utf8' }, (_event, filename) => listener(filename === null ? null : String(filename)))
+/** Shares the root's one native watch (shared-folder-watch.ts), so closing these costs no FSEvents restart. */
+const defaultWatch = (root: string): WatchFunction => (path, listener) =>
+  watchFolder(path, { anchor: root }, (_event, filename) => listener(filename === null ? null : String(filename)))
 
 export const VAULT_FOLDER_NAME = '.writeflex'
 export const VAULT_FILE_NAME = 'vault.json'
@@ -130,17 +132,17 @@ export function watchVaultFile(
     retryDelaysMs?: readonly number[]
   } = {},
 ): VaultFileWatch {
-  const watch = options.watch ?? defaultWatch
+  const watch = options.watch ?? defaultWatch(root)
   const debounce = boundedDebounce(onTouched, options.debounceMs ?? VAULT_NOTICE_DEBOUNCE_MS, options.maxWaitMs ?? VAULT_NOTICE_MAX_WAIT_MS)
   const matches = nameMatcher(options.ignoresCase)
   const delays = options.retryDelaysMs?.length ? options.retryDelaysMs : VAULT_WATCH_RETRY_MS
   let disposed = false
-  let folderWatch: Pick<FSWatcher, 'close' | 'on'> | null = null
+  let folderWatch: Pick<FolderWatch, 'close' | 'on'> | null = null
   /** Identity of the folder `folderWatch` is attached to, so an unchanged folder is not re-attached. */
   let folderId: string | null = null
-  let rootWatch: Pick<FSWatcher, 'close' | 'on'> | null = null
+  let rootWatch: Pick<FolderWatch, 'close' | 'on'> | null = null
 
-  const close = (watcher: Pick<FSWatcher, 'close'> | null): void => {
+  const close = (watcher: Pick<FolderWatch, 'close'> | null): void => {
     try {
       watcher?.close()
     } catch {

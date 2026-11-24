@@ -16,7 +16,7 @@
 // Pure: no Electron, no React, no CodeMirror.
 import { canonChord, defineRegistry, isValidChord, type CommandDef, type MenuDecl } from '@app-patterns/commands'
 import { MENU_PLACEMENT } from './command-menu'
-import { COMMAND_CATALOGUE, type CatalogueRow } from './command-catalogue'
+import { commandCatalogue, type CatalogueRow } from './command-catalogue'
 
 export type Group =
   | 'File'
@@ -92,8 +92,10 @@ export function bridleIdOf(writeflexId: string): string {
   return writeflexId.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
 }
 
-const WRITEFLEX_OF_BRIDLE = new Map<string, string>([...COMMAND_CATALOGUE.map((row) => [bridleIdOf(row.id), row.id] as [string, string])])
-const CATALOGUE_BY_ID = new Map<string, CatalogueRow>(COMMAND_CATALOGUE.map((row) => [row.id, row]))
+// Shortcut storage recognises every supported ID so disabling a feature preserves its saved preferences.
+const ALL_COMMANDS = commandCatalogue(true)
+const WRITEFLEX_OF_BRIDLE = new Map<string, string>([...ALL_COMMANDS.map((row) => [bridleIdOf(row.id), row.id] as [string, string])])
+const CATALOGUE_BY_ID = new Map<string, CatalogueRow>(ALL_COMMANDS.map((row) => [row.id, row]))
 
 /** Renderer id for a registry command, including the main-dispatched palette rows; null if unknown. */
 export const writeflexIdOf = (bridleId: string): string | null => WRITEFLEX_OF_BRIDLE.get(bridleId) ?? null
@@ -147,7 +149,7 @@ function defOf(row: CatalogueRow): CommandDef<Group, void> | null {
 }
 
 export const DEFS: CommandDef<Group, void>[] = [
-  ...COMMAND_CATALOGUE.flatMap((row) => { const def = defOf(row); return def ? [def] : [] }),
+  ...ALL_COMMANDS.flatMap((row) => { const def = defOf(row); return def ? [def] : [] }),
 ]
 
 export const registry = defineRegistry<Group, void>(DEFS)

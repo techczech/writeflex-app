@@ -1,3 +1,5 @@
+import { EXPERIMENTAL_GIT_SYNC_KEY, SYNC_VAULTS_KEY, experimentalGitSyncOn, syncVaultPreferences } from '../../shared/git-sync-settings'
+import { stopSentences } from '../../shared/git-sync-view'
 // WriteFlex's own pages in the shared Settings window (the package's custom-page slot). They hold what
 // is not a single setting: the ChatGPT sign-in, the model and voice lists, the Counted Collections, the
 // command-line tool and Get started. Every call goes through window.writeflexSettings, which main answers
@@ -196,9 +198,20 @@ function GetStartedPage(): JSX.Element {
   )
 }
 
+function GitSyncPreferences({ view }: { view: SettingsView }): JSX.Element {
+  const entries = syncVaultPreferences(view.state.settings[SYNC_VAULTS_KEY])
+  const [problem,setProblem]=useState<string|null>(null)
+  const [tools,setTools]=useState<boolean|null>(null)
+  const askTools=(action:'status'|'install'|'check')=>void window.writeflexSettings.gitTools(action).then(r=>setTools(r.present),()=>setTools(null))
+  useEffect(()=>askTools('status'),[])
+  const change=(id:string,value:{enabled?:boolean;wait?:number})=>void window.writeflexSettings.gitSync(id,value).then(()=>setProblem(null),e=>setProblem(String(e.message??e)))
+  return <div className="wf-page">{tools===false&&<div className="wf-page-row" role="status"><span className="grow">{stopSentences['tools-missing']}</span><button type="button" onClick={()=>askTools('install')}>Install Command Line Tools</button><button type="button" onClick={()=>askTools('check')}>Check again</button></div>}<p className="wf-page-note">{experimentalGitSyncOn(view.state.settings[EXPERIMENTAL_GIT_SYNC_KEY]) ? 'Git sync is per vault on this Mac. Turn it on in that vault’s Sync tab.' : 'Git sync is experimental. While “Vault sync with Git (experimental)” in Advanced is off, nothing is sent or received; switching it on or off takes effect the next time WriteFlex starts.'}</p>{Object.entries(entries).map(([id,entry]) => <div className="wf-page-row" key={id}><span className="grow">{entry.path ?? `Vault ${id.slice(0,8)}`}{tools===false&&entry.enabled?' (paused)':''}</span><label><input type="checkbox" aria-label={`Sync for ${id}`} checked={entry.enabled} onChange={e => change(id,{enabled:e.target.checked})} />Sync</label><select aria-label={`Send wait for ${id}`} value={entry.wait} onChange={e => change(id,{wait:Number(e.target.value)})}>{[1,3,10].map(n => <option key={n} value={n}>{n} {n===1?'minute':'minutes'}</option>)}</select></div>)}<Notice text={problem}/></div>
+}
+
 /** The custom pages, in sidebar order. Ids match settings-host.ts CUSTOM_PAGES. */
 export function useCustomPages(view: SettingsView | null, openAccounts: () => void): CustomPage[] {
   return useMemo(() => (view ? [
+    { id: 'git-sync', label: 'Git sync', icon: 'refresh-cw', render: () => <GitSyncPreferences view={view} /> },
     { id: 'sign-in', label: 'Sign in', icon: 'log-in', placement: 'all' as const, render: () => <SignIn /> },
     { id: 'model', label: 'Model', icon: 'bot', render: () => <ModelPage view={view} openAccounts={openAccounts} /> },
     { id: 'voice', label: 'Voice', icon: 'audio-lines', render: () => <VoicePage view={view} /> },

@@ -2,9 +2,11 @@
 // Every palette command: its id, label, task group, default chords (display spelling, ⌃⌥⇧⌘ order)
 // and whether Settings › Shortcuts may rebind it. Pure data for main, the CLI and the Settings window.
 
+import { isTableSyncCommand } from './table-sync-feature'
+
 export type CatalogueRow = { id: string; label: string; task: string; keys: string[]; bindable: boolean }
 
-export const COMMAND_CATALOGUE: readonly CatalogueRow[] = [
+const catalogue: readonly CatalogueRow[] = [
   {"id":"edit.strikethrough","label":"Strikethrough","task":"Write","keys":[],"bindable":true},
   {"id":"skill.run.report-structure","label":"Help with this report","task":"Work with the agent","keys":[],"bindable":true},
   {"id":"threads.new","label":"Start a new conversation","task":"Work with the agent","keys":[],"bindable":true},
@@ -173,6 +175,7 @@ export const COMMAND_CATALOGUE: readonly CatalogueRow[] = [
   {"id":"sounds.ambient","label":"Toggle ambient sound","task":"Set up WriteFlex","keys":[],"bindable":true},
   {"id":"appearance.darkTheme","label":"Use dark theme","task":"Set up WriteFlex","keys":[],"bindable":true},
   {"id":"appearance.lightTheme","label":"Use light theme","task":"Set up WriteFlex","keys":[],"bindable":true},
+  {"id":"appearance.systemTheme","label":"Match system","task":"Set up WriteFlex","keys":[],"bindable":true},
   {"id":"collection.openBoard","label":"Open Board","task":"Collect and plan","keys":["⇧⌘B"],"bindable":true},
   {"id":"collection.openDashboard","label":"Open Folder dashboard","task":"Collect and plan","keys":[],"bindable":true},
   {"id":"widget.newRecordBrowser","label":"New record browser…","task":"Write","keys":[],"bindable":true},
@@ -215,6 +218,8 @@ export const COMMAND_CATALOGUE: readonly CatalogueRow[] = [
   {"id":"research.capture","label":"Capture to research…","task":"Collect and plan","keys":[],"bindable":true},
   {"id":"plan.open","label":"Open Folio outline","task":"Collect and plan","keys":[],"bindable":true},
   {"id":"folio.linkFiles","label":"Link this Folio's chapters to their files","task":"Collect and plan","keys":[],"bindable":true},
+  {"id":"folio.pick","label":"Open a Folio…","task":"Collect and plan","keys":[],"bindable":true},
+  {"id":"folio.allComments","label":"All comments in this Folio","task":"Review and versions","keys":[],"bindable":true},
   {"id":"folio.open","label":"Open Folio","task":"Collect and plan","keys":["⌘↵"],"bindable":true},
   {"id":"folio.previousPiece","label":"Previous piece in Folio","task":"Collect and plan","keys":[],"bindable":true},
   {"id":"folio.nextPiece","label":"Next piece in Folio","task":"Collect and plan","keys":[],"bindable":true},
@@ -277,6 +282,7 @@ export const COMMAND_CATALOGUE: readonly CatalogueRow[] = [
   {"id":"citation.insertReference","label":"Insert reference…","task":"Collect and plan","keys":[],"bindable":true},
   {"id":"sync.open","label":"Open Sync","task":"Find and manage files","keys":[],"bindable":true},
   {"id":"sync.status","label":"Show sync status","task":"Find and manage files","keys":[],"bindable":true},
+  {"id":"sync.send","label":"Send now","task":"Find and manage files","keys":[],"bindable":true},
   {"id":"sync.now","label":"Sync now","task":"Find and manage files","keys":[],"bindable":true},
   {"id":"sync.check","label":"Check for remote changes","task":"Find and manage files","keys":[],"bindable":true},
   {"id":"sync.history","label":"Open backup history","task":"Find and manage files","keys":[],"bindable":true},
@@ -382,3 +388,9 @@ export const COMMAND_CATALOGUE: readonly CatalogueRow[] = [
   {"id":"folder.reveal","label":"Reveal containing folder in Finder","task":"Find and manage files","keys":[],"bindable":true},
   {"id":"insert.widget","label":"Insert widget…","task":"Write","keys":[],"bindable":true},
 ]
+
+/** The catalogue defaults to commands available with optional integrations switched off. */
+export const commandCatalogue = (tableSyncEnabled = false): readonly CatalogueRow[] =>
+  tableSyncEnabled ? catalogue : catalogue.filter(row => !isTableSyncCommand(row.id))
+
+export const COMMAND_CATALOGUE = commandCatalogue()

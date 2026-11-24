@@ -9,7 +9,7 @@
  *
  * The frame: `sandbox="allow-scripts allow-forms"` (never allow-same-origin; guarded by a throw),
  * `credentialless`, `referrerpolicy="no-referrer"`, and the page's text, with the policy, referrer,
- * base and agent lead in front, given by `srcdoc` (an opaque origin), and a random `name` by which main
+ * base and agent lead in front, served as a separate document with an opaque origin, and a random `name` by which main
  * knows the frame when it grants it the keyboard. Nothing else is ever set on it.
  *
  * Engagement (security round 3): nothing the widget sends grants it anything. Over every widget that is
@@ -66,6 +66,7 @@ type Entry = {
    *  created, and finds the frame by it when it grants it the keyboard (whatever name the widget takes later). */
   name: string
   document: string
+  documentUrl?: string
   options: WidgetFrameOptions
   engaged: boolean
   stopped: boolean
@@ -150,7 +151,16 @@ function load(runtime: Runtime, entry: Entry): void {
   if (!runtime.channel.activate(entry.frame)) throw new Error('widget-frame: the frame has no window to activate')
   entry.stopped = false
   entry.frame.dataset.widgetState = 'running'
-  entry.frame.srcdoc = entry.document
+  const documentUrl = entry.frame.ownerDocument.defaultView?.writeflex?.widgetDocumentUrl
+  if (documentUrl) {
+    const url = documentUrl(entry.document)
+    if (!url) throw new Error('widget-frame: the document was refused')
+    entry.documentUrl = url
+    entry.frame.src = url
+  } else {
+    // The standalone browser harness has no Electron bridge.
+    entry.frame.srcdoc = withWidgetLead(entry.document)
+  }
   runtime.guard.watch()
 }
 
@@ -159,6 +169,11 @@ function unload(runtime: Runtime, entry: Entry): void {
   runtime.guard.release(entry.frame)
   runtime.channel.deactivate(entry.frame)
   entry.frame.removeAttribute('srcdoc')
+  entry.frame.removeAttribute('src')
+  if (entry.documentUrl) {
+    entry.frame.ownerDocument.defaultView?.writeflex?.releaseWidgetDocumentUrl(entry.documentUrl)
+    entry.documentUrl = undefined
+  }
 }
 
 function runtimeFor(win: Window): Runtime {
@@ -285,7 +300,7 @@ export function mountWidgetFrame(options: WidgetFrameOptions): WidgetFrame {
   box.className = 'wf-widget-frame-box'
   box.style.cssText = 'position:relative;width:100%;height:100%;overflow:hidden'
   const runtime = runtimeFor(win)
-  const entry: Entry = { frame, cover, name, document: withWidgetLead(options.html), options, engaged: false, stopped: false, disposed: false }
+  const entry: Entry = { frame, cover, name, document: options.html, options, engaged: false, stopped: false, disposed: false }
   const onCoverPress = (event: PointerEvent): void => {
     if (!event.isTrusted || event.button !== 0 || entry.disposed || entry.engaged) return
     event.preventDefault()
@@ -303,6 +318,7 @@ export function mountWidgetFrame(options: WidgetFrameOptions): WidgetFrame {
     options.container.appendChild(box)
     load(runtime, entry)
   } catch (error) {
+    unload(runtime, entry)
     runtime.entries.delete(entry)
     box.remove()
     if (runtime.entries.size === 0) runtime.dispose()

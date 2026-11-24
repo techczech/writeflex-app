@@ -118,7 +118,14 @@ export function TabBar({
   const [treeView, setTreeView] = useState(true)
 
   useLayoutEffect(() => {
-    if (orientation !== 'horizontal' || !measureRef.current) return
+    if (orientation !== 'horizontal') return
+    // Active and pinned tabs are never folded. A strip containing only those has no width decision.
+    if (tabs.every(path => path === active || pinned.includes(path))) {
+      setStripVisible(current => sameTabList(current, tabs) ? current : tabs)
+      onStripVisibleChange?.(tabs)
+      return
+    }
+    if (!measureRef.current) return
     const strip = measureRef.current.closest<HTMLElement>('.tabstrip')
     if (!strip) return
     const measure = (): void => {

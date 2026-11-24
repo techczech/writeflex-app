@@ -1,6 +1,6 @@
 {
   "name": "writeflex-app",
-  "version": "0.29.0-alpha.2",
+  "version": "0.29.0-alpha.3",
   "private": true,
   "type": "module",
   "main": "./out/main/bootstrap.js",
@@ -16,7 +16,7 @@
     "build:agent-skill": "bun scripts/build-agent-skill.mjs",
     "build:backup-helper": "bun scripts/build-backup-helper.ts",
     "dist:mac": "bun run build && electron-builder --mac --publish never",
-    "dist:win": "bun run build && electron-builder --win --publish never"
+    "dist:win": "bun run build && electron-builder --win --publish never && node scripts/verify-electron-security.cjs release/win-unpacked/WriteFlex.exe"
   },
   "dependencies": {
     "@bridle/contract": "file:./vendor/bridle/bridle-contract-0.3.1.tgz",
@@ -46,6 +46,7 @@
     "dompurify": "^3.4.17",
     "electron-updater": "6.8.12",
     "fflate": "0.8.3",
+    "katex": "0.16.47",
     "lucide-react": "^1.21.0",
     "markmap-lib": "^0.18.12",
     "markmap-view": "^0.18.12",
@@ -89,6 +90,17 @@
     "appId": "net.dominiklukes.writeflex",
     "productName": "WriteFlex",
     "asar": true,
+    "beforePack": "scripts/stage-backup-executable.cjs",
+    "afterSign": "scripts/verify-electron-security.cjs",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "resetAdHocDarwinSignature": true
+    },
     "directories": {
       "output": "release"
     },
@@ -98,6 +110,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "node_modules/.cache/writeflex/backup-native/${os}-${arch}",
+        "to": "backup-helper"
+      },
       {
         "from": "resources/skills",
         "to": "skills"
@@ -125,13 +141,6 @@
       {
         "from": "agent-skill-dist",
         "to": "agent-skill"
-      },
-      {
-        "from": "out/backup-helper",
-        "to": "vault-sync-helper",
-        "filter": [
-          "writeflex-backup-helper.js"
-        ]
       },
       {
         "from": "vendor/bridle/LICENSE",
@@ -181,6 +190,7 @@
         }
       ],
       "category": "public.app-category.productivity",
+      "sign": "scripts/sign-electron-package.cjs",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",

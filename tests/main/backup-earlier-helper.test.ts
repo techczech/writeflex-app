@@ -1,6 +1,6 @@
-import { expect, test } from 'bun:test'
+import { expect } from 'bun:test'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { createBackupEngine, createGitleaksScanner, urlDigest } from '@app-patterns/vault-sync'
 import { ordinaryScopeTest } from '@app-patterns/vault-sync/helper/host'
@@ -12,13 +12,13 @@ import { Workspace } from '../../src/main/workspace'
 import { versionTextReader } from '../../src/main/cli/history-store'
 import { readVersionContent } from '../../src/main/version-content'
 import { earlierFixture } from './backup-earlier-fixture'
+import { findGitleaks, missingBuild, testRequiring } from '../helpers/built-output'
+
 const NODE = Bun.which('node')
-if (!NODE) throw new Error('real Node on PATH required')
-// PATH first; the developer-Mac locations remain the fallback, so a host without gitleaks on PATH
-// fails only the tests that run it, as before.
 const GIT = Bun.which('git') ?? '/Library/Developer/CommandLineTools/usr/bin/git'
-const GITLEAKS = Bun.which('gitleaks') ?? '/opt/homebrew/bin/gitleaks'
-test('built helper preview and ongoing engine capture require exact private authority; all 213 names restore',async()=>{
+const GITLEAKS = findGitleaks()
+const testHelper = testRequiring(missingBuild('out/backup-helper/writeflex-backup-helper.js') ?? (NODE ? undefined : 'Node is missing from PATH') ?? (GITLEAKS ? undefined : 'gitleaks executable is missing'))
+testHelper('built helper preview and ongoing engine capture require exact private authority; all 213 names restore',async()=>{
   const f=earlierFixture(),remote=join(f.base,'remote.git'),file=join(f.base,'private','earlier-locations.jsonl')
   const env={PATH:'/usr/bin:/bin:/usr/sbin:/sbin',HOME:f.base,GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1'}
   const git=(cwd:string,args:string[])=>{const r=spawnSync(GIT,args,{cwd,env});if(r.status!==0)throw new Error(r.stderr.toString());return r.stdout}
@@ -27,7 +27,7 @@ test('built helper preview and ongoing engine capture require exact private auth
   const config=join(f.base,'synthetic-config.json')
   writeFileSync(config,JSON.stringify({configVersion:2,machineId:'synthetic',tools:{git:GIT,gitleaks:GITLEAKS},vaults:[{id:'v',path:f.root,include:WRITEFLEX_SCOPE.include,exclude:WRITEFLEX_SCOPE.exclude,history:WRITEFLEX_HISTORY}]}))
   const preview=(approved:boolean)=>{
-    const r=spawnSync(NODE,[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'preview','--config',config,'--vault','v'],{env:{...env,...(approved?{[HISTORY_APPROVAL_ENV]:file}:{})},timeout:10000,maxBuffer:4*1024*1024})
+    const r=spawnSync(NODE!,[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'preview','--config',config,'--vault','v'],{env:{...env,...(approved?{[HISTORY_APPROVAL_ENV]:file}:{})},timeout:10000,maxBuffer:4*1024*1024})
     expect(r.status).toBe(0);return JSON.parse(r.stdout.toString())
   }
   expect(preview(false).history.state).toBe('unavailable')
@@ -39,7 +39,7 @@ test('built helper preview and ongoing engine capture require exact private auth
   appendHistoryApproval(file,f.root,c.earlier,()=>true)
   expect(preview(true).history).toMatchObject({state:'complete',summary:{namedVersions:213}})
   const bridged = await new Promise<any>((resolveResult,reject) => {
-    const child = spawn(NODE,[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'--github-credentials','preview','--config',config,'--vault','v'],{env:{...env,[HISTORY_APPROVAL_ENV]:file},stdio:['ignore','pipe','pipe','pipe','pipe']})
+    const child = spawn(NODE!,[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'--github-credentials','preview','--config',config,'--vault','v'],{env:{...env,[HISTORY_APPROVAL_ENV]:file},stdio:['ignore','pipe','pipe','pipe','pipe']})
     let stdout='',stderr=''
     const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('synthetic bridge timed out'))},10000)
     child.stdout!.on('data',c=>stdout+=c);child.stderr!.on('data',c=>stderr+=c)
@@ -52,8 +52,7 @@ test('built helper preview and ongoing engine capture require exact private auth
   })
   expect(bridged.history).toMatchObject({state:'complete',summary:{namedVersions:213}})
   expect(preview(false).history.state).toBe('unavailable')
-  if(!existsSync(GITLEAKS))throw new Error('real scanner required')
-  const engine=createBackupEngine({machineId:'synthetic',gitPath:GIT,gitEnv:env,settleMs:5,homeDir:'/synthetic/nonexistent',mountInfo:async()=>null,remoteVisibility:async()=>'private',secretScanner:createGitleaksScanner({gitleaksPath:GITLEAKS,searchDirs:[]}),historyProjection:writeflexHistoryProjection(ordinaryScopeTest(WRITEFLEX_SCOPE),undefined,file)})
+  const engine=createBackupEngine({machineId:'synthetic',gitPath:GIT,gitEnv:env,settleMs:5,homeDir:'/synthetic/nonexistent',mountInfo:async()=>null,remoteVisibility:async()=>'private',secretScanner:createGitleaksScanner({gitleaksPath:GITLEAKS!,searchDirs:[]}),historyProjection:writeflexHistoryProjection(ordinaryScopeTest(WRITEFLEX_SCOPE),undefined,file)})
   await engine.enable(f.root,{expectedDestinationDigest:urlDigest(remote)})
   const captured=await engine.capture(f.root,WRITEFLEX_SCOPE)
   expect(captured.projected).toMatchObject({files:3})
