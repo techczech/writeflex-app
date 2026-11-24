@@ -17,6 +17,7 @@ import { allStates, stateForSender } from './state'
 import type { SettingsStore } from './settings'
 import type { GitVaultSyncResult } from './git-vault-sync-types'
 import type { RemoteProtection } from '../shared/remote-protection'
+import { createRemoteCopy, type ProtectionHolder } from './remote-copy'
 export const canonicalSyncRoot=(root:string)=>{try{return realpathSync(root)}catch{return resolve(root)}}
 export const relatedSyncRoots=(a:string,b:string)=>a===b||a.startsWith(b+'/')||b.startsWith(a+'/')
 const translatedPaths=(from:string,to:string,paths:readonly string[])=>paths.map(p=>relative(to,join(from,p))).filter(p=>p!== '..'&&!p.startsWith('../')&&!isAbsolute(p))
@@ -49,9 +50,6 @@ function withoutTools(root: string): { result: GitVaultSyncResult; discovery: Aw
     gitFolder: hasGitFolder(root),
   }
 }
-/** What the remote-copy status reads and keeps per vault (issue 257): read-only Git and the backup tool's records. */
-type ProtectionHolder = { protection?: RemoteProtection; saves?: number[]; gitFolder: boolean; discovery: { state: string } }
-function createRemoteCopy() { return { refreshProtection: (_root: string, _holder: ProtectionHolder, _force: boolean): void => {}, currentProtection: (_holder: ProtectionHolder): RemoteProtection | undefined => undefined } }
 /** Eligibility is read-only; the off switch must not be toggled to ask the engine to inspect. */
 async function inspectForApp(root: string): ReturnType<typeof inspectGitVault> {
   const discovery = await inspectGitVault(root)
@@ -87,7 +85,7 @@ function syncMarker(settings: SettingsStore, root: string): boolean {
  *  periodic check, quit send or recovery. The Sync tab gets the remote-copy status (issue 257) and whether the
  *  vault carries a sync marker; nothing here writes to a vault. */
 function registerSyncOff(settings: SettingsStore): GitSyncLifecycle {
-  const { refreshProtection, currentProtection } = createRemoteCopy()
+  const { refreshProtection, currentProtection, tool } = createRemoteCopy(settings)
   const holders = new Map<string, ProtectionHolder & { discovery: Awaited<ReturnType<typeof inspectGitVault>> }>()
   ipcMain.handle('git-sync:call', async (event, input: { action: string; value?: unknown }) => {
     const displayRoot = stateForSender(event.sender.id).workspace?.root
@@ -100,7 +98,7 @@ function registerSyncOff(settings: SettingsStore): GitSyncLifecycle {
     holders.set(root, holder)
     refreshProtection(root, holder, input.action === 'open')
     return { root: displayRoot, result: withoutTools(root).result, discovery: holder.discovery, gitFolder: holder.gitFolder, busy: false, wait: 3,
-      experimentalOff: true, syncMarker: syncMarker(settings, root), protection: currentProtection(holder) }
+      experimentalOff: true, syncMarker: syncMarker(settings, root), protection: currentProtection(holder), backupTool: tool }
   })
   settingsPreferenceHook = async () => { throw new Error(EXPERIMENTAL_GIT_SYNC_OFF) }
   // Only the time of a save, so a save after the last verified upload never leaves the remote copy green. No Git.
@@ -129,8 +127,8 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
     return take(0)
   }
   const engine = createGitVaultSync({ settings, ownWrite, withFileLock })
-  type Slot = { /** Issue 257: the remote-copy evidence (not in the public build). */ protection?: RemoteProtection; /** Issue 257: when WriteFlex last saved here (any vault, sync on or off), newest last, at most 50. */ saves?: number[]; /** A quit's send did not finish: its intent is kept until a send here confirms nothing is left. */ quitMark?: boolean; /** What the writer is told about that writing. */ leftAtQuit?: 'sending' | 'waiting' | 'sent'; result: GitVaultSyncResult; discovery: Awaited<ReturnType<typeof inspectGitVault>>; busy: boolean; followUp?: 'send' | 'manual-send' | 'fetch'; wait: number; editedAt?: number; failedAt?: number; next: number; checked: number; gitFolder: boolean; firstEdited?: number; edits: Record<string, number>; progress: SendProgress }
-  const { refreshProtection, currentProtection } = createRemoteCopy()
+  type Slot = { /** Issue 257: the backup tool's evidence and the folder's ignored writing, read from records only. */ protection?: RemoteProtection; /** Issue 257: when WriteFlex last saved here (any vault, sync on or off), newest last, at most 50. */ saves?: number[]; /** A quit's send did not finish: its intent is kept until a send here confirms nothing is left. */ quitMark?: boolean; /** What the writer is told about that writing. */ leftAtQuit?: 'sending' | 'waiting' | 'sent'; result: GitVaultSyncResult; discovery: Awaited<ReturnType<typeof inspectGitVault>>; busy: boolean; followUp?: 'send' | 'manual-send' | 'fetch'; wait: number; editedAt?: number; failedAt?: number; next: number; checked: number; gitFolder: boolean; firstEdited?: number; edits: Record<string, number>; progress: SendProgress }
+  const { refreshProtection, currentProtection, tool } = createRemoteCopy(settings)
   const slots = new Map<string, Slot>(), requests = new Map<string, { sender: number; root: string; windowRoot: string; resolve: (paths: string[]) => void }>()
   const waitKey = (root: string) => 'git-sync.wait.' + createHash('sha256').update(root).digest('hex')
   const members = (root: string) => allStates().filter(s => !!s.workspace && relatedSyncRoots(canonicalSyncRoot(s.workspace.root), root) && !s.window.isDestroyed())
@@ -246,7 +244,7 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
       if (input.action === 'disable') await withdraw(root)
       if (slot.discovery.state !== 'tools-missing' || input.action === 'open' || input.action === 'disable') Object.assign(slot, withoutTools(root))
       refreshProtection(root, slot, input.action === 'open' || input.action === 'disable')
-      return { ...slot, protection: currentProtection(slot), paused: settings.get(enabledKey(root)) === true, root:displayRoot }
+      return { ...slot, protection: currentProtection(slot), backupTool: tool, paused: settings.get(enabledKey(root)) === true, root:displayRoot }
     }
     const slot = await load(root)
     if (input.action === 'open' && !slot.result.enabled) slot.result = await engine.status(root)
@@ -266,7 +264,7 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
     else if (input.action === 'open' && slot.result.enabled) { slot.checked = Date.now(); void operate(root, slot.quitMark === true) }
     if (input.action === 'e2e-idle' && e2eWriteHooksAllowed(process.env, app.isPackaged)) { if (input.value === 'offline' && slot.result.reason?.code === 'network-unavailable') slot.failedAt = Date.now() - 900001; else { slot.editedAt = Date.now() - slot.wait * 60000; slot.next = 0; tick() } }
     refreshProtection(root, slot, ['open', 'enable', 'disable'].includes(input.action))
-    return { ...slot, protection: currentProtection(slot), root:displayRoot }
+    return { ...slot, protection: currentProtection(slot), backupTool: tool, root:displayRoot }
   })
   settingsPreferenceHook=async(id,value)=>{
     const pref=syncVaultPreferences(settings.get(SYNC_VAULTS_KEY))[id]

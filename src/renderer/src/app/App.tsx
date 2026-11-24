@@ -1,7 +1,6 @@
 import type { EpubPreparationOptions, EpubPrepareReply } from '../../../shared/publication-export'
 import { EPUB_EXPORT_AVAILABLE } from '../../../shared/epub-feature'
 import { useGitSync, GitPanel, GitMark, ProtectionMark } from '../sync/GitSync'
-import { REMOTE_COPY_AVAILABLE } from '../../../shared/remote-protection'
 import { EXPERIMENTAL_GIT_SYNC_OFF } from '../../../shared/git-sync-settings'
 import { releaseEarlyChords, stopHoldingEarlyChords } from './early-chords'
 import { nativeEditRoleChord } from './shortcuts'
@@ -8404,7 +8403,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 </RoomBinderSwitch>
               </div>
               <div className={leftTab === 'sync' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Sync">
-                {gitSync.view && ((gitSync.view.gitFolder && (REMOTE_COPY_AVAILABLE || !gitSync.view.experimentalOff)) || gitSync.view.result.enabled) ? <><GitPanel controller={gitSync} modifiedAt={tabModifiedAt} open={open} />{syncStatus.input.availability === 'ready' && <details><summary>Backup receipts</summary><SyncPanel controller={syncStatus} selectedPath={active} label="Backup receipts" /></details>}</> : <SyncPanel controller={syncStatus} selectedPath={active} />}
+                {gitSync.view && (gitSync.view.gitFolder || gitSync.view.result.enabled) ? <><GitPanel controller={gitSync} modifiedAt={tabModifiedAt} open={open} />{syncStatus.input.availability === 'ready' && <details><summary>Backup receipts</summary><SyncPanel controller={syncStatus} selectedPath={active} label="Backup receipts" /></details>}</> : <SyncPanel controller={syncStatus} selectedPath={active} />}
               </div>
               <div className={leftTab === 'search' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Search vault">
                 <SearchPanel onOpenHit={(match) => { jumpToMatch(match); noteOpenSource(match.path, 'search') }} onClose={closeSearch} focus={folderFocus} />
@@ -8763,7 +8762,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             />
           )}
           <StatusBar
-            noticeSlot={gitSync.view?.result.enabled ? <GitMark controller={gitSync} onOpen={openSyncTab} /> : REMOTE_COPY_AVAILABLE && gitSync.view?.gitFolder ? <ProtectionMark view={gitSync.view} onOpen={openSyncTab} /> : <SyncTitleStatus controller={syncStatus} open={syncPopoverOpen} onOpenChange={setSyncPopoverOpen} onOpenSync={openSyncTab} />}
+            noticeSlot={gitSync.view?.result.enabled ? <GitMark controller={gitSync} onOpen={openSyncTab} /> : gitSync.view?.gitFolder ? <ProtectionMark view={gitSync.view} onOpen={openSyncTab} /> : <SyncTitleStatus controller={syncStatus} open={syncPopoverOpen} onOpenChange={setSyncPopoverOpen} onOpenSync={openSyncTab} />}
             readingVersionName={readingVersionNow?.name ?? null}
             outboxWaiting={outboxWaiting}
             outboxRejected={outboxRejected}

@@ -1,5 +1,5 @@
 import { DEFAULT_THEME, THEME_SETTING } from './appearance'
-import { EXPERIMENTAL_GIT_SYNC_KEY, SYNC_VAULTS_KEY, migratedSyncPreferences } from './git-sync-settings'
+import { BACKUP_TOOL_RECORDS_KEY, EXPERIMENTAL_GIT_SYNC_KEY, SYNC_VAULTS_KEY, migratedSyncPreferences } from './git-sync-settings'
 // WriteFlex's settings schema (the shared Settings window, export and import, `writeflex settings`) and
 // the bridge from the file WriteFlex used before shared settings.
 //
@@ -39,11 +39,11 @@ export function modelRefError(v: SettingValue): string | null {
 
 /**
  * Settings that name something to run, somewhere to send data, or a folder that becomes a code or data
- * path are `importable: false` (set on this Mac only). In WriteFlex that is the Diary folder: sessions
- * are written into it. There is no other path, endpoint or program among WriteFlex's settings, so no
- * pair of folders can overlap.
+ * path are `importable: false` (set on this Mac only). In WriteFlex that is the Diary folder (sessions
+ * are written into it) and the backup tool's records folder (read only, never written). There is no
+ * other path, endpoint or program among WriteFlex's settings.
  */
-export const THIS_MAC_ONLY: ReadonlySet<string> = new Set(['diary.folder'])
+export const THIS_MAC_ONLY: ReadonlySet<string> = new Set(['diary.folder', BACKUP_TOOL_RECORDS_KEY])
 
 export const schema = defineSchema({
   app: APP_ID,
@@ -129,6 +129,7 @@ export const schema = defineSchema({
     choice('snapshots.retention', 'Keep history for', 'history', 'History', [['30', '30 days'], ['90', '90 days'], ['forever', 'Forever']], 'forever'),
 
     // ---- Advanced ----
+    { key: BACKUP_TOOL_RECORDS_KEY, label: 'Backup tool records', section: 'advanced', group: 'Backup', type: 'path', default: '', importable: false, help: 'The settings folder of a backup tool outside WriteFlex, such as ~/.toolname; its status is read from ~/.local/state/toolname. WriteFlex reads these records, never changes them, to show whether a Git vault’s writing reached its remote. Empty: no backup tool is connected. Set on this Mac only.' },
     on(EXPERIMENTAL_GIT_SYNC_KEY, 'Vault sync with Git (experimental)', 'advanced', 'Experimental', 'Lets a vault send its changes to its Git repository and bring in changes from your other Macs. Not yet proven between two Macs. While off, WriteFlex sends and receives nothing. Takes effect the next time WriteFlex starts.', false),
     { key: APP_KEYS_SETTING, label: 'Keys kept by WriteFlex itself', section: 'advanced', group: 'Keyboard', type: 'text', default: '', importable: false, validate: appKeysError, help: 'Shortcuts the Shortcuts page cannot hold: keys inside the Plan and lists, and keys from an older WriteFlex the shared shortcuts refuse. Written as {"command": "chord"}.' },
 

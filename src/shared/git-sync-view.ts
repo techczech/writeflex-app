@@ -1,6 +1,6 @@
 import type { GitVaultSyncResult, GitSyncReasonCode, GitSyncReason } from '../main/git-vault-sync-types'
 import type { GitVaultDiscovery } from '../main/git-vault-discovery'
-import type { RemoteProtection } from './remote-protection'
+import type { BackupToolInfo, RemoteProtection } from './remote-protection'
 export const stopSentences: Record<GitSyncReasonCode, string> = {
   'repository-state': 'This folder is not ready to receive changes. Finish the other operation in your repository, then try again.',
   'repository-changed': 'This folder or its branch has moved or changed. Check where it is kept, then turn sync off and on again.',
@@ -20,7 +20,7 @@ export const stopSentences: Record<GitSyncReasonCode, string> = {
   'git-renames': "This Mac's Git handles renames in a way WriteFlex cannot sync safely. Update Xcode or its Command Line Tools in Software Update, then try again.",
   'tools-missing': "Git sync needs Apple's Command Line Tools, which are not installed on this Mac.",
 }
-export type GitView = { root: string; result: GitVaultSyncResult; discovery: GitVaultDiscovery; gitFolder: boolean; busy: boolean; /** Sync is switched on but cannot run: no Command Line Tools. */ paused?: boolean; /** Vault sync with Git was switched off at launch (Settings › Advanced): none of it runs. */ experimentalOff?: boolean; /** Switched off, and this vault carries a sync marker (its preference or sync's own files). */ syncMarker?: boolean; wait: number; editedAt?: number; failedAt?: number; edits?: Record<string, number>; /** Writing the last quit could not send: being sent on this opening, then sent. */ leftAtQuit?: 'sending' | 'waiting' | 'sent'; /** Issue 257: this folder's remote copy (not in the public build). */ protection?: RemoteProtection }
+export type GitView = { root: string; result: GitVaultSyncResult; discovery: GitVaultDiscovery; gitFolder: boolean; busy: boolean; /** Sync is switched on but cannot run: no Command Line Tools. */ paused?: boolean; /** Vault sync with Git was switched off at launch (Settings › Advanced): none of it runs. */ experimentalOff?: boolean; /** Switched off, and this vault carries a sync marker (its preference or sync's own files). */ syncMarker?: boolean; wait: number; editedAt?: number; failedAt?: number; edits?: Record<string, number>; /** Writing the last quit could not send: being sent on this opening, then sent. */ leftAtQuit?: 'sending' | 'waiting' | 'sent'; /** Issue 257: what the backup tool's records and Git's ignore rules say about this folder's remote copy. */ protection?: RemoteProtection; /** Issue 257: the backup tool those records come from, named before they are first read. */ backupTool?: BackupToolInfo }
 
 export function gitState(view: GitView, now = Date.now()) {
   const r = view.result

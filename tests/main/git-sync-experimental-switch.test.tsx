@@ -14,7 +14,6 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { GitPanel } from '../../src/renderer/src/sync/GitSync'
 import type { GitView } from '../../src/shared/git-sync-view'
 import { EXPERIMENTAL_GIT_SYNC_OFF } from '../../src/shared/git-sync-settings'
-import { REMOTE_COPY_AVAILABLE } from '../../src/shared/remote-protection'
 import { testWithGitleaks } from '../helpers/built-output'
 
 const gitEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' }
@@ -117,7 +116,8 @@ test('switched off: the Sync tab shows the remote copy and what a save means, a 
     result: { enabled: false, state: 'idle', pending: [], internalPending: [], incoming: [], pairs: [], warnings: [] } } as unknown as GitView
   const controller = (view: GitView) => ({ view, call: async () => {} })
   const off = renderToStaticMarkup(<GitPanel controller={controller({ ...base, experimentalOff: true })} open={() => {}} />)
-  if (REMOTE_COPY_AVAILABLE) expect(off).toContain('aria-label="Remote copy"')
+  // Issue 257's Remote copy status shows in every build; nothing offers to turn sync on.
+  expect(off).toContain('aria-label="Remote copy"')
   expect(off).toContain('WriteFlex saves your writing on this Mac only and sends nothing anywhere.')
   expect(off).not.toContain('Turn on sync for this vault')
   expect(off).not.toContain('switched off (experimental)')

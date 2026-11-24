@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { gitState, leftAtQuitSentence, stopSentences, stopSentence, shortReason, documents, shortPath, type GitView, type GitSyncAction } from '../../../shared/git-sync-view'
 import { calendarTime } from '../components/relative-time'
 import type { ReactNode } from 'react'
-import { REMOTE_COPY_AVAILABLE, presentProtection } from '../../../shared/remote-protection'
+import { presentProtection } from '../../../shared/remote-protection'
 import './git-sync.css'
 export function useGitSync(root: string | null, readDirty: () => string[]) {
   const [view, setView] = useState<GitView | null>(null), current = useRef({ root, readDirty })
@@ -35,10 +35,9 @@ function Rows({ rows }: { rows: Array<[string, string]> }) {
   return <dl className="sync-list git-rows">{rows.map(([name, value]) => <div className="trow" key={name}><dt>{name} </dt><dd>{value}</dd></div>)}</dl>
 }
 const routeOf = (v: GitView) => ({ enabled: v.result.enabled, state: v.result.enabled ? gitState(v) : null, lastSentAt: v.result.lastSentAt, busy: v.busy })
-/** Issue 257: the remote copy of this folder (not shown in the public build). */
+/** Issue 257: the remote copy of this folder, from the backup tool's records and WriteFlex sync's sends; never from a save. */
 export function ProtectionSection({ view }: { view: GitView }) {
-  if (!REMOTE_COPY_AVAILABLE) return null
-  const p = presentProtection(view.protection, routeOf(view))
+  const p = presentProtection(view.protection, routeOf(view), Date.now(), view.protection?.tool ?? view.backupTool)
   return <section className="git-state git-protection" aria-label="Remote copy" data-protection={p.tone}>
     <Heading tone={p.tone}>{p.heading}</Heading>
     <ul className="git-routes">{p.routes.map(r => <li key={r.name} data-route={r.name}><i className={`sync-dot ${r.tone}`} aria-hidden="true" /><span><strong>{r.name}:</strong> {r.text}</span></li>)}</ul>
@@ -46,10 +45,9 @@ export function ProtectionSection({ view }: { view: GitView }) {
     {p.gaps.length > 0 && <div className="git-protection-gaps" role="note">{p.gaps.map(line => <p key={line}>{line}</p>)}</div>}
   </section>
 }
-/** Status-bar mark for a Git vault whose WriteFlex sync is off: the remote copy in a few words (not shown in the public build). */
+/** Status-bar mark for a Git vault whose WriteFlex sync is off: what the backup tool's records say, in a few words. */
 export function ProtectionMark({ view, onOpen }: { view: GitView; onOpen: () => void }) {
-  if (!REMOTE_COPY_AVAILABLE) return null
-  const p = presentProtection(view.protection, routeOf(view))
+  const p = presentProtection(view.protection, routeOf(view), Date.now(), view.protection?.tool ?? view.backupTool)
   const detail = `${p.heading}. ${[...p.routes.map(r => `${r.name}: ${r.text}`), ...p.lines, ...p.gaps].join(' ')}`
   return <button className={`git-sync-mark protection-mark ${p.tone}`} aria-label={`Remote copy: ${p.label}`} title={detail} onClick={onOpen}><i aria-hidden="true" /><strong>{p.label}</strong><span className="sync-announcement" role="status" aria-live="polite">{p.heading}</span></button>
 }

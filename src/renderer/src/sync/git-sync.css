@@ -25,7 +25,7 @@
 
 .git-panel .git-history-notice{font-size:11px;color:var(--ink-3)}
 
-/* Issue 257: the remote copy, (not shown in the public build). */
+/* Issue 257: the remote copy, from the backup tool's records and WriteFlex sync's sends. */
 .git-sync-mark.grey i{background:var(--ink-3)}
 .git-panel .git-protection .git-protection-gaps{border-left:2px solid var(--amber);padding-left:10px;margin:0 0 4px}
 .git-panel .git-protection .git-protection-gaps p{margin-bottom:6px}

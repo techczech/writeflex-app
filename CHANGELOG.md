@@ -9,6 +9,7 @@ An alpha: early, and it can break.
 - Open a Folio… in the command palette and the Collect menu, and Quick Open lists matching Folios first.
 - All comments in this Folio: one tab with every waiting comment and suggested edit across the Folio's parts, in running order.
 - Match system appearance: the editor and Settings follow your Mac's light or dark mode.
+- Backup status for a Git vault: if a backup tool outside WriteFlex keeps verification records, name its settings folder in Settings › Advanced › Backup › Backup tool records, and the status bar and Sync tab say whether this folder's last upload was verified.
 
 ### Changed
 - The editor and Settings keep clear of the Mac's window buttons, and toolbar controls line up.

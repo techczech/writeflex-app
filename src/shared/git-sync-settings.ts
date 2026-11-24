@@ -4,6 +4,8 @@ export const SYNC_VAULTS_KEY = 'sync.vaults'
 export const EXPERIMENTAL_GIT_SYNC_KEY = 'experimental.gitVaultSync'
 export const experimentalGitSyncOn = (value: unknown): boolean => value === true
 export const EXPERIMENTAL_GIT_SYNC_OFF = 'Vault sync with Git is switched off (experimental). Switch it on in Settings › Advanced; it takes effect the next time WriteFlex starts.'
+/** Issue 257: the folder holding a backup tool's records, read to show a Git vault's remote copy. This Mac only. */
+export const BACKUP_TOOL_RECORDS_KEY = 'backupTool.records'
 export type SyncVaultPreference = { enabled: boolean; wait: 1 | 3 | 10; path?: string }
 export function syncVaultPreferences(raw: unknown): Record<string, SyncVaultPreference> {
   try {
