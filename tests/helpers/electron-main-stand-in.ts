@@ -5,6 +5,7 @@ export const electronMainStandIn = {
     static getAllWindows(): never[] { return [] }
   },
   webFrameMain: { fromId: () => null },
+  nativeTheme: { shouldUseDarkColors: false, on: () => {}, removeListener: () => {} },
   Menu: {},
   net: {},
   session: {},

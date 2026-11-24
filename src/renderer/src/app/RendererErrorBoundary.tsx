@@ -1,4 +1,5 @@
 import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
+import { abandonEarlyChords } from './early-chords'
 import { saveUnsavedText, unsavedFileNames, unsavedStatus, unsavedTextForClipboard, watchUnsaved } from './unsaved-text'
 
 export function errorParts(value: unknown): { message: string; stack: string } {
@@ -24,6 +25,8 @@ export function RendererErrorSurface({ error }: { error: unknown }) {
   const details = [parts.message, parts.stack, window.location.href].filter(Boolean).join('\n\n')
   const [status, setStatus] = useState(unsavedStatus)
   const [copied, setCopied] = useState(false)
+  // The app will not start in this page: a chord noted at launch must never run (early-chords.ts).
+  useEffect(() => { abandonEarlyChords() }, [])
   useEffect(() => {
     const read = (): void => setStatus(unsavedStatus())
     read()

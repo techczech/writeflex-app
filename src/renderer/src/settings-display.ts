@@ -1,3 +1,4 @@
+import { syncVaultPreferences } from '../../shared/git-sync-settings'
 // Renderer-only choice labels; the persisted schema and its validation stay authoritative in main.
 import type { Schema, SettingDef, SettingValue, SettingsState } from '@app-patterns/settings'
 import { schema } from '../../shared/settings-schema'
@@ -47,7 +48,8 @@ export function settingsDisplaySchema(state: SettingsState, voices: SpeechVoiceI
     if (value === null || value === undefined || options.has(value)) continue
     options.set(value, key === 'editor.fixedLine' && typeof value === 'number' ? fixedLineCustomLabel(value) : String(value))
   }
-  const settings = schema.settings.map((def): SettingDef => {
+  const settings = schema.settings.filter(def => def.key !== 'sync.vaults').map((def): SettingDef => {
+    if (def.key === 'snapshots.retention' && Object.values(syncVaultPreferences(state.settings['sync.vaults'])).some(v=>v.enabled)) return {...def,help:'Older history is kept while sync is on'}
     const options = labels.get(def.key)
     return options ? { ...def, type: 'choice', options: [...options].map(([value, label]) => ({ value, label })) } : def
   })

@@ -89,7 +89,7 @@ export const FOLIO_READERS: ReadonlySet<PropertyKey> = new Set<PropertyKey>([
   // Paths and their judgement.
   'absolute', 'relative', 'isVisiblePath', 'classifyPath', 'assertDocumentPath', 'renameTarget',
   // Reads and listings.
-  'readFile', 'listFiles', 'listFilesAndFolders', 'listFilesIn', 'listFolders', 'listSources', 'checklistProgress', 'search',
+  'readFile', 'hasListedDocument', 'listFiles', 'listFilesAndFolders', 'listFilesIn', 'listFolders', 'listSources', 'checklistProgress', 'search',
   // The Collection's write turn: asks for it, writes nothing itself; every write made inside is one of the writers above.
   'exclusive', 'exclusiveAll', 'writersWaiting',
   // Per-call records and refusals, the own-write record and the write notice: none of them touches a file.

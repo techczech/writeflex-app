@@ -11,12 +11,12 @@ export const AGENT_SKILL_IDENTITY = {
   /** What the skill lets the person ask an agent for (the offer's sentence, in the person's terms; the owner's wording). */
   features: 'draft, edit and review your documents',
   tryExample: (agent: string): string => `Ask ${agent} to read a document in your WriteFlex Collection and suggest edits that tighten it.`,
-  /** The one `writeflex` command (src/main/cli/shim.ts): runs the app's binary in Node mode on the bundled command line. */
+  /** The one `writeflex` command (src/main/cli/shim.ts): selects the packaged command at bootstrap. */
   cli: {
     command: 'writeflex',
     appName: 'WriteFlex',
     bundleId: STABLE_BUNDLE_ID,
-    nodeEntry: 'Contents/Resources/app.asar/out/main/writeflex-cli.js',
+    appArgument: '--writeflex-cli',
     announceElsewhere: true
   }
 } as const

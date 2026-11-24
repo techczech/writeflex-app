@@ -133,9 +133,10 @@ export async function credentialMode(operation: string): Promise<number> {
   } catch { return 1 } finally { lifetime?.close() }
 }
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'"
-export function fixedCredentialCommand(executable: string, entry: string): string {
-  for (const path of [executable, entry]) if (!isAbsolute(path) || /[\0\r\n]/.test(path) || path.split('/').some(p => p === '.' || p === '..')) throw denied()
-  return `!ELECTRON_RUN_AS_NODE=1 ${quote(executable)} ${quote(entry)} credential`
+export function fixedCredentialCommand(executable: string, entry?: string): string {
+  const paths = entry === undefined ? [executable] : [executable, entry]
+  for (const path of paths) if (!isAbsolute(path) || /[\0\r\n]/.test(path) || path.split('/').some(p => p === '.' || p === '..')) throw denied()
+  return '!' + (entry === undefined ? '' : 'ELECTRON_RUN_AS_NODE=1 ') + paths.map(quote).join(' ') + ' credential'
 }
 /** Stock macOS /Applications is root:admin 0775. Only that exact folder may be group-writable; nothing below or above it. */
 export function trustedAncestor(path: string, stat: { mode: number; uid: number; gid: number }, uid = process.getuid?.()): boolean {
@@ -158,7 +159,7 @@ function trustedSelfPath(path: string, executable: boolean): string {
 }
 export interface HostBridge { hostCredentials: HostCredentialFactory; signal: AbortSignal; maxRuntimeMs: number; close(): void }
 /** Snapshot descriptors are used only when the supervisor explicitly enables this fixed mode. */
-export async function receiveHostBridge(executable: string, entry: string): Promise<HostBridge> {
+export async function receiveHostBridge(executable: string, entry?: string): Promise<HostBridge> {
   const lifetime = parentLifetime()
   try {
     const snapshot = validateSnapshot(await readFrame(privateDescriptor(3), SNAPSHOT_CAP, 5000, lifetime.signal))
@@ -169,7 +170,7 @@ export async function receiveHostBridge(executable: string, entry: string): Prom
     const close = () => { controller.abort(); for (const stream of streams) stream.destroy(); streams.clear() }
     lifetime.signal.addEventListener('abort', close, { once: true })
     const timer = setTimeout(close, Math.min(remaining, 6 * 60 * 60000))
-    const command = fixedCredentialCommand(trustedSelfPath(executable, true), trustedSelfPath(entry, false))
+    const command = fixedCredentialCommand(trustedSelfPath(executable, true), entry === undefined ? undefined : trustedSelfPath(entry, false))
     const live = () => !controller.signal.aborted && Date.now() + EXPIRY_MARGIN_MS < snapshot.expiresAt
     const hostCredentials: HostCredentialFactory = (vault, launch) => {
       const binding = snapshot.bindings.find(b => b.vaultId === vault.id && b.realRoot === vault.path && b.repositoryId === vault.github?.repositoryId && b.exactRemote.replace(/^https:\/\/github.com\//, '').replace(/\.git$/, '').toLowerCase() === vault.github?.repository.toLowerCase())

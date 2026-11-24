@@ -76,10 +76,13 @@ export type KeyboardGateHost = {
    *  on as any other key of main's own, without taking the keyboard back. Must also be a key `actsOn` acts on. */
   actsOnInEngaged?(input: HeldKey): boolean
   /** Start listening in the top frame for the marker key (`DELIVERY_MARKER`). Resolves, once the
-   *  listener is in place, to a wait that is true when the top frame has had the marker. Without this
-   *  port main acts on its own keys without waiting for the keys sent before them. */
-  watchMarker?(): Promise<() => Promise<boolean>>
+   *  listener is in place, to that listener: `seen` is true when the top frame has had the marker, and
+   *  `end` removes the listener if it is still there (never a newer one). Without this port main acts on
+   *  its own keys without waiting for the keys sent before them. */
+  watchMarker?(): Promise<MarkerWatch>
 }
+
+export type MarkerWatch = { seen(): Promise<boolean>; end(): void }
 
 /**
  * The marker: a key main sends behind the keys it sends again, on the same input path, to learn that the
@@ -185,6 +188,8 @@ export function createKeyboardGate(host: KeyboardGateHost, options: { attempts?:
   let undelivered = false
   // The marker is on its way: the next F24 key-down on the input path is main's own.
   let expectingMarker = false
+  // Told when main's marker was held back from a widget that had taken the keyboard again.
+  let markerHeld: (() => void) | null = null
   // Counts resets: work that waited across one belongs to a document that is gone.
   let generation = 0
 
@@ -284,17 +289,54 @@ export function createKeyboardGate(host: KeyboardGateHost, options: { attempts?:
     if (!undelivered || !host.watchMarker) return
     const mine = generation
     let waiting = true
+    // This attempt's wait is still the one that counts: its bound has not run out and no reset came since.
+    const current = () => waiting && generation === mine
+    const live: { watch: MarkerWatch | null } = { watch: null }
     const reached = (async (): Promise<boolean> => {
-      const seen = await host.watchMarker!()
-      if (!waiting || generation !== mine) return false // too late: main has moved on, no marker is sent
-      expectingMarker = true
-      host.send(DELIVERY_MARKER)
-      return (await seen()) === true
+      for (;;) {
+        if (!current()) return false
+        const watch = await host.watchMarker!()
+        live.watch = watch
+        if (!current()) { watch.end(); return false } // too late: main has moved on, no marker is sent
+        const held = new Promise<'held'>((resolve) => { markerHeld = () => resolve('held') })
+        expectingMarker = true
+        host.send(DELIVERY_MARKER)
+        const answer = watch.seen()
+        const outcome = await Promise.race([answer, held])
+        markerHeld = null
+        if (outcome !== 'held') return outcome === true
+        // A widget took the keyboard again after the keys sent again had gone to the top frame, and was
+        // not given the marker. Those keys passed here while the top frame had the focus, so they are on
+        // their way to the document: main takes the keyboard back and sends a new marker rather than
+        // waiting out its bound (a widget that takes the focus every few milliseconds made every held ⌘Q
+        // wait the full second). Not when a key sent again was itself held: it has not reached the
+        // document, and only the bound may let main act without it.
+        if (!(await retake(current))) return (await answer) === true
+        watch.end()
+      }
     })().catch(() => false)
     const ok = await Promise.race([reached, host.wait(DELIVERY_WAIT_MS).then(() => false, () => false)])
     waiting = false
     expectingMarker = false
+    markerHeld = null
+    // A listener the marker never reached would stop an unrelated F24 in the page until it timed out.
+    if (!ok) live.watch?.end()
     if (ok && generation === mine && replaying.length === 0) undelivered = false
+  }
+
+  /** Take the keyboard back for a new marker. False when main must not send one: a key sent again or typed
+   *  since is held, the attempt is no longer current (its bound ran out, or a reset replaced the document,
+   *  whose replacement must not be asked to move its focus), or the keyboard did not come back. */
+  async function retake(current: () => boolean): Promise<boolean> {
+    const clear = () => current() && queue.length === 0 && replaying.length === 0
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (!clear()) return false
+      try { await host.reclaim() } catch { /* the window is gone or busy: try again */ }
+      if (!clear()) return false
+      if (!intoWidget()) return true
+      await host.wait(retryMs)
+    }
+    return false
   }
 
   /** Run what main does with a held key of its own. An error there loses that key, and no other. */
@@ -351,6 +393,7 @@ export function createKeyboardGate(host: KeyboardGateHost, options: { attempts?:
     reset() {
       engaged = false
       ownerFrame = null
+      markerHeld = null
       lastPress = null
       const dropped = queue.splice(0).length
       replaying.splice(0)
@@ -365,7 +408,12 @@ export function createKeyboardGate(host: KeyboardGateHost, options: { attempts?:
       const input: HeldKey = { type: raw.type, key: raw.key, shift: raw.shift, control: raw.control, alt: raw.alt, meta: raw.meta }
       // Main's own marker: it goes to the top frame, where the listener stops it, and to nothing else.
       // If a widget has taken the keyboard again it is dropped (never delivered, never sent again).
-      if (expectingMarker && raw.type === 'keyDown' && raw.key === DELIVERY_MARKER.keyCode && !raw.shift && !raw.control && !raw.alt && !raw.meta) return intoWidget()
+      if (expectingMarker && raw.type === 'keyDown' && raw.key === DELIVERY_MARKER.keyCode && !raw.shift && !raw.control && !raw.alt && !raw.meta) {
+        if (!intoWidget()) return false
+        expectingMarker = false
+        markerHeld?.()
+        return true
+      }
       const isReplay = replaying.length > 0 && same(replaying[0], input)
       if (isReplay) replaying.shift()
       else if (queue.length > 0 || replaying.length > 0 || reclaiming) {
@@ -422,9 +470,13 @@ export function guardInput(decide: () => boolean, contents: { focusedFrame: unkn
 
 // Run in the top frame's own world (a widget's frame cannot reach it). The first puts a one-shot
 // listener for the marker ahead of the page's own key handling and keeps its outcome; the second reads
-// that outcome. Trusted events only: a script cannot make one, and widget content is in another frame.
+// that outcome; the third removes the listener if it is still the one with that id. Trusted events only:
+// a script cannot make one, and widget content is in another frame.
 const MARKER_SLOT = '__writeflexHeldKeysMarker'
-const MARKER_LISTEN_SCRIPT = `(() => {
+const markerListenScript = (id: number): string => `(() => {
+  // A listener left by a marker that never arrived would stop the next one: end it first.
+  const previous = window[${JSON.stringify(MARKER_SLOT)}]
+  if (previous && typeof previous.finish === 'function') previous.finish(false)
   let settle
   const seen = new Promise((resolve) => { settle = resolve })
   const finish = (value) => { window.removeEventListener('keydown', onKey, true); clearTimeout(timer); settle(value) }
@@ -436,10 +488,18 @@ const MARKER_LISTEN_SCRIPT = `(() => {
   }
   const timer = setTimeout(() => finish(false), ${DELIVERY_WAIT_MS})
   window.addEventListener('keydown', onKey, true)
-  window[${JSON.stringify(MARKER_SLOT)}] = seen
+  window[${JSON.stringify(MARKER_SLOT)}] = { id: ${id}, seen, finish }
   return true
 })()`
-const MARKER_SEEN_SCRIPT = `Promise.resolve(window[${JSON.stringify(MARKER_SLOT)}]).then((value) => value === true)`
+const markerSeenScript = (id: number): string => `(() => {
+  const slot = window[${JSON.stringify(MARKER_SLOT)}]
+  return slot && slot.id === ${id} ? slot.seen.then((value) => value === true) : false
+})()`
+const markerEndScript = (id: number): string => `(() => {
+  const slot = window[${JSON.stringify(MARKER_SLOT)}]
+  if (slot && slot.id === ${id}) slot.finish(false)
+  return true
+})()`
 
 /** Put the gate on a window's web contents. */
 export function attachKeyboardGate(contents: WindowContentsLike, shellURL: string, onDropped?: (count: number) => void, hooks: Pick<KeyboardGateHost, 'onHeld' | 'actsOn' | 'actsOnInEngaged' | 'readerFrame'> = {}): KeyboardGate {
@@ -459,6 +519,7 @@ export function attachKeyboardGate(contents: WindowContentsLike, shellURL: strin
       widgetNodes.set(frame.name, frame.frameTreeNodeId)
     } catch { /* a frame already gone */ }
   })
+  let markerWatches = 0
   const host: KeyboardGateHost = {
     focusedFrame: () => (contents.isDestroyed() ? null : frameOf(() => contents.focusedFrame)),
     mainFrame: () => (contents.isDestroyed() ? null : frameOf(() => contents.mainFrame)),
@@ -470,8 +531,13 @@ export function attachKeyboardGate(contents: WindowContentsLike, shellURL: strin
     wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     watchMarker: async () => {
       if (contents.isDestroyed()) throw new Error('The window has gone.')
-      await contents.mainFrame.executeJavaScript(MARKER_LISTEN_SCRIPT)
-      return async () => (contents.isDestroyed() ? false : (await contents.mainFrame.executeJavaScript(MARKER_SEEN_SCRIPT)) === true)
+      markerWatches += 1
+      const id = markerWatches
+      await contents.mainFrame.executeJavaScript(markerListenScript(id))
+      return {
+        seen: async () => (contents.isDestroyed() ? false : (await contents.mainFrame.executeJavaScript(markerSeenScript(id))) === true),
+        end: () => { if (!contents.isDestroyed()) void contents.mainFrame.executeJavaScript(markerEndScript(id)).catch(() => undefined) },
+      }
     },
     onDropped,
     onHeld: hooks.onHeld,

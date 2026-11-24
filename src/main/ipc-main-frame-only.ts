@@ -60,7 +60,7 @@ function describeSender(event: unknown): string {
  * Replaces the four registration methods of `ipc` with guarded ones. Idempotent. Returns `ipc`.
  * `removeListener` / `off` keep working with the listener that was passed to `on` / `once`.
  */
-export function applyMainFrameOnly<T extends IpcMainLike>(ipc: T, opts: { log?: (message: string) => void } = {}): T {
+export function applyMainFrameOnly<T extends IpcMainLike>(ipc: T, opts: { log?: (message: string) => void; trusted?: (event: any) => boolean } = {}): T {
   const marked = ipc as T & { [APPLIED]?: true }
   if (marked[APPLIED]) return ipc
   const log = opts.log ?? console.warn
@@ -69,8 +69,13 @@ export function applyMainFrameOnly<T extends IpcMainLike>(ipc: T, opts: { log?: 
   const removeListener = ipc.removeListener.bind(ipc)
   const off = typeof ipc.off === 'function' ? ipc.off.bind(ipc) : removeListener
 
-  const refuse = (kind: 'call' | 'message', channel: string, event: unknown, verdict: SenderFrameVerdict): string => {
-    const why = verdict === 'subframe' ? 'a frame that is not the window\'s top frame' : 'a frame that is gone or unknown'
+  const verdictFor = (event: unknown): SenderFrameVerdict | 'untrusted' => {
+    const verdict = senderFrameVerdict(event)
+    if (verdict !== 'main-frame' || !opts.trusted) return verdict
+    try { return opts.trusted(event) ? verdict : 'untrusted' } catch { return 'untrusted' }
+  }
+  const refuse = (kind: 'call' | 'message', channel: string, event: unknown, verdict: SenderFrameVerdict | 'untrusted'): string => {
+    const why = verdict === 'subframe' ? 'a frame that is not the window\'s top frame' : verdict === 'untrusted' ? 'an unregistered window or document' : 'a frame that is gone or unknown'
     const line = `[ipc] refused ${kind} on ${channel} from ${why} in ${describeSender(event)}`
     try { log(line) } catch { /* logging never changes the answer */ }
     return line
@@ -97,14 +102,14 @@ export function applyMainFrameOnly<T extends IpcMainLike>(ipc: T, opts: { log?: 
 
   ipc.handle = (channel: string, listener: Listener): void => {
     handle(channel, (event: unknown, ...args: unknown[]) => {
-      const verdict = senderFrameVerdict(event)
+      const verdict = verdictFor(event)
       if (verdict !== 'main-frame') throw new Error(refuse('call', channel, event, verdict))
       return listener(event, ...args)
     })
   }
   ipc.handleOnce = (channel: string, listener: Listener): void => {
     handle(channel, (event: unknown, ...args: unknown[]) => {
-      const verdict = senderFrameVerdict(event)
+      const verdict = verdictFor(event)
       if (verdict !== 'main-frame') throw new Error(refuse('call', channel, event, verdict))
       ipc.removeHandler(channel)
       return listener(event, ...args)
@@ -112,8 +117,12 @@ export function applyMainFrameOnly<T extends IpcMainLike>(ipc: T, opts: { log?: 
   }
   ipc.on = (channel: string, listener: Listener): unknown => {
     const wrapper: Listener = (event, ...args) => {
-      const verdict = senderFrameVerdict(event)
-      if (verdict !== 'main-frame') { refuse('message', channel, event, verdict); return }
+      const verdict = verdictFor(event)
+      if (verdict !== 'main-frame') {
+        refuse('message', channel, event, verdict)
+        if (event && 'returnValue' in event) event.returnValue = null
+        return
+      }
       return listener(event, ...args)
     }
     remember(channel, listener, wrapper)
@@ -122,8 +131,12 @@ export function applyMainFrameOnly<T extends IpcMainLike>(ipc: T, opts: { log?: 
   }
   ipc.once = (channel: string, listener: Listener): unknown => {
     const wrapper: Listener = (event, ...args) => {
-      const verdict = senderFrameVerdict(event)
-      if (verdict !== 'main-frame') { refuse('message', channel, event, verdict); return }
+      const verdict = verdictFor(event)
+      if (verdict !== 'main-frame') {
+        refuse('message', channel, event, verdict)
+        if (event && 'returnValue' in event) event.returnValue = null
+        return
+      }
       forget(channel, listener, wrapper)
       removeListener(channel, wrapper)
       return listener(event, ...args)

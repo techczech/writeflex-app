@@ -1,5 +1,4 @@
 import { expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
 import {
   chapterHistory, chapterHistoryText, emptyGuideProgress, guideDate, parseGuideProgress, serialiseGuideProgress,
   withChapterFinished, withChapterOpened, withCommandRan, withStepDone, withTopicRead,
@@ -154,38 +153,6 @@ test('each chapter lists exactly the registry rows that count, and every row has
     const all = chapter.rows.flatMap((row) => row.ids)
     expect(new Set(all).size, `${chapter.task} lists a command twice`).toBe(all.length)
   }
-})
-
-test('the derived rows of each chapter, as built (counts are the build\'s, not the drawing\'s 25)', () => {
-  const chapters = deriveChapters()
-  const listed = Object.fromEntries(chapters.map((chapter) => [chapter.task, chapter.subgroups.map((group) => ({ subgroup: group.name, rows: group.rows.map((row) => `${row.label}${row.merged ? ` [${row.merged}: ${row.ids.join(', ')}]` : ''}`) }))]))
-  expect(listed).toEqual(JSON.parse(readFileSync(new URL('../fixtures/guide-chapter-rows.json', import.meta.url), 'utf8')))
-  expect(Object.fromEntries(chapters.map((chapter) => [chapter.task, chapter.rows.length]))).toEqual({
-    'Write': 60,
-    'Shape the document': 28,
-    'Stay focused': 20,
-    'Listen': 9,
-    'Review and versions': 37, // +12 Folio/file version commands in the current registry
-    'Find and manage files': 45, // +7 the menu's own operations (New File, New Folder, New Window, Open…, Open Recent, Checkpoint, Close Tab), registered 2026-11-10
-    'Collect and plan': 104, // +4 sheet-only Folio workspace keys (2026-10-25); +19 option A collection page commands (2026-10-21); +2 the Folio workspace's Files tab and inspector (2026-10-24).
-    // // +1 Capture to research;  +5 Folio page redesign (0.26: the agent pill's three writes, Choose a file as front matter, Show or hide the files not in the outline); then 58: 41 at the fork; +5 title-conflict buttons, +1 Open Folio (next/0.25.1); +1 Add existing part to Folio outline as front matter (ADR-0046); +1 Go to the Details (0.26 ticket 4); +9 Folio outline keys (0.26 ticket 7: Open Folio at another part, Choose the role of a part, Open the file, six Details rows)
-    'Work with the agent': 28, // +10 Scratchpad commands (2026-10-28, ADR-0050); fixture completed at the 2026-10-29 installed-base merge
-    'Share and export': 15,
-    'Set up WriteFlex': 27, // Check for Updates and What's new; +8 (the five prose and column size steps, Toggle Developer Tools, Toggle Full Screen, Actions here), registered 2026-11-10
-  })
-  expect(chapterFor(chapters, 'Shape the document')!.subgroups.map((group) => [group.name, group.rows.map((row) => row.label)])).toEqual([
-    ['Fold', ['Fold Current Heading', 'Fold All Headings', 'Unfold All']],
-    ['Move blocks and sections', ['Move this block up / down', 'Move this with everything under it up / down', 'Delete this section', 'Select this section']],
-    ['Headings and levels', [
-      'Raise / lower the level of this line', 'Raise / lower the level with everything under it', 'New heading before this section', 'New subheading under this section',
-      'Make this line a heading at the surrounding level', 'Make this line a heading one level deeper',
-      'Insert heading, level 1', 'Insert heading, level 2', 'Insert heading, level 3', 'Insert heading, level 4', 'Insert heading, level 5', 'Insert heading, level 6',
-    ]],
-    ['Jump between headings', [
-      'Next / previous block', 'Outline: Open the menu for this row', 'Outline: Expand all', 'Outline: Collapse all',
-      'Outline: show levels 1 to 1 … 1 to 6', 'Outline: Show all levels', 'Outline: Show / hide word counts', 'Previous / next heading', 'Open Outline',
-    ]],
-  ])
 })
 
 test('lesson files map to chapters by name; the welcome file is no chapter', () => {

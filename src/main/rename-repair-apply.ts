@@ -8,6 +8,7 @@ import type {
 } from './rename-repair'
 import { DiskChangedUnderBuffer, DocumentChangedError, SavedButNotReadBack, type Workspace } from './workspace'
 import { fingerprintOfRead } from './guarded-document-read'
+import { repairReceipt } from '../shared/repair-receipt'
 
 class RenameRepairApplyError extends Error {
   constructor(message: string, readonly unrevertedPaths: string[]) {
@@ -82,11 +83,25 @@ export async function failedPlannedRenameRepairResult(
   ])
 }
 
-function planDriftError(plan: RenameRepairPlan, pathChanges: string[] = []): Error {
-  const references = [...new Set(plan.plannedReferences)]
-  const named = references.length ? ` Planned references: ${references.join('; ')}.` : ''
-  const changed = pathChanges.length ? ` Workspace file-set changes: ${pathChanges.join('; ')}.` : ''
-  return new Error(`The Rename Repair plan changed while the rename was being prepared.${changed}${named}`)
+/** At most this many paths are named in a drift refusal: a sync landing 200 files must not flash a wall of text. */
+const DRIFT_NAMED = 3
+
+/** The refusal when the workspace moved on between the rename's plan and its apply. Exported for its test. */
+export function planDriftMessage(changedPaths: string[] = [], plannedReferences: string[] = []): string {
+  const references = [...new Set(plannedReferences)]
+  const changed = changedPaths.length
+    ? ` ${changedPaths.length} ${changedPaths.length === 1 ? 'file was' : 'files were'} added or removed while the rename was prepared`
+      + ` (${changedPaths.length > DRIFT_NAMED ? 'first three: ' : ''}${changedPaths.slice(0, DRIFT_NAMED).join(', ')}).`
+    : ''
+  const moreReferences = references.length - DRIFT_NAMED
+  const named = references.length
+    ? ` Planned references: ${references.slice(0, DRIFT_NAMED).join('; ')}${moreReferences > 0 ? ` and ${moreReferences} more` : ''}.`
+    : ''
+  return `The Rename Repair plan changed while the rename was being prepared.${changed}${named}`
+}
+
+function planDriftError(plan: RenameRepairPlan, changedPaths: string[] = []): Error {
+  return new Error(planDriftMessage(changedPaths, plan.plannedReferences))
 }
 
 async function assertPlanStillMatchesDisk(plan: RenameRepairPlan, workspace: Workspace): Promise<void> {
@@ -94,8 +109,8 @@ async function assertPlanStillMatchesDisk(plan: RenameRepairPlan, workspace: Wor
   const listedPathSet = new Set(listedPaths)
   const expectedPathSet = new Set(plan.verification.workspacePaths)
   const pathChanges = [
-    ...listedPaths.filter((path) => !expectedPathSet.has(path)).map((path) => `${path} was added`),
-    ...plan.verification.workspacePaths.filter((path) => !listedPathSet.has(path)).map((path) => `${path} was removed`),
+    ...listedPaths.filter((path) => !expectedPathSet.has(path)),
+    ...plan.verification.workspacePaths.filter((path) => !listedPathSet.has(path)),
   ]
   if (pathChanges.length) throw planDriftError(plan, pathChanges)
   for (const write of plan.writes) {
@@ -182,11 +197,19 @@ export async function applyPlannedRenameRepair(
     )
   }
 
-  return result(
-    plan.writes.map((write) => write.path),
-    [
-      ...plan.unrepairedReferences.map((text): RenameRepairIssue => ({ kind: 'reference', text })),
-      ...plan.plannedOutcomes.map((outcome): RenameRepairIssue => ({ kind: 'outcome', text: outcome.text })),
-    ],
-  )
+  const receipts = await Promise.all(applied.map((write) => {
+    const before = plan.verification.markdown.find(({ path }) => path === write.path)?.content
+      ?? plan.verification.manifests.find(({ path }) => path === write.path)?.content ?? ''
+    return repairReceipt(write.path, before, write.content)
+  }))
+  return {
+    ...result(
+      plan.writes.map((write) => write.path),
+      [
+        ...plan.unrepairedReferences.map((text): RenameRepairIssue => ({ kind: 'reference', text })),
+        ...plan.plannedOutcomes.map((outcome): RenameRepairIssue => ({ kind: 'outcome', text: outcome.text })),
+      ],
+    ),
+    receipts,
+  }
 }

@@ -1,4 +1,4 @@
-import { fuzzyScore } from './fuzzy'
+import { prepareFuzzyScore } from './fuzzy'
 
 /**
  * Quick open (⇧⌘K, house rule R12): fuzzy matching on a file's TITLE and on its FILE NAME and folder, whichever
@@ -20,10 +20,11 @@ export function quickOpenFiles(
   const hit = (path: string): QuickOpenHit => ({ path, title: titles[path] ?? null, hidden: isHiddenByView(path, hiddenPaths) })
   if (query.trim() === '') return paths.slice(0, limit).map(hit)
   const scored: Array<{ path: string; score: number }> = []
+  const scoreCandidate = prepareFuzzyScore(query)
   for (const path of paths) {
-    const byPath = fuzzyScore(query, path)
+    const byPath = scoreCandidate(path)
     const title = titles[path]
-    const byTitle = title ? fuzzyScore(query, title) : null
+    const byTitle = title ? scoreCandidate(title) : null
     const score = byPath === null ? byTitle : byTitle === null ? byPath : Math.max(byPath, byTitle)
     if (score !== null) scored.push({ path, score })
   }

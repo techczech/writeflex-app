@@ -65,6 +65,7 @@ export { imageSize } from './pictures'
 
 /** The two targets, named for where they are going rather than by extension (ADR-0029). */
 export type ExportFormat = 'html' | 'docx'
+export type ExportDestinationFormat = ExportFormat | 'epub'
 export const EXPORT_FORMATS: ExportFormat[] = ['html', 'docx']
 export const EXPORT_FORMAT_LABELS: Record<ExportFormat, string> = { html: 'HTML', docx: 'Word' }
 export const EXPORT_EXTENSIONS: Record<ExportFormat, string> = { html: 'html', docx: 'docx' }
@@ -131,9 +132,9 @@ export function isExportFormat(value: unknown): value is ExportFormat {
 // so the writer sees the same title at each step.
 
 /** A file name the save dialog can open with: the title, made safe for a file system. */
-export function exportFileName(title: string, format: ExportFormat): string {
+export function exportFileName(title: string, format: ExportDestinationFormat): string {
   const stem = title.replace(/\0/g, '').replace(/[/\\:*?"<>|\n\r\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'export'
-  return `${stem}.${EXPORT_EXTENSIONS[format]}`
+  return `${stem}.${format === 'epub' ? 'epub' : EXPORT_EXTENSIONS[format]}`
 }
 
 // ---- Where the save dialog opens -----------------------------------------------------------------
@@ -161,14 +162,14 @@ export function exportFolderToRemember(target: string | null): string | null {
  *  Electron window — a native sheet is not drivable by Playwright either. */
 export function exportSaveDialogOptions(input: {
   name: string
-  format: ExportFormat
+  format: ExportDestinationFormat
   remembered: unknown
   documents: string
 }): { title: string; defaultPath: string; filters: Array<{ name: string; extensions: string[] }>; properties: Array<'createDirectory' | 'showOverwriteConfirmation'> } {
   return {
     title: 'Export',
     defaultPath: `${exportStartFolder(input.remembered, input.documents)}/${input.name}`,
-    filters: [{ name: EXPORT_FORMAT_LABELS[input.format], extensions: [EXPORT_EXTENSIONS[input.format]] }],
+    filters: input.format === 'epub' ? [{ name: 'EPUB', extensions: ['epub'] }] : [{ name: EXPORT_FORMAT_LABELS[input.format], extensions: [EXPORT_EXTENSIONS[input.format]] }],
     properties: ['createDirectory', 'showOverwriteConfirmation'],
   }
 }

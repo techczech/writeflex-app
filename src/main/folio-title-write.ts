@@ -21,7 +21,7 @@ export const TITLE_WRITERS = new Set<PropertyKey>(['saveFile', 'saveFileWithoutR
 export const TITLE_PASSTHROUGH = new Set<PropertyKey>([
   'root', 'onDocumentWritten', 'onWriteNotice', 'searchIndex',
   'absolute', 'relative', 'isVisiblePath', 'classifyPath', 'assertDocumentPath', 'renameTarget',
-  'readFile', 'listFiles', 'listFilesAndFolders', 'listFilesIn', 'listFolders', 'listSources', 'checklistProgress', 'search',
+  'readFile', 'hasListedDocument', 'listFiles', 'listFilesAndFolders', 'listFilesIn', 'listFolders', 'listSources', 'checklistProgress', 'search',
   'exclusive', 'exclusiveAll', 'writersWaiting', 'assertWritable', 'commitOnlyOver', 'assertOnDisk',
   'withWriteReceipts', 'recordingOperationWrites', 'outsideCallRecords', 'changedSinceRead', 'receiptFor', 'receiptForOwnRoute',
   'recordOwnWrite', 'forgetOwnWrites', 'wasRecentlyWrittenByApp', 'announceWriteNotice',

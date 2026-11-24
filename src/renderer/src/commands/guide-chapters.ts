@@ -61,7 +61,7 @@ export const MERGED_ROWS: readonly MergedRow[] = [
   // Share and export
   { label: 'Move export preset up / down', kind: 'pair', ids: ['exportPresets.moveUp', 'exportPresets.moveDown'] },
   // Set up WriteFlex
-  { label: 'Use dark / light theme', kind: 'variants', ids: ['appearance.darkTheme', 'appearance.lightTheme'] },
+  { label: 'Use a light, dark or system theme', kind: 'variants', ids: ['appearance.darkTheme', 'appearance.lightTheme', 'appearance.systemTheme'] },
 ]
 
 /** One row of a chapter's This chapter list. `ids` are the commands it stands for (one, unless merged). */

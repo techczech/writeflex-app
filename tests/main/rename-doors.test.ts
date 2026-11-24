@@ -1,373 +1,43 @@
+/**
+ * The rename doors (src/main/rename-doors.ts) against a real vault on disk, next to the agent's rename verb: both
+ * doors repair, checkpoint, warn and report alike. The IPC channels reaching the module are checked once, in
+ * rename-doors-ipc.test.ts.
+ */
 import { expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CapabilityContext } from '@bridle/core'
 import { buildWriteFlexManifest } from '../../src/main/capabilities'
+import { moveFile, previewRename, renameFile, RenameBatch, type MoveDestination } from '../../src/main/rename-doors'
 import { Workspace } from '../../src/main/workspace'
 import { formatRenameRepairMessage } from '../../src/shared/rename-repair-message'
+import { renameDoorWorld, type RenameDoorWorld } from '../helpers/rename-door-world'
 
-const ipcProbe = String.raw`
-  import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
-  import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-  import { tmpdir } from 'node:os'
-  import { join } from 'node:path'
+/** As the file:move handler reads the picker's path: slash-free names the workspace root. */
+const destinationOf = (newPath: string): MoveDestination =>
+  newPath.includes('/') ? { to: 'folder', path: newPath } : { to: 'root', name: newPath }
 
-  const root = await mkdtemp(join(tmpdir(), 'writeflex-rename-door-'))
-  const handlers = new Map()
-  const sent = []
-  const checkpoints = []
-  const checkpointStates = []
-  let failCheckpoint = false
-  let saveFailure = 'none'
-  const ipcMain = {
-    handle: (channel, handler) => handlers.set(channel, handler),
-    removeHandler: (channel) => handlers.delete(channel),
-  }
-  void mock.module('electron', () => ({
-    ...electronMainStandIn,
-    app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
-    clipboard: { write: () => {} },
-    dialog: {},
-    ipcMain,
-    shell: { openExternal: async () => {}, showItemInFolder: () => {}, trashItem: async () => {} },
-  }))
-  const [{ registerIpc }, { registerWindow }, { Workspace }] = await Promise.all([
-    import('./src/main/ipc.ts'), import('./src/main/state.ts'), import('./src/main/workspace.ts'),
-  ])
-  const state = registerWindow({
-    webContents: { id: 17, send: (channel, payload) => sent.push([channel, payload]) },
-    on: () => {}, isDestroyed: () => false,
+/** The sidebar's rename: the dialog's preview, then the rename to the path it named. */
+async function sidebarRename(world: RenameDoorWorld, path: string, newName: string, directory?: string | null) {
+  const plan = await previewRename(world.workspace, { path, newName, directory })
+  return { plan, renamed: await renameFile(world.deps, path, plan.newPath) }
+}
+
+/** The sidebar's move: the picker's preview, then the move to the path it named. */
+async function sidebarMove(world: RenameDoorWorld, path: string, newName: string, directory: string | null) {
+  const plan = await previewRename(world.workspace, { path, newName, directory })
+  return { plan, moved: await moveFile(world.deps, path, destinationOf(plan.newPath)) }
+}
+
+/** A checkpoint that fails, noting where the document was at that moment. */
+function failingCheckpoint(world: RenameDoorWorld, oldPath: string, newPath: string) {
+  const states: Array<{ oldExists: boolean; newExists: boolean }> = []
+  world.failCheckpointWith(async () => {
+    states.push({ oldExists: await world.exists(oldPath), newExists: await world.exists(newPath) })
+    throw new Error('injected repair checkpoint failure')
   })
-  state.workspace = new Workspace(root)
-  const realSaveFile = state.workspace.saveFile.bind(state.workspace)
-  state.workspace.saveFile = async (path, content, options) => {
-    if (saveFailure === 'write' && path === 'write-ref.md' && content.includes('[[write-new]]')) {
-      throw new Error('injected repair write failure')
-    }
-    if (saveFailure === 'rollback') {
-      if (path === 'b-ref.md' && content.includes('[[rollback-new]]')) {
-        await realSaveFile('a-ref.md', 'See [[rollback-new]].\nA concurrent paragraph survives.\n')
-        throw new Error('injected repair write failure')
-      }
-    }
-    return realSaveFile(path, content, options)
-  }
-  state.agentReady = Promise.resolve({
-    checkpointFile: async (path) => {
-      checkpoints.push(path)
-      if (failCheckpoint) checkpointStates.push({
-        oldExists: await Bun.file(join(root, 'broken-old.md')).exists(),
-        newExists: await Bun.file(join(root, 'broken-new.md')).exists(),
-      })
-      if (failCheckpoint) throw new Error('injected repair checkpoint failure')
-    },
-  })
-  registerIpc(
-    { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
-    { modelDefaults: () => ({}), recents: () => [] },
-    {},
-  )
-  const rename = handlers.get('file:rename')
-  const move = handlers.get('file:move')
-  const planRename = handlers.get('file:rename-repair-paths')
-  await writeFile(join(root, 'old.md'), 'Body.\n')
-  await writeFile(join(root, 'ref.md'), 'See [[old]].\n')
-  const firstPlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'old.md', newName: '2026/08/10.md' },
-  )
-  const first = await rename({ sender: { id: 17 } }, { path: 'old.md', newPath: firstPlan.newPath })
-  const firstResult = {
-    plan: firstPlan,
-    path: first.file.path,
-    checkpoints: [...checkpoints],
-    changedOnDisk: sent.filter(([channel]) => channel === 'file:changed-on-disk').map(([, payload]) => payload),
-    repair: first.repair,
-    ref: await readFile(join(root, 'ref.md'), 'utf8'),
-  }
-
-  await writeFile(join(root, 'rename-traversal.md'), 'Rename traversal.\n')
-  const traversalRenamePlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'rename-traversal.md', newName: '../x.md' },
-  )
-  const traversalRename = await rename(
-    { sender: { id: 17 } },
-    { path: 'rename-traversal.md', newPath: traversalRenamePlan.newPath },
-  )
-  await mkdir(join(root, 'safe-dir'), { recursive: true })
-  await writeFile(join(root, 'move-traversal.md'), 'Move traversal.\n')
-  const traversalMovePlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'move-traversal.md', newName: '../x.md', directory: 'safe-dir' },
-  )
-  const traversalMove = await move(
-    { sender: { id: 17 } },
-    { path: 'move-traversal.md', newPath: traversalMovePlan.newPath },
-  )
-  const traversalResult = {
-    renamePlan: traversalRenamePlan,
-    renamePath: traversalRename.file.path,
-    renameContent: await readFile(join(root, '..-x.md'), 'utf8'),
-    movePlan: traversalMovePlan,
-    movePath: traversalMove.file.path,
-    moveContent: await readFile(join(root, 'safe-dir', '..-x.md'), 'utf8'),
-  }
-
-  checkpoints.length = 0
-  sent.length = 0
-  failCheckpoint = true
-  await writeFile(join(root, 'broken-old.md'), 'Body.\n')
-  await writeFile(join(root, 'broken-ref.md'), 'See [[broken-old]].\n')
-  const secondPlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'broken-old.md', newName: 'broken-new.md' },
-  )
-  const second = await rename({ sender: { id: 17 } }, { path: 'broken-old.md', newPath: secondPlan.newPath })
-  const failureResult = {
-    path: second.file.path,
-    warning: second.repair.unrepairedReferences,
-    issues: second.repair.issues,
-    checkpointState: checkpointStates.at(-1),
-    targetExists: await readFile(join(root, 'broken-new.md'), 'utf8'),
-    ref: await readFile(join(root, 'broken-ref.md'), 'utf8'),
-  }
-
-  failCheckpoint = false
-  saveFailure = 'write'
-  await writeFile(join(root, 'write-old.md'), 'Body.\n')
-  await writeFile(join(root, 'write-ref.md'), 'See [[write-old]].\n')
-  const writeFailurePlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'write-old.md', newName: 'write-new.md' },
-  )
-  const writeFailure = await rename(
-    { sender: { id: 17 } },
-    { path: 'write-old.md', newPath: writeFailurePlan.newPath },
-  )
-  const writeFailureResult = {
-    path: writeFailure.file.path,
-    repair: writeFailure.repair,
-    ref: await readFile(join(root, 'write-ref.md'), 'utf8'),
-  }
-
-  sent.length = 0
-  saveFailure = 'rollback'
-  await writeFile(join(root, 'rollback-old.md'), 'Body.\n')
-  await writeFile(join(root, 'a-ref.md'), 'See [[rollback-old]].\n')
-  await writeFile(join(root, 'b-ref.md'), 'See [[rollback-old]].\n')
-  const rollbackFailurePlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'rollback-old.md', newName: 'rollback-new.md' },
-  )
-  const rollbackFailure = await rename(
-    { sender: { id: 17 } },
-    { path: 'rollback-old.md', newPath: rollbackFailurePlan.newPath },
-  )
-  const rollbackFailureResult = {
-    path: rollbackFailure.file.path,
-    repair: rollbackFailure.repair,
-    changedOnDisk: sent.filter(([channel]) => channel === 'file:changed-on-disk').map(([, payload]) => payload),
-    firstRef: await readFile(join(root, 'a-ref.md'), 'utf8'),
-    secondRef: await readFile(join(root, 'b-ref.md'), 'utf8'),
-  }
-
-  checkpoints.length = 0
-  sent.length = 0
-  saveFailure = 'none'
-  failCheckpoint = false
-  await mkdir(join(root, 'report'), { recursive: true })
-  await mkdir(join(root, 'archive'), { recursive: true })
-  await writeFile(join(root, 'report', 'part.md'), 'Body.\n')
-  await writeFile(join(root, 'report', '_report_INDEX.md'), '# Report\n\n## Running order\n\n- [[part]]\n')
-  await writeFile(join(root, 'report', '_report-structure.json'), JSON.stringify({ schema_version: 1, content_root: '', files: [{ path: 'part.md' }] }, null, 2) + '\n')
-  const movePlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'report/part.md', newName: 'part.md', directory: 'archive' },
-  )
-  const moved = await move({ sender: { id: 17 } }, { path: 'report/part.md', newPath: movePlan.newPath })
-  const moveResult = {
-    plan: movePlan,
-    path: moved.file.path,
-    checkpoints: [...checkpoints],
-    changedOnDisk: sent.filter(([channel]) => channel === 'file:changed-on-disk').map(([, payload]) => payload),
-    repair: moved.repair ?? null,
-    manifest: JSON.parse(await readFile(join(root, 'report', '_report-structure.json'), 'utf8')),
-    index: await readFile(join(root, 'report', '_report_INDEX.md'), 'utf8'),
-  }
-
-  await mkdir(join(root, 'adoption-report'), { recursive: true })
-  await writeFile(join(root, 'adoption-loose.md'), 'Body.\n')
-  await writeFile(join(root, 'adoption-report', '_adoption-report_INDEX.md'), '## Running order\n\n- [[adopted]]\n')
-  await writeFile(join(root, 'adoption-report', '_report-structure.json'), JSON.stringify({ schema_version: 1, content_root: '', files: [] }, null, 2) + '\n')
-  const adoptionPlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'adoption-loose.md', newName: 'adopted.md', directory: 'adoption-report' },
-  )
-  const adopted = await move(
-    { sender: { id: 17 } },
-    { path: 'adoption-loose.md', newPath: adoptionPlan.newPath },
-  )
-  const adoptionResult = {
-    path: adopted.file.path,
-    repair: adopted.repair,
-    index: await readFile(join(root, 'adoption-report', '_adoption-report_INDEX.md'), 'utf8'),
-  }
-
-  await mkdir(join(root, 'root-source'), { recursive: true })
-  await writeFile(join(root, 'root-source', 'root-part.md'), 'Root-bound body.\n')
-  await writeFile(join(root, 'root-source', '_report_INDEX.md'), '## Running order\n\n- [[root-part]]\n')
-  await writeFile(join(root, 'root-source', '_report-structure.json'), JSON.stringify({
-    schema_version: 1,
-    content_root: '',
-    files: [{ path: 'root-part.md' }],
-  }, null, 2) + '\n')
-  const rootMovePlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'root-source/root-part.md', newName: 'root-part.md', directory: null },
-  )
-  const rootMoved = await move(
-    { sender: { id: 17 } },
-    { path: 'root-source/root-part.md', newPath: rootMovePlan.newPath },
-  )
-  const rootMoveResult = {
-    plan: rootMovePlan,
-    path: rootMoved.file.path,
-    repair: rootMoved.repair,
-    oldExists: await Bun.file(join(root, 'root-source', 'root-part.md')).exists(),
-    rootContent: await Bun.file(join(root, 'root-part.md')).exists()
-      ? await readFile(join(root, 'root-part.md'), 'utf8')
-      : null,
-    manifest: JSON.parse(await readFile(join(root, 'root-source', '_report-structure.json'), 'utf8')),
-    index: await readFile(join(root, 'root-source', '_report_INDEX.md'), 'utf8'),
-  }
-
-  checkpoints.length = 0
-  sent.length = 0
-  failCheckpoint = true
-  await writeFile(join(root, 'report', 'move-broken.md'), 'Body.\n')
-  await writeFile(join(root, 'report', '_report-structure.json'), JSON.stringify({ schema_version: 1, content_root: '', files: [{ path: 'move-broken.md' }] }, null, 2) + '\n')
-  await writeFile(join(root, 'move-broken-ref.md'), 'See [[move-broken]].\n')
-  const moveFailurePlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'report/move-broken.md', newName: 'move-broken.md', directory: 'archive' },
-  )
-  const movedWithWarning = await move(
-    { sender: { id: 17 } },
-    { path: 'report/move-broken.md', newPath: moveFailurePlan.newPath },
-  )
-  const moveFailureResult = {
-    path: movedWithWarning.file.path,
-    warning: movedWithWarning.repair?.unrepairedReferences ?? [],
-    issues: movedWithWarning.repair?.issues ?? [],
-    targetExists: await readFile(join(root, 'archive', 'move-broken.md'), 'utf8'),
-    ref: await readFile(join(root, 'move-broken-ref.md'), 'utf8'),
-  }
-
-  failCheckpoint = false
-  await mkdir(join(root, 'bystander-link', 'elsewhere'), { recursive: true })
-  await mkdir(join(root, 'bystander-link', 'report'), { recursive: true })
-  await writeFile(join(root, 'bystander-link', 'elsewhere', 'target.md'), 'Stable target.\n')
-  await writeFile(join(root, 'bystander-link', 'report', 'old.md'), 'Moving target.\n')
-  await writeFile(join(root, 'bystander-link', 'report', 'ref.md'), 'A [[old]] and a [[target]].\n')
-  const bystanderLinkPlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'bystander-link/report/old.md', newName: 'target.md', directory: 'bystander-link/report' },
-  )
-  const bystanderLink = await rename(
-    { sender: { id: 17 } },
-    { path: 'bystander-link/report/old.md', newPath: bystanderLinkPlan.newPath },
-  )
-  const bystanderLinkResult = {
-    path: bystanderLink.file.path,
-    repair: bystanderLink.repair,
-    ref: await readFile(join(root, 'bystander-link', 'report', 'ref.md'), 'utf8'),
-  }
-
-  await mkdir(join(root, 'bystander-manifest', 'contents'), { recursive: true })
-  await writeFile(join(root, 'bystander-manifest', 'x.md'), 'Stable part.\n')
-  await writeFile(join(root, 'bystander-manifest', 'contents', 'old.md'), 'Moving part.\n')
-  const bystanderManifestBefore = JSON.stringify({
-    schema_version: 1,
-    content_root: 'contents',
-    files: [
-      { path: 'x.md', title: 'The stable part' },
-      { path: 'old.md', title: 'The moving part' },
-    ],
-  }, null, 2) + '\n'
-  await writeFile(join(root, 'bystander-manifest', '_report-structure.json'), bystanderManifestBefore)
-  const bystanderManifestPlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'bystander-manifest/contents/old.md', newName: 'x.md', directory: 'bystander-manifest/contents' },
-  )
-  const bystanderManifest = await rename(
-    { sender: { id: 17 } },
-    { path: 'bystander-manifest/contents/old.md', newPath: bystanderManifestPlan.newPath },
-  )
-  const bystanderManifestResult = {
-    path: bystanderManifest.file.path,
-    repair: bystanderManifest.repair,
-    manifest: await readFile(join(root, 'bystander-manifest', '_report-structure.json'), 'utf8'),
-  }
-
-  await mkdir(join(root, 'scoped-orphan', 'report', 'contents', 'parts'), { recursive: true })
-  await writeFile(join(root, 'scoped-orphan', 'guide.md'), '# Guide\n')
-  await writeFile(join(root, 'scoped-orphan', 'report', 'contents', 'parts', 'guide.md'), 'Report part.\n')
-  await writeFile(join(root, 'scoped-orphan', 'report', '_report_INDEX.md'), '# Report\n\n## Running order\n\n- [[Guide]]\n')
-  await writeFile(join(root, 'scoped-orphan', 'report', '_report-structure.json'), JSON.stringify({ schema_version: 1, content_root: 'contents/parts', files: [] }, null, 2) + '\n')
-  const scopedOrphanPlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'scoped-orphan/report/contents/parts/guide.md', newName: 'opening.md', directory: 'scoped-orphan/report/contents/parts' },
-  )
-  const scopedOrphan = await rename(
-    { sender: { id: 17 } },
-    { path: 'scoped-orphan/report/contents/parts/guide.md', newPath: scopedOrphanPlan.newPath },
-  )
-  const scopedOrphanResult = {
-    path: scopedOrphan.file.path,
-    repair: scopedOrphan.repair,
-    index: await readFile(join(root, 'scoped-orphan', 'report', '_report_INDEX.md'), 'utf8'),
-  }
-
-  await mkdir(join(root, 'scoped-unaffected', 'report', 'contents', 'parts'), { recursive: true })
-  await mkdir(join(root, 'scoped-unaffected', 'elsewhere'), { recursive: true })
-  await writeFile(join(root, 'scoped-unaffected', 'report', 'contents', 'parts', 'guide.md'), 'Report part.\n')
-  await writeFile(join(root, 'scoped-unaffected', 'report', '_report_INDEX.md'), '# Report\n\n## Running order\n\n- [[Guide]]\n')
-  await writeFile(join(root, 'scoped-unaffected', 'report', '_report-structure.json'), JSON.stringify({ schema_version: 1, content_root: 'contents/parts', files: [] }, null, 2) + '\n')
-  await writeFile(join(root, 'scoped-unaffected', 'elsewhere', 'old.md'), '# Guide\n')
-  const scopedUnaffectedPlan = await planRename(
-    { sender: { id: 17 } },
-    { path: 'scoped-unaffected/elsewhere/old.md', newName: 'guide.md', directory: 'scoped-unaffected' },
-  )
-  const scopedUnaffected = await rename(
-    { sender: { id: 17 } },
-    { path: 'scoped-unaffected/elsewhere/old.md', newPath: scopedUnaffectedPlan.newPath },
-  )
-  const scopedUnaffectedResult = {
-    path: scopedUnaffected.file.path,
-    repair: scopedUnaffected.repair,
-    index: await readFile(join(root, 'scoped-unaffected', 'report', '_report_INDEX.md'), 'utf8'),
-  }
-  await rm(root, { recursive: true, force: true })
-  console.log(JSON.stringify({
-    firstResult, traversalResult, failureResult, writeFailureResult, rollbackFailureResult,
-    moveResult, adoptionResult, rootMoveResult, moveFailureResult, bystanderLinkResult, bystanderManifestResult,
-    scopedOrphanResult, scopedUnaffectedResult,
-  }))
-`
-
-async function realIpcRenameDoor() {
-  const child = Bun.spawn([process.execPath, '-e', ipcProbe], {
-    cwd: new URL('../..', import.meta.url).pathname,
-    stdout: 'pipe', stderr: 'pipe',
-  })
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
-  ])
-  if (exitCode !== 0) throw new Error(`The real rename IPC probe failed: ${stderr}`)
-  return JSON.parse(stdout)
+  return states
 }
 
 async function agentRenameCheckpointFailure() {
@@ -580,21 +250,126 @@ async function agentMixedManifestFailure() {
   }
 }
 
-test('the real file:rename handler checkpoints and notifies every repaired path', async () => {
-  const { firstResult } = await realIpcRenameDoor()
-  expect(firstResult).toEqual({
+/** A completed repair's receipt for each file it wrote (shared/repair-receipt.ts): sha256 of before and after. */
+const receiptsFor = (...paths: string[]) => paths.map((path) => ({ path, before: expect.stringMatching(/^[0-9a-f]{64}$/), written: expect.stringMatching(/^[0-9a-f]{64}$/) }))
+
+test('the rename door checkpoints and notifies every repaired path, and the document is followed in one turn', async () => {
+  const world = await renameDoorWorld()
+  await world.write('old.md', 'Body.\n')
+  await world.write('ref.md', 'See [[old]].\n')
+  const { plan, renamed } = await sidebarRename(world, 'old.md', '2026/08/10.md')
+  expect({
+    plan, path: renamed.file.path, checkpoints: world.checkpoints, changedOnDisk: world.changedOnDisk,
+    repair: renamed.repair, ref: await world.read('ref.md'),
+  }).toEqual({
     plan: { newPath: '2026-08-10.md', repairPaths: ['ref.md'] },
     path: '2026-08-10.md',
     checkpoints: ['ref.md'],
     changedOnDisk: [['ref.md']],
-    repair: { writtenPaths: ['ref.md'], unrepairedReferences: [], issues: [] },
+    repair: { writtenPaths: ['ref.md'], unrepairedReferences: [], issues: [], receipts: receiptsFor('ref.md') },
     ref: 'See [[2026-08-10]].\n',
+  })
+  expect(world.follows).toEqual([
+    ['ledger', 'old.md', '2026-08-10.md'], ['scratchpad', 'old.md', '2026-08-10.md'], ['sharing', 'old.md', '2026-08-10.md'],
+  ])
+  expect(world.forgotten).toEqual(['old.md'])
+  expect(world.collectionChanged).toEqual([['old.md', '2026-08-10.md', 'ref.md']])
+})
+
+test('the sidebar rename door proceeds and names wikilink and manifest bystanders without rewriting them', async () => {
+  const world = await renameDoorWorld()
+  await world.write('bystander-link/elsewhere/target.md', 'Stable target.\n')
+  await world.write('bystander-link/report/old.md', 'Moving target.\n')
+  await world.write('bystander-link/report/ref.md', 'A [[old]] and a [[target]].\n')
+  const link = (await sidebarRename(world, 'bystander-link/report/old.md', 'target.md', 'bystander-link/report')).renamed
+  expect({ path: link.file.path, repair: link.repair, ref: await world.read('bystander-link/report/ref.md') }).toMatchObject({
+    path: 'bystander-link/report/target.md',
+    repair: { unrepairedReferences: [expect.stringContaining('bystander-link/report/ref.md: [[target]] changed meaning')] },
+    ref: 'A [[target]] and a [[target]].\n',
+  })
+
+  await world.write('bystander-manifest/x.md', 'Stable part.\n')
+  await world.write('bystander-manifest/contents/old.md', 'Moving part.\n')
+  await world.write('bystander-manifest/_report-structure.json', JSON.stringify({
+    schema_version: 1,
+    content_root: 'contents',
+    files: [{ path: 'x.md', title: 'The stable part' }, { path: 'old.md', title: 'The moving part' }],
+  }, null, 2) + '\n')
+  const manifest = (await sidebarRename(world, 'bystander-manifest/contents/old.md', 'x.md', 'bystander-manifest/contents')).renamed
+  expect(manifest.file.path).toBe('bystander-manifest/contents/x.md')
+  expect(manifest.repair.unrepairedReferences).toEqual(expect.arrayContaining([expect.stringContaining('The stable part (x.md) changed meaning')]))
+  expect(JSON.parse(await world.read('bystander-manifest/_report-structure.json')).files[0]).toEqual({ path: 'x.md', title: 'The stable part' })
+})
+
+async function scopedFolio(world: RenameDoorWorld, base: string) {
+  await world.write(`${base}/report/contents/parts/guide.md`, 'Report part.\n')
+  await world.write(`${base}/report/_report_INDEX.md`, '# Report\n\n## Running order\n\n- [[Guide]]\n')
+  await world.write(`${base}/report/_report-structure.json`, JSON.stringify({ schema_version: 1, content_root: 'contents/parts', files: [] }, null, 2) + '\n')
+}
+
+test('both rename doors repair an Index Note through the scoped Folio outline resolver', async () => {
+  const world = await renameDoorWorld()
+  await scopedFolio(world, 'scoped-orphan')
+  await world.write('scoped-orphan/guide.md', '# Guide\n')
+  const [agentDoor, { renamed }] = await Promise.all([
+    agentScopedPlanProbe('orphan'),
+    sidebarRename(world, 'scoped-orphan/report/contents/parts/guide.md', 'opening.md', 'scoped-orphan/report/contents/parts'),
+  ])
+  expect(agentDoor).toMatchObject({
+    isError: undefined, oldExists: false, newExists: true,
+    index: '# Report\n\n## Running order\n\n- [[opening]]\n',
+    repair: { writtenPaths: ['report/_report_INDEX.md'], unrepairedReferences: [], issues: [] },
+  })
+  expect({ path: renamed.file.path, index: await world.read('scoped-orphan/report/_report_INDEX.md'), repair: renamed.repair }).toEqual({
+    path: 'scoped-orphan/report/contents/parts/opening.md',
+    index: '# Report\n\n## Running order\n\n- [[opening]]\n',
+    repair: { writtenPaths: ['scoped-orphan/report/_report_INDEX.md'], unrepairedReferences: [], issues: [], receipts: receiptsFor('scoped-orphan/report/_report_INDEX.md') },
   })
 })
 
-test('the real file:rename handler reports a completed rename with a repair warning', async () => {
-  const { failureResult } = await realIpcRenameDoor()
-  expect(failureResult).toEqual({
+test('both rename doors allow an unrelated rename that leaves the scoped Folio outline unchanged', async () => {
+  const world = await renameDoorWorld()
+  await scopedFolio(world, 'scoped-unaffected')
+  await world.write('scoped-unaffected/elsewhere/old.md', '# Guide\n')
+  const [agentDoor, { renamed }] = await Promise.all([
+    agentScopedPlanProbe('unaffected'),
+    sidebarRename(world, 'scoped-unaffected/elsewhere/old.md', 'guide.md', 'scoped-unaffected'),
+  ])
+  expect(agentDoor).toMatchObject({
+    isError: undefined, oldExists: false, newExists: true,
+    index: '# Report\n\n## Running order\n\n- [[Guide]]\n',
+    repair: { writtenPaths: [], unrepairedReferences: [], issues: [] },
+  })
+  expect(agentDoor.text).not.toContain('The rename was not made')
+  expect({ path: renamed.file.path, index: await world.read('scoped-unaffected/report/_report_INDEX.md'), repair: renamed.repair }).toEqual({
+    path: 'scoped-unaffected/guide.md',
+    index: '# Report\n\n## Running order\n\n- [[Guide]]\n',
+    repair: { writtenPaths: [], unrepairedReferences: [], issues: [], receipts: [] },
+  })
+})
+
+test('both rename doors checkpoint after the rename and keep checkpoint failure as a warning', async () => {
+  const world = await renameDoorWorld()
+  await world.write('broken-old.md', 'Body.\n')
+  await world.write('broken-ref.md', 'See [[broken-old]].\n')
+  const states = failingCheckpoint(world, 'broken-old.md', 'broken-new.md')
+  const [agentDoor, { renamed }] = await Promise.all([
+    agentRenameCheckpointFailure(),
+    sidebarRename(world, 'broken-old.md', 'broken-new.md'),
+  ])
+  expect(agentDoor).toMatchObject({
+    isError: undefined, checkpointState: { oldExists: false, newExists: true }, oldExists: false, newExists: true, ref: 'See [[old]].\n',
+  })
+  expect(agentDoor.warning).toEqual(['ref.md: [[old]]'])
+  expect(agentDoor.issues).toEqual([
+    { kind: 'reference', text: 'ref.md: [[old]]' },
+    { kind: 'file', text: 'ref.md' },
+    { kind: 'reason', text: expect.stringContaining('injected repair checkpoint failure') },
+  ])
+  expect({
+    path: renamed.file.path, warning: renamed.repair.unrepairedReferences, issues: renamed.repair.issues,
+    checkpointState: states.at(-1), targetExists: await world.read('broken-new.md'), ref: await world.read('broken-ref.md'),
+  }).toEqual({
     path: 'broken-new.md',
     warning: ['broken-ref.md: [[broken-old]]'],
     issues: [
@@ -608,122 +383,19 @@ test('the real file:rename handler reports a completed rename with a repair warn
   })
 })
 
-test('the sidebar rename door proceeds and names wikilink and manifest bystanders without rewriting them', async () => {
-  const { bystanderLinkResult, bystanderManifestResult } = await realIpcRenameDoor()
-
-  expect(bystanderLinkResult).toMatchObject({
-    path: 'bystander-link/report/target.md',
-    repair: {
-      unrepairedReferences: [
-        expect.stringContaining('bystander-link/report/ref.md: [[target]] changed meaning'),
-      ],
-    },
-    ref: 'A [[target]] and a [[target]].\n',
-  })
-  expect(bystanderManifestResult).toMatchObject({
-    path: 'bystander-manifest/contents/x.md',
-    repair: {
-      unrepairedReferences: expect.arrayContaining([
-        expect.stringContaining('The stable part (x.md) changed meaning'),
-      ]),
-    },
-  })
-  expect(JSON.parse(bystanderManifestResult.manifest).files[0]).toEqual({
-    path: 'x.md',
-    title: 'The stable part',
-  })
-})
-
-test('both rename doors repair an Index Note through the scoped Folio outline resolver', async () => {
-  const [agentDoor, { scopedOrphanResult: sidebarDoor }] = await Promise.all([
-    agentScopedPlanProbe('orphan'),
-    realIpcRenameDoor(),
-  ])
-
-  expect(agentDoor).toMatchObject({
-    isError: undefined,
-    oldExists: false,
-    newExists: true,
-    index: '# Report\n\n## Running order\n\n- [[opening]]\n',
-    repair: {
-      writtenPaths: ['report/_report_INDEX.md'],
-      unrepairedReferences: [],
-      issues: [],
-    },
-  })
-  expect(sidebarDoor).toEqual({
-    path: 'scoped-orphan/report/contents/parts/opening.md',
-    index: '# Report\n\n## Running order\n\n- [[opening]]\n',
-    repair: {
-      writtenPaths: ['scoped-orphan/report/_report_INDEX.md'],
-      unrepairedReferences: [],
-      issues: [],
-    },
-  })
-})
-
-test('both rename doors allow an unrelated rename that leaves the scoped Folio outline unchanged', async () => {
-  const [agentDoor, { scopedUnaffectedResult: sidebarDoor }] = await Promise.all([
-    agentScopedPlanProbe('unaffected'),
-    realIpcRenameDoor(),
-  ])
-
-  expect(agentDoor).toMatchObject({
-    isError: undefined,
-    oldExists: false,
-    newExists: true,
-    index: '# Report\n\n## Running order\n\n- [[Guide]]\n',
-    repair: { writtenPaths: [], unrepairedReferences: [], issues: [] },
-  })
-  expect(agentDoor.text).not.toContain('The rename was not made')
-  expect(sidebarDoor).toEqual({
-    path: 'scoped-unaffected/guide.md',
-    index: '# Report\n\n## Running order\n\n- [[Guide]]\n',
-    repair: { writtenPaths: [], unrepairedReferences: [], issues: [] },
-  })
-})
-
-test('both rename doors checkpoint after the rename and keep checkpoint failure as a warning', async () => {
-  const [agentDoor, { failureResult: ipcDoor }] = await Promise.all([
-    agentRenameCheckpointFailure(),
-    realIpcRenameDoor(),
-  ])
-
-  expect(agentDoor).toMatchObject({
-    isError: undefined,
-    checkpointState: { oldExists: false, newExists: true },
-    oldExists: false,
-    newExists: true,
-    ref: 'See [[old]].\n',
-  })
-  expect(agentDoor.warning).toEqual(['ref.md: [[old]]'])
-  expect(agentDoor.issues).toEqual([
-    { kind: 'reference', text: 'ref.md: [[old]]' },
-    { kind: 'file', text: 'ref.md' },
-    { kind: 'reason', text: expect.stringContaining('injected repair checkpoint failure') },
-  ])
-  expect(ipcDoor).toMatchObject({
-    path: 'broken-new.md',
-    checkpointState: { oldExists: false, newExists: true },
-    targetExists: 'Body.\n',
-    ref: 'See [[broken-old]].\n',
-  })
-  expect(ipcDoor.warning).toEqual(['broken-ref.md: [[broken-old]]'])
-  expect(ipcDoor.issues).toEqual([
-    { kind: 'reference', text: 'broken-ref.md: [[broken-old]]' },
-    { kind: 'file', text: 'broken-ref.md' },
-    { kind: 'reason', text: expect.stringContaining('injected repair checkpoint failure') },
-  ])
-})
-
 test('both rename doors deliver the failed references and repair-write reason', async () => {
-  const [agentDoor, { writeFailureResult: ipcDoor }] = await Promise.all([
+  const world = await renameDoorWorld()
+  await world.write('write-old.md', 'Body.\n')
+  await world.write('write-ref.md', 'See [[write-old]].\n')
+  world.beforeSave(async (path, content) => {
+    if (path === 'write-ref.md' && content.includes('[[write-new]]')) throw new Error('injected repair write failure')
+  })
+  const [agentDoor, { renamed }] = await Promise.all([
     agentRenameWriteFailure(false),
-    realIpcRenameDoor(),
+    sidebarRename(world, 'write-old.md', 'write-new.md'),
   ])
-
   expect(agentDoor.text).toBe(formatRenameRepairMessage('Renamed to new.md', agentDoor.repair))
-  for (const repair of [agentDoor.repair, ipcDoor.repair]) {
+  for (const repair of [agentDoor.repair, renamed.repair]) {
     expect(repair).toMatchObject({
       writtenPaths: [],
       unrepairedReferences: [expect.stringContaining('ref.md: [[')],
@@ -737,35 +409,38 @@ test('both rename doors deliver the failed references and repair-write reason', 
   expect(agentDoor.text).toContain('injected repair write failure')
   expect(agentDoor.text).not.toContain('part-way through an abandoned change')
   expect(agentDoor.references).toEqual(['See [[old]].\n'])
-  expect(ipcDoor.ref).toBe('See [[write-old]].\n')
+  expect(await world.read('write-ref.md')).toBe('See [[write-old]].\n')
 })
 
 test('a written file keeps its genuinely unrepaired running-order reference on both doors', async () => {
   const agentDoor = await agentMixedManifestFailure()
-
   expect(agentDoor.index).toBe('## Running order\n\n- [[old]]\n\nSee also [[moved]] in prose.\n')
   expect(agentDoor.repair.writtenPaths).toEqual(['report/_report_INDEX.md'])
   expect(agentDoor.repair.unrepairedReferences).not.toContain(
     'report/_report_INDEX.md: [[old]] was left unchanged because the renamed file left this report.',
   )
   expect(agentDoor.repair.unrepairedReferences).not.toContain('report/_report_INDEX.md: [[old]]')
-  expect(agentDoor.text).toContain(
-    'report/_report_INDEX.md: [[old]] was left unchanged because the renamed file left this report.',
-  )
+  expect(agentDoor.text).toContain('report/_report_INDEX.md: [[old]] was left unchanged because the renamed file left this report.')
   expect(agentDoor.text).not.toContain('could not repair 2 references')
-
 })
 
-test('both rename doors report a preserved plan line identically without failure wording', async () => {
-  const [agentDoor, { moveResult: sidebarDoor }] = await Promise.all([
-    agentPlanNoticeProbe('preserved'),
-    realIpcRenameDoor(),
-  ])
+async function reportWithPart(world: RenameDoorWorld) {
+  await mkdir(join(world.root, 'archive'), { recursive: true })
+  await world.write('report/part.md', 'Body.\n')
+  await world.write('report/_report_INDEX.md', '# Report\n\n## Running order\n\n- [[part]]\n')
+  await world.write('report/_report-structure.json', JSON.stringify({ schema_version: 1, content_root: '', files: [{ path: 'part.md' }] }, null, 2) + '\n')
+}
 
-  expect(agentDoor.repair).toEqual(sidebarDoor.repair)
+test('both rename doors report a preserved plan line identically without failure wording', async () => {
+  const world = await renameDoorWorld()
+  await reportWithPart(world)
+  const [agentDoor, { moved }] = await Promise.all([
+    agentPlanNoticeProbe('preserved'),
+    sidebarMove(world, 'report/part.md', 'part.md', 'archive'),
+  ])
+  expect(agentDoor.repair).toEqual(moved.repair)
   const agentMessage = formatRenameRepairMessage('', agentDoor.repair)
-  const sidebarMessage = formatRenameRepairMessage('', sidebarDoor.repair)
-  expect(agentMessage).toBe(sidebarMessage)
+  expect(agentMessage).toBe(formatRenameRepairMessage('', moved.repair))
   expect(agentMessage).toContain(
     'Preserved plan line: report/_report_INDEX.md: [[part]] was left unchanged because the renamed file left this report.',
   )
@@ -774,30 +449,42 @@ test('both rename doors report a preserved plan line identically without failure
 })
 
 test('both rename doors report adoption as the same available action without writing', async () => {
-  const [agentDoor, { adoptionResult: sidebarDoor }] = await Promise.all([
+  const world = await renameDoorWorld()
+  await world.write('adoption-loose.md', 'Body.\n')
+  await world.write('adoption-report/_adoption-report_INDEX.md', '## Running order\n\n- [[adopted]]\n')
+  await world.write('adoption-report/_report-structure.json', JSON.stringify({ schema_version: 1, content_root: '', files: [] }, null, 2) + '\n')
+  const [agentDoor, { moved }] = await Promise.all([
     agentPlanNoticeProbe('available'),
-    realIpcRenameDoor(),
+    sidebarMove(world, 'adoption-loose.md', 'adopted.md', 'adoption-report'),
   ])
-
-  expect(agentDoor.repair).toEqual(sidebarDoor.repair)
+  expect(agentDoor.repair).toEqual(moved.repair)
   expect(agentDoor.repair.writtenPaths).toEqual([])
-  expect(sidebarDoor.repair.writtenPaths).toEqual([])
+  expect(moved.repair.writtenPaths).toEqual([])
   const agentMessage = formatRenameRepairMessage('', agentDoor.repair)
-  const sidebarMessage = formatRenameRepairMessage('', sidebarDoor.repair)
-  expect(agentMessage).toBe(sidebarMessage)
+  expect(agentMessage).toBe(formatRenameRepairMessage('', moved.repair))
   expect(agentMessage).toContain(
     'Available action: adoption-report/adopted.md now matches planned part [[adopted]] in adoption-report/_adoption-report_INDEX.md; you can adopt it when you want to.',
   )
   expect(agentMessage).not.toContain('Completed repair')
+  expect(await world.read('adoption-report/_adoption-report_INDEX.md')).toBe('## Running order\n\n- [[adopted]]\n')
 })
 
 test('both rename doors preserve and report content written after repair apply began', async () => {
-  const [agentDoor, { rollbackFailureResult: ipcDoor }] = await Promise.all([
+  const world = await renameDoorWorld()
+  await world.write('rollback-old.md', 'Body.\n')
+  await world.write('a-ref.md', 'See [[rollback-old]].\n')
+  await world.write('b-ref.md', 'See [[rollback-old]].\n')
+  world.beforeSave(async (path, content, save) => {
+    if (path === 'b-ref.md' && content.includes('[[rollback-new]]')) {
+      await save('a-ref.md', 'See [[rollback-new]].\nA concurrent paragraph survives.\n')
+      throw new Error('injected repair write failure')
+    }
+  })
+  const [agentDoor, { renamed }] = await Promise.all([
     agentRenameWriteFailure(true),
-    realIpcRenameDoor(),
+    sidebarRename(world, 'rollback-old.md', 'rollback-new.md'),
   ])
-
-  for (const [repair, oldName] of [[agentDoor.repair, 'old'], [ipcDoor.repair, 'rollback-old']] as const) {
+  for (const [repair, oldName] of [[agentDoor.repair, 'old'], [renamed.repair, 'rollback-old']] as const) {
     expect(repair.writtenPaths).toEqual(['a-ref.md'])
     expect(repair.unrepairedReferences).toEqual([`b-ref.md: [[${oldName}]]`])
     expect(repair.issues).toEqual([
@@ -809,14 +496,19 @@ test('both rename doors preserve and report content written after repair apply b
   expect(agentDoor.text).toContain('The repair to a-ref.md was applied and could not be undone')
   expect(agentDoor.changedOnDisk).toEqual([['a-ref.md']])
   expect(agentDoor.references).toEqual(['See [[new]].\nA concurrent paragraph survives.\n', 'See [[old]].\n'])
-  expect(ipcDoor.changedOnDisk).toEqual([['a-ref.md']])
-  expect(ipcDoor.firstRef).toBe('See [[rollback-new]].\nA concurrent paragraph survives.\n')
-  expect(ipcDoor.secondRef).toBe('See [[rollback-old]].\n')
+  expect(world.changedOnDisk).toEqual([['a-ref.md']])
+  expect(await world.read('a-ref.md')).toBe('See [[rollback-new]].\nA concurrent paragraph survives.\n')
+  expect(await world.read('b-ref.md')).toBe('See [[rollback-old]].\n')
 })
 
-test('the real file:move handler repairs the report and notifies every rewritten path', async () => {
-  const { moveResult } = await realIpcRenameDoor()
-  expect(moveResult).toEqual({
+test('the move door repairs the report and notifies every rewritten path', async () => {
+  const world = await renameDoorWorld()
+  await reportWithPart(world)
+  const { plan, moved } = await sidebarMove(world, 'report/part.md', 'part.md', 'archive')
+  expect({
+    plan, path: moved.file.path, checkpoints: world.checkpoints, changedOnDisk: world.changedOnDisk, repair: moved.repair,
+    manifest: JSON.parse(await world.read('report/_report-structure.json')), index: await world.read('report/_report_INDEX.md'),
+  }).toEqual({
     plan: { newPath: 'archive/part.md', repairPaths: ['report/_report-structure.json'] },
     path: 'archive/part.md',
     checkpoints: ['report/_report-structure.json'],
@@ -828,26 +520,31 @@ test('the real file:move handler repairs the report and notifies every rewritten
         { kind: 'preserved', text: 'report/_report_INDEX.md: [[part]] was left unchanged because the renamed file left this report.' },
         { kind: 'outcome', text: 'report/_report-structure.json: part.md was removed because archive/part.md left the report folder.' },
       ],
+      receipts: receiptsFor('report/_report-structure.json'),
     },
     manifest: { schema_version: 1, content_root: '', files: [] },
     index: '# Report\n\n## Running order\n\n- [[part]]\n',
   })
 })
 
-test('the real file:move handler moves a nested file to the workspace root and repairs its references', async () => {
-  const { rootMoveResult } = await realIpcRenameDoor()
-  expect(rootMoveResult).toEqual({
+test('the move door moves a nested file to the workspace root and repairs its references', async () => {
+  const world = await renameDoorWorld()
+  await world.write('root-source/root-part.md', 'Root-bound body.\n')
+  await world.write('root-source/_report_INDEX.md', '## Running order\n\n- [[root-part]]\n')
+  await world.write('root-source/_report-structure.json', JSON.stringify({ schema_version: 1, content_root: '', files: [{ path: 'root-part.md' }] }, null, 2) + '\n')
+  const { plan, moved } = await sidebarMove(world, 'root-source/root-part.md', 'root-part.md', null)
+  expect({
+    plan, path: moved.file.path, repair: moved.repair,
+    oldExists: await world.exists('root-source/root-part.md'), rootContent: await world.read('root-part.md'),
+    manifest: JSON.parse(await world.read('root-source/_report-structure.json')), index: await world.read('root-source/_report_INDEX.md'),
+  }).toEqual({
     plan: { newPath: 'root-part.md', repairPaths: ['root-source/_report-structure.json'] },
     path: 'root-part.md',
     repair: {
       writtenPaths: ['root-source/_report-structure.json'],
       unrepairedReferences: [],
-      issues: [
-        {
-          kind: 'outcome',
-          text: 'root-source/_report-structure.json: root-part.md was removed because root-part.md left the report folder.',
-        },
-      ],
+      issues: [{ kind: 'outcome', text: 'root-source/_report-structure.json: root-part.md was removed because root-part.md left the report folder.' }],
+      receipts: receiptsFor('root-source/_report-structure.json'),
     },
     oldExists: false,
     rootContent: 'Root-bound body.\n',
@@ -856,9 +553,17 @@ test('the real file:move handler moves a nested file to the workspace root and r
   })
 })
 
-test('the real rename and move handlers keep traversal-like typed names inside the chosen folder', async () => {
-  const { traversalResult } = await realIpcRenameDoor()
-  expect(traversalResult).toEqual({
+test('the rename and move doors keep traversal-like typed names inside the chosen folder', async () => {
+  const world = await renameDoorWorld()
+  await world.write('rename-traversal.md', 'Rename traversal.\n')
+  await mkdir(join(world.root, 'safe-dir'), { recursive: true })
+  await world.write('move-traversal.md', 'Move traversal.\n')
+  const renamed = await sidebarRename(world, 'rename-traversal.md', '../x.md')
+  const moved = await sidebarMove(world, 'move-traversal.md', '../x.md', 'safe-dir')
+  expect({
+    renamePlan: renamed.plan, renamePath: renamed.renamed.file.path, renameContent: await world.read('..-x.md'),
+    movePlan: moved.plan, movePath: moved.moved.file.path, moveContent: await world.read('safe-dir/..-x.md'),
+  }).toEqual({
     renamePlan: { newPath: '..-x.md', repairPaths: [] },
     renamePath: '..-x.md',
     renameContent: 'Rename traversal.\n',
@@ -868,13 +573,20 @@ test('the real rename and move handlers keep traversal-like typed names inside t
   })
 })
 
-test('the real file:move handler reports a completed move with a repair warning', async () => {
-  const { moveFailureResult } = await realIpcRenameDoor()
-  expect(moveFailureResult).toEqual({
+test('the move door reports a completed move with a repair warning', async () => {
+  const world = await renameDoorWorld()
+  await mkdir(join(world.root, 'archive'), { recursive: true })
+  await world.write('report/move-broken.md', 'Body.\n')
+  await world.write('report/_report-structure.json', JSON.stringify({ schema_version: 1, content_root: '', files: [{ path: 'move-broken.md' }] }, null, 2) + '\n')
+  await world.write('move-broken-ref.md', 'See [[move-broken]].\n')
+  failingCheckpoint(world, 'report/move-broken.md', 'archive/move-broken.md')
+  const { moved } = await sidebarMove(world, 'report/move-broken.md', 'move-broken.md', 'archive')
+  expect({
+    path: moved.file.path, warning: moved.repair.unrepairedReferences, issues: moved.repair.issues,
+    targetExists: await world.read('archive/move-broken.md'), ref: await world.read('move-broken-ref.md'),
+  }).toEqual({
     path: 'archive/move-broken.md',
-    warning: [
-      'report/_report-structure.json: move-broken.md was removed because archive/move-broken.md left the report folder.',
-    ],
+    warning: ['report/_report-structure.json: move-broken.md was removed because archive/move-broken.md left the report folder.'],
     issues: [
       { kind: 'reference', text: 'report/_report-structure.json: move-broken.md was removed because archive/move-broken.md left the report folder.' },
       { kind: 'file', text: 'report/_report-structure.json' },
@@ -883,4 +595,47 @@ test('the real file:move handler reports a completed move with a repair warning'
     targetExists: 'Body.\n',
     ref: 'See [[move-broken]].\n',
   })
+})
+
+/** One Collection multi-select move: each document moved in the same batch, as collection:begin-batch starts. */
+const batchMove = (world: RenameDoorWorld, batch: RenameBatch, path: string, to: string) =>
+  moveFile(world.deps, path, destinationOf(to), { dir: '', batch })
+
+test('in a batch, a document written at a path an earlier move left keeps the links that name it', async () => {
+  const world = await renameDoorWorld()
+  await mkdir(join(world.root, 'dest'), { recursive: true })
+  await world.write('a.md', '# Old A\n')
+  await world.write('source/b.md', '# Draft without a link\n')
+  const batch = new RenameBatch()
+  await batchMove(world, batch, 'a.md', 'dest/a.md')
+  // A new a.md at the root, linked from b before b moves in the same batch.
+  await world.write('a.md', '# New\n')
+  await world.write('source/b.md', '[New A](../a.md#new)\n')
+  const moved = await batchMove(world, batch, 'source/b.md', 'dest/b.md')
+  expect(await world.read('dest/b.md')).toBe('[New A](../a.md#new)\n')
+  expect(moved.repair.unrepairedReferences).toEqual([])
+})
+
+test('in a batch, a link written in another case reaches the moved document where the volume ignores case', async () => {
+  const world = await renameDoorWorld()
+  await mkdir(join(world.root, 'dest'), { recursive: true })
+  await world.write('source/a.md', '[B](B.md#top)\n')
+  await world.write('source/b.md', '# Top\n')
+  const ignoresCase = await world.exists('source/B.md')
+  const batch = new RenameBatch()
+  await batchMove(world, batch, 'source/a.md', 'dest/a.md')
+  const moved = await batchMove(world, batch, 'source/b.md', 'dest/b.md')
+  // On a case-sensitive volume the link named no file from the start, and keeps its bytes.
+  expect(await world.read('dest/a.md')).toBe(ignoresCase ? '[B](b.md#top)\n' : '[B](B.md#top)\n')
+  expect(moved.repair.unrepairedReferences).toEqual([])
+
+  // The other order: b already moved, so a's link in another case is found where b went.
+  const second = await renameDoorWorld()
+  await mkdir(join(second.root, 'dest'), { recursive: true })
+  await second.write('source/a.md', '[B](B.md#top)\n')
+  await second.write('source/b.md', '# Top\n')
+  const other = new RenameBatch()
+  await batchMove(second, other, 'source/b.md', 'dest/b.md')
+  await batchMove(second, other, 'source/a.md', 'dest/a.md')
+  expect(await second.read('dest/a.md')).toBe(ignoresCase ? '[B](b.md#top)\n' : '[B](B.md#top)\n')
 })

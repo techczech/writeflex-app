@@ -7,13 +7,13 @@ import type { VaultView } from '../../../shared/vault'
  * root is not a vault. The previous index stays on screen until a new one arrives, so labels and the hidden
  * set update in place.
  */
-export function useVaultSidebar(root: string): { vault: VaultView | null; index: VaultIndex | null } {
+export function useVaultSidebar(root: string, listingReady = true): { vault: VaultView | null; index: VaultIndex | null } {
   const [vault, setVault] = useState<VaultView | null>(null)
   const [index, setIndex] = useState<VaultIndex | null>(null)
 
   useEffect(() => {
     const bridge = window.writeflex
-    if (!bridge?.vault || !bridge.getVaultIndex) return undefined
+    if (!root || !listingReady || !bridge?.vault || !bridge.getVaultIndex) return undefined
     let live = true
     setVault(null)
     setIndex(null)
@@ -29,7 +29,7 @@ export function useVaultSidebar(root: string): { vault: VaultView | null; index:
     })
     const offIndex = bridge.onVaultIndexChanged((next) => { if (live) setIndex(next) })
     return () => { live = false; offVault(); offIndex() }
-  }, [root])
+  }, [root, listingReady])
 
   return { vault, index }
 }

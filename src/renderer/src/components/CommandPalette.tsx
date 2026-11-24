@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ChevronRight, FileText, Folder, Search, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { BookMarked, ChevronRight, FileText, Folder, Search, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import type { MarkdownFile, SkillMeta } from '../../../preload'
 import { isPathInSearchScope } from '../../../shared/search-scope'
 import { fuzzyFilter, fuzzyScore } from '../fuzzy'
 import { quickOpenFiles } from '../quick-open'
+import { folioPathText, matchFolios, type FolioRow } from '../vault-folios'
 import { AgentLaunchIcon, orderSkills, skillDisplayName } from './AgentSkillSurfaces'
 import { launchesAgent } from './agent-icon'
 import type { TaskGroup } from '../commands/command-task-groups'
@@ -43,8 +44,13 @@ export type AppCommand = {
 type CommandPaletteProps = {
   /** Text already typed when the sheet opens (Actions here hands over what the writer typed). */
   initialQuery?: string
-  /** 'files' = quick-open (⇧⌘K): fuzzy over workspace files. 'commands' = palette (⇧⌘P): the command list. */
-  mode: 'files' | 'commands'
+  /** 'files' = quick-open (⇧⌘K): fuzzy over workspace files. 'commands' = palette (⇧⌘P): the command list.
+   *  'folios' = Open a Folio…: the vault's Folios by their own title, folder path second. */
+  mode: PaletteMode
+  /** The vault's Folios (title and folder path): a Folios section in files mode, the whole list in folios mode. */
+  folios?: readonly FolioRow[]
+  /** Open a Folio's page: App opens it and closes the sheet. */
+  onOpenFolio?: (path: string) => void
   /** Workspace files (relative POSIX paths), for files mode. */
   files: MarkdownFile[]
   /** Files mode: path to title (the vault's Titles), so a title is found as well as a file name. */
@@ -87,9 +93,15 @@ type CommandPaletteProps = {
   onClose: () => void
 }
 
+export type PaletteMode = 'files' | 'commands' | 'folios'
+
+/** Quick open lists this many Folios above the files; Open a Folio… lists them all. */
+const QUICK_OPEN_FOLIOS = 5
+
 /** A selectable palette row (arrow navigation flattens these across sections). */
 export type PaletteItem =
   | { kind: 'file'; key: string; file: MarkdownFile; title?: string | null; hidden?: boolean }
+  | { kind: 'folio'; key: string; folio: FolioRow }
   | { kind: 'folder'; key: string; path: string; name: string }
   | { kind: 'command'; key: string; command: AppCommand }
   /** A task group on the top level: opens to that group's commands. */
@@ -155,13 +167,15 @@ export function buildCommandPaletteSections({
   recentIds,
   titles,
   hiddenPaths,
+  folios = [],
   view = TOP_VIEW,
 }: {
   /** Commands mode: the top level, or one opened task group. */
   view?: PaletteView
   titles?: Readonly<Record<string, string>>
   hiddenPaths?: readonly string[]
-  mode: 'files' | 'commands'
+  folios?: readonly FolioRow[]
+  mode: PaletteMode
   query: string
   files: MarkdownFile[]
   folders: string[]
@@ -171,6 +185,12 @@ export function buildCommandPaletteSections({
   recentIds: string[]
 }): PaletteSection[] {
   const q = query.trim()
+  const folioItems = (limit: number): PaletteItem[] => matchFolios(q, folios).slice(0, limit)
+    .map((folio) => ({ kind: 'folio' as const, key: `folio:${folio.path}`, folio }))
+  if (mode === 'folios') {
+    const items = folioItems(Number.POSITIVE_INFINITY)
+    return items.length ? [{ label: 'Folios', items }] : []
+  }
   if (mode === 'files') {
     const searchableFiles = files.filter((file) => isPathInSearchScope(file.path))
     const searchableFolders = folders.filter(isPathInSearchScope)
@@ -180,6 +200,9 @@ export function buildCommandPaletteSections({
     const folderItems: PaletteItem[] = fuzzyFilter(q, searchableFolders)
       .map((path) => ({ kind: 'folder', key: path, path, name: path.split('/').at(-1) ?? path }))
     const sections: PaletteSection[] = []
+    // Folios first, by their own title (a Folio's README heading does not tell it apart from another).
+    const matchedFolios = folioItems(QUICK_OPEN_FOLIOS)
+    if (matchedFolios.length) sections.push({ label: 'Folios', items: matchedFolios })
     if (fileItems.length) sections.push({ label: 'Files', items: fileItems })
     if (folderItems.length) sections.push({ label: 'Folders', items: folderItems })
     return sections
@@ -256,6 +279,8 @@ export function CommandPalette({
   files,
   titles,
   hiddenPaths,
+  folios,
+  onOpenFolio,
   checklistProgress = NO_CHECKLIST_PROGRESS,
   folders,
   commands,
@@ -288,8 +313,8 @@ export function CommandPalette({
   }, [])
 
   const sections = useMemo(() => buildCommandPaletteSections({
-    mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths, view,
-  }), [mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths, view])
+    mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths, folios, view,
+  }), [mode, query, files, folders, commands, skills, activeFile, recentIds, titles, hiddenPaths, folios, view])
 
   const flatItems = useMemo(() => sections.flatMap((section) => section.items), [sections])
 
@@ -324,6 +349,7 @@ export function CommandPalette({
 
   function activate(item: PaletteItem, options: { reveal?: boolean; alternate?: boolean } = {}): void {
     if (item.kind === 'file') options.reveal ? onRevealFile(item.file.path) : onOpenFile(item.file.path)
+    else if (item.kind === 'folio') onOpenFolio?.(item.folio.path)
     else if (item.kind === 'folder') options.reveal && onFocusFolder ? onFocusFolder(item.path) : onRevealFolder(item.path)
     else if (item.kind === 'group') openGroup(item.group)
     else if (item.kind === 'ask') onAskAgent(item.query)
@@ -407,7 +433,7 @@ export function CommandPalette({
       className="overlay open"
       role="dialog"
       aria-modal="true"
-      aria-label={mode === 'files' ? 'Quick open' : 'Command palette'}
+      aria-label={mode === 'files' ? 'Quick open' : mode === 'folios' ? 'Open a Folio' : 'Command palette'}
       onKeyDown={onDialogKeyDown}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
@@ -425,15 +451,15 @@ export function CommandPalette({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onInputKeyDown}
-            placeholder={mode === 'files' ? 'Find a file by title or name…' : 'Type a command, or ask the agent…'}
-            aria-label={mode === 'files' ? 'File or folder name' : 'Command'}
+            placeholder={mode === 'files' ? 'Find a file by title or name…' : mode === 'folios' ? 'Find a Folio by title or folder…' : 'Type a command, or ask the agent…'}
+            aria-label={mode === 'files' ? 'File or folder name' : mode === 'folios' ? 'Folio title or folder' : 'Command'}
             aria-description={mode === 'commands' && view.kind === 'group' ? `Searching in ${view.group}` : undefined}
           />
           <kbd>esc</kbd>
         </div>
         <div className="pal-list" ref={listRef}>
           {flatItems.length === 0 && (
-            <div className="pal-empty">{mode === 'files' ? 'No names match' : 'No commands match'}</div>
+            <div className="pal-empty">{mode === 'files' ? 'No names match' : mode === 'folios' ? ((folios?.length ?? 0) === 0 ? 'This vault has no Folios' : 'No Folios match') : 'No commands match'}</div>
           )}
           {sections.map((section) => (
             <div key={section.label}>
@@ -460,7 +486,15 @@ export function CommandPalette({
                     onMouseMove={() => setSelected(index)}
                     onClick={() => activate(item)}
                   >
-                    {item.kind === 'file' ? (
+                    {item.kind === 'folio' ? (
+                      <>
+                        <BookMarked className="icon sm" aria-label="Folio" />
+                        <span className="grow">
+                          <span className="pal-name">{item.folio.title}</span>
+                          <span className="pal-dir" data-folio-path>{folioPathText(item.folio.path)}</span>
+                        </span>
+                      </>
+                    ) : item.kind === 'file' ? (
                       <>
                         <FileText className="icon sm" />
                         <span className="grow">
@@ -542,9 +576,10 @@ export function CommandPalette({
             </div>
           ))}
         </div>
+        {mode === 'folios' && flatItems.length > 0 && <div className="palette-footer">↵ open the Folio</div>}
         {mode === 'files' && flatItems.length > 0 && (
           <div className="palette-footer">
-            {flatItems[selected]?.kind === 'folder'
+            {flatItems[selected]?.kind === 'folio' ? '↵ open the Folio' : flatItems[selected]?.kind === 'folder'
               ? (onFocusFolder ? '↵ reveal in Files · ⌘↵ focus' : '↵ reveal in Files')
               : '↵ open · ⌘↵ reveal in Files'}
           </div>

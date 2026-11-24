@@ -1,3 +1,6 @@
+import { sweepSyncedSnapshots as sweepSnapshots } from './git-vault-sync-retention'
+import { registerGitSync, gitSyncSaved, changeGitSyncPreference, recheckGitTools, type GitSyncLifecycle } from './git-sync-app'
+import { developerToolsPresent, installDeveloperTools } from './developer-tools'
 import { requireSettingsPagePreference } from './main-window-settings'
 import { receiveCommandMenu, invokeNativeMenuCommand } from './menu'
 import type { MenuCommand, MenuFocus } from '../shared/command-menu'
@@ -19,10 +22,11 @@ import { focusWindow } from './window-presentation'
 import { AmbientState, type AmbientSnapshot } from './ambient'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { basename, dirname, extname, isAbsolute, join, posix, resolve } from 'node:path'
-import { existsSync, lstatSync, statSync, watch } from 'node:fs'
+import { existsSync, lstatSync, statSync } from 'node:fs'
+import { watchFolder as watchSharedFolder } from './shared-folder-watch'
 import { fileURLToPath } from 'node:url'
 import { lstat, readFile, writeFile } from 'node:fs/promises'
-import { BridleAuth, createModelService, scriptedSessionFactory, sweepSnapshots, SnapshotStore, type BridleModelService } from '@bridle/core'
+import { BridleAuth, createModelService, scriptedSessionFactory, SnapshotStore, type BridleModelService } from '@bridle/core'
 import { registerWriteFlexAuth } from './auth'
 import { settingsWindowOnlyAuth } from './auth-guard'
 import { fetchLinkTitle } from './fetch-title'
@@ -38,7 +42,7 @@ import { listingEntryOf, type CollectionChanged } from '../shared/listing-patch'
 import { RestoreNotCompletedError } from './restore-failure'
 import { toggleAgentNoteTask } from './tasks'
 import { parseFrontmatter } from './frontmatter'
-import { collectionMoveFolderPieces, assertCollectionMove, addCollectionPieceTags, collectionPattern, collectionStatus, createIndexNote, listCollection, localCalendarDate, createPiece, unresolvedFolderPieces, setCollectionPieceMode, setCollectionPieceStatus } from './collection'
+import { addCollectionPieceTags, collectionPattern, collectionStatus, createIndexNote, listCollection, localCalendarDate, createPiece, unresolvedFolderPieces, setCollectionPieceMode, setCollectionPieceStatus } from './collection'
 import { countedCollections, countedSettingKey, diaryCaptureRoot, DIARY_FOLDER_SETTING, invalidateCountedCollectionCache, isCountedCollection, isInsideDiaryRoot, parseCountedSettingKey, persistDiarySession, setCollectionCounted } from './diary'
 import { DiaryCaptureTracker, DIARY_IDLE_MS } from './diary-capture'
 import { ExplicitSessionRecorder, shouldIdleCloseExplicitSession, type ExplicitSessionOptions } from './explicit-session'
@@ -84,13 +88,13 @@ import { registerStandardWidgetHandlers } from './standard-widgets/ipc'
 import { setAppSyncGrantStore, SyncGrantStore } from './standard-widgets/sync-grants'
 import { readPieceSources } from './piece-sources'
 import { BoardMaterialDesk } from './board-material-desk'
-import { applyRenameRepair, failedRenameRepairResult, planRenameRepair, type RenameRepairResult } from './rename-repair'
+import { planRenameRepair } from './rename-repair'
+import { followAgentRename, moveFile, previewRename, renameFile, renameFolder, RenameBatch, type RenameDoorDeps, type RenameFollow } from './rename-doors'
 import { readDocumentBytesGuarded } from './guarded-document-read'
 import type { PathIdentity } from './guarded-document-move'
 import type { CommitTarget } from './guarded-document-write'
 import { collectionNamingTitle, hasNewCollectionTitle, planCollectionName, preferredCollectionTitle, type AutoNameSave } from './collection-auto-name'
 import { isUntitledPiece } from '../shared/collection-naming-title'
-import { applyFolderRenameRepair, planFolderRenameRepair } from './folder-rename-repair'
 import { ScrapStore } from './scraps'
 import { ScratchpadStore } from './scratchpad-store'
 import { registerScratchLiveReads } from './scratchpad-live'
@@ -136,6 +140,7 @@ import { createWorkspaceWatcher } from './workspace-watcher'
 import { registerVaultIpcHandlers } from './vault-ipc'
 import { onVaultChanged, vaultStoreFor } from './vault-store'
 import { VaultIndexService } from './vault-index-service'
+import { SearchIndex } from './search-index'
 import { previewSettingsFrom } from './vault-preview'
 import { assertCollectionWritable, collectionWritesPaused } from './collection-write-gate'
 import { OPERATIONS_SAVING_A_VERSION, RequestExecutor } from './request-executor'
@@ -411,21 +416,38 @@ function revisionBinding(state: WindowState): Parameters<typeof requestedRevisio
   }
 }
 
-export function agentFileServices(state: WindowState): { prepareFolioInstructions: (dir: string) => Promise<void>; trashFile: (absolute: string) => Promise<void>; onFileRenamed: (from: string, to: string) => Promise<void>; onVersionHistoryChanged: () => void; notifyFilesChangedOnDisk: (paths: string[]) => void; folioVersions?: NonNullable<CapabilityServices['folioVersions']> } {
+/** What follows a document to its new name in this window (rename-doors.ts). Each never fails a rename. */
+function renameFollow(state: WindowState): RenameFollow {
   return {
-    ...folioVersionServices(state),
-    onVersionHistoryChanged: () => sendSafe(state, 'versions:changed', null),
-    prepareFolioInstructions: (dir) => prepareFolioInstructions(state, dir),
-    trashFile: (absolute) => shell.trashItem(absolute),
-    onFileRenamed: async (from, to) => {
-      notifyDocumentMoved(state, from, to)
-      // The agent's rename moves the Scratchpad's items with the document, as the app's own rename does.
+    // Never fails a rename: a Change left on the old path closes with its reason at accept.
+    ledger: async (from, to) => {
+      // A synced Collection's pending save version follows the document to its new name.
+      state.syncReplicas?.cycles.renamed(from, to)
+      try {
+        if (await state.changes?.followRename(from, to)) sendSafe(state, 'changes:changed', null)
+      } catch (error) {
+        void recordMainProcessDiagnostic('outside-changes.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
+      }
+    },
+    // The floating Scratchpad's items follow their document (spec §7.7).
+    scratchpad: async (from, to) => {
       try {
         if (state.scratchpad && (await state.scratchpad.followRename(from, to)) > 0) announceScratchpad(state)
       } catch (error) {
         void recordMainProcessDiagnostic('scratchpad.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
       }
     },
+    sharing: (from, to) => notifyDocumentMoved(state, from, to),
+  }
+}
+export function agentFileServices(state: WindowState): { prepareFolioInstructions: (dir: string) => Promise<void>; trashFile: (absolute: string) => Promise<void>; onFileRenamed: (from: string, to: string) => Promise<void>; onVersionHistoryChanged: () => void; notifyFilesChangedOnDisk: (paths: string[]) => void; folioVersions?: NonNullable<CapabilityServices['folioVersions']> } {
+  return {
+    ...folioVersionServices(state),
+    onVersionHistoryChanged: () => sendSafe(state, 'versions:changed', null),
+    prepareFolioInstructions: (dir) => prepareFolioInstructions(state, dir),
+    trashFile: (absolute) => shell.trashItem(absolute),
+    // The agent's rename moves the Scratchpad's items with the document and tells sharing, as the app's own rename does.
+    onFileRenamed: (from, to) => followAgentRename(renameFollow(state), from, to),
     notifyFilesChangedOnDisk: (paths) => {
       notifyCollectionChanged(state, paths)
       sendSafe(state, 'file:changed-on-disk', paths)
@@ -507,9 +529,10 @@ export const STATUS_SAVE_REFUSED = 'Could not save this document. Try again.'
  * says nothing and the renderer re-pulls the whole listing as before.
  */
 const collectionBatches = new CollectionChangeBatches<WindowState>()
-const collectionMoveDiscovery = new WeakMap<WindowState, Map<string, Promise<ReadonlySet<string>>>>()
+const collectionMoveBatches = new WeakMap<WindowState, RenameBatch>()
 
-function notifyCollectionChanged(state: WindowState, paths: string[] = [], ownSave?: MarkdownFile): void {
+function notifyCollectionChanged(state: WindowState, paths: string[] = [], ownSave?: MarkdownFile, fromSync = false): void {
+  if (!fromSync && state.workspace) for (const path of paths) gitSyncSaved(state.workspace.root, path)
   if (collectionBatches.collect(state, paths)) return
   scheduleVaultIndexRecompute(state, paths)
   if (state.workspace && paths.length > 0) {
@@ -619,7 +642,7 @@ const outsideLooks = new WeakMap<WindowState, OutsideLook>()
 /**
  * Deliver a queued file-focus to a window at most once. Freshly-created windows can't receive the
  * push until their renderer has mounted and registered `onFocusFile`; those windows carry the
- * pending path and it is flushed when the renderer first pulls `workspace:get`. Already-mounted
+ * pending path and it is flushed when the renderer pulls its workspace context. Already-mounted
  * windows (existing / start-screen reuse) are flushed immediately by the WindowManager. Clearing the
  * field on send makes both paths idempotent.
  */
@@ -654,7 +677,9 @@ export function registerIpc(
   },
 ): {
   evictWindow: (webContentsId: number) => void
-  dispose: () => void
+  dispose: () => Promise<void>
+  /** Git sync's periodic checks and bounded quit attempt; the app's start-up and quit sequence (index.ts) drive them. */
+  gitSync: GitSyncLifecycle
   /** The agent's credential store (userData/auth.json), for Accounts and keys (key-slots.ts). */
   auth: BridleAuth
   /** Preferences changed outside a window's own `wf-settings:set` (the Settings window, the CLI, an import): tell every window. */
@@ -667,6 +692,7 @@ export function registerIpc(
       for (const state of allStates()) if (state.workspace?.root === root) sendSafe(state, 'window:status', 'The folder moved, but its completed chapter-linking state could not be saved.')
     }
   })
+  const gitSync = registerGitSync(settings, (state, paths) => notifyCollectionChanged(state, paths, undefined, true))
   const disposeConfirmIpc = registerConfirmIpc()
   const authFilePath = resolve(join(app.getPath('userData'), 'auth.json'))
   const vaultIndexDir = join(app.getPath('userData'), 'vault-index')
@@ -954,10 +980,37 @@ export function registerIpc(
     }
     return requireWorkspace(stateForSender(event.sender.id)).saveImage(bytes, candidate.ext)
   })
+  ipcMain.handle('workspace:context', async (event) => {
+    const state = stateForSender(event.sender.id)
+    // The shortcut-at-launch spec presses a key before the renderer knows its workspace.
+    const e2eDelay = e2eHooksAllowed() ? Number(process.env.WRITEFLEX_E2E_WORKSPACE_GET_DELAY_MS ?? 0) : 0
+    if (e2eDelay > 0) await new Promise((resolve) => setTimeout(resolve, e2eDelay))
+    flushPendingFocus(state)
+    const workspace = state.workspace
+    return {
+      root: workspace?.root ?? null,
+      assetBaseUrl: workspace ? `wf-asset://${state.assetToken}` : null,
+      canRestoreTabsEarly: Boolean(state.workspaceWatcher?.isWatching()
+        || (!state.syncReplicas && settings.get('workspace.watchExternalChanges') === false)),
+    }
+  })
+  ipcMain.handle('workspace:check-startup-tabs', async (event, root: unknown, paths: unknown) => {
+    const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
+    if (workspace.root !== root || !Array.isArray(paths) || paths.length > 256
+      || !paths.every((path): path is string => typeof path === 'string')) {
+      throw new Error('Invalid startup tabs.')
+    }
+    const existing = await Promise.all(paths.map(async (path) => await workspace.hasListedDocument(path) ? path : null))
+    if (state.workspace !== workspace) throw new Error('The folder changed while restoring tabs.')
+    return existing.filter((path): path is string => path !== null)
+  })
   ipcMain.handle('workspace:get', async (event) => {
     const state = stateForSender(event.sender.id)
+    const e2eDelay = e2eHooksAllowed() ? Number(process.env.WRITEFLEX_E2E_WORKSPACE_LIST_DELAY_MS ?? 0) : 0
+    if (e2eDelay > 0) await new Promise((resolve) => setTimeout(resolve, e2eDelay))
     const view = await workspaceState(state)
-    // A fresh window's renderer is now mounted and listening; hand it any queued file-open focus.
+    // Also handles a post-mount bind or focus that arrived after the initial context pull.
     flushPendingFocus(state)
     return view
   })
@@ -1392,6 +1445,7 @@ export function registerIpc(
   ipcMain.handle('sounds:load', (_event, name: unknown) => readSoundFile(soundsDir, name))
 
   // ---- Copy (Round B T5) -----------------------------------------------------------------------
+
   // The clipboard is written HERE, not in the renderer, because only the main process can put
   // several flavours on it at once — and one flavour is exactly what fails: Word, Teams and Outlook
   // treat RTF as authoritative and reinterpret an HTML-only paste. The renderer decides the SCOPE
@@ -1454,7 +1508,7 @@ export function registerIpc(
     return { target: await askExportTarget(state, name, format), name }
   })
   // The save dialog for an export, one for the document and Folio exports and for a saved Folio version's (ticket 11).
-  const askExportTarget = async (state: ReturnType<typeof stateForSender>, name: string, format: ExportFormat): Promise<string | null> => {
+  const askExportTarget = async (state: ReturnType<typeof stateForSender>, name: string, format: ExportFormat | 'epub'): Promise<string | null> => {
     // A native save sheet is not drivable by Playwright, so under the e2e flag the destination comes
     // from the environment — the same fence Make Folio uses. Unset means the writer cancelled.
     if (process.env.WRITEFLEX_E2E === '1') {
@@ -1963,8 +2017,17 @@ export function registerIpc(
     shell.showItemInFolder(absolute)
   })
 
-  ipcMain.handle('file:read', async (event, path: string) =>
-    requireWorkspace(stateForSender(event.sender.id)).readFile(path))
+  ipcMain.handle('file:read', async (event, path: string, purpose?: unknown) => {
+    const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
+    const result = await workspace.readFile(path)
+    if (state.workspace !== workspace) throw new Error('The folder changed while reading the document.')
+    if (purpose === 'editor') {
+      state.workspaceWatcher?.noteRead(result.file.path, result.content, async () =>
+        (await workspace.readFile(path)).content)
+    }
+    return result
+  })
 
   // ---- Collections (Task 23, ADR-0008) ---------------------------------------------------------
   // A folder is a Collection: its pieces as a sortable metadata table under an Index-Note cover. `dir`
@@ -1994,7 +2057,7 @@ export function registerIpc(
   ipcMain.handle('collection:begin-batch', event => {
     const state = stateForSender(event.sender.id)
     const finish = () => {
-      collectionMoveDiscovery.delete(state)
+      collectionMoveBatches.delete(state)
       const paths = collectionBatches.finish(state)
       if (paths) notifyCollectionChanged(state, paths)
     }
@@ -2002,13 +2065,13 @@ export function registerIpc(
       event.sender.removeListener('did-start-loading', finish)
       event.sender.removeListener('render-process-gone', finish)
     })
-    collectionMoveDiscovery.set(state, new Map())
+    collectionMoveBatches.set(state, new RenameBatch())
     event.sender.once('did-start-loading', finish)
     event.sender.once('render-process-gone', finish)
   })
   ipcMain.handle('collection:end-batch', event => {
     const state = stateForSender(event.sender.id)
-    collectionMoveDiscovery.delete(state)
+    collectionMoveBatches.delete(state)
     const paths = collectionBatches.finish(state)
     if (paths) notifyCollectionChanged(state, paths)
   })
@@ -2569,7 +2632,7 @@ export function registerIpc(
   // Widgets (interactive-widgets-in-documents, ticket 02): the HTML of an embed line's file, resolved
   // inside this window's workspace and read here; the renderer runs it in a sealed frame.
   const widgetWatches = createWidgetWatches({
-    watchFolder: (folder, listener) => watch(folder, { recursive: false, encoding: 'utf8' }, (_event, name) => { if (name) listener(String(name)) }),
+    watchFolder: (folder, listener, failed) => watchSharedFolder(folder, {}, (_event, name) => { if (name) listener(String(name)) }).on('error', failed),
     notify: (windowId, paths) => {
       const state = allStates().find((candidate) => !candidate.window.isDestroyed() && candidate.window.webContents.id === windowId)
       if (state) sendSafe(state, 'file:changed-on-disk', paths)
@@ -2836,6 +2899,7 @@ export function registerIpc(
         }
       }
       replicas?.saved(saved.file.path, saved.written, input.basis)
+      if (saved.written) gitSyncSaved(workspace.root, saved.file.path)
       // Durable only after the file and its folder are synced and read back (never a claim of backup).
       if (receipt) await receipt.saved(workspace.absolute(input.path), saved.written)
       // Saved in place: the renderer patches this one listing entry instead of re-listing the folder.
@@ -2996,72 +3060,24 @@ export function registerIpc(
     return created
   })
 
-  const plannedRename = async (workspace: Workspace, path: string, newPath: string) => {
-    const targetPath = workspace.relative(workspace.renameTarget(path, newPath))
-    return planRenameRepair(workspace, path, targetPath)
-  }
-  /** Never fails a rename: a Change left on the old path closes with its reason at accept. */
-  const followRenameInLedger = async (state: WindowState, from: string, to: string): Promise<void> => {
-    // A synced Collection's pending save version follows the document to its new name.
-    state.syncReplicas?.cycles.renamed(from, to)
-    try {
-      if (await state.changes?.followRename(from, to)) sendSafe(state, 'changes:changed', null)
-    } catch (error) {
-      void recordMainProcessDiagnostic('outside-changes.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
-    }
-  }
-  /** The floating Scratchpad's items follow their document (spec §7.7); never fails a rename either. */
-  const followRenameInScratchpad = async (state: WindowState, from: string, to: string): Promise<void> => {
-    try {
-      if (state.scratchpad && (await state.scratchpad.followRename(from, to)) > 0) announceScratchpad(state)
-    } catch (error) {
-      void recordMainProcessDiagnostic('scratchpad.rename-not-followed', { from, to, message: error instanceof Error ? error.message : String(error) })
-    }
-  }
-  const renameWithRepair = async (state: WindowState, path: string, newPath: string, collection?: string,
-    guardedSource?: () => Promise<PathIdentity>) => {
+  const renameDoors = (state: WindowState): RenameDoorDeps => {
     const workspace = requireWorkspace(state)
-    let discovered: Promise<ReadonlySet<string>> | undefined
-    const folderPieces = () => {
-      const batch = collectionMoveDiscovery.get(state)
-      discovered ??= batch?.get(collection!) ?? collectionMoveFolderPieces(workspace, collection!)
-      batch?.set(collection!, discovered)
-      return discovered
+    return {
+      workspace,
+      follow: renameFollow(state),
+      checkpointer: {
+        current: () => state.agent ?? (state.agentReady ? 'starting' : null),
+        ready: async () => state.agentReady ? requireAgent(state) : null,
+      },
+      notify: {
+        collectionChanged: (paths) => notifyCollectionChanged(state, paths),
+        changedOnDisk: (paths) => sendSafe(state, 'file:changed-on-disk', paths),
+      },
+      forget: (path) => {
+        createdPieces.get(workspace)?.delete(path)
+        autoNameUndos.get(workspace)?.delete(path)
+      },
     }
-    if (collection !== undefined) await assertCollectionMove(workspace, collection, path, newPath, folderPieces)
-    const plan = await plannedRename(workspace, path, newPath)
-    // One turn for the rename and the ledger's follow: an undecided Change from outside filed for this
-    // document follows it to its new name before any decision on it can run.
-    const renamed = await workspace.exclusiveAll(async () => {
-      if (collection !== undefined) await assertCollectionMove(workspace, collection, path, newPath, folderPieces)
-      const expectedSource = await guardedSource?.()
-      const moved = await workspace.renameFile(path, newPath, expectedSource
-        ? { documentOnly: true, requireExistingDirectory: true, expectedSource }
-        : { requireExistingDirectory: collection !== undefined })
-      createdPieces.get(workspace)?.delete(path)
-      autoNameUndos.get(workspace)?.delete(path)
-      await followRenameInLedger(state, path, moved.file.path)
-      await followRenameInScratchpad(state, path, moved.file.path)
-      // Sharing (ticket 04): the share follows in the same turn, before any save signal names either path.
-      notifyDocumentMoved(state, path, moved.file.path)
-      return moved
-    })
-    let repair: RenameRepairResult
-    try {
-      const checkpoint = async (repairPath: string) => {
-        if (!state.agentReady) return
-        await (await requireAgent(state)).checkpointFile(repairPath)
-      }
-      repair = await applyRenameRepair(plan, workspace, {
-        beforeMarkdownWrite: checkpoint,
-        beforeManifestWrite: checkpoint,
-      })
-    } catch (error) {
-      repair = await failedRenameRepairResult(plan, workspace, error)
-    }
-    notifyCollectionChanged(state, [path, renamed.file.path, ...repair.writtenPaths])
-    if (repair.writtenPaths.length) sendSafe(state, 'file:changed-on-disk', repair.writtenPaths)
-    return { ...renamed, repair }
   }
 
   const pendingCollectionName = async (workspace: Workspace, path: string, piece: CreatedPiece, id: number, collisions: readonly string[]) => {
@@ -3102,7 +3118,7 @@ export function registerIpc(
       const suggestion = await pendingCollectionName(workspace, path, piece, id, collisions)
       if (!suggestion) return null
       if (workspace.relative(workspace.renameTarget(path, suggestion.name)) !== newPath) return { kind: 'collision' as const }
-      const renamed = await renameWithRepair(state, path, newPath, undefined, async () => {
+      const renamed = await renameFile(renameDoors(state), path, newPath, async () => {
         if (state.workspace !== workspace || createdPieces.get(workspace)?.get(path) !== piece || piece.saved !== suggestion.saved) throw STALE_NAMING_CANDIDATE
         const current = await readDocumentBytesGuarded(workspace, path)
         if (!current.bytes.equals(Buffer.from(suggestion.saved.content))) throw new Error('The document changed before it could be named.')
@@ -3128,7 +3144,7 @@ export function registerIpc(
     const undos = autoNameUndos.get(workspace)
     const undo = undos?.get(input.path)
     if (!undo || undo.oldPath !== input.oldPath) throw new Error('This rename is no longer available to undo.')
-    const renamed = await renameWithRepair(state, input.path, './' + undo.oldPath, undefined, async () => {
+    const renamed = await renameFile(renameDoors(state), input.path, './' + undo.oldPath, async () => {
       if (state.workspace !== workspace || undos?.get(input.path) !== undo) throw new Error('This rename is no longer available to undo.')
       return undo.identity
     })
@@ -3138,22 +3154,15 @@ export function registerIpc(
   ipcMain.handle('file:rename-repair-paths', async (
     event,
     input: { path: string; newName: string; directory?: string | null },
-  ) => {
-    const workspace = requireWorkspace(stateForSender(event.sender.id))
-    const name = sanitiseFileName(input.newName)
-    const requestedPath = input.directory === null ? `./${name}` : input.directory ? `${input.directory}/${name}` : name
-    const newPath = workspace.relative(workspace.renameTarget(input.path, requestedPath))
-    const plan = await planRenameRepair(workspace, input.path, newPath)
-    return { newPath, repairPaths: plan.writes.map((write) => write.path) }
-  })
-  ipcMain.handle('file:rename', async (event, input: { path: string; newPath: string }) => {
-    const state = stateForSender(event.sender.id)
-    return renameWithRepair(state, input.path, input.newPath)
-  })
+  ) => previewRename(requireWorkspace(stateForSender(event.sender.id)), input))
+  ipcMain.handle('file:rename', async (event, input: { path: string; newPath: string }) =>
+    renameFile(renameDoors(stateForSender(event.sender.id)), input.path, input.newPath))
   ipcMain.handle('file:move', async (event, input: { path: string; newPath: string; collectionDir?: string }) => {
     const state = stateForSender(event.sender.id)
-    const workspaceRelativePath = input.newPath.includes('/') ? input.newPath : `./${input.newPath}`
-    return renameWithRepair(state, input.path, workspaceRelativePath, input.collectionDir)
+    // A slash-free path from the move picker names the workspace root.
+    const destination = input.newPath.includes('/') ? { to: 'folder' as const, path: input.newPath } : { to: 'root' as const, name: input.newPath }
+    const collection = input.collectionDir === undefined ? undefined : { dir: input.collectionDir, batch: collectionMoveBatches.get(state) }
+    return moveFile(renameDoors(state), input.path, destination, collection)
   })
   ipcMain.handle('file:duplicate', async (event, input: { path: string }) => {
     const state = stateForSender(event.sender.id)
@@ -3184,54 +3193,8 @@ export function registerIpc(
     notifyCollectionChanged(state, [created.path])
     return created
   })
-  ipcMain.handle('folder:rename', async (event, input: { path: string; newName: string }) => {
-    const state = stateForSender(event.sender.id)
-    const workspace = requireWorkspace(state)
-    // One turn for the rename, the ledger's follow and the repair of the `./` path links into the folder: read before
-    // it moves and written after (folder-rename-repair.ts, Sol round 4), with no other rename between (Sol round 5).
-    // Each repair write is checkpointed on the agent. The agent is never awaited inside the turn (its start-up began
-    // outside it and may wait on the model service, holding every save), and a rename with nothing to repair never
-    // waits on it at all (Sol round 6). So: when the plan has writes and the agent is still starting, the turn ends
-    // before anything moves, the agent is awaited outside it, and the whole turn runs again with the agent in hand.
-    // A failed start-up refuses each repair write, as before.
-    type Checkpointer = { agent: WorkspaceAgent } | { error: unknown } | null
-    const attempt = (checkpointer: Checkpointer | undefined) => workspace.exclusiveAll(async () => {
-      const from = workspace.relative(workspace.absolute(input.path))
-      const parent = posix.dirname(from)
-      const predicted = parent === '.' ? sanitiseFileName(input.newName) : `${parent}/${sanitiseFileName(input.newName)}`
-      const planned = await planFolderRenameRepair(workspace, from, predicted)
-      let held: Checkpointer = checkpointer ?? null
-      if (checkpointer === undefined && planned.writes.length) {
-        if (state.agent) held = { agent: state.agent }
-        else if (state.agentReady) return null // the agent is starting: await it outside the turn, then again
-      }
-      const checkpoint = async (repairPath: string): Promise<void> => {
-        if (!held) return
-        if ('error' in held) throw held.error
-        await held.agent.checkpointFile(repairPath)
-      }
-      const moved = await workspace.renameFolder(input.path, input.newName)
-      await followRenameInLedger(state, input.path, moved.path)
-      await followRenameInScratchpad(state, from, moved.path)
-      notifyDocumentMoved(state, input.path, moved.path)
-      const repaired = moved.path === predicted
-        ? await applyFolderRenameRepair(planned, workspace, checkpoint)
-        : { writtenPaths: [], unrepairedReferences: [] }
-      return { renamed: moved, repair: repaired }
-    })
-    let outcome = await attempt(undefined)
-    if (!outcome) {
-      let checkpointer: Checkpointer = null
-      if (state.agentReady) {
-        try { checkpointer = { agent: await requireAgent(state) } } catch (error) { checkpointer = { error } }
-      }
-      outcome = (await attempt(checkpointer))!
-    }
-    const { renamed, repair } = outcome
-    notifyCollectionChanged(state, [input.path, renamed.path, ...repair.writtenPaths])
-    if (repair.writtenPaths.length) sendSafe(state, 'file:changed-on-disk', repair.writtenPaths)
-    return { ...renamed, repair }
-  })
+  ipcMain.handle('folder:rename', async (event, input: { path: string; newName: string }) =>
+    renameFolder(renameDoors(stateForSender(event.sender.id)), input.path, input.newName))
   ipcMain.handle('folder:trash', async (event, input: { path: string }) => {
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
@@ -3553,6 +3516,11 @@ export function registerIpc(
       return listener(event, ...args)
     })
   }
+  settingsWindowOnly('wf-settings-window:git-sync', async (_event,input:any) => { if(!input||typeof input.id!=='string'||!input.value||typeof input.value!=='object')throw new Error('Invalid sync preference.');await changeGitSyncPreference(input.id,input.value);return {ok:true} })
+  settingsWindowOnly('wf-settings-window:git-tools', async (_event, action: unknown) => {
+    if (action === 'install') installDeveloperTools()
+    return { present: action === 'check' ? await recheckGitTools() : await developerToolsPresent() }
+  })
   settingsWindowOnly('wf-settings-window:set', async (_event, input: unknown) => {
     const request = requireSettingsPagePreference(input)
     await settings.setPersisted(request.key, request.value, request.key)
@@ -3608,6 +3576,7 @@ export function registerIpc(
   return {
     auth,
     preferencesChanged,
+    gitSync,
     evictWindow: (webContentsId: number) => { e2eScripts.delete(webContentsId); widgetWatches.disposeWindow(webContentsId) },
     dispose: () => {
       disposeConfirmIpc()
@@ -3620,6 +3589,7 @@ export function registerIpc(
       ipcMain.removeHandler('agent:models-refresh')
       for (const channel of settingsWindowChannels) ipcMain.removeHandler(channel)
       settingsWindowChannels.clear()
+      return SearchIndex.flushPending()
     },
   }
 }
@@ -3690,7 +3660,9 @@ export async function bindWorkspace(
   invalidateFolioOrderFacts(root)
   invalidateFolioOutlines(root)
   if (previousWorkspace) clearFolioDeclarations(previousWorkspace.root)
-  state.workspace = withFolioTitleIdentity(new Workspace(root), {
+  state.workspace = withFolioTitleIdentity(new Workspace(root, {
+    searchCacheDir: join(app.getPath('userData'), 'search-index'),
+  }), {
     beforeIndexWrite: async path => { if (state.agent) await state.agent.checkpointFile(path) },
     onLinked: result => {
       // A title write links only its own file; it does not complete the whole-Folio opening migration.
@@ -3934,7 +3906,7 @@ export async function bindWorkspace(
       const retention = settings.get('snapshots.retention')
       // The sweep rewrites the journal inside the Collection, so not while another owner holds it.
       if ((retention === '30' || retention === '90') && !collectionWritesPaused(root)) {
-        await sweepSnapshots(join(root, '.bridle'), Number(retention)).catch(() => {})
+        await sweepSnapshots(join(root, '.bridle'), Number(retention), settings).catch(() => {})
       }
       let checkpointCreated: (path: string) => Promise<void>
       await deps.modelServiceReady

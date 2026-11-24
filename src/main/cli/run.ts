@@ -5,6 +5,7 @@ import { OUTCOME_LINES, renderOutcome, type Outcome } from './outcome'
 import { resolveCollectionRoot, type CollectionRoot } from './root'
 import { CommandLineWorkspace } from './guarded-workspace'
 import { buildOperationTable } from './table'
+import { requestedExportFormat } from './export-operation'
 import { READ_REQUEST_OPERATIONS, REQUEST_OPERATIONS } from './request-format'
 import { MAX_STDIN_BYTES, stdinTooLarge } from './stdin'
 import { sendToApp, type RequestSurroundings } from './request-route'
@@ -14,6 +15,7 @@ import { chooseWriteRoute, recordsPlace, replyKeyFolders, withWriteAccess, type 
 
 export type CliEnv = {
   cwd: string
+  publicationRuntime?: OperationContext['publicationRuntime']
   stdout: (text: string) => void
   stderr: (text: string) => void
   openUrl?: OperationContext['openUrl']
@@ -126,6 +128,7 @@ export async function runCli(argv: string[], env: CliEnv): Promise<number> {
       if (Buffer.byteLength(piped, 'utf8') > MAX_STDIN_BYTES) throw stdinTooLarge()
     }
     const ctx: OperationContext = {
+      publicationRuntime: env.publicationRuntime,
       workspace: new CommandLineWorkspace(found?.root ?? env.cwd), output: invocation.output, openUrl: env.openUrl ?? systemOpen,
       cwd: env.cwd, stdin: async () => piped,
     }
@@ -156,10 +159,13 @@ export async function runCli(argv: string[], env: CliEnv): Promise<number> {
     const routed = appOwns && requestable && found
       ? await sendToApp(found.root, operation, invocation.args, surroundings())
       : null
+    // EPUB writes its authorised external destination and the profile only. The Collection write
+    // route would run version recovery and other maintenance on the writing being frozen.
+    const epubOutput = operation.name === 'export' && requestedExportFormat(invocation.args) === 'epub'
     const result = routed ? routed.result : appOwns
       // Not a request and not a write to the Collection: run as a read is, and told the app is there.
       ? await operation.run({ ...ctx, appOwnsCollection: true }, invocation.args)
-      : writes && found
+      : writes && found && !epubOutput
       ? await withWriteAccess(found, writeEnv, operation.name, (write) => operation.run({ ...ctx, workspace: write.workspace, write }, invocation.args))
       : await operation.run(ctx, invocation.args)
     const filed = filing as ReviewFiling | null

@@ -172,6 +172,10 @@ export type OutsideLimits = { maxUndecided: number; maxUndecidedBytes: number; m
 
 /** Not yet decided: pending or held. */
 export const undecided = (change: Change): boolean => change.status === 'pending' || change.status === 'held'
+
+/** A comment: a Change that changes no text (the margin's `note`). A move keeps its words but is an edit. */
+export const isCommentChange = (change: Change): boolean =>
+  change.oldText === change.newText && newFilePartOf(change) === undefined && !(change as Change & { newFile?: unknown }).newFile && !change.moveFrom && change.editClass !== 'move'
 /** The text a record carries, for the size limits: its old and new text, and the words kept around them (`AnchorContext`). */
 const textBytes = (change: Pick<Change, 'oldText' | 'newText'>): number => {
   const context = anchorContextOf(change)
@@ -551,9 +555,14 @@ export class ChangeStore {
   }
 
   /**
-   * An undecided outside Change follows a rename the app made: `from` (a document, or a folder and
-   * everything under it) is now `to`. One write. Changes of any other kind are left as they are: the
-   * in-app agent's carry their path in a live proposal as well. Returns how many moved.
+   * An undecided Change follows a rename the app made: `from` (a document, or a folder and everything
+   * under it) is now `to`. One write. Every undecided outside Change follows, and every undecided comment
+   * (a Change that changes no text) whoever left it: a comment is about the words, wherever the file is
+   * now, and is never left on a path that no longer exists (rough edges, 24 Nov 2026: the Folio's Comments
+   * tab lost a comment when its part was renamed). An in-app agent's comment that is still live keeps its
+   * proposal on the old path; its Accept and Decline then settle from this record (agent.ts
+   * `resolveChangeInTurn`). Other in-app edits are left as they are: they carry their path in a live
+   * proposal as well. Returns how many moved.
    */
   async followRename(from: string, to: string): Promise<number> {
     if (from === '' || to === '' || from === to) return 0
@@ -561,7 +570,7 @@ export class ChangeStore {
       const all = await this.#readAll()
       let moved = 0
       const next = all.map((change) => {
-        if (!undecided(change) || outsideSourceOf(change) === null) return change
+        if (!undecided(change) || (outsideSourceOf(change) === null && !isCommentChange(change))) return change
         const path = change.path === from ? to : change.path.startsWith(`${from}/`) ? `${to}${change.path.slice(from.length)}` : null
         if (path === null) return change
         moved += 1

@@ -1,3 +1,9 @@
+import type { EpubPreparationOptions, EpubPrepareReply } from '../../../shared/publication-export'
+import { EPUB_EXPORT_AVAILABLE } from '../../../shared/epub-feature'
+import { useGitSync, GitPanel, GitMark, ProtectionMark } from '../sync/GitSync'
+import { REMOTE_COPY_AVAILABLE } from '../../../shared/remote-protection'
+import { EXPERIMENTAL_GIT_SYNC_OFF } from '../../../shared/git-sync-settings'
+import { releaseEarlyChords, stopHoldingEarlyChords } from './early-chords'
 import { nativeEditRoleChord } from './shortcuts'
 import { useLiveMenuChecks } from '../commands/use-menu-command-state'
 import { menuCommands, dispatchMenuCommand, sameMenuModel } from '../commands/menu-model'
@@ -21,7 +27,7 @@ import { researchCaptureTarget } from './research-capture-target'
 import { reportRendererError } from './RendererErrorBoundary'
 import { closeWindowIfClean, closeWithEditor, editorIsPresent, queueCloseRetry, setEditorPresent, setSaveBasisSource, takeCloseRetry, unsaved } from './unsaved-text'
 import { acceptThroughOwner as acceptRoute, replayAcceptRedo, resolveProposalThroughOwner, type AcceptAnswer, type AcceptRouteResult } from './resolution-routes'
-import { createDocumentOwner, type DocumentOwner, type MainWriteOutcome, type OutsideOutcome, type Snapshot } from './document-owner'
+import { createDocumentOwner, type DocumentOwner, type MainWriteOutcome, type Snapshot } from './document-owner'
 import { createAutosaveScheduler, type AutosaveScheduler } from './autosave-scheduler'
 import { isUntitledPiece, type CollectionNamingCandidate } from '../../../shared/collection-naming-title'
 import { fanOutReceipts } from './save-receipts'
@@ -62,11 +68,10 @@ import { askConfirm } from '../components/confirm-bus'
 import { StatusBar } from '../components/StatusBar'
 import type { ReviewAsk } from '../components/ReviewBulkPopovers'
 import { FocusPicker } from '../components/FocusPicker'
-import { applyLineOverlaySetting, DEFAULT_LINE_OVERLAY, LINE_OVERLAY_SETTINGS, RULER_OPACITY_STEP, normaliseRulerOpacity, resolveExclusive, type LineOverlayConfig, type RulerCovers, type LineFocusSize } from '../editor/line-overlay'
+import { useWritingView } from './useWritingView'
 import { SessionStarter } from '../components/SessionStarter'
 import { ReadAloudBar } from '../components/ReadAloudBar'
 import { ReadingRoom, type ReaderSelection } from '../components/ReadingRoom'
-import { effectiveFocusMode, FOCUS_CHIP_NAMES, normaliseFocusMode, normaliseLeadStyle, type FocusMode, type LeadStyle } from '../editor/focus-modes'
 import { resolveChangeRange } from '../editor/change-marks'
 import { jumpToBlock } from '../editor/live-preview'
 import { noteDocumentInteraction, noteFileOpened, OUTLINE_SWITCH_IDLE, folioSidebarLayout, type OpenSource, type OutlineSwitchState } from './outline-switch'
@@ -89,13 +94,7 @@ import {
   type ReadAloudPreset,
   type ReadAloudStrength,
 } from '../editor/read-aloud-colours'
-import {
-  FIXED_LINE_DEFAULT,
-  FIXED_LINE_PRESETS,
-  FIXED_LINE_PRESET_LABELS,
-  FIXED_LINE_SETTING,
-  normaliseFixedLine,
-} from '../editor/fixed-line'
+import { FIXED_LINE_PRESETS } from '../editor/fixed-line'
 import type { PendingChange, SpeakableOptions } from '../editor/speakable'
 import {
   fakeSpeechEngine,
@@ -123,8 +122,11 @@ import { archiveLinkInsert, archiveQuoteInsert, insertedRange } from '../editor/
 import type { ArchiveResult } from '../../../shared/scout'
 import { RemoveExampleConfirm, REMOVE_EXAMPLE_TEXT } from '../components/RemoveExampleConfirm'
 import { DiskMergeSheet } from '../components/DiskMergeSheet'
-import { applyDiskMerge, beginDiskMerge, diskMergeMessage, offersMerge, type DiskMergeSession } from './disk-merge'
-import type { ConflictPick } from '../../../shared/three-way-merge'
+import { offersMerge } from './disk-merge'
+import { repairInBuffer } from './repair-in-buffer'
+import { repairReceiptsOf, type RepairReceipt } from '../../../shared/repair-receipt'
+import { sha256OfText } from '../../../shared/preserve-receipt'
+import { useDiskNoticeStore, useDiskNotices } from './disk-notices'
 import { StartScreen } from '../components/StartScreen'
 import { AgentSkillStep } from '../components/AgentSkillOffer'
 import { WorkspaceEmpty } from '../components/WorkspaceEmpty'
@@ -161,7 +163,9 @@ import { dispatchSidebar } from '../plan/folio-sidebar'
 import { exportPlaceFor } from './export-collection-dir'
 import { OutlinePane, type OutlineRequest } from '../components/OutlinePane'
 import { RoomBinderSwitch } from '../components/RoomBinderPane'
-import { CommandPalette, type AppCommand } from '../components/CommandPalette'
+import { CommandPalette, type AppCommand, type PaletteMode } from '../components/CommandPalette'
+import { FolioCommentsPane } from '../components/FolioCommentsPane'
+import { vaultFolios } from '../vault-folios'
 import { WidgetPicker } from '../components/WidgetPicker'
 import { StandardWidgetWorkbench, type WorkbenchStep } from '../components/StandardWidgetWorkbench'
 import { embedTarget, undoesWidgetCreate } from '../widgets/standard-widget-model'
@@ -199,7 +203,6 @@ import { IdeaMaterialise } from '../components/IdeaMaterialise'
 import { useAgent } from '../hooks/useAgent'
 import { useScraps } from '../hooks/useScraps'
 import { useSources } from '../hooks/useSources'
-import { useSettings } from '../hooks/useSettings'
 import { useWorkspace } from '../hooks/useWorkspace'
 import { WidgetStepLeftoverNotice } from '../components/WidgetStepLeftoverNotice'
 import { useChecklistProgress } from '../hooks/useChecklistProgress'
@@ -221,15 +224,18 @@ import { commandRan, onCommandRan } from '../commands/command-ran'
 import { placeAt, placeOfRow, type Place } from '../commands/place'
 import { offeredAt } from '../commands/command-places'
 import { askComposerText, askContextAt } from '../commands/ask-context'
-import { runThemeCommand } from '../commands/theme-commands'
+import { runThemeCommand, THEME_COMMANDS } from '../commands/theme-commands'
+import { THEME_SETTING, themePreference } from '../../../shared/appearance'
+import { useAppearance } from '../hooks/useAppearance'
+import { WindowTitlebar } from '../components/WindowTitlebar'
 import { runRefreshModelsCommand } from '../commands/model-refresh-command'
 import { settingsPageOf } from './settings-page-of'
 import { APP_DISPATCHED_EDITOR_IDS, parseOverrides, resolveChord, SHORTCUT_OVERRIDES_KEY, shortcutCaptureActive, subscribeShortcutCapture } from '../commands/chords'
 import { suggestionAnchors, uniqueRange } from '../editor/suggestion-anchor'
 import { flashApplied, minimisedAppliedRange } from '../editor/applied-flash'
-import { closeRefusalMessage, diskNoticeRefusalMessage, keepMineWrites, mayWriteUnderDiskNotice, minimalReplace, noticeAfterRefusal, refusalMayReload, removedTabDiscardQuestion, sameDiskNotice, type ExternalDiskNotice } from '../editor/reconcile'
+import { closeRefusalMessage, mayWriteUnderDiskNotice, removedTabDiscardQuestion, sameDiskNotice, type ExternalDiskNotice } from '../editor/reconcile'
 import { basisFromBaseline } from '../../../shared/save-basis'
-import { normaliseEditorViewMode, type EditorViewMode } from '../editor/view-mode'
+import type { EditorViewMode } from '../editor/view-mode'
 import type { SuggestionResolutionEffect } from '../editor/suggestion-resolution-history'
 import { materialiseSeed, type WikilinkRange } from '../editor/wikilinks'
 import { useReviewActions } from './review-actions'
@@ -247,7 +253,7 @@ import { useOutsideSourceBulk } from './use-outside-source-bulk'
 import { reviseSuggestionWithWarning } from './revise-suggestion'
 import { findLiveSuggestionForChange } from './change-suggestion-match'
 import { ReviewCursor, owedReveal } from './review-cursor'
-import { SIDEBARS_TAKE_TURNS_BELOW, fitSidebars, guideNeedsRoom, initialSidebars, planSidebars, readRightSidebarChoice, readSidebarTurn, rightPaneTabsFor, usePaneLayout, writeRightSidebarChoice, writeSidebarTurn } from './pane-layout'
+import { SIDEBARS_TAKE_TURNS_BELOW, fitSidebars, guideNeedsRoom, initialSidebars, planSidebars, readRightSidebarChoice, readSidebarTurn, rightPaneTabsFor, usePaneLayout, withFolioComments, writeRightSidebarChoice, writeSidebarTurn } from './pane-layout'
 import { RightPaneTabs } from '../components/RightPaneTabs'
 import { GuidePane } from '../components/GuidePane'
 import { useGuideConnectionSources } from '../components/guide-connections-live'
@@ -318,6 +324,10 @@ const FILTER_FILES_COMMAND = registryCommand('files.filter')
 const HIDE_STRIKES_COMMAND = registryCommand('view.hideStrikes')
 const HIDE_INSERTS_COMMAND = registryCommand('view.hideInserts')
 const OPEN_TABS_COMMAND = registryCommand('view.openTabs')
+/** Commands a chord pressed before the app listened may still run (early-chords.ts): each opens a surface, none
+ *  closes, quits or changes text. Not Search (⇧⌘F): run late it opens, but the workspace's first focus takes the
+ *  keyboard back from its field. */
+const EARLY_CHORD_COMMANDS = ['app.quickOpen', 'app.commandPalette', 'collection.openBoard'] as const
 const OPEN_BOARD_COMMAND = registryCommand('collection.openBoard')
 const ACCEPT_SESSION_COMMAND = registryCommand('writer.acceptSession')
 const EMPTY_ID_SET: ReadonlySet<string> = new Set()
@@ -353,14 +363,6 @@ const recentsKey = (root: string): string => `wf:cmd-recents:${root}`
 
 
 
-/** The Editor settings ladders (Task 17). Prose-size labels apply literally (17/19/21px); the
- *  UNSET default stays the locked 18.5px (tokens.css) — the mockup's select says 19 while its page
- *  renders 18.5, so labels govern explicit choices and the locked value governs untouched (recorded
- *  deviation). Line widths step ±120px around the locked 660px measure (usability review look item). */
-const PROSE_SIZES = ['17', '19', '21']
-const LINE_WIDTHS = ['narrow', 'medium', 'wide']
-const LINE_WIDTH_PX: Record<string, string> = { narrow: '540px', medium: '660px', wide: '780px' }
-const LINE_WIDTH_LABEL: Record<string, string> = { narrow: 'Narrow', medium: 'Medium', wide: 'Wide' }
 const READ_ALOUD_VOICE_SETTING = 'readAloud.voiceURI'
 const READ_ALOUD_RATE_SETTING = 'readAloud.rate'
 const READ_ALOUD_SCROLL_MODE_SETTING = 'readAloud.scrollMode'
@@ -502,6 +504,8 @@ Object.assign(COMMAND_ICONS, {
 ['plan.open']: ListOrdered,
 ['folio.linkFiles']: BookOpen,
 ['folio.open']: BookOpen,
+['folio.pick']: Library,
+['folio.allComments']: MessageSquare,
 ['research.capture']: BookOpenCheck,
 ['folio.movePieceUp']: ArrowUp,
 ['folio.movePieceDown']: ArrowDown,
@@ -608,6 +612,7 @@ Object.assign(COMMAND_ICONS, {
 ['sounds.ambient']: AudioLines,
 ['appearance.darkTheme']: Moon,
 ['appearance.lightTheme']: Sun,
+['appearance.systemTheme']: AppWindow,
 ['goal.set']: Target,
 ['copy.rich']: ClipboardCopy,
 ['copy.markdown']: FileCode,
@@ -809,6 +814,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [sharesListOpen, setSharesListOpen] = useState(false)
   const [shareMark, setShareMark] = useState<ShareMark | null>(null)
   const guideInRow = guideOpen
+  // "All comments in this Folio" (rough edges, 24 Nov 2026): the right pane's Comments tab, in the row only once opened.
+  const [folioCommentsOpen, setFolioCommentsOpen] = useState(false)
+  const [folioCommentsDir, setFolioCommentsDir] = useState<string | null>(null)
+  const [folioCommentCurrent, setFolioCommentCurrent] = useState<string | null>(null)
   const [exampleChanges, setExampleChanges] = useState(0)
   // Main asked this window to open its Guide tab (it is taken with the next Guide-context read).
   const [guideWanted, setGuideWanted] = useState(0)
@@ -843,6 +852,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     scratchpadDocked: scratchpadMode === 'docked',
     viewportWidth,
     defaultRightTab: window.writeflex.e2eEnabled && !window.writeflex.e2eFreshSidebars ? 'agent' : undefined,
+    folioCommentsShown: folioCommentsOpen,
     onLeftTabOpened: (tab) => {
       if (tab === 'outline') setOutlineOpen(true)
     },
@@ -898,12 +908,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // The window's ONE workspace instance — useTabs/useFavourites take root/files as arguments so a
   // post-mount bind (start screen → Open dialog / Open Recent → refresh()) reaches every consumer.
   // A hook privately instantiating useWorkspace would only ever see the mount-time pull (fix wave 1).
-  const { root, files, folders, assetBaseUrl, refresh, applyCollectionChange } = useWorkspace()
+  const { root, files, folders, assetBaseUrl, listingReady, canRestoreTabsEarly, refresh, applyCollectionChange } = useWorkspace()
   // The page has loaded its workspace view: main shows a window the vault switcher opened hidden only
   // once this names the root it bound (vaults 06 review round 2). Again on every change of root.
   useEffect(() => {
-    if (root !== undefined) void window.writeflex.reportRendererReady(root).catch(() => {})
-  }, [root])
+    if (listingReady && root !== undefined) void window.writeflex.reportRendererReady(root).catch(() => {})
+  }, [listingReady, root])
   useEffect(() => {
     let live = true
     void window.writeflex.getGuideContext().then((got) => {
@@ -938,7 +948,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   restoredIdentityRoot.current = root
   const namingInFlight = useRef(new Map<string, Promise<string>>())
   const namingCandidates = useRef(new Map<string, NamingCandidate>())
-  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, renamed: renameTab, close, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, boardDir, (path) => namingInFlight.current.has(path) || unsaved.textOf(path) !== undefined, path => {
+  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, renamed: renameTab, close, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, listingReady, canRestoreTabsEarly, boardDir, (path) => namingInFlight.current.has(path) || unsaved.textOf(path) !== undefined, path => {
     if (path.includes('://')) return
     const restoredRoot = root
     void window.writeflex.readFolioPlace(path).then(place => {
@@ -947,8 +957,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   })
   const [visibleTabStripPaths, setVisibleTabStripPaths] = useState<string[]>([])
   const [modeDrawerOpen, setModeDrawerOpen] = useState(false)
-  const [distractionFree, setDistractionFree] = useState(false)
-  const [dfControlsVisible, setDfControlsVisible] = useState(false)
   const [tabParents, setTabParents] = useState<Record<string, string>>({})
   const [linkTrail, setLinkTrail] = useState<string[]>([])
   const [linkTrailIndex, setLinkTrailIndex] = useState(-1)
@@ -1034,7 +1042,15 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // moving between pieces does not blink the line; any other file clears it first. A slower earlier
   // answer is dropped.
   const backTarget = active ?? lastEditablePath ?? tabs[0] ?? null
-  const { index: paletteVaultIndex } = useVaultSidebar(root ?? '')
+  const { index: paletteVaultIndex } = useVaultSidebar(root ?? '', listingReady)
+  // The vault's Folios by their own title (Quick open's Folios section and Open a Folio…).
+  const paletteFolios = useMemo(() => vaultFolios(paletteVaultIndex), [paletteVaultIndex])
+  // The open Folio named by its own title (rough edges, row 3): the title bar's Manage Folio and the Folio line under the
+  // text said the folder's name, so two Folios in folders called "unity" read the same. The vault index has the title.
+  const shownFolioPlace = useMemo(() => {
+    const title = folioPlace ? paletteVaultIndex?.labels[folioPlace.dir] : undefined
+    return folioPlace && title ? { ...folioPlace, name: title } : folioPlace
+  }, [folioPlace, paletteVaultIndex])
   const folioPlacePath = active ?? (boardActive ? lastEditablePath : null)
   const refreshFolioPlace = useCallback(() => {
     const request = ++folioPlaceRequest.current
@@ -1210,11 +1226,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [slowSavePaths, setSlowSavePaths] = useState<Set<string>>(() => new Set())
   const [lastSavedAt, setLastSavedAt] = useState<Map<string, number>>(() => new Map())
   const [statusDisclosureRequest, setStatusDisclosureRequest] = useState(0)
-  // The same notices, readable in the turn they are raised: the save seam (writePath) asks this, not the rendered state.
-  const externalDiskNoticesRef = useRef(new Map<string, ExternalDiskNotice>())
-  const [externalDiskNotices, setExternalDiskNotices] = useState<Map<string, ExternalDiskNotice>>(
-    () => new Map(),
-  )
+  // The changed-on-disk notices (disk-notices.ts): the ref the save seam (writePath) reads in the turn a
+  // notice is raised, and the same notices for rendering. Their actions are bound below (useDiskNotices).
+  const diskNoticeStore = useDiskNoticeStore()
+  const { ref: externalDiskNoticesRef, notices: externalDiskNotices } = diskNoticeStore
   // An update's restart waits while this window holds text whose last save failed, or a document that changed on
   // disk with the writer's choice not made yet (ADR-0054). Main reads only these two flags.
   const restartHoldUnsaved = saveFailures.size > 0
@@ -1236,6 +1251,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [savedTick, setSavedTick] = useState(0)
   const readSyncDocument = useCallback(() => editorRef.current?.view()?.state.doc, [])
   const syncStatus = useSyncStatus(root ?? null, dirtyPaths, savedTick, syncAdapter, readSyncDocument, helperComposition.adapter)
+  const gitSync = useGitSync(root ?? null, () => tabsRef.current.filter(path => ownerRef.current?.isDirty(path) || unsaved.diskIsUnknown(path)))
   const [syncPopoverOpen, setSyncPopoverOpen] = useState(false)
   const [skillToast, setSkillToast] = useState<SkillToast | null>(null)
   const [paletteSkills, setPaletteSkills] = useState<SkillMeta[]>([])
@@ -2115,83 +2131,25 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     return files.filter((file) => dir === '' || file.path.startsWith(`${dir}/`)).length
   }, [active, files])
 
-  const clearExternalDiskNotice = useCallback((path: string) => {
-    externalDiskNoticesRef.current.delete(path)
-    if (guardRefusalPath.current === path) guardRefusalPath.current = null
-    setExternalDiskNotices((current) => {
-      if (!current.has(path)) return current
-      const next = new Map(current)
-      next.delete(path)
-      return next
-    })
-  }, [])
-  // The ref is what the save seam reads (writePath): it holds the notice from this turn on, before React renders it.
-  const raiseExternalDiskNotice = useCallback((path: string, notice: ExternalDiskNotice) => {
-    externalDiskNoticesRef.current.set(path, notice)
-    setExternalDiskNotices((current) => new Map(current).set(path, notice))
-  }, [])
-  // The app renamed or moved a file: its notice (the same object, so a Keep mine on it stays its answer)
-  // now stands for the new path, and none is left behind on the old one.
-  const moveExternalDiskNotice = useCallback((from: string, to: string) => {
-    const notice = externalDiskNoticesRef.current.get(from)
-    if (!notice || from === to) return
-    clearExternalDiskNotice(from)
-    raiseExternalDiskNotice(to, notice)
-  }, [clearExternalDiskNotice, raiseExternalDiskNotice])
-  // A notice is dropped with its tab. A tab also closes when its file leaves the tree (useTabs prunes it on
-  // a removal): once a path is neither open nor listed, its notice must not stop the saves of a file made
-  // there later. (A rename's notice has moved on first; the new path is listed before its tab opens.)
-  useEffect(() => {
-    const listed = new Set(files.map((file) => file.path))
-    for (const path of [...externalDiskNoticesRef.current.keys()]) {
-      if (!tabs.includes(path) && !listed.has(path)) clearExternalDiskNotice(path)
-    }
-  }, [tabs, files, clearExternalDiskNotice])
-
-  // The watcher (and a refused save over a clean buffer) asks the owner to apply what is on disk now. It
-  // runs in the path's queue, after any route holding it (document-owner.ts); the owner replaces a buffer
-  // only when it is saved, and says what the app should raise. `now`: from inside a hold (a Folio
-  // running-order write's own reconcile), where queueing behind that hold would wait for itself.
-  // What the app raises for the owner's answer to a read of the disk (the watcher's, and a file main
-  // returned after writing it: reconcileAppliedFile).
-  const raiseForOutside = useCallback((path: string, outcome: OutsideOutcome): void => {
-    switch (outcome.kind) {
-      case 'skipped': return // activation's own disk read will seed a tab not yet live
-      case 'none':
-        // Cloud providers may echo WriteFlex's own save long after the watcher's time window. If the
-        // bytes already match the live buffer (or its saved baseline), this event is a complete no-op:
-        // no editor reconcile, no state replacement, no banner, and no viewport movement.
-        clearExternalDiskNotice(path)
-        return
-      case 'adopted':
-        // The disk holds the buffer's own document in another form (or the buffer caught up with it).
-        clearExternalDiskNotice(path)
-        return
-      case 'conflict':
-        // Freeze the pending automatic write: the other version stays on disk until the writer
-        // explicitly chooses Reload or Keep mine. The same version as the banner already up: that notice
-        // stays (a Keep mine clicked on it stays its answer).
-        cancelAutosaveFor(path)
-        if (!sameDiskNotice(externalDiskNoticesRef.current.get(path), 'changed', outcome.diskText)) {
-          raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText: outcome.diskText })
-        }
-        return
-      case 'replaced':
-        clearExternalDiskNotice(path)
-        setSavedTick((tick) => tick + 1)
-        queueLiveCompareRefresh(path)
-        return
-      case 'removed': {
-        cancelAutosaveFor(path)
-        // A file gone from disk is a question whether or not the buffer held unsaved text: no automatic
-        // write recreates it until the writer chooses Keep mine (reconcile.ts, mayWriteUnderDiskNotice).
-        const standing = externalDiskNoticesRef.current.get(path)
-        if (!sameDiskNotice(standing, 'removed', null) || (outcome.dirty && !standing?.dirty)) {
-          raiseExternalDiskNotice(path, { kind: 'removed', dirty: outcome.dirty, diskText: null })
-        }
-      }
-    }
-  }, [cancelAutosaveFor, clearExternalDiskNotice, queueLiveCompareRefresh, raiseExternalDiskNotice])
+  // The shared overlay guard: while a sheet is up the window's own capture-phase shortcuts stand
+  // down (they read isOpenRef below). Reused by Tasks 15/17 for their overlays, and by the Merge sheet.
+  const overlay = useOverlayGuard()
+  const { active: overlayActive, isOpenRef: overlayOpenRef, open: openOverlay, close: closeOverlay, hold: holdOverlay } = overlay
+  const bumpSaved = useCallback(() => setSavedTick((tick) => tick + 1), [])
+  // Raise, clear and move a notice; what the app does for the owner's answer to a read of the disk; Reload,
+  // Keep mine and Merge (disk-notices.ts).
+  const {
+    clear: clearExternalDiskNotice, raise: raiseExternalDiskNotice, move: moveExternalDiskNotice, raiseForOutside,
+    reconcile: reconcileExternalDiskChanges, askAboutRefusedWrite, noteDiskChangedUnderBuffer, noteOutsideAfterWrite,
+    reload: reloadExternalDiskVersion, keepMine: keepExternalBuffer,
+    diskMerge, diskMergeBusy, openMerge: openDiskMerge, cancelMerge: cancelDiskMerge, runMerge: runDiskMerge,
+  } = useDiskNotices(diskNoticeStore, {
+    owner, unsaved, tabs, tabsRef, files, active, activeRef, editorRef, loadedPath, guardRefusalPath, refusalReasons, uncheckpointed,
+    overlay, bufferNow, savePath, cancelAutosaveFor, queueLiveCompareRefresh, bumpSaved, flash,
+  })
+  reconcileWithDiskRef.current = (paths) => reconcileExternalDiskChanges(paths, { now: true })
+  diskChangedUnderBufferRef.current = noteDiskChangedUnderBuffer
+  outsideAfterWriteRef.current = noteOutsideAfterWrite
   // --- Record browser: Source and preview tab, edit from a made widget, undo (ticket 04b) ---------------------
   // The engine writes the widget and its embed line to disk (main, one undoable step) and announces the changed
   // files; the open buffer takes the change through the changed-on-disk path above, so no second copy is inserted.
@@ -2302,208 +2260,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [undoWidgetStep])
-
-  const reconcileExternalDiskChanges = useCallback(async (paths: string[], options: { now?: boolean } = {}): Promise<void> => {
-    await Promise.all(paths.map(async (path) => {
-      if (!tabsRef.current.includes(path)) return
-      const outcome = await owner.applyOutside(path, async () => (await window.writeflex.readFile(path)).content, options)
-      if (!tabsRef.current.includes(path)) return
-      raiseForOutside(path, outcome)
-    }))
-  }, [owner, raiseForOutside])
-
-  reconcileWithDiskRef.current = (paths) => reconcileExternalDiskChanges(paths, { now: true })
-
-  // Main refused a write because the file changed after main read it (an accept's refusal): the owner reads
-  // the disk and the writer is asked with the notice, whatever the watcher delivers (it holds events back
-  // for a while after a write of ours). Final review round 2, finding 2.
-  const askAboutRefusedWrite = useCallback(async (path: string, options: { now: boolean }): Promise<void> => {
-    if (!tabsRef.current.includes(path)) return
-    const outcome = await owner.refusedOnDisk(path, async () => (await window.writeflex.readFile(path)).content, options)
-    if (!tabsRef.current.includes(path)) return
-    raiseForOutside(path, outcome)
-  }, [owner, raiseForOutside])
-
-  // Main refused a write: the disk no longer holds the version the buffer was based on (its basis). The
-  // buffer is kept and the writer is asked, as for any outside change; automatic saves stop. A buffer with
-  // nothing unsaved simply takes the disk version, as the watcher would give it.
-  // "Nothing unsaved" needs the baseline to be known: after a write of unknown outcome it is not (Sol M2),
-  // and the buffer is replaced only by the writer's choice.
-  const noteDiskChangedUnderBuffer = useCallback((path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice) => {
-    cancelAutosaveFor(path)
-    const baseline = owner.baselineOf(path)
-    if (refusalMayReload({ baseline, buffer, diskUnknown: unsaved.diskIsUnknown(path), answering }) && owner.unchangedSinceSave(path)) {
-      void reconcileExternalDiskChanges([path])
-      return
-    }
-    // The notice already up for exactly this disk text stays (a Keep mine clicked on it stays its answer).
-    const standing = externalDiskNoticesRef.current.get(path)
-    const notice = noticeAfterRefusal(standing, diskText, answering)
-    if (notice !== standing) raiseExternalDiskNotice(path, notice)
-    const message = diskNoticeRefusalMessage(path, notice)
-    refusalReasons.current.set(path, message)
-    flash(message)
-  }, [owner, cancelAutosaveFor, flash, raiseExternalDiskNotice, reconcileExternalDiskChanges])
-  diskChangedUnderBufferRef.current = noteDiskChangedUnderBuffer
-  // A write was made and the file read back holds other text: another program wrote it between the
-  // commit and the readback. The buffer stays based on what was written, and the writer is asked
-  // whether or not the buffer has typing since: their text was replaced on disk without their seeing it.
-  const noteOutsideAfterWrite = useCallback((path: string, diskText: string) => {
-    cancelAutosaveFor(path)
-    if (!sameDiskNotice(externalDiskNoticesRef.current.get(path), 'changed', diskText)) {
-      raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText })
-    }
-    const name = path.split('/').at(-1) ?? path
-    const message = `${name} was changed on disk by another program just after it was saved. Choose Reload or Keep mine above the text.`
-    guardRefusalPath.current = path // the callers' own "could not save" lines give way to this one
-    refusalReasons.current.set(path, message)
-    flash(message)
-  }, [cancelAutosaveFor, flash, raiseExternalDiskNotice])
-  outsideAfterWriteRef.current = noteOutsideAfterWrite
-  useEffect(
-    () => window.writeflex.onFileChangedOnDisk((paths) => { void reconcileExternalDiskChanges(paths) }),
-    [reconcileExternalDiskChanges],
-  )
-
-  const reloadExternalDiskVersion = useCallback(async () => {
-    const path = activeRef.current
-    if (!path) return
-    cancelAutosaveFor(path)
-    // The writer's choice: the owner replaces the buffer with the disk version, in the path's queue.
-    const reloaded = await owner.reload(path, async () => (await window.writeflex.readFile(path)).content)
-    if (reloaded.ok) {
-      uncheckpointed.current.delete(path)
-      clearExternalDiskNotice(path)
-      setSavedTick((tick) => tick + 1)
-      queueLiveCompareRefresh(path)
-      flash(`Reloaded ${path} from disk`)
-    } else if (reloaded.reason === 'typed') {
-      // Typing after Reload was pressed is kept: nothing replaced, the notice stays up for the new text.
-      flash(`${path} was not reloaded: you typed after choosing Reload. Choose Reload or Keep mine again.`)
-    } else {
-      raiseExternalDiskNotice(path, { kind: 'removed', dirty: owner.isDirty(path), diskText: null })
-      flash(`${path} is no longer on disk`)
-    }
-  }, [owner, cancelAutosaveFor, clearExternalDiskNotice, flash, queueLiveCompareRefresh, raiseExternalDiskNotice])
-
-  // "Keep mine": the writer's choice, and the one write a notice over unsaved text lets through. The
-  // buffer goes to disk over the other version, as the answer to the notice that was on screen; the
-  // notice goes once that write is made, and stays (with the reason in the status bar) if it is not.
-  const keepExternalBuffer = useCallback(async () => {
-    const path = activeRef.current
-    if (!path) return
-    const notice = externalDiskNoticesRef.current.get(path)
-    // Keep mine is the writer's explicit choice and is carried out against the notice whatever the dirty
-    // dot says now (Sol S5: an undo can clear the dot while the disk holds another version). Only a notice
-    // raised over a buffer with nothing unsaved, that still has nothing unsaved, is answered by dismissing it.
-    if (keepMineWrites(notice, owner.isDirty(path) || unsaved.textOf(path) !== undefined || !owner.unchangedSinceSave(path))) {
-      cancelAutosaveFor(path)
-      if (guardRefusalPath.current === path) guardRefusalPath.current = null
-      if (!notice || !(await owner.keepMine(path, notice))) {
-        if (guardRefusalPath.current !== path) flash(`Could not save ${path.split('/').at(-1) ?? path}. Your version is still only in this tab.`)
-        return
-      }
-      if (externalDiskNoticesRef.current.get(path) !== notice) return // a later outside change: its own notice stands
-    }
-    clearExternalDiskNotice(path)
-    flash(`Kept your version of ${path}`)
-  }, [owner, cancelAutosaveFor, clearExternalDiskNotice, flash])
-
-  // The shared overlay guard: while a sheet is up the window's own capture-phase shortcuts stand
-  // down (they read isOpenRef below). Reused by Tasks 15/17 for their overlays, and by the Merge sheet.
-  const overlay = useOverlayGuard()
-  const { active: overlayActive, isOpenRef: overlayOpenRef, open: openOverlay, close: closeOverlay, hold: holdOverlay } = overlay
-
-  // "Merge" (disk-merge.ts): the sheet shows both versions against the one they began from; opening and
-  // cancelling it write nothing. Merging keeps exactly the disk version and the writer's (main returns a
-  // History receipt for each; with no History nothing is written), writes the writer's over exactly the disk version,
-  // then the merged text through the normal save.
-  const [diskMerge, setDiskMerge] = useState<DiskMergeSession | null>(null)
-  const [diskMergeBusy, setDiskMergeBusy] = useState(false)
-  const openDiskMerge = useCallback(() => {
-    const path = activeRef.current
-    if (!path) return
-    const view = editorRef.current?.view()
-    // Pending tracked changes (Reviewing) make the editor's text differ from the text that is saved, and
-    // the merge is placed into the editor's text: it waits until they are settled.
-    if (view && loadedPath.current === path && view.state.doc.toString() !== bufferNow(path)) {
-      flash('Settle the tracked changes in this document first, then choose Merge.')
-      return
-    }
-    const session = beginDiskMerge({ path, notice: externalDiskNoticesRef.current.get(path), buffer: bufferNow(path), baseline: owner.baselineOf(path) })
-    if (!session) { flash('There is nothing on disk to merge with.'); return }
-    cancelAutosaveFor(path)
-    setDiskMerge(session)
-    // Through the shared overlay guard, as every sheet: it replaces any other overlay, the window's own
-    // shortcuts stand down behind it, and an overlay raised over it (⌘, or the palette) dismisses it.
-    openOverlay('diskMerge')
-  }, [owner, bufferNow, cancelAutosaveFor, flash, openOverlay])
-  const cancelDiskMerge = useCallback(() => {
-    setDiskMerge(null)
-    closeOverlay()
-    editorRef.current?.view()?.focus() // back to the text, where the banner still asks
-  }, [closeOverlay])
-  const runDiskMerge = useCallback(async (session: DiskMergeSession, picks: ConflictPick[]) => {
-    setDiskMergeBusy(true)
-    // While it writes, the sheet is held up: no other overlay replaces it mid-write.
-    holdOverlay(true)
-    try {
-      const outcome = await applyDiskMerge({
-        notice: (p) => externalDiskNoticesRef.current.get(p),
-        buffer: bufferNow,
-        preserve: (p, text) => window.writeflex.preserveVersion(p, text),
-        saved: (p) => ({ editor: owner.baselineOf(p), disk: owner.baselineDiskOf(p) }),
-        checkpoint: (p) => window.writeflex.checkpoint(p),
-        keepMine: (p, notice) => {
-          cancelAutosaveFor(p)
-          if (guardRefusalPath.current === p) guardRefusalPath.current = null
-          return owner.keepMine(p, notice)
-        },
-        answered: clearExternalDiskNotice,
-        placeMerged: (p, merged) => {
-          const view = editorRef.current?.view()
-          if (!view || activeRef.current !== p || loadedPath.current !== p || view.state.readOnly) return false
-          const doc = view.state.doc.toString()
-          if (doc !== bufferNow(p)) return false // tracked changes appeared meanwhile
-          const change = minimalReplace(doc, merged)
-          if (change) {
-            view.dispatch({ changes: change, annotations: [isolateHistory.of('full'), Transaction.userEvent.of('input.merge')] })
-          }
-          return true
-        },
-        save: (p) => savePath(p),
-      }, session, picks)
-      if (outcome.kind === 'merged') {
-        uncheckpointed.current.delete(session.path)
-        queueLiveCompareRefresh(session.path)
-      }
-      holdOverlay(false)
-      if (outcome.kind !== 'unresolved') {
-        setDiskMerge(null)
-        closeOverlay()
-        editorRef.current?.view()?.focus()
-      }
-      const message = diskMergeMessage(session.path, outcome)
-      if (message) flash(message)
-    } finally {
-      holdOverlay(false)
-      setDiskMergeBusy(false)
-    }
-  }, [owner, bufferNow, cancelAutosaveFor, clearExternalDiskNotice, closeOverlay, flash, holdOverlay, queueLiveCompareRefresh, savePath])
-  // The sheet answers one document's notice: it closes when that tab is no longer the one shown.
-  // It closes too when the disk moves again under it (a newer notice): the merge it shows is out of date.
-  // Another overlay raised over it (⌘, or the palette) replaced it in the shared guard: it is dismissed,
-  // as Cancel would (nothing written).
-  useEffect(() => {
-    if (!diskMerge || diskMergeBusy) return
-    if (overlayActive !== 'diskMerge') { setDiskMerge(null); return }
-    if (active !== diskMerge.path) { setDiskMerge(null); closeOverlay(); return }
-    if (externalDiskNotices.get(diskMerge.path) !== diskMerge.notice) {
-      setDiskMerge(null)
-      closeOverlay()
-      flash(`${diskMerge.path.split('/').at(-1) ?? diskMerge.path} changed on disk again while you were merging, so nothing was written. Choose Merge again to see the newer version.`)
-    }
-  }, [active, closeOverlay, diskMerge, diskMergeBusy, externalDiskNotices, flash, overlayActive])
 
   // ── Change Ledger dock (Task 4) ──────────────────────────────────────────────────────────────
   // The dock lists the ACTIVE document's changes; reload when the document changes or main pushes
@@ -3120,6 +2876,14 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     changeToSelectOnLoad.current = firstId
     open(path)
   }, [open])
+  // All comments in this Folio: a row opens its part at its place; the tab stays, so the next row is one click away.
+  const jumpToFolioComment = useCallback((path: string, id: string) => {
+    setFolioCommentCurrent(id)
+    // A row the margin's filter hides would not be selectable: show everything again first.
+    if (shownReviewIdsRef.current && !shownReviewIdsRef.current.has(id)) setMarginFilterState((state) => withMode({ ...state, filter: {} }, 'review'))
+    if (path === active && collectionDir === null && loadedFile === active) selectChange(id)
+    else openPieceAt(path, id)
+  }, [active, collectionDir, loadedFile, selectChange, openPieceAt])
   const nextPieceWithItems = useCallback(() => {
     const paths = [...new Set(waitingElsewhere.map((change) => change.path))].sort()
     if (paths.length === 0) { flash('Nothing is waiting in other pieces'); return }
@@ -3366,7 +3130,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     setSavedTick((n) => n + 1)
   }), [applyCollectionChange])
   useEffect(() => {
-    if (!root) {
+    if (!root || !listingReady) {
       setSidebarCollectionSummary(null)
       return
     }
@@ -3384,7 +3148,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       reloadSummary()
     })
     return () => { cancelled = true; dispose() }
-  }, [root])
+  }, [listingReady, root])
   const newPiece = useCallback(
     async (dir: string) => {
       try {
@@ -3606,14 +3370,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   }, [setFolderFocus, revealFilesTab])
   const toggleSidebar = useCallback(() => toggleLeftPane(), [toggleLeftPane])
 
-  // Typewriter mode (PRD S12): centres the cursor line as you type. The editor owns the mode (a
-  // per-view CM compartment reapplied on every tab switch), so App just flips it and reports the
-  // result. The status-bar tw-chip (Task 12) is now the persistent on/off readout; the flash stays
-  // as a subtle one-shot confirmation of the toggle (the mockup's #statusFlash surface).
-  const [typewriterOn, setTypewriterOn] = useState(false)
-  // The fixed line (editor.fixedLine): one height, as a fraction of the editor, shared by read-aloud
-  // and typewriter mode. Live while the margin marker is dragged; persisted when it settles.
-  const [fixedLine, setFixedLine] = useState(FIXED_LINE_DEFAULT)
   // The read-aloud highlight colour and strength (Settings → Editor, palette). They are written to the
   // --ra-* tokens on the root element, per theme, so a running read-aloud changes at once.
   const readAloudColourRef = useRef<string>(DEFAULT_READ_ALOUD_COLOUR)
@@ -3623,19 +3379,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     applyReadAloudTokens(document.documentElement, readAloudColourRef.current, readAloudStrengthRef.current, theme)
   }, [])
   useEffect(() => { applyReadAloudColours() }, [applyReadAloudColours])
-  const [viewMode, setViewModeState] = useState<EditorViewMode>('clean')
-
-  // Focus modes (Round A, ADR-0028): modes are commands, not chrome — the only resident trace is
-  // the status-bar Focus Chip while a mode is active. State mirrors the editor compartment; refs
-  // keep applySetting/toggles stable (the applier is a stable callback, hydration order is loose).
-  const [focusMode, setFocusModeState] = useState<FocusMode>('')
-  const [leadStyle, setLeadStyleState] = useState<LeadStyle>('contrast')
-  const focusModeRef = useRef<FocusMode>('')
-  // Line focus and Ruler are overlays beside the exclusive focus mode, with their own settings.
-  const [lineOverlay, setLineOverlayState] = useState<LineOverlayConfig>(DEFAULT_LINE_OVERLAY)
-  const lineOverlayRef = useRef<LineOverlayConfig>(DEFAULT_LINE_OVERLAY)
-  const leadStyleRef = useRef<LeadStyle>('contrast')
-
   // Read-aloud is an app-owned session, parallel to the declared focus mode. The player publishes
   // the one source offset that drives both wash levels; voice and default rate are ordinary
   // renderer settings, with the current rate still adjustable directly from the transport.
@@ -3746,20 +3489,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const applySetting = useCallback(
     (key: string, value: SettingValue | null) => {
       switch (key) {
-        case 'appearance.theme': {
-          // Dark is a real theme: the tokens.css dark block re-states every token behind this
-          // attribute. Light (the default face) is the attribute's absence.
-          if (value === 'dark') document.documentElement.setAttribute('data-theme', 'dark')
-          else document.documentElement.removeAttribute('data-theme')
-          applyReadAloudColours() // each theme has its own wash values
-          break
-        }
-        case 'editor.typewriter': {
-          const on = value === true
-          editorRef.current?.setTypewriter(on)
-          setTypewriterOn(on)
-          break
-        }
         case READ_ALOUD_COLOUR_SETTING:
           readAloudColourRef.current = normaliseReadAloudColour(value)
           applyReadAloudColours()
@@ -3768,43 +3497,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           readAloudStrengthRef.current = normaliseReadAloudStrength(value)
           applyReadAloudColours()
           break
-        case FIXED_LINE_SETTING:
-          setFixedLine(normaliseFixedLine(value))
-          break
         case 'editor.spellcheck':
           editorRef.current?.setSpellcheck(value !== false)
           break
-        case LINE_OVERLAY_SETTINGS.lineFocusOn:
-        case LINE_OVERLAY_SETTINGS.lineFocusSize:
-        case LINE_OVERLAY_SETTINGS.lineFocusDim:
-        case LINE_OVERLAY_SETTINGS.lineFocusFollow:
-        case LINE_OVERLAY_SETTINGS.rulerOn:
-        case LINE_OVERLAY_SETTINGS.rulerCovers:
-        case LINE_OVERLAY_SETTINGS.rulerOpacity:
-        case LINE_OVERLAY_SETTINGS.rulerFollow: {
-          // Hydration in any key order: a stored both-on state resolves to Line focus on.
-          const applied = applyLineOverlaySetting(lineOverlayRef.current, key, value)
-          if (applied) {
-            const next = resolveExclusive(applied, key === LINE_OVERLAY_SETTINGS.rulerOn && value === true && !lineOverlayRef.current.lineFocus.on ? 'ruler' : 'lineFocus')
-            lineOverlayRef.current = next
-            setLineOverlayState(next)
-          }
-          break
-        }
-        case 'editor.focusMode': {
-          // State only: the editor receives focus DECLARATIVELY (EditorPane's `focus` prop — the
-          // viewMode pattern), because settings hydration can land before the pane mounts.
-          const mode = normaliseFocusMode(value)
-          focusModeRef.current = mode
-          setFocusModeState(mode)
-          break
-        }
-        case 'editor.leadStyle': {
-          const style = normaliseLeadStyle(value)
-          leadStyleRef.current = style
-          setLeadStyleState(style)
-          break
-        }
         case READ_ALOUD_VOICE_SETTING: {
           const savedVoiceURI = typeof value === 'string' && value !== '' ? value : null
           if (speechVoicesRef.current.length === 0) {
@@ -3853,22 +3548,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           soundPrefsRef.current.ambientVolume = clampVolume(value, 0.35)
           applySoundPrefs('ambient')
           break
-        case 'editor.viewMode': {
-          const mode = normaliseEditorViewMode(value)
-          editorRef.current?.setViewMode(mode)
-          setViewModeState(mode)
-          break
-        }
-        case 'editor.lineWidth': {
-          if (value === null) document.documentElement.style.removeProperty('--prose-measure')
-          else document.documentElement.style.setProperty('--prose-measure', LINE_WIDTH_PX[String(value)] ?? '660px')
-          break
-        }
-        case 'editor.proseSize': {
-          if (value === null) document.documentElement.style.removeProperty('--prose-size')
-          else document.documentElement.style.setProperty('--prose-size', `${String(value)}px`)
-          break
-        }
         // Assistant defaults are resolved in main directly from the shared preferences.
         // Hydration and reset never copy them into the retired modelDefaults record.
       }
@@ -3876,8 +3555,17 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     [flash, applySoundPrefs],
   )
   const reportSettingsError = useCallback((error: unknown) => flash(humanReadableError(error, 'Could not reset that setting.')), [flash])
-  const settings = useSettings(applySetting, reportSettingsError)
-  const { set: setSetting, values: settingValues } = settings
+  const {
+    settings, typewriterOn, toggleTypewriter, fixedLine, setFixedLine, chooseFixedLine, commitFixedLine,
+    viewMode, selectViewMode, distractionFree, setDistractionFree, toggleDistractionFree,
+    dfControlsVisible, setDfControlsVisible, focusMode, leadStyle, focusForEditor,
+    chooseFocusMode, toggleFocusMode, chooseAnchoredStyle, lineOverlay, chooseLineOverlay,
+    toggleLineFocus, toggleRuler, chooseLineFocusSize, chooseRulerCovers, nudgeRulerOpacity,
+    toggleOverlayFollowByHand, toggleOverlayFollowTypewriter, stepProseSize, stepLineWidth, resetProseZoom,
+  } = useWritingView({ editorRef, speaking: playerState.speaking, flash, applySetting, reportSettingsError })
+  const { set: setSetting, values: settingValues, loaded: settingsLoaded } = settings
+  const theme = themePreference(settingValues[THEME_SETTING])
+  useAppearance(theme, applyReadAloudColours)
   const [explicitSession, setExplicitSession] = useState<ExplicitSessionState | null>(null)
   const [automaticDiarySession, setAutomaticDiarySession] = useState(false)
   const [sessionMenuRequest, setSessionMenuRequest] = useState(0)
@@ -4226,131 +3914,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     editorRef.current?.setCommandChords(shortcutOverrides)
   }, [shortcutOverrides])
 
-  const toggleTypewriter = useCallback(() => {
-    const on = editorRef.current?.toggleTypewriter() ?? false
-    setTypewriterOn(on)
-    flash(on ? 'Typewriter on' : 'Typewriter off')
-    // Persist the live choice so a relaunch keeps it — but SILENTLY (log:false): the changelog
-    // documents changes made in Settings; ⌘T is a live-surface tweak, not one of those.
-    setSetting('editor.typewriter', on, 'Typewriter mode', { log: false })
-  }, [flash, setSetting])
-
-  // The fixed line from the palette: the three presets write the same setting as Settings → Editor.
-  const chooseFixedLine = useCallback((preset: keyof typeof FIXED_LINE_PRESETS) => {
-    setSetting(FIXED_LINE_SETTING, FIXED_LINE_PRESETS[preset], 'Fixed line position', { log: false })
-    flash(`Fixed line: ${FIXED_LINE_PRESET_LABELS[preset].toLowerCase()}`)
-  }, [flash, setSetting])
   const chooseReadAloudHighlight = useCallback((preset: ReadAloudPreset) => {
     setSetting(READ_ALOUD_COLOUR_SETTING, preset, 'Read-aloud highlight', { log: false })
     flash(`Read-aloud highlight: ${READ_ALOUD_PRESETS[preset].label.toLowerCase()}`)
   }, [flash, setSetting])
-  const commitFixedLine = useCallback((fraction: number) => {
-    setSetting(FIXED_LINE_SETTING, fraction, 'Fixed line position', { log: false })
-  }, [setSetting])
-
-  // Apply a focus mode exactly (the picker's semantics) and persist it silently (the ⌘T rule:
-  // live-surface tweaks are not "changes made in Settings"). Both routes — picker and direct
-  // commands — land here, so they stay in sync by construction.
-  const chooseFocusMode = useCallback((mode: FocusMode) => {
-    focusModeRef.current = mode
-    setFocusModeState(mode)
-    flash(mode === '' ? 'Focus off' : `Focus: ${FOCUS_CHIP_NAMES[mode]}`)
-    setSetting('editor.focusMode', mode, 'Focus mode', { log: false })
-  }, [flash, setSetting])
-
-  // Direct mode commands toggle: re-invoking the active mode = Off (ADR-0028).
-  const toggleFocusMode = useCallback((mode: Exclude<FocusMode, ''>) => {
-    chooseFocusMode(focusModeRef.current === mode ? '' : mode)
-  }, [chooseFocusMode])
-
-  // The Anchored lead-in style. Silent here (picker = live surface); the Settings select logs.
-  const chooseLeadStyle = useCallback((style: LeadStyle) => {
-    leadStyleRef.current = style
-    setLeadStyleState(style)
-    setSetting('editor.leadStyle', style, 'Anchored lead-in style', { log: false })
-  }, [setSetting])
-
-  // Line focus and Ruler: one silent write per choice (the same rule as the focus modes).
-  const chooseLineOverlay = useCallback((key: string, value: boolean | string | number, label: string) => {
-    const applied = applyLineOverlaySetting(lineOverlayRef.current, key, value)
-    if (applied) {
-      const next = resolveExclusive(applied, key === LINE_OVERLAY_SETTINGS.rulerOn ? 'ruler' : 'lineFocus')
-      lineOverlayRef.current = next
-      setLineOverlayState(next)
-    }
-    setSetting(key, value, label, { log: false })
-  }, [setSetting])
-  // The two overlays are mutually exclusive: switching one on writes the other off.
-  const switchOverlayOn = useCallback((which: 'lineFocus' | 'ruler') => {
-    const { lineFocus, ruler } = lineOverlayRef.current
-    if (which === 'lineFocus') {
-      if (ruler.on) chooseLineOverlay(LINE_OVERLAY_SETTINGS.rulerOn, false, 'Ruler')
-      if (!lineFocus.on) chooseLineOverlay(LINE_OVERLAY_SETTINGS.lineFocusOn, true, 'Line focus')
-    } else {
-      if (lineFocus.on) chooseLineOverlay(LINE_OVERLAY_SETTINGS.lineFocusOn, false, 'Line focus')
-      if (!ruler.on) chooseLineOverlay(LINE_OVERLAY_SETTINGS.rulerOn, true, 'Ruler')
-    }
-  }, [chooseLineOverlay])
-  const toggleLineFocus = useCallback(() => {
-    if (lineOverlayRef.current.lineFocus.on) {
-      chooseLineOverlay(LINE_OVERLAY_SETTINGS.lineFocusOn, false, 'Line focus')
-      flash('Line focus off')
-    } else {
-      switchOverlayOn('lineFocus')
-      flash('Line focus on')
-    }
-  }, [chooseLineOverlay, flash, switchOverlayOn])
-  const toggleRuler = useCallback(() => {
-    if (lineOverlayRef.current.ruler.on) {
-      chooseLineOverlay(LINE_OVERLAY_SETTINGS.rulerOn, false, 'Ruler')
-      flash('Ruler off')
-    } else {
-      switchOverlayOn('ruler')
-      flash('Ruler on')
-    }
-  }, [chooseLineOverlay, flash, switchOverlayOn])
-  // The picker's switch rows route through here too, so the picker, the palette and the chips agree.
-  const chooseLineFocusSize = useCallback((size: LineFocusSize) => {
-    chooseLineOverlay(LINE_OVERLAY_SETTINGS.lineFocusSize, size, 'Line focus size')
-    switchOverlayOn('lineFocus')
-    flash(`Line focus: ${size} ${size === 1 ? 'line' : 'lines'}`)
-  }, [chooseLineOverlay, flash, switchOverlayOn])
-  const chooseRulerCovers = useCallback((covers: RulerCovers) => {
-    chooseLineOverlay(LINE_OVERLAY_SETTINGS.rulerCovers, covers, 'Ruler covers')
-    switchOverlayOn('ruler')
-    flash(`Ruler: ${covers === 'thin' ? 'thin rule' : covers === 'below' ? 'all below' : covers === '1' ? '1 line' : `${covers} lines`}`)
-  }, [chooseLineOverlay, flash, switchOverlayOn])
-  const nudgeRulerOpacity = useCallback((direction: 1 | -1) => {
-    const opacity = normaliseRulerOpacity(lineOverlayRef.current.ruler.opacity + direction * 2 * RULER_OPACITY_STEP)
-    chooseLineOverlay(LINE_OVERLAY_SETTINGS.rulerOpacity, opacity, 'Ruler opacity')
-    switchOverlayOn('ruler')
-    flash(`Ruler opacity: ${opacity}%`)
-  }, [chooseLineOverlay, flash, switchOverlayOn])
-  // By hand is only ever an explicit choice (picker pill or this command); the command toggles it for
-  // both overlays and returns them to Cursor.
-  const toggleOverlayFollowByHand = useCallback(() => {
-    const { lineFocus, ruler } = lineOverlayRef.current
-    const active = lineFocus.on ? lineFocus : ruler.on ? ruler : lineFocus
-    const next = active.follow === 'by-hand' ? 'cursor' : 'by-hand'
-    chooseLineOverlay(LINE_OVERLAY_SETTINGS.lineFocusFollow, next, 'Line focus follow')
-    chooseLineOverlay(LINE_OVERLAY_SETTINGS.rulerFollow, next, 'Ruler follow')
-    flash(next === 'by-hand' ? 'Line focus / Ruler: follow by hand' : 'Line focus / Ruler: follow cursor')
-  }, [chooseLineOverlay, flash])
-  // Typewriter follow is toggled the same way: the band stays on the typewriter line, the text moves through it.
-  const toggleOverlayFollowTypewriter = useCallback(() => {
-    const { lineFocus, ruler } = lineOverlayRef.current
-    const active = lineFocus.on ? lineFocus : ruler.on ? ruler : lineFocus
-    const next = active.follow === 'typewriter' ? 'cursor' : 'typewriter'
-    chooseLineOverlay(LINE_OVERLAY_SETTINGS.lineFocusFollow, next, 'Line focus follow')
-    chooseLineOverlay(LINE_OVERLAY_SETTINGS.rulerFollow, next, 'Ruler follow')
-    flash(next === 'typewriter' ? 'Line focus / Ruler: follow typewriter' : 'Line focus / Ruler: follow cursor')
-  }, [chooseLineOverlay, flash])
-
-  // The editor's declarative focus prop (one object identity per mode/style pair).
-  const focusForEditor = useMemo(
-    () => ({ mode: effectiveFocusMode(focusMode, playerState.speaking), leadStyle }),
-    [focusMode, leadStyle, playerState.speaking],
-  )
 
   // Sound channel toggles (palette commands). Silent persists (the ⌘T rule: live-surface tweaks are
   // not "changes made in Settings"); setSetting re-fires applySetting, which drives the engine.
@@ -4387,20 +3954,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     }
   }, [])
 
-  const selectViewMode = useCallback((mode: EditorViewMode) => {
-    if (distractionFree && mode !== 'clean') setDistractionFree(false)
-    setSetting('editor.viewMode', mode, 'View mode', { log: false })
-    flash(mode === 'clean' ? 'View: Clean' : mode === 'markup' ? 'View: Show markup' : 'View: Show raw')
-  }, [distractionFree, flash, setSetting])
-
-  const toggleDistractionFree = useCallback(() => {
-    setDistractionFree((active) => {
-      if (!active) selectViewMode('clean')
-      setDfControlsVisible(false)
-      return !active
-    })
-  }, [selectViewMode])
-
   const moveDocumentFind = useCallback((direction: 1 | -1) => {
     setDocumentFindStatus(editorRef.current?.find(documentFindQuery, direction, documentFindReplacement) ?? { current: 0, total: 0 })
   }, [documentFindQuery, documentFindReplacement])
@@ -4416,40 +3969,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const replaceDocumentFind = useCallback((all: boolean) => {
     setDocumentFindStatus(editorRef.current?.replaceFind(documentFindQuery, documentFindReplacement, all) ?? { current: 0, total: 0 })
   }, [documentFindQuery, documentFindReplacement])
-
-  // Prose zoom (Task 17, the locked View keys): ⌘+/⌘− step the prose size through 17/19/21,
-  // ⌥⌘+/⌥⌘− step the line width, ⌥⌘0 resets both. Steps persist silently (the ⌘T rule) and flash.
-  // From the untouched/reset default (locked 18.5px, which the Settings select shows as "19"), the
-  // ladder treats the position as index-1 ('19'): the first ⌘+ → 21, the first ⌘− → 17 — each step
-  // visibly changes the displayed size, matching the "19" the select already shows.
-  const stepProseSize = useCallback(
-    (direction: 1 | -1) => {
-      const current = String(settingValues['editor.proseSize'] ?? '19')
-      const index = PROSE_SIZES.indexOf(current)
-      const next = PROSE_SIZES[Math.min(Math.max((index === -1 ? 1 : index) + direction, 0), PROSE_SIZES.length - 1)]
-      setSetting('editor.proseSize', next, 'Prose size', { log: false })
-      flash(`Prose size ${next}`)
-    },
-    [settingValues, setSetting, flash],
-  )
-  const stepLineWidth = useCallback(
-    (direction: 1 | -1) => {
-      const current = String(settingValues['editor.lineWidth'] ?? 'medium')
-      const index = LINE_WIDTHS.indexOf(current)
-      const next = LINE_WIDTHS[Math.min(Math.max((index === -1 ? 1 : index) + direction, 0), LINE_WIDTHS.length - 1)]
-      setSetting('editor.lineWidth', next, 'Line width', { log: false })
-      flash(`Line width ${LINE_WIDTH_LABEL[next]}`)
-    },
-    [settingValues, setSetting, flash],
-  )
-  const resetProseZoom = useCallback(() => {
-    // Genuinely UNSET both keys (null) — reset means "back to the locked default" (18.5px / 660px),
-    // consistent with the changelog's per-entry Reset, not a concrete 19/medium the ladder would
-    // then treat as an explicit choice. Silent (log:false): key-driven tweaks never touch the log.
-    setSetting('editor.proseSize', null, 'Prose size', { log: false })
-    setSetting('editor.lineWidth', null, 'Line width', { log: false })
-    flash('Prose zoom reset')
-  }, [setSetting, flash])
 
   // --- Quick-open + command palette (Task 13) ---
   // The shared overlay guard is declared above, before the Merge sheet that also goes through it.
@@ -4575,12 +4094,22 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   }, [reviewMode, leaveReviewMode, restoreEditorFocus, overlayOpenRef])
 
   // The palette is a shell surface: only raise it once a Workspace is bound (root is a string).
+  // ⇧⌘K or ⇧⌘P pressed while the first workspace load is still in flight (root undefined) waits for it,
+  // as the Board's early open does in useTabs; the newest press wins, and none opens on the start screen.
+  const pendingPalette = useRef<PaletteMode | null>(null)
   const openPalette = useCallback(
-    (mode: 'files' | 'commands') => {
+    (mode: PaletteMode) => {
       if (typeof root === 'string') openOverlay(mode)
+      else if (root === undefined) pendingPalette.current = mode
     },
     [root, openOverlay],
   )
+  useEffect(() => {
+    if (root === undefined || pendingPalette.current === null) return
+    const mode = pendingPalette.current
+    pendingPalette.current = null
+    if (typeof root === 'string') openOverlay(mode)
+  }, [root, openOverlay])
   // The workspace shell container — the fallback focus target when no editor view exists yet, so a
   // palette exit never drops the keyboard onto <body> (tabIndex -1: script-focusable, not tab-reachable).
   const shellRef = useRef<HTMLDivElement | null>(null)
@@ -4624,6 +4153,25 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     closeOverlay()
     focusEditor()
   }, [closeOverlay, focusEditor])
+  const openFolioFromPalette = useCallback((path: string) => {
+    closeOverlay()
+    openCollection(path)
+  }, [closeOverlay, openCollection])
+  // All comments in this Folio: opens (or re-selects) the Comments tab on the Folio that is open now.
+  const openFolioComments = useCallback(() => {
+    if (openFolioDir === null) return
+    setFolioCommentsDir(openFolioDir)
+    setFolioCommentsOpen(true)
+    openRightTab('folio-comments')
+  }, [openFolioDir, openRightTab])
+  const closeFolioComments = useCallback(() => {
+    setFolioCommentsOpen(false)
+    setFolioCommentCurrent(null)
+  }, [])
+  // The tab follows the writer into another Folio; between a part and its Folio page it keeps its Folio.
+  useEffect(() => {
+    if (folioCommentsOpen && openFolioDir !== null) setFolioCommentsDir(openFolioDir)
+  }, [folioCommentsOpen, openFolioDir])
   const openSharingSetup = useCallback(() => {
     closeOverlay()
     setSharingSetupOpen(true)
@@ -5615,7 +5163,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       if (fromCollection !== undefined || folio || (await window.writeflex.collection.status(dir)).collection) {
         const listed = await window.writeflex.listCollection(dir)
         const htmlPieces = folio ? folio.pieces.length : listed.rows.length
-        if (htmlPieces || listed.rows.length || folio?.leftOut.length) {
+        if (htmlPieces || listed.rows.length || folio || place.inFolio) {
           const sources = documentsUnder(folderPrefix(dir)).flatMap((path) => {
             const source = bufferNow(path) ?? unsaved.textOf(path)
             return source === null || source === undefined ? [] : [{ path, source }]
@@ -5671,6 +5219,23 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       ? `${name} is no longer readable on disk, so nothing was exported. Choose Keep mine above the text to write it again, then export.`
       : `${name} changed on disk, so nothing was exported. Choose Reload or Keep mine above the text, then export again.`
   }, [])
+  const prepareFolioEpub = useCallback(async (options: EpubPreparationOptions): Promise<EpubPrepareReply> => {
+    const dir = exportSubject?.collection?.dir
+    if (dir === undefined || !exportSubject?.inFolio) return { status: 'error', problem: { code: 'outside-folio', message: 'Open a Folio to export an EPUB.' } }
+    const buffers = []
+    for (const path of owner.pathsUnder(folderPrefix(dir))) {
+      const source = bufferNow(path) ?? unsaved.textOf(path)
+      if (source === null || source === undefined) continue
+      const disk = owner.baselineDiskOf(path)
+      if (!owner.isDirty(path)) continue
+      if (disk === undefined) return { status: 'error', problem: { code: 'stale', message: 'An open Folio part has no confirmed disk version. Check its source and try again.' } }
+      const message = exportRefusedUnderNotice(path)
+      if (message) return { status: 'error', problem: { code: 'stale', message } }
+      buffers.push({ path, source, disk })
+    }
+    return window.writeflex.folioEpub.prepare({ ...options, dir, buffers })
+  }, [bufferNow, exportRefusedUnderNotice, exportSubject, owner, unsaved])
+
   /** One export attempt, end to end: flush the buffer (so the file is what is on screen), ask the
    *  system save dialog where it goes, then write it. A cancelled dialog writes nothing and says
    *  nothing; a failure comes back as the sentence the main process wrote. */
@@ -5806,8 +5371,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       { id: 'metadata.edit', run: () => editorRef.current?.editMetadata() },
       { id: NEXT_TAB_COMMAND.id, run: () => cycle(1) },
       { id: PREVIOUS_TAB_COMMAND.id, run: () => cycle(-1) },
-      { id: NEXT_PANEL_TAB_COMMAND.id, run: () => cycleRightTab(1, rightPaneTabsFor(guideInRow, scratchpadMode === 'docked')) },
-      { id: PREVIOUS_PANEL_TAB_COMMAND.id, run: () => cycleRightTab(-1, rightPaneTabsFor(guideInRow, scratchpadMode === 'docked')) },
+      { id: NEXT_PANEL_TAB_COMMAND.id, run: () => cycleRightTab(1, withFolioComments(rightPaneTabsFor(guideInRow, scratchpadMode === 'docked'), folioCommentsOpen)) },
+      { id: PREVIOUS_PANEL_TAB_COMMAND.id, run: () => cycleRightTab(-1, withFolioComments(rightPaneTabsFor(guideInRow, scratchpadMode === 'docked'), folioCommentsOpen)) },
       { id: NEXT_FOLDER_FILE_COMMAND.id, run: () => void browseFolderFile(1) },
       { id: PREVIOUS_FOLDER_FILE_COMMAND.id, run: () => void browseFolderFile(-1) },
       { id: 'outline.rowMenu', run: () => requestOutline('rowMenu') },
@@ -5824,7 +5389,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       { id: HIDE_INSERTS_COMMAND.id, checked: hideInserts, run: toggleHideInserts },
       { id: 'sync.open', run: openSyncTab },
       { id: 'sync.status', run: () => setSyncPopoverOpen(true) },
-      { id: 'sync.now',   disabled: syncStatus.reason('syncNow') !== null, disabledReason: syncStatus.reason('syncNow') ?? undefined, run: () => { void syncStatus.run('syncNow') } },
+      { id: 'sync.send', disabled: !gitSync.view?.result.enabled, disabledReason: gitSync.view?.experimentalOff ? EXPERIMENTAL_GIT_SYNC_OFF : 'Turn on sync for this vault first.', run: () => { void gitSync.call('send') } },
+      { id: 'sync.now',   disabled: gitSync.view?.result.enabled ? false : syncStatus.reason('syncNow') !== null, run: () => { if (gitSync.view?.result.enabled) void gitSync.call('fetch'); else void syncStatus.run('syncNow') } },
       { id: 'sync.check',   disabled: syncStatus.reason('check') !== null, disabledReason: syncStatus.reason('check') ?? undefined, run: () => { void syncStatus.run('check') } },
       { id: 'sync.history',   disabled: syncStatus.reason('history') !== null, disabledReason: syncStatus.reason('history') ?? undefined, run: () => { void syncStatus.run('history') } },
       { id: 'view.toggleLeftPane', checked: !leftPaneCollapsed, run: toggleLeftPane },
@@ -5851,6 +5417,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       { id: 'plan.open', run: openPlan },
       { id: 'folio.linkFiles',   disabled: openFolioDir === null, disabledReason: 'Open a Folio first', run: () => { if (openFolioDir !== null) void requestIdentityLinks.current(openFolioDir, true) } },
       { id: 'folio.open',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: openFolio },
+      { id: 'folio.pick',   disabled: paletteFolios.length === 0, disabledReason: rootIsVault === true ? 'This vault has no Folios' : 'Folios are listed in a vault; this folder is not one', run: () => openPalette('folios') },
+      { id: 'folio.allComments',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its parts first', run: openFolioComments },
       { id: 'research.capture',   disabled: researchProject == null, disabledReason: 'Open a Piece or a Folio first', run: openResearchCapture },
       { id: 'folio.movePieceUp',   disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('up') } },
       { id: 'folio.movePieceDown',   disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('down') } },
@@ -6056,9 +5624,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       // Round A sounds (Task 4): channel toggles; scheme/loop/volume live in Settings → Sounds.
       { id: 'sounds.typing', checked: soundPrefsRef.current.typingOn, run: toggleTypingSounds },
       { id: 'sounds.ambient', checked: soundPrefsRef.current.ambientOn, run: toggleAmbientSound },
-      // Theme (2026-09-13): each writes appearance.theme through setSetting — the same path Settings uses.
-      { id: 'appearance.darkTheme', checked: settingValues['appearance.theme'] === 'dark', run: () => { runThemeCommand('appearance.darkTheme', setSetting) } },
-      { id: 'appearance.lightTheme', checked: settingValues['appearance.theme'] !== 'dark', run: () => { runThemeCommand('appearance.lightTheme', setSetting) } },
+      ...THEME_COMMANDS.map(({ id, value }) => ({
+        id, checked: theme === value, run: () => { runThemeCommand(id, setSetting) },
+      })),
       // Round A goals (Task 5): the Goal Gauge's keyboard path — the gauge click opens the same dialog.
       { id: 'goal.set', run: openGoalDialog },
       // Round B copy (T5): keyless by the pre-v1 ruling, palette + cheat-sheet only. A flash names
@@ -6168,7 +5736,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       return { ...presented, keys: override === '' ? undefined : override }
     })
   }, [
-    settingValues, fixedLine, roomTextPath, root, active, activeFilePath, activeFileUnavailable, typewriterOn, viewMode, focusMode, lineOverlay, distractionFree, hideStrikes, hideInserts,
+    settingValues, theme, fixedLine, roomTextPath, root, active, activeFilePath, activeFileUnavailable, typewriterOn, viewMode, focusMode, lineOverlay, distractionFree, hideStrikes, hideInserts,
     leftPaneCollapsed, rightPaneCollapsed, actionBarVisible, marginHidden, contextCounted,
     shownTitleConflict,
     titleHeadingCanBeInserted,
@@ -6233,7 +5801,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     runEditorCommand,
     openFilesTab,
     openSyncTab,
-    syncStatus.run, syncStatus.reason, syncStatus.commandState,
+    syncStatus.run, syncStatus.reason, syncStatus.commandState, gitSync.call, gitSync.view?.result.enabled, gitSync.view?.experimentalOff,
     toggleLeftPane,
     toggleRightPane,
     toggleActionBar,
@@ -6546,8 +6114,25 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       runAsPlanShortcut(run)
     }
     window.addEventListener('keydown', onKeyDown, true)
+    // From here keys reach this listener; a chord pressed before it existed waits for the saved shortcuts.
+    stopHoldingEarlyChords()
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [overlayActive, overlayOpenRef, shortcutOverrides, collectionDir, configureActionBarOpen])
+  // A chord pressed before the app listened (early-chords.ts), decided once the saved shortcuts have
+  // loaded and the workspace is known: only a command that opens a surface and is safe to run late, as
+  // bound now, with a handler. None runs on the start screen.
+  useEffect(() => {
+    if (!settingsLoaded || root === undefined) return
+    releaseEarlyChords((held) => {
+      if (root === null) return
+      const chord = eventToChord(held)
+      if (!chord || !EARLY_CHORD_COMMANDS.some((id) => resolveChord(id, shortcutOverrides) === chord)) return
+      const paletteChord = chord === resolveChord('app.quickOpen', shortcutOverrides) || chord === resolveChord('app.commandPalette', shortcutOverrides)
+      if (overlayOpenRef.current && !paletteChord) return
+      const run = appChordIndexRef.current.get(chord)
+      if (run) runAsPlanShortcut(run)
+    })
+  }, [settingsLoaded, root, shortcutOverrides, overlayOpenRef])
 
   // The Reading Room's vendored reader owns the keyboard once a document has focus, so its seam
   // forwards the modified chords it does not want (ReadFlex ADR-0028). They run through the SAME
@@ -6571,7 +6156,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     }
     let cancelled = false // a fast tab switch must not let the older read land after the newer one
     void window.writeflex
-      .readFile(active)
+      .readEditorFile(active)
       .then(({ content }) => {
         if (cancelled) return
         setLastEditablePath(active)
@@ -6924,10 +6509,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   }, [switchToRoot, openMakeVault])
 
   // A file-open boot (or opening a file into this window) arrives as a workspace:focus-file push;
-  // main queues it and flushes on the first workspace:get pull (T2 seam, ipc.ts). This subscription
-  // registers in the same synchronous effects pass that SENDS that pull (useWorkspace's mount
-  // effect), so the push can never arrive before we listen; useTabs.open itself queues a path that
-  // arrives ahead of tab hydration.
+  // main flushes the queued focus on the workspace context pull. This subscription registers in
+  // the same effects pass as that pull, and useTabs.open queues a path that arrives before hydration.
   // A writeflex://open?…&line=N link (an archive citation) carries its line: land the caret there
   // through the outline jump's queue-until-loaded path. jumpToFileLine is declared further down, so
   // the subscription reads it off a ref rather than re-ordering this load-bearing registration.
@@ -7499,6 +7082,43 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       uncheckpointed.current.add(to) // saved, not yet checkpointed: the next ⌘S/close checkpoints it there
     }
   }, [owner, autosave, forgetAppTraces, moveExternalDiskNotice, queueAutosave])
+  /**
+   * Inside a route holding the documents main's link repair wrote (after `afterMainMoved`): the open document with
+   * typing over the version the repair read takes the repair's edit (repair-in-buffer.ts), so the repair's own
+   * write never reaches it as an outside change. Its basis becomes the repaired file and the typing stays unsaved
+   * over it, written by the next save. Only on main's receipt for the document (shared/repair-receipt.ts): the
+   * buffer's basis is exactly what the repair replaced and the file read now is exactly what it wrote, and the
+   * document is one the route holds (`held`). Anything else (another writer's bytes, a past version on screen,
+   * typing on the repaired lines, a document not held) is left to the changed-on-disk banner, as before.
+   */
+  const takeRepairWrites = useCallback(async (
+    repair: { receipts?: readonly RepairReceipt[] } | undefined,
+    held: (path: string) => boolean,
+  ): Promise<void> => {
+    for (const receipt of repairReceiptsOf(repair?.receipts, (path) => typeof path === 'string')) {
+      const path = receipt.path
+      const showing = (): boolean => activeRef.current === path && loadedPath.current === path
+        && editorRef.current?.showingHistorical() === false
+      // A held document not on screen was written first and holds no typing; the watcher's read updates it.
+      if (!held(path) || !showing()) continue
+      try {
+        const basis = owner.baselineDiskOf(path)
+        if (basis === undefined || await sha256OfText(basis) !== receipt.before) continue
+        const repaired = (await window.writeflex.readFile(path)).content
+        if (await sha256OfText(repaired) !== receipt.written) continue
+        if (!showing() || owner.baselineDiskOf(path) !== basis) continue
+        const take = repairInBuffer(owner.baselineOf(path), bufferNow(path), repaired)
+        if (take.kind !== 'merge') continue
+        const since = owner.generationsOf(path)?.gen ?? 0
+        editorRef.current?.setContent(path, take.merged, { silent: true })
+        if (bufferNow(path) !== take.merged) continue
+        owner.replaceFromMain(path, { written: repaired, content: repaired }, { since, mode: 'integrated' })
+        queueAutosave(path)
+      } catch {
+        // Not taken: the document goes the changed-on-disk way, and the rename itself has already happened.
+      }
+    }
+  }, [owner, bufferNow, queueAutosave])
   moveHoldRef.current = { withPathsSaved: (paths, act) => withPathsSaved(paths, () => act()), afterMainMoved }
 
   settleAutoNameRef.current = async (path) => {
@@ -7634,6 +7254,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             await e2eHoldMove()
             const renamed = await window.writeflex.renameFile(path, plan.newPath)
             afterMainMoved(path, renamed.file.path)
+            await takeRepairWrites(renamed.repair, (p) => plan.repairPaths.includes(p))
             return renamed
           })
           if (!flushed) return true // flashed; close the rename input, file untouched
@@ -7659,13 +7280,16 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         // action moves every document it then holds, so none is left under the old name (2b round 3 ruling).
         const prefix = `${path}/`
         try {
-          const flushed = await withPathsSaved(() => documentsUnder(prefix), async (snapshots) => {
+          // Every document the app has a record of is held too, as for a file's rename: the repair also rewrites
+          // documents outside the folder that link into it (PR 255 review).
+          const flushed = await withPathsSaved(() => renameMembers(documentsUnder(prefix), [], documentsUnder('')), async (snapshots) => {
             await e2eHoldMove()
             const renamed = await window.writeflex.renameFolder(path, newName)
-            const moved = [...snapshots.keys()]
+            const moved = [...snapshots.keys()].filter((t) => t.startsWith(prefix))
             // Of the documents moved, the ones open in a tab are opened again under the new name.
             const wereOpen = moved.filter((t) => tabsRef.current.includes(t))
             for (const t of moved) afterMainMoved(t, `${renamed.path}${t.slice(path.length)}`)
+            await takeRepairWrites(renamed.repair, (p) => snapshots.has(p))
             return { renamed, moved: wereOpen }
           }, prefix)
           if (!flushed) return true
@@ -7690,6 +7314,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             await e2eHoldMove()
             const movedTo = await window.writeflex.moveFile(path, plan.newPath)
             afterMainMoved(path, movedTo.file.path)
+            await takeRepairWrites(movedTo.repair, (p) => plan.repairPaths.includes(p))
             return movedTo
           })
           if (!flushed) return false
@@ -7700,6 +7325,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           return true
         } catch (error) {
           flash(humanReadableError(error, 'Could not move the file.'))
+          // Main may have moved the file before this threw (its result failed validation, or the refresh
+          // above threw): the tree is read again so it stops listing the old path (rename-repair follow-ups).
+          void refresh().catch(() => {})
           return false
         }
       },
@@ -7785,7 +7413,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       exportFile: (path) => void openExportSheet(path),
       copyPath: copyFilePath,
     }),
-    [tabs, active, root, refresh, open, flash, owner, cancelAutosaveFor, forgetAppTraces, withPathsSaved, withRenameScopeSaved, afterMainMoved, e2eHoldMove, openExportSheet, documentsUnder, copyFilePath],
+    [tabs, active, root, refresh, open, flash, owner, cancelAutosaveFor, forgetAppTraces, withPathsSaved, withRenameScopeSaved, afterMainMoved, takeRepairWrites, e2eHoldMove, openExportSheet, documentsUnder, copyFilePath],
   )
   runActiveFileCommand.current = (id, path) => {
     if (activeFileUnavailable || activeFilePath !== path) return
@@ -8529,9 +8157,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     return (
       <div className="app-shell">
         <UpdateNotices protectedMode={distractionFree} />
-        <div className="toolbar">
-          <div className="traffic-spacer" aria-hidden="true" />
-        </div>
+        <WindowTitlebar className="toolbar" />
         <div className="body" />
       </div>
     )
@@ -8543,9 +8169,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     return (
       <div className="app-shell">
         <UpdateNotices protectedMode={distractionFree} />
-        <div className="toolbar">
-          <div className="traffic-spacer" aria-hidden="true" />
-        </div>
+        <WindowTitlebar className="toolbar" />
         <div className="body">
           <StartScreen onOpen={() => void openDialog()} onOpenRecent={(r) => void openRecent(r)} onOpenExample={(target) => void openExample(target)} onRemoveExample={() => setRemoveExampleOpen(true)} />
         </div>
@@ -8574,7 +8198,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         focusTick={outlineFocusTick}
         shortcutFor={(commandId) => resolveChord(commandId, shortcutOverrides)}
         request={outlineRequest}
-        folioPlace={active !== null ? folioPlace : null}
+        folioPlace={active !== null ? shownFolioPlace : null}
         folderFileCount={outlineFolderFileCount}
         onOpenFile={(file, isPart) => { if (workspaceDir !== undefined && isPart === true) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: { path: file } })); else open(file) }}
         onOpenPlan={workspaceDir !== undefined ? () => openPlanIn(workspaceDir) : openFolioPlan}
@@ -8639,7 +8263,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         onSelectWriterMode={changeWriterMode}
         onSelectViewMode={selectViewMode}
         onOpenPalette={() => openPalette('commands')}
-        folioName={folioPlace?.name ?? null}
+        folioName={shownFolioPlace?.name ?? null}
         onOpenFolioPlan={openFolioPlan}
         onToggleGuide={toggleGuideTab}
         guideOpen={guideOpen && rightTab === 'guide' && !rightPaneCollapsed}
@@ -8678,6 +8302,22 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           onStripVisibleChange={setMeasuredVisibleTabs}
         />
       </Toolbar>
+      {distractionFree && (
+        <WindowTitlebar className="df-titlebar" onPointerMove={() => setDfControlsVisible(!documentFindOpen)}>
+          {dfControlsVisible && (
+            <>
+              <button type="button" className="df-exit" onClick={toggleDistractionFree} title="Leave distraction-free (⌥⌘D or Esc)">
+                <Minimize2 className="icon sm" />Esc
+              </button>
+              <div className="moderail" role="group" aria-label="Writing mode">
+                <button type="button" aria-pressed={writerMode === 'reviewing'} title="Track my changes (⌥⌘M)" onClick={() => changeWriterMode(writerMode === 'reviewing' ? 'drafting' : 'reviewing')}>
+                  <Glasses className="icon sm" />Track my changes
+                </button>
+              </div>
+            </>
+          )}
+        </WindowTitlebar>
+      )}
       {folderFocus && !distractionFree && (
         <FocusPathBar
           rootName={workspaceName ?? 'Vault'}
@@ -8703,7 +8343,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 <Search className="icon i sm" aria-hidden="true" />
                 <span className="pt-label">Search</span>
               </button>
-              <SyncTabStatus controller={syncStatus} selected={leftTab === 'sync'} onOpen={openSyncTab} />
+              <SyncTabStatus gitView={gitSync.view} controller={syncStatus} selected={leftTab === 'sync'} onOpen={openSyncTab} />
               <button type="button" className="sidebar-fold" onClick={toggleLeftPane} title={`Collapse sidebar (${formatShortcutKey(resolveChord('view.toggleLeftPane', shortcutOverrides) ?? '')})`} aria-label="Collapse sidebar">
                 <ChevronLeft className="icon sm" aria-hidden="true" />
               </button>
@@ -8720,6 +8360,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                   focusSidebarFilter()
                 }}>
                   <Sidebar
+                    listingReady={listingReady}
                     files={files}
                     syncMarks={syncStatus.presentation.marks}
                     checklistProgress={checklistProgress}
@@ -8763,7 +8404,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 </RoomBinderSwitch>
               </div>
               <div className={leftTab === 'sync' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Sync">
-                <SyncPanel controller={syncStatus} selectedPath={active} />
+                {gitSync.view && ((gitSync.view.gitFolder && (REMOTE_COPY_AVAILABLE || !gitSync.view.experimentalOff)) || gitSync.view.result.enabled) ? <><GitPanel controller={gitSync} modifiedAt={tabModifiedAt} open={open} />{syncStatus.input.availability === 'ready' && <details><summary>Backup receipts</summary><SyncPanel controller={syncStatus} selectedPath={active} label="Backup receipts" /></details>}</> : <SyncPanel controller={syncStatus} selectedPath={active} />}
               </div>
               <div className={leftTab === 'search' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Search vault">
                 <SearchPanel onOpenHit={(match) => { jumpToMatch(match); noteOpenSource(match.path, 'search') }} onClose={closeSearch} focus={folderFocus} />
@@ -8820,9 +8461,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                   const prefix = `${collectionDir}/`
                   const openBefore = tabsRef.current.filter(path => path.startsWith(prefix))
                   const activeBefore = activeRef.current
-                  const moved = await withPathsSaved(() => documentsUnder(prefix), async snapshots => {
+                  const moved = await withPathsSaved(() => renameMembers(documentsUnder(prefix), [], documentsUnder('')), async snapshots => {
                     const renamed = await window.writeflex.renameFolder(collectionDir, name)
-                    for (const path of snapshots.keys()) afterMainMoved(path, `${renamed.path}${path.slice(collectionDir.length)}`)
+                    for (const path of snapshots.keys()) if (path.startsWith(prefix)) afterMainMoved(path, `${renamed.path}${path.slice(collectionDir.length)}`)
+                    await takeRepairWrites(renamed.repair, p => snapshots.has(p))
                     return renamed
                   }, prefix)
                   if (!moved) throw new Error('Could not save the documents. The collection was not renamed.')
@@ -8857,6 +8499,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                         const result = await withRenameScopeSaved(path, () => window.writeflex.planFileRename(path, name, value || null), async planned => {
                           const moved = await window.writeflex.moveFile(path, planned.newPath, collectionDir)
                           if (moved.file.path !== path) afterMainMoved(path, moved.file.path)
+                          await takeRepairWrites(moved.repair, p => planned.repairPaths.includes(p))
                           return moved
                         })
                         if (!result) throw new Error('Could not save this document. Try again.')
@@ -8906,7 +8549,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
               />
             </div>
           )}
-          {distractionFree && dfControlsVisible && <><button type="button" className="df-exit" onClick={toggleDistractionFree} title="Leave distraction-free (⌥⌘D or Esc)"><Minimize2 className="icon sm" />Esc</button><div className="moderail" role="group" aria-label="Writing mode"><span className="rl">Mode</span><div className="rseg" role="group" aria-label="Writing mode"><button type="button" aria-pressed={writerMode === 'reviewing'} title="Track my changes (⌥⌘M)" onClick={() => changeWriterMode(writerMode === 'reviewing' ? 'drafting' : 'reviewing')}><Glasses className="icon sm" />Track my changes</button></div><span className="rk">⌥⌘M</span></div></>}
           {/* The formatting toolbar sits inside the document pane (ticket 15): above the text, below the tab
               strip, with the read-aloud and review bars stacking under it. The sidebar therefore starts
               directly under the tab strip. Hidden costs ZERO pixels: when the bar is off it is not in the
@@ -9009,7 +8651,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             onInsertWidget={insertWidget}
             ref={editorRef}
             hasDocument={active !== null}
-            folioPlace={active !== null && collectionDir === null && !distractionFree ? folioPlace : null}
+            folioPlace={active !== null && collectionDir === null && !distractionFree ? shownFolioPlace : null}
             onOpenFolioPlan={openFolioPlan}
             onOpenFolioPiece={open}
             hideStrikes={hideStrikes}
@@ -9121,7 +8763,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             />
           )}
           <StatusBar
-            noticeSlot={<SyncTitleStatus controller={syncStatus} open={syncPopoverOpen} onOpenChange={setSyncPopoverOpen} onOpenSync={openSyncTab} />}
+            noticeSlot={gitSync.view?.result.enabled ? <GitMark controller={gitSync} onOpen={openSyncTab} /> : REMOTE_COPY_AVAILABLE && gitSync.view?.gitFolder ? <ProtectionMark view={gitSync.view} onOpen={openSyncTab} /> : <SyncTitleStatus controller={syncStatus} open={syncPopoverOpen} onOpenChange={setSyncPopoverOpen} onOpenSync={openSyncTab} />}
             readingVersionName={readingVersionNow?.name ?? null}
             outboxWaiting={outboxWaiting}
             outboxRejected={outboxRejected}
@@ -9385,12 +9027,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         )}
         {!rightPaneCollapsed && (
           <aside className={`chrome-pane right-pane${distractionFree ? ' df-pane' : ''}`} aria-label="Right sidebar" style={distractionFree ? undefined : { width: rightPaneWidth }}>
-            {distractionFree && <div className="df-ph">{rightTab === 'agent' ? <Sparkles className="icon sm" /> : rightTab === 'scratchpad' ? <StickyNote className="icon sm" /> : rightTab === 'research' ? <Telescope className="icon sm" /> : <GitCommitHorizontal className="icon sm" />}<span>{`${rightTab[0].toUpperCase()}${rightTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title={`Close panel (${formatShortcutKey(resolveChord('view.toggleRightPane', shortcutOverrides) ?? '')})`} onClick={toggleRightPane}><X className="icon sm" /></button></div>}
+            {distractionFree && <div className="df-ph">{rightTab === 'agent' ? <Sparkles className="icon sm" /> : rightTab === 'scratchpad' ? <StickyNote className="icon sm" /> : rightTab === 'research' ? <Telescope className="icon sm" /> : <GitCommitHorizontal className="icon sm" />}<span>{rightTab === 'folio-comments' ? 'Comments' : `${rightTab[0].toUpperCase()}${rightTab.slice(1)}`}</span><span className="gap" /><button type="button" className="x" aria-label="Close panel" title={`Close panel (${formatShortcutKey(resolveChord('view.toggleRightPane', shortcutOverrides) ?? '')})`} onClick={toggleRightPane}><X className="icon sm" /></button></div>}
             {!distractionFree && (
               <RightPaneTabs
                 active={rightTab}
                 guideShown={guideInRow}
                 scratchpadDocked={scratchpadMode === 'docked'}
+                commentsShown={folioCommentsOpen}
                 onSelect={(tab) => (tab === 'agent' ? focusComposer() : tab === 'scratchpad' ? openScratchpad(true) : openRightTab(tab))}
               />
             )}
@@ -9475,6 +9118,17 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                   onExit={closeArchiveSearch}
                 />
               </div>
+              {folioCommentsOpen && (
+                <div className={rightTab === 'folio-comments' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Comments">
+                  <FolioCommentsPane
+                    dir={folioCommentsDir}
+                    title={folioCommentsDir === null ? null : paletteVaultIndex?.labels[folioCommentsDir] ?? null}
+                    currentId={folioCommentCurrent}
+                    onJump={jumpToFolioComment}
+                    onClose={closeFolioComments}
+                  />
+                </div>
+              )}
               <div className={rightTab === 'scratchpad' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Scratchpad">
                 <div className="sp-rail">
                   <div className="sp-rail-slot" ref={setScratchpadDockSlot} />
@@ -9530,11 +9184,15 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           </aside>
         )}
       </div>
-      {(overlayActive === 'files' || overlayActive === 'commands') && (
+      {(overlayActive === 'files' || overlayActive === 'commands' || overlayActive === 'folios') && (
         <CommandPalette
+          // Open a Folio… is run from the command palette: a fresh sheet, so the command's own name is not its filter.
+          key={overlayActive === 'folios' ? 'folios' : 'palette'}
           mode={overlayActive}
           initialQuery={overlayActive === 'commands' ? paletteSeed : ''}
           files={files}
+          folios={paletteFolios}
+          onOpenFolio={openFolioFromPalette}
           titles={paletteVaultIndex?.labels}
           hiddenPaths={paletteVaultIndex?.hidden.paths}
           checklistProgress={checklistProgress}
@@ -9637,11 +9295,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             chooseFocusMode(mode)
             closePalette()
           }}
-          onSelectStyle={(style) => {
-            // The mockup's grammar: touching a style means Anchored — apply both, keep the picker up.
-            chooseLeadStyle(style)
-            if (focusModeRef.current !== 'anchored') chooseFocusMode('anchored')
-          }}
+          onSelectStyle={chooseAnchoredStyle}
           onClose={closePalette}
         />
       )}
@@ -9663,6 +9317,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           inFolio={exportSubject.inFolio}
           onSaveFolioVersionFirst={(dir) => { closePalette(); void openFolioSaveSheet(dir) }}
           onExport={runExport}
+          prepareEpub={EPUB_EXPORT_AVAILABLE && exportSubject.inFolio ? prepareFolioEpub : undefined}
           initialPresetAction={exportSubject.presetAction}
           tocDepthHomes={exportSubject.tocDepthHomes}
           onReveal={() => void window.writeflex.revealExport().catch((error: unknown) => flash(humanReadableError(error, 'Could not show the file.')))}

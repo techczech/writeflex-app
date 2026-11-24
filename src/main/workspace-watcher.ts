@@ -1,5 +1,6 @@
 import { invalidateFolioDeclarations, watchFolioDeclarations } from './folio-declaration'
-import { lstatSync, watch, type FSWatcher } from 'node:fs'
+import { lstatSync } from 'node:fs'
+import { watchFolder, type FolderWatch } from './shared-folder-watch'
 import { isAbsolute, posix } from 'node:path'
 import type { MarkdownFile } from './workspace'
 
@@ -98,7 +99,11 @@ export type WatchableWorkspace = {
   wasRecentlyWrittenByApp: (path: string, at?: number) => boolean
 }
 
-export type WorkspaceWatcher = { dispose: () => void }
+export type WorkspaceWatcher = {
+  dispose: () => void
+  isWatching: () => boolean
+  noteRead: (path: string, content: string, readCurrent: () => Promise<string>) => void
+}
 
 type StartupListing = {
   files: readonly Pick<MarkdownFile, 'path' | 'modifiedAt' | 'size'>[]
@@ -227,13 +232,13 @@ export function createWorkspaceWatcher(
   let router: WatchRouter | null = null
   let disposed = false
   let retried = false
-  let watcher: FSWatcher | null = null
+  let watcher: FolderWatch | null = null
 
   const start = (): void => {
     const nextRouter = createWatchRouter(workspace, onChanged, debounceMs, history, sharingIdentityChanged)
-    let next: FSWatcher
+    let next: FolderWatch
     try {
-      next = watch(workspace.root, { recursive: true, encoding: 'utf8' }, (_event, filename) => {
+      next = watchFolder(workspace.root, { recursive: true, anchor: workspace.root }, (_event, filename) => {
         if (!disposed && filename) nextRouter.take(String(filename))
       })
     } catch (error) { nextRouter.dispose(); throw error }
@@ -273,14 +278,33 @@ export function createWorkspaceWatcher(
     // Send missed paths through the normal debounce, cache invalidation and own-write rules.
     for (const path of changedDuringStartup(before, after)) router.take(path)
   }
-  const catchUpTimer = setTimeout(() => { void catchUp() }, WATCH_STARTUP_CATCH_UP_MS)
+  // The editor can read a document before the first listing stats it. Keep the actual read as
+  // its baseline in case a write falls inside that gap and the native watcher misses it.
+  let startupReads: Map<string, () => Promise<boolean>> | null = new Map()
+  const catchUpTimer = setTimeout(() => {
+    const reads = startupReads
+    startupReads = null
+    for (const [path, changed] of reads ?? []) {
+      void changed().then((different) => { if (different) router?.take(path) })
+    }
+    void catchUp()
+  }, WATCH_STARTUP_CATCH_UP_MS)
   catchUpTimer.unref()
 
   return {
+    isWatching: () => watcher !== null,
+    noteRead: (path, content, readCurrent) => {
+      if (!startupReads || startupReads.has(path)) return
+      startupReads.set(path, async () => {
+        try { return await readCurrent() !== content }
+        catch { return true }
+      })
+    },
     dispose: () => {
       if (disposed) return
       disposed = true
       clearTimeout(catchUpTimer)
+      startupReads = null
       router?.dispose()
       router = null
       watcher?.close()

@@ -1,3 +1,4 @@
+import { WindowTitlebar } from './WindowTitlebar'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { BookOpen, Check, ChevronDown, CloudOff, Code2, Command, Compass, Eye, PanelsTopLeft, Glasses, Highlighter, Link, ListOrdered, PanelLeft, PanelRight, PanelTop, Search, TriangleAlert, X } from 'lucide-react'
 import { missingPartsLabel, type ShareMark } from '../../../shared/sharing-links'
@@ -73,7 +74,7 @@ export function documentIdentityLabel(documentName?: string | null, collectionNa
 
 /**
  * Chrome 0.6 shelf per the locked v3 mockup (ADR-0026). The bar is the traffic-light drag region
- * (app.css); the spacer reserves the native traffic lights' footprint, positioned by
+ * (app.css); WindowTitlebar reserves the native traffic lights' footprint, positioned by
  * windows.ts. Only controls with live handlers render here.
  */
 export function Toolbar({
@@ -162,8 +163,7 @@ export function Toolbar({
   }
 
   return (
-    <div className="toolbar">
-      <div className="traffic-spacer" aria-hidden="true" />
+    <WindowTitlebar className="toolbar">
       <button
         className="tbtn"
         aria-pressed={sidebarOpen}
@@ -290,6 +290,6 @@ export function Toolbar({
           <PanelRight className="icon" />
         </button>
       </div>
-    </div>
+    </WindowTitlebar>
   )
 }

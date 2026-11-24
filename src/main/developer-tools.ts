@@ -3,13 +3,17 @@
  * running it, even `git --version`, opens the system dialog offering to install them. `xcode-select -p` names the
  * active developer folder without that dialog. WriteFlex then runs the real Git inside that folder, not the stub,
  * and checks the file is still there before every launch: if the tools are removed while the app runs, the launch
- * fails quietly and no dialog can open. The folder is asked once per session.
+ * fails quietly and no dialog can open. The folder is asked once per session and again only on Check again.
  * Electron-free.
  */
+import { spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { runBounded } from './bounded-child'
 import { isAppleToolStub } from './apple-tool-stub'
+import { stopSentences } from '../shared/git-sync-view'
+
+export const MISSING_TOOLS_MESSAGE = stopSentences['tools-missing']
 
 /** @internal Test seams: another `xcode-select`, another platform. */
 export const developerToolsSeams: { command: string; platform: NodeJS.Platform } = { command: '/usr/bin/xcode-select', platform: process.platform }
@@ -49,8 +53,18 @@ export async function developerToolsPresent(): Promise<boolean> {
   return (await systemGit()) !== null
 }
 
-/** Forget the session's answer and ask again. */
+/** Forget the session's answer and ask again (Check again, or after installing). */
 export function recheckDeveloperTools(): Promise<boolean> {
   folder = null
   return developerToolsPresent()
+}
+
+/** Opens Apple's installer. Only ever called from the person's click on Install Command Line Tools. */
+export function installDeveloperTools(): void {
+  if (developerToolsSeams.platform !== 'darwin') return
+  try {
+    const child = spawn(developerToolsSeams.command, ['--install'], { stdio: 'ignore', detached: true })
+    child.on('error', () => { /* the button stays; Check again reports the outcome */ })
+    child.unref()
+  } catch { /* as above */ }
 }

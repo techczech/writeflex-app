@@ -242,7 +242,7 @@ export async function fallbackFolioParts(ws: Workspace, dir: string): Promise<st
  * rule the sidebar Outline applies too), direct children first in chapter order, then subfolder files by path.
  * The "Not in the outline" group is this list minus the running order.
  */
-export async function folioPartsUnderRoot(ws: Workspace, root: string): Promise<string[]> {
+export async function folioPartsUnderRoot(ws: Pick<Workspace, 'listFilesIn'>, root: string): Promise<string[]> {
   const files = (await ws.listFilesIn(root)).filter((file) => isNotInOutlineName(file.name))
   const direct = files.filter((file) => file.directory === root).sort((a, b) => compareChapterOrder(a.name, b.name))
   const deeper = files.filter((file) => file.directory !== root).sort((a, b) => a.path.localeCompare(b.path))
@@ -325,7 +325,7 @@ export async function assertManifestAbsent(ws: Workspace, dir: string, reportSki
  * An entry listed twice resolves twice, in both positions, as it always has. Null when the folder
  * declares no manifest.
  */
-export async function folioPieces(ws: Workspace, dir: string, listing?: ReadonlySet<string>): Promise<FolioPieces | null> {
+export async function folioPieces(ws: Pick<Workspace, 'listFilesIn' | 'readFile'>, dir: string, listing?: ReadonlySet<string>): Promise<FolioPieces | null> {
   const manifest = await readManifest(ws, dir)
   if (!manifest) return null
   // Containment: no candidate lies outside `dir`, so the Folio's own folder is the whole listing needed

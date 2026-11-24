@@ -13,6 +13,9 @@ export type WriteFlexSettingsApi = {
   menuFocus(plain: boolean): Promise<void>
   getStarted(): Promise<{ removed: boolean; canRestore: boolean }>
   restoreExample(): Promise<{ ok: boolean; message?: string }>
+  gitSync(id:string,value:{enabled?:boolean;wait?:number}):Promise<{ok:boolean}>
+  /** Whether Git can run without Apple's install dialog; `install` opens the installer, `check` asks again. */
+  gitTools(action:'status'|'install'|'check'):Promise<{present:boolean}>
   context(): Promise<{ root: string | null }>
   /** The models this Mac can use (`models`), every model WriteFlex knows (`catalogue`), and the defaults. */
   models: () => Promise<{ models: SettingsModelChoice[]; catalogue: SettingsModelChoice[]; defaults: { model: { provider: string; id: string }; thinking: string } }>

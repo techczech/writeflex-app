@@ -21,7 +21,8 @@ import { repairTable, serialiseTable } from '../../src/shared/object-markup'
 const MILLION = 1_000_000
 
 test('Word bundle: a piece of 1,000,000 paragraphs is gathered without overflowing the stack', () => {
-  const blocks = Array.from({ length: MILLION }, (): Block => ({ kind: 'paragraph', children: [{ kind: 'text', text: 'x' }] }))
+  const paragraph: Block = { kind: 'paragraph', children: [{ kind: 'text', text: 'x' }] }
+  const blocks = Array<Block>(MILLION).fill(paragraph)
   const content = docxBundleContent([{ title: 'T', document: { blocks, footnotes: [] } }])
   expect(content.children).toHaveLength(MILLION + 1) // the piece's heading, then its paragraphs
   expect(content.missingImages).toEqual([])
@@ -36,7 +37,7 @@ test('Word bundle: 1,000,000 unreadable pictures in one piece are all reported, 
 }, 60_000)
 
 test('external links only: a refused link with 1,000,000 parts in its text is replaced by them', () => {
-  const words = Array.from({ length: MILLION }, (): Inline => ({ kind: 'break' }))
+  const words = Array<Inline>(MILLION).fill({ kind: 'break' })
   const paragraph: Block = { kind: 'paragraph', children: [{ kind: 'text', text: 'a ' }, { kind: 'link', href: 'file:///x', children: words }, { kind: 'text', text: ' z' }] }
   const read = externalLinksOnly({ blocks: [paragraph], footnotes: [] }).blocks[0]
   if (read.kind !== 'paragraph') throw new Error('not a paragraph')
@@ -61,11 +62,14 @@ const tiles = (documents: HtmlDocumentData[]): string => assembleDocument({ titl
 test('HTML summary tiles: the last-modified date of 1,000,000 documents is found without overflowing the stack', () => {
   const day = 86_400_000
   const latest = Date.UTC(2031, 5, 15, 12)
-  const documents = Array.from({ length: MILLION }, (_, i) => data(i === 123_456 ? latest : Date.UTC(2020, 0, 1, 12) + (i % 1000) * day))
+  const first = Date.UTC(2020, 0, 1, 12)
+  const earlier = Array.from({ length: 1000 }, (_, i) => data(first + i * day))
+  const documents = Array.from({ length: MILLION }, (_, i) => earlier[i % 1000])
+  documents[123_456] = data(latest)
   const html = tiles(documents)
   // the same page as a collection whose every document was modified at the latest time
-  expect(html).toBe(tiles(Array.from({ length: MILLION }, () => data(latest))))
-  expect(html).not.toBe(tiles(Array.from({ length: MILLION }, () => data(Date.UTC(2020, 0, 1, 12)))))
+  expect(html).toBe(tiles(Array<HtmlDocumentData>(MILLION).fill(data(latest))))
+  expect(html).not.toBe(tiles(Array<HtmlDocumentData>(MILLION).fill(data(first))))
 }, 60_000)
 
 test('table text: 1,000,000 rows are repaired and written back without overflowing the stack', () => {
@@ -73,7 +77,7 @@ test('table text: 1,000,000 rows are repaired and written back without overflowi
   expect(repaired.cells).toHaveLength(MILLION + 1)
   expect([repaired.cells[0], repaired.cells[1], repaired.cells[MILLION]]).toEqual([['h', 'i', ''], ['y', '', ''], ['a', 'b', 'c']])
   expect(repaired.alignments).toHaveLength(3)
-  const written = serialiseTable({ cells: [['h'], ...Array.from({ length: MILLION - 1 }, () => ['y']), ['a', 'b']], alignments: ['left'] })
+  const written = serialiseTable({ cells: [['h'], ...Array<string[]>(MILLION - 1).fill(['y']), ['a', 'b']], alignments: ['left'] })
   const lines = written.split('\n')
   expect(lines).toHaveLength(MILLION + 2)
   expect([lines[0], lines[1], lines[2], lines[MILLION + 1]]).toEqual(['| h |  |', '| :--- | :--- |', '| y |  |', '| a | b |'])

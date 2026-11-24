@@ -243,14 +243,16 @@ function insideFence(lines: readonly string[]): boolean {
 export function mergedText(merge: ThreeWayMerge, picks: ReadonlyArray<ConflictPick | undefined>): string | null {
   const out: string[] = []
   for (const chunk of merge.chunks) {
+    // Appended line by line: spreading a long run of lines as call arguments overflows the stack.
+    const append = (lines: readonly string[]): void => { for (const line of lines) out.push(line) }
     if (chunk.kind === 'conflict') {
       const pick = picks[chunk.index]
       if (pick === undefined) return null
-      if (pick !== 'theirs') out.push(...chunk.mine)
+      if (pick !== 'theirs') append(chunk.mine)
       if (pick === 'both' && isProseLine(chunk.mine.at(-1)) && isProseLine(chunk.theirs[0]) && !insideFence(out)) out.push('')
-      if (pick !== 'mine') out.push(...chunk.theirs)
+      if (pick !== 'mine') append(chunk.theirs)
     } else {
-      out.push(...chunk.lines)
+      append(chunk.lines)
     }
   }
   return (merge.bom ? BOM : '') + out.join('\n')

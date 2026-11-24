@@ -54,6 +54,7 @@
  * docs/plans/2026-11-03-sync-replicas-and-duplicate-reconciliation.md). Reads have no such window for content:
  * see the hash rule above.
  */
+import { protectSnapshotAppends } from '../git-vault-sync-private-history'
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, open, readdir } from 'node:fs/promises'
@@ -216,6 +217,7 @@ async function withCommandLineHistory<T>(workspace: Workspace, confirmOwner: () 
     await journal()
     // Makes the objects folder when it is missing; it was just verified to be there.
     const bridle = await SnapshotStore.open({ dir: join(root, HISTORY_DIR) })
+    protectSnapshotAppends(bridle)
     const versions = new VersionStore(workspace)
     const changes = new ChangeStore(workspace)
     return await use({

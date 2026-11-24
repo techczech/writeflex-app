@@ -1,14 +1,15 @@
 import { escapePlanLink } from '../shared/plan-line'
-import { movedDocumentLinks } from './moved-document-links'
+import { batchLocator, movedDocumentLinks } from './moved-document-links'
 import { stat } from 'node:fs/promises'
 import { posix } from 'node:path'
 import { indexNotePath, MANIFEST_NAME, readManifest, resolveManifestFilePath, type Folio } from './folio'
 import { jsonArrayLayout, rewriteJsonObjectStringProperty } from './json-array-layout'
-import { parseMarkdown } from '../shared/markdown/dialect'
 import { readPlan } from './plan'
 import type { FileReadResult, MarkdownFile, Workspace } from './workspace'
 import { Workspace as WorkspaceAdapter } from './workspace'
 import type { RenameRepairDisplayIssue } from '../shared/rename-repair-message'
+import type { RepairReceipt } from '../shared/repair-receipt'
+import { scanMarkdownCodeRanges, type MarkdownCodeRange, type RenameRepairMarkdownCache } from './rename-repair-markdown'
 import { applyPlannedRenameRepair, failedPlannedRenameRepairResult } from './rename-repair-apply'
 import {
   buildWikilinkCandidateIndex,
@@ -22,6 +23,8 @@ export type RenameRepairResult = {
   writtenPaths: string[]
   unrepairedReferences: string[]
   issues: RenameRepairIssue[]
+  /** For a repair that completed: exactly what it replaced and wrote in each file (shared/repair-receipt.ts). */
+  receipts?: RepairReceipt[]
 }
 
 export type RenameRepairIssue = RenameRepairDisplayIssue
@@ -64,7 +67,7 @@ export type RenameRepairPlan = {
   }
 }
 
-export type MarkdownCodeRange = { from: number; to: number }
+export { scanMarkdownCodeRanges, type MarkdownCodeRange } from './rename-repair-markdown'
 type CachedMarkdown = { file: MarkdownFile; content: string }
 
 function planVerification(
@@ -234,24 +237,6 @@ function gateManifestCandidate(candidate: ManifestCandidate, context: ManifestGa
   return rewritten
 }
 
-/** CommonMark code ranges, including container-aware blocks and paragraph-bounded inline spans. */
-export function scanMarkdownCodeRanges(source: string): MarkdownCodeRange[] {
-  const ranges: MarkdownCodeRange[] = []
-  const cursor = parseMarkdown(source).cursor()
-  const visit = (): void => {
-    if (cursor.name === 'CodeBlock' || cursor.name === 'FencedCode' || cursor.name === 'InlineCode') {
-      ranges.push({ from: cursor.from, to: cursor.to })
-      return
-    }
-    if (!cursor.firstChild()) return
-    do visit()
-    while (cursor.nextSibling())
-    cursor.parent()
-  }
-  visit()
-  return ranges
-}
-
 function isInsideRange(from: number, to: number, ranges: MarkdownCodeRange[]): boolean {
   return ranges.some((range) => from >= range.from && to <= range.to)
 }
@@ -359,8 +344,8 @@ function referenceResolution(
     link: ReturnType<typeof extractWikilinks>[number],
   ): { found: boolean; path: string | null; ambiguous?: boolean } => {
     const line = planLines.get(filePath)
-    const lineNumber = lineAtOffset(source, link.from)
-    const titleLink = line?.get(lineNumber)
+    if (!line) return { found: false, path: null }
+    const titleLink = line.get(lineAtOffset(source, link.from))
     return titleLink?.from === link.from && titleLink.to === link.to
       ? { found: true, path: titleLink.path, ambiguous: titleLink.ambiguous }
       : { found: false, path: null }
@@ -416,6 +401,7 @@ type PrepareManifestWritesOptions = {
   workspace: Workspace
   readThrough: (path: string) => Promise<FileReadResult>
   folders: string[]
+  manifestCandidates: ReadonlySet<string>
   fromPath: string
   toPath: string
   issues: string[]
@@ -434,6 +420,7 @@ async function prepareManifestWrites({
   workspace,
   readThrough,
   folders,
+  manifestCandidates,
   fromPath,
   toPath,
   issues,
@@ -449,7 +436,7 @@ async function prepareManifestWrites({
   for (const dir of ['', ...folders]) {
     const path = dir ? `${dir}/${MANIFEST_NAME}` : MANIFEST_NAME
     if (ignore?.(path)) continue
-    if (!(await workspacePathExists(workspace, path))) {
+    if (!manifestCandidates.has(dir) || !(await workspacePathExists(workspace, path))) {
       manifestInputs.push({ path, content: null })
       continue
     }
@@ -541,14 +528,14 @@ function canonicalWorkspacePath(workspace: Workspace, path: string): string {
 
 async function planLinesToPreserve(workspace: Workspace, folders: string[], fromPath: string, toPath: string): Promise<Map<string, string>> {
   const paths = new Map<string, string>()
+  const excluded = excludedPlanDestination(toPath)
   for (const dir of ['', ...folders]) {
+    if (!pathInside(dir, fromPath)) continue
+    const leftReport = !pathInside(dir, toPath)
+    if (!leftReport && !excluded) continue
     const indexPath = indexNotePath(workspace, dir)
     if (fromPath === indexPath || !(await workspacePathExists(workspace, indexPath))) continue
-    const fromRelative = pathInside(dir, fromPath)
-    if (!fromRelative) continue
-    const toRelative = pathInside(dir, toPath)
-    if (!toRelative) paths.set(indexPath, 'the renamed file left this report')
-    else if (excludedPlanDestination(toPath)) paths.set(indexPath, 'the destination is excluded from this report')
+    paths.set(indexPath, leftReport ? 'the renamed file left this report' : 'the destination is excluded from this report')
   }
   return paths
 }
@@ -613,7 +600,7 @@ type MarkdownReferenceAnalysis = {
   file: MarkdownFile
   source: string
   links: ReturnType<typeof extractWikilinks>
-  skipped: MarkdownCodeRange[]
+  codeRanges: () => MarkdownCodeRange[]
 }
 
 function analyseMarkdownReferences(
@@ -622,6 +609,7 @@ function analyseMarkdownReferences(
   toPath: string,
   beforeResolution: ReferenceResolution,
   afterResolution: ReferenceResolution,
+  markdownCache?: RenameRepairMarkdownCache,
 ): {
   files: MarkdownReferenceAnalysis[]
   bystanderReferences: string[]
@@ -631,14 +619,20 @@ function analyseMarkdownReferences(
   const plannedOutcomes: Array<{ path: string; text: string; kind?: 'available' }> = []
   const namedOutcomes = new Set<string>()
   const files = afterFiles.map(({ file, content: source }): MarkdownReferenceAnalysis => {
-    const skipped = scanMarkdownCodeRanges(source)
-    const links = extractWikilinks(source)
+    // Only links that could change meaning need the full Markdown parse for code ranges.
+    const facts = markdownCache?.forFile(file.path, source)
+    let skipped: MarkdownCodeRange[] | undefined
+    const codeRanges = () => {
+      if (facts) return facts.codeRanges ??= scanMarkdownCodeRanges(source)
+      return skipped ??= scanMarkdownCodeRanges(source)
+    }
+    const links = facts ? (facts.links ??= extractWikilinks(source)) : extractWikilinks(source)
     const beforeFrom = file.path === toPath ? fromPath : file.path
     for (const link of links) {
-      if (isInsideRange(link.from, link.to, skipped)) continue
       const before = beforeResolution.resolve(beforeFrom, source, link)
       const after = afterResolution.resolve(file.path, source, link)
       if (before === fromPath || before === after) continue
+      if (isInsideRange(link.from, link.to, codeRanges())) continue
       if (before === null && after !== null) {
         const availableAdoption = beforeResolution.isPlanTitleLink(beforeFrom, source, link)
           || afterResolution.isPlanTitleLink(file.path, source, link)
@@ -655,7 +649,7 @@ function analyseMarkdownReferences(
         `${file.path}: ${link.raw} changed meaning from ${before ?? 'no file'} to ${after ?? 'no file'} because of the rename.`,
       )
     }
-    return { file, source, links, skipped }
+    return { file, source, links, codeRanges }
   })
   return { files, bystanderReferences, plannedOutcomes }
 }
@@ -671,16 +665,27 @@ async function buildRenameRepairPlan(
   options: RenameRepairPlanOptions = {},
 ): Promise<RenameRepairPlan> {
   const ignore = options.ignore
-  const folders = await workspace.listFolders()
   const readThrough = cachedReads(workspace)
-  const afterCandidateList = await collectionCandidates(cachedWorkspace(workspace, afterFiles, readThrough), '')
-  const beforeCandidateList = await collectionCandidates(cachedWorkspace(workspace, beforeFiles, readThrough), '')
-  const beforeIndex = buildWikilinkCandidateIndex(beforeCandidateList)
-  const afterIndex = buildWikilinkCandidateIndex(afterCandidateList)
+  const markdownCache = options.markdownCache
+  const indexFor = async (files: CachedMarkdown[], view: 'before' | 'after') => {
+    if (markdownCache) return markdownCache.candidateIndex(view, files)
+    const candidates = await collectionCandidates(cachedWorkspace(workspace, files, readThrough), '')
+    return buildWikilinkCandidateIndex(candidates)
+  }
+  const afterIndex = await indexFor(afterFiles, 'after')
+  const beforeIndex = await indexFor(beforeFiles, 'before')
   const beforeResolution = referenceResolution(await planLineResolutions(workspace, beforeFiles, readThrough), beforeIndex)
   const afterResolution = referenceResolution(await planLineResolutions(workspace, afterFiles, readThrough), afterIndex)
-  const markdownReferences = analyseMarkdownReferences(afterFiles, fromPath, toPath, beforeResolution, afterResolution)
+  const markdownReferences = analyseMarkdownReferences(afterFiles, fromPath, toPath, beforeResolution, afterResolution, markdownCache)
   const replacement = withoutMarkdownExtension(posix.basename(toPath))
+  const manifestCandidates = new Set<string>()
+  const folders = await workspace.listFolders((dir, entries) => {
+    // Let the filesystem decide case and Unicode aliases. Include other entry types too:
+    // the existing probe decides whether a symlink or non-file entry is readable.
+    if (entries.some(({ name }) => name.toLowerCase() === MANIFEST_NAME || /[^\x00-\x7f]/.test(name))) {
+      manifestCandidates.add(dir)
+    }
+  })
   const preservePlanLinesIn = await planLinesToPreserve(workspace, folders, fromPath, toPath)
   const writes: PreparedWrite[] = []
   const bystanderReferences = [...markdownReferences.bystanderReferences]
@@ -693,6 +698,7 @@ async function buildRenameRepairPlan(
     workspace,
     readThrough,
     folders,
+    manifestCandidates,
     fromPath,
     toPath,
     issues,
@@ -705,7 +711,10 @@ async function buildRenameRepairPlan(
     ...(ignore ? { ignore } : {}),
   })
 
-  for (const { file, source, links, skipped } of markdownReferences.files) {
+  // One locator per batch move: a link in the moved document (or in one moved earlier) is followed to where its
+  // target is once this move is made (moved-document-links.ts batchLocator).
+  const batchLocate = options.batchMoves ? await batchLocator(workspace, options.batchMoves, { from: fromPath, to: toPath }) : undefined
+  for (const { file, source, links, codeRanges } of markdownReferences.files) {
     const preservedPlanReason = preservePlanLinesIn.get(file.path)
     const mismatched = links.filter((link) => source.slice(link.from, link.to) !== link.raw)
     if (mismatched.length) {
@@ -715,9 +724,9 @@ async function buildRenameRepairPlan(
     let next = source
     const repairedReferences: string[] = []
     for (const link of [...links].reverse()) {
-      if (isInsideRange(link.from, link.to, skipped)) continue
       const beforeFrom = file.path === toPath ? fromPath : file.path
       if (beforeResolution.resolve(beforeFrom, source, link) !== fromPath) continue
+      if (isInsideRange(link.from, link.to, codeRanges())) continue
       const isPlanTitleLink = beforeResolution.isPlanTitleLink(beforeFrom, source, link)
       if (preservedPlanReason && isPlanTitleLink) {
         preservedReferences.push(`${file.path}: [[${link.target}]] was left unchanged because ${preservedPlanReason}.`)
@@ -766,10 +775,16 @@ async function buildRenameRepairPlan(
       repairedReferences.unshift(`${file.path}: ${link.raw}`)
     }
     if (file.path === toPath && !options.outgoingLinksCarried) {
-      const outgoing = await movedDocumentLinks(workspace, next, fromPath, toPath)
+      const outgoing = await movedDocumentLinks(workspace, next, fromPath, toPath, batchLocate)
       issues.push(...outgoing.unrepairedReferences)
       next = outgoing.content
       repairedReferences.push(...outgoing.references)
+    } else if (file.path !== toPath && batchLocate && options.batchMoves && [...options.batchMoves.values()].includes(file.path)) {
+      // A document moved earlier in the same batch: its links to this one now name where this one goes.
+      const incoming = await movedDocumentLinks(workspace, next, file.path, file.path, batchLocate)
+      issues.push(...incoming.unrepairedReferences)
+      next = incoming.content
+      repairedReferences.push(...incoming.references)
     }
     plannedReferences.push(...repairedReferences)
     if (next !== source) writes.push({ path: file.path, current: source, content: next, kind: 'markdown' })
@@ -830,11 +845,16 @@ async function planRenameRepairAfterRename(
 }
 
 export type RenameRepairPlanOptions = {
+  /** Syntax memo for the previews and commit. The planner still lists, reads and resolves against disk. */
+  markdownCache?: RenameRepairMarkdownCache
   ignore?: (path: string) => boolean
   /** The moved document's own relative links already point where they should from its new place: a step that
    *  moves several documents together copies each with its links carried by the whole batch's from→to map
    *  (standard-widgets/own-folder.ts), so a second pass that knows only this one move would undo that. */
   outgoingLinksCarried?: boolean
+  /** Moves made earlier in the same batch (the Collection's multi-select move), from → to: the moved document's
+   *  links to those documents name their new places, and their links to it name its new place. */
+  batchMoves?: ReadonlyMap<string, string>
 }
 
 /**

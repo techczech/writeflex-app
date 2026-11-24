@@ -19,6 +19,7 @@ const choiceSummary = (choice: ExportPresetChoice): string => {
     choice.readerEdits ? 'reader editing' : '',
     choice.summaryTiles ? 'word count and dates' : '',
   ].filter(Boolean)
+  if (choice.format === 'epub') return 'EPUB · ' + (choice.keepLineBreaks === false ? 'Join lines within paragraphs' : 'Keep line breaks')
   return `${features.length ? features.join(' · ') : 'Everything off'} · ${choice.design === 'a' ? 'Report' : 'Editorial'} · ${choice.format === 'html' ? 'HTML' : 'Word'}`
 }
 

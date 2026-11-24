@@ -1,3 +1,5 @@
+import { gitState, type GitView } from '../../../shared/git-sync-view'
+import { REMOTE_COPY_AVAILABLE, presentProtection } from '../../../shared/remote-protection'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, Info, RefreshCw } from 'lucide-react'
 import { syncTime, type SyncInput, type SyncAction, type SyncRow } from './sync-status'
@@ -41,11 +43,11 @@ function SourceInfo({ row }: { row: SyncRow }): JSX.Element {
     </div>}
   </div>
 }
-export function SyncPanel({ controller, selectedPath }: { controller: SyncStatusController; selectedPath?: string | null }): JSX.Element {
+export function SyncPanel({ controller, selectedPath, label = 'Vault sync' }: { controller: SyncStatusController; selectedPath?: string | null; label?: string }): JSX.Element {
   const { input, error } = controller
   const p = useSyncDisplay(controller)
   const reviewReason = controller.reason('review')
-  return <section className="sync-panel" aria-label="Vault sync" tabIndex={-1}>
+  return <section className="sync-panel" aria-label={label} tabIndex={-1}>
     <header className={`sync-head ${p.tone}`}>
       <div className="sync-heading"><i className={`sync-dot ${p.tone}`} aria-hidden="true" />{p.heading}</div>
       <p>{p.description}</p>
@@ -102,8 +104,11 @@ export function syncAnnouncement(input: SyncInput, now = Date.now()): string {
 }
 
 /** The tab has its own display clock; minute changes never rebuild App commands. */
-export function SyncTabStatus({ controller, selected, onOpen }: { controller: SyncStatusController; selected: boolean; onOpen: () => void }): JSX.Element {
-  const p = useSyncDisplay(controller)
+export function SyncTabStatus({ controller, selected, onOpen, gitView }: { controller: SyncStatusController; selected: boolean; onOpen: () => void; gitView?: GitView | null }): JSX.Element {
+  const legacy = useSyncDisplay(controller)
+  const state = gitView?.result.enabled ? gitState(gitView) : null
+  const shield = REMOTE_COPY_AVAILABLE && !state && gitView?.gitFolder ? presentProtection(gitView.protection, { enabled: false, state: null }) : null
+  const p = shield ? { label: shield.label, tone: shield.tone } : state ? { label: state === 4 ? 'Sync has stopped' : state === 5 ? 'Documents need you' : state === 3 ? 'Waiting to be sent' : state === 2 ? 'Documents updated' : 'Up to date', tone: state === 4 ? 'red' : state === 5 ? 'amber' : state === 3 || gitView?.busy ? 'blue' : 'green' } : legacy
   return <button type="button" className={`pane-tab sync-tab${selected ? ' on' : ''}`} role="tab" aria-label={`Sync: ${p.label}`} aria-selected={selected} onClick={onOpen} title={`Sync · ${p.label}`}>
     <RefreshCw className="icon i sm" aria-hidden="true" /><i className={`sync-dot ${p.tone}`} aria-hidden="true" />
   </button>

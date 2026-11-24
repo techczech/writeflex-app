@@ -1,7 +1,7 @@
 // Builds the WriteFlex backup helper (src/backup-helper/writeflex-helper.ts) to
 // out/backup-helper/writeflex-backup-helper.js: one self-contained file for Node with every package
-// bundled in. Main starts it as a separate process (Electron in Node mode); electron-builder stages it
-// outside app.asar as Resources/vault-sync-helper/. Fails when the bundle imports anything but Node's own
+// bundled in. Packaging embeds this bundle into the standalone signed helper (stage-backup-executable.cjs).
+// Fails when the bundle imports anything but Node's own
 // modules or names a path of this checkout.
 import { backupHelperInputPlugin, verifyBackupHelperInputs } from './lib/backup-helper-inputs'
 import { readFileSync } from 'node:fs'

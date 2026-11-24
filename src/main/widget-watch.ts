@@ -12,12 +12,16 @@ import { realpath } from 'node:fs/promises'
 import { isIgnoredWorkspaceWatchPath } from './workspace-watcher'
 
 export type FolderWatch = { close(): void }
+/** After a watch fails, how long until it is made again; after the last, the watch is given up. */
+export const WIDGET_WATCH_RETRY_MS: readonly number[] = [1_000, 5_000, 30_000]
 export type WidgetWatchDeps = {
-  /** Watch one folder (not recursive); `listener` gets the changed entry's name. */
-  watchFolder(folder: string, listener: (name: string) => void): FolderWatch
+  /** Watch one folder (not recursive); `listener` gets the changed entry's name; `failed` is told if the
+   *  watch stops (it then reports nothing more). */
+  watchFolder(folder: string, listener: (name: string) => void, failed: (error: Error) => void): FolderWatch
   /** Report changed workspace-relative paths to one window. */
   notify(windowId: number, paths: string[]): void
   debounceMs?: number
+  retryDelaysMs?: readonly number[]
 }
 
 /** The workspace-relative path an embed line names, written as the block writes it; null when it leaves the root. */
@@ -63,8 +67,55 @@ export async function resolveWidgetWatchTarget(root: string, path: string): Prom
 
 export function createWidgetWatches(deps: WidgetWatchDeps) {
   const debounceMs = deps.debounceMs ?? 150
-  type Watch = { count: number; handle: FolderWatch; timer: ReturnType<typeof setTimeout> | null }
+  const delays = deps.retryDelaysMs ?? WIDGET_WATCH_RETRY_MS
+  type Watch = {
+    count: number
+    handle: FolderWatch | null
+    timer: ReturnType<typeof setTimeout> | null
+    /** Making the watch again after it failed; `failures` counts failures since the last event. */
+    retry: ReturnType<typeof setTimeout> | null
+    failures: number
+  }
   const watches = new Map<string, Watch>() // `${windowId}\0${path}`
+
+  const changed = (key: string, entry: Watch, windowId: number, path: string): void => {
+    if (watches.get(key) !== entry) return
+    if (entry.timer) clearTimeout(entry.timer)
+    entry.timer = setTimeout(() => { entry.timer = null; deps.notify(windowId, [path]) }, debounceMs)
+  }
+  /** Make the folder watch for `entry`; throws when the folder cannot be watched. If it fails later, it is
+   *  made again (after 1 s, 5 s, 30 s), so the widgets already showing go on being refreshed; the file is
+   *  then reported changed once, for any edit made meanwhile. After the last attempt the entry goes, and
+   *  the next block that shows the widget starts afresh. */
+  const attach = (key: string, entry: Watch, windowId: number, path: string, target: WidgetWatchTarget): void => {
+    let handle: FolderWatch | null = null
+    handle = deps.watchFolder(target.folder, (name) => {
+      if (name !== target.name || entry.handle !== handle) return
+      entry.failures = 0
+      changed(key, entry, windowId, path)
+    }, () => {
+      if (watches.get(key) !== entry || entry.handle !== handle) return
+      entry.handle = null
+      try { handle?.close() } catch { /* already gone */ }
+      const delay = delays[entry.failures]
+      entry.failures += 1
+      if (delay === undefined) { drop(key, entry); return }
+      entry.retry = setTimeout(() => {
+        entry.retry = null
+        if (watches.get(key) !== entry) return
+        try { attach(key, entry, windowId, path, target) } catch { drop(key, entry); return }
+        changed(key, entry, windowId, path)
+      }, delay)
+    })
+    entry.handle = handle
+  }
+  const drop = (key: string, entry: Watch): void => {
+    if (entry.timer) clearTimeout(entry.timer)
+    if (entry.retry) clearTimeout(entry.retry)
+    try { entry.handle?.close() } catch { /* already gone */ }
+    entry.handle = null
+    if (watches.get(key) === entry) watches.delete(key)
+  }
 
   return {
     /** Start (or count one more user of) the watch of `path` for this window, when the workspace watcher
@@ -75,20 +126,14 @@ export function createWidgetWatches(deps: WidgetWatchDeps) {
       const key = `${windowId}\u0000${path}`
       const existing = watches.get(key)
       if (existing) { existing.count += 1; return true }
-      const { name } = target
-      let handle: FolderWatch
+      const entry: Watch = { count: 1, handle: null, timer: null, retry: null, failures: 0 }
+      watches.set(key, entry)
       try {
-        handle = deps.watchFolder(target.folder, (changed) => {
-          if (changed !== name) return
-          const entry = watches.get(key)
-          if (!entry) return
-          if (entry.timer) clearTimeout(entry.timer)
-          entry.timer = setTimeout(() => { entry.timer = null; deps.notify(windowId, [path]) }, debounceMs)
-        })
+        attach(key, entry, windowId, path, target)
       } catch {
+        watches.delete(key)
         return false // the folder does not exist (yet): nothing to watch
       }
-      watches.set(key, { count: 1, handle, timer: null })
       return true
     },
     /** One user fewer; the watch goes with the last. */
@@ -98,17 +143,13 @@ export function createWidgetWatches(deps: WidgetWatchDeps) {
       if (!entry) return
       entry.count -= 1
       if (entry.count > 0) return
-      if (entry.timer) clearTimeout(entry.timer)
-      try { entry.handle.close() } catch { /* already gone */ }
-      watches.delete(key)
+      drop(key, entry)
     },
     /** A window closed: every watch of its goes. */
     disposeWindow(windowId: number): void {
       for (const [key, entry] of [...watches]) {
         if (!key.startsWith(`${windowId}\u0000`)) continue
-        if (entry.timer) clearTimeout(entry.timer)
-        try { entry.handle.close() } catch { /* already gone */ }
-        watches.delete(key)
+        drop(key, entry)
       }
     },
     get size() { return watches.size },

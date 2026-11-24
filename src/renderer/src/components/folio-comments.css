@@ -1,0 +1,28 @@
+/* The right sidebar's Comments tab: all comments in this Folio, by part in running order (rough edges, 24 Nov 2026). */
+.fc-pane { height: 100%; overflow-y: auto; padding: 10px 12px 24px; font: 13px var(--ui); color: var(--ink); }
+.fc-head { display: flex; align-items: flex-start; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.fc-head-text { flex: 1; min-width: 0; }
+.fc-kicker { font: 600 11px var(--ui); color: var(--ink-3); letter-spacing: .02em; }
+.fc-title { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-weight: 600; font-size: 14px; }
+.fc-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-path { margin: 2px 0 0 19px; font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-close { flex: none; display: flex; padding: 3px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-3); cursor: pointer; }
+.fc-close:hover { background: var(--hover); color: var(--ink); }
+.fc-count { margin: 8px 0 4px; font-size: 12px; color: var(--ink-2); }
+.fc-empty { margin: 12px 0; font-size: 12.5px; color: var(--ink-3); line-height: 1.45; }
+.fc-group { margin-top: 12px; }
+.fc-part { display: flex; align-items: baseline; gap: 7px; margin: 0 0 4px; font: 600 12.5px var(--ui); color: var(--ink); }
+.fc-pos { flex: none; min-width: 16px; font: 11px var(--mono); color: var(--ink-3); }
+.fc-part-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-part-count { flex: none; font-weight: 400; font-size: 11px; color: var(--ink-3); }
+.fc-not-listed { margin: -2px 0 4px 23px; font-size: 11px; color: var(--ink-3); }
+.fc-row { display: flex; flex-direction: column; gap: 3px; width: calc(100% - 23px); margin: 0 0 4px 23px; padding: 7px 9px; border: 1px solid var(--line); border-left: 3px solid var(--s-note); border-radius: 7px; background: var(--bg-pane); color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
+.fc-row.k-edit { border-left-color: var(--review); }
+.fc-row:hover { background: var(--hover); }
+.fc-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fc-row.is-current { border-color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+.fc-meta { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--ink-3); }
+.fc-kind { font-weight: 600; color: var(--ink-2); }
+.fc-held { padding: 0 5px; border-radius: 4px; background: var(--amber-soft); color: var(--amber); }
+.fc-quote { font: 12.5px/1.4 var(--prose); color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.fc-text { font-size: 12.5px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }

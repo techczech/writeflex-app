@@ -48,6 +48,8 @@ export const ERROR_CODES = [
   'root-not-chosen', 'writes-paused', 'write-not-permitted', 'app-data-not-writable',
   'request-too-large', 'not-passable-to-app', 'confirmation-needed',
   'version-unsettled', 'review-allowance-full', 'out-of-backup-scope',
+  'epub-outside-folio', 'epub-source', 'epub-stale', 'epub-empty', 'epub-order', 'epub-unwritten',
+  'epub-image', 'epub-alternative', 'epub-metadata', 'epub-destination', 'epub-generation',
   'owner-not-verified', 'reply-unreadable', 'collection-closed',
 ] as const
 export type ErrorCode = (typeof ERROR_CODES)[number]
@@ -57,6 +59,9 @@ export const ERROR_OUTCOME: Record<ErrorCode, Outcome> = {
   'root-not-chosen': 'refused', 'writes-paused': 'refused', 'write-not-permitted': 'refused', 'app-data-not-writable': 'refused',
   'request-too-large': 'refused', 'not-passable-to-app': 'refused', 'confirmation-needed': 'refused',
   'version-unsettled': 'needs-writer', 'review-allowance-full': 'needs-writer', 'out-of-backup-scope': 'refused',
+  'epub-outside-folio': 'refused', 'epub-source': 'refused', 'epub-stale': 'refused', 'epub-empty': 'refused',
+  'epub-order': 'refused', 'epub-unwritten': 'refused', 'epub-image': 'refused', 'epub-alternative': 'refused',
+  'epub-metadata': 'refused', 'epub-destination': 'refused', 'epub-generation': 'failed',
   'owner-not-verified': 'not-verified', 'reply-unreadable': 'not-verified', 'collection-closed': 'failed',
 }
 

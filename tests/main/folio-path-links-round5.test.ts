@@ -5,6 +5,8 @@
  * - "Write it out" never creates a file through a link on the way, nor in a folder the listing hides.
  */
 import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { renameFolder } from '../../src/main/rename-doors'
+import { renameDoorWorld } from '../helpers/rename-door-world'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -64,7 +66,7 @@ for (const name of ['chap#ters', 'chap|ters', 'chap]]ters', 'chap]ters']) {
     expect(plan.writes).toHaveLength(1)
     expect(plan.unrepairedReferences).toEqual([])
     await rename(join(root, DIR, 'contents'), join(root, DIR, name))
-    expect(await applyFolderRenameRepair(plan, ws)).toEqual({ writtenPaths: [INDEX], unrepairedReferences: [] })
+    expect(await applyFolderRenameRepair(plan, ws)).toEqual({ writtenPaths: [INDEX], unrepairedReferences: [], receipts: [expect.objectContaining({ path: INDEX })] })
     const escaped = name.replace(/[%#|\[\]]/g, char => encodeURIComponent(char))
     expect(await read(INDEX)).toBe(`# book\n\n- [[./${escaped}/a]]\n`)
   })
@@ -86,51 +88,18 @@ test('a folder repair whose folder moved on again before the write is not writte
   expect(await read(INDEX)).toBe('# book\n\n- [[./contents/a]]\n')
 })
 
-const interleavedRenameProbe = String.raw`
-  import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
-  import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-  import { tmpdir } from 'node:os'
-  import { join } from 'node:path'
-  const root = await mkdtemp(join(tmpdir(), 'writeflex-folder-rename-r5-'))
-  const handlers = new Map()
-  const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: (channel) => handlers.delete(channel) }
-  void mock.module('electron', () => ({
-    ...electronMainStandIn,
-    app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
-    clipboard: { write: () => {} }, dialog: {}, ipcMain,
-    shell: { openExternal: async () => {}, showItemInFolder: () => {}, trashItem: async () => {} },
-  }))
-  const [{ registerIpc }, { registerWindow }, { Workspace }] = await Promise.all([
-    import('./src/main/ipc.ts'), import('./src/main/state.ts'), import('./src/main/workspace.ts'),
-  ])
-  const state = registerWindow({ webContents: { id: 17, send: () => {} }, on: () => {}, isDestroyed: () => false })
-  state.workspace = new Workspace(root)
-  registerIpc(
-    { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
-    { modelDefaults: () => ({}), recents: () => [] },
-    {},
-  )
-  await mkdir(join(root, 'book', 'contents'), { recursive: true })
-  await writeFile(join(root, 'book', 'contents', 'a.md'), '# Alpha\n')
-  await writeFile(join(root, 'book', '_book_INDEX.md'), '# book\n\n- [[./contents/a]]\n')
-  const rename = handlers.get('folder:rename')
-  // The second rename is asked for while the first is still under way.
-  const first = rename({ sender: { id: 17 } }, { path: 'book/contents', newName: 'chapters' })
-  await new Promise((resolve) => setImmediate(resolve))
-  const second = rename({ sender: { id: 17 } }, { path: 'book/chapters', newName: 'final' })
-  const results = await Promise.all([first, second])
-  console.log(JSON.stringify({ results, index: await readFile(join(root, 'book', '_book_INDEX.md'), 'utf8') }))
-`
-
 test('two folder renames asked for one after another leave the Index Note naming the file where it ends up', async () => {
-  const child = Bun.spawn([process.execPath, '-e', interleavedRenameProbe], { cwd: new URL('../..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe' })
-  const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
-  if (exitCode !== 0) throw new Error(`The folder rename probe failed: ${stderr}`)
-  const result = JSON.parse(stdout.trim().split('\n').at(-1)!)
-  expect(result.index).toBe('# book\n\n- [[./final/a]]\n')
-  expect(result.results.map((item: { path: string }) => item.path)).toEqual(['book/chapters', 'book/final'])
-}, 60_000)
+  const world = await renameDoorWorld()
+  await world.write('book/contents/a.md', '# Alpha\n')
+  await world.write('book/_book_INDEX.md', '# book\n\n- [[./contents/a]]\n')
+  // The second rename is asked for while the first is still under way.
+  const first = renameFolder(world.deps, 'book/contents', 'chapters')
+  await new Promise((resolve) => setImmediate(resolve))
+  const second = renameFolder(world.deps, 'book/chapters', 'final')
+  const results = await Promise.all([first, second])
+  expect(await world.read('book/_book_INDEX.md')).toBe('# book\n\n- [[./final/a]]\n')
+  expect(results.map((item) => item.path)).toEqual(['book/chapters', 'book/final'])
+})
 
 // ---- 3. "Write it out" never writes through a link on the way ----
 

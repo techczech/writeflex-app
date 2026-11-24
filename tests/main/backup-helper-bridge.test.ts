@@ -500,6 +500,12 @@ describe('the app embeds only the reviewed client', () => {
     ['src/main/backup-helper/earlier-locations.ts', new Set(['ordinaryScopeTest'])],
     ['src/backup-helper/inserted-scope.ts', new Set(['ordinaryScopeTest'])],
   ])
+  // ADR-0055: WriteFlex performs Git vault sync itself, and every app commit must pass the package's exported fail-closed
+  // secret scanner. The sync engine may take that one value, from the package root (the only entry that exports it).
+  const SYNC_SCANNER_USERS = new Map([
+    ['src/main/git-vault-sync.ts', { from: '@app-patterns/vault-sync', values: new Set(['createGitleaksScanner']) }],
+  ])
+  const HELPER_ONLY_NAMES = ['startHelper', 'loadHelperConfig', 'createProcessRegistry', 'createBackupEngine', 'createGitleaksScanner']
   test('only main backup-helper modules import the helper package, and only its clients', async () => {
     const { Glob } = await import('bun')
     const importers: string[] = []
@@ -524,10 +530,17 @@ describe('the app embeds only the reviewed client', () => {
           for (const name of values) expect(hostOnly.has(name)).toBe(true)
           continue
         }
+        const scannerOnly = SYNC_SCANNER_USERS.get(file)
+        if (scannerOnly) {
+          expect(from).toBe(scannerOnly.from)
+          for (const name of values) expect(scannerOnly.values.has(name)).toBe(true)
+          continue
+        }
         expect(from).toBe('@app-patterns/vault-sync/helper')
         for (const name of values) expect(ALLOWED_VALUES.has(name)).toBe(true)
       }
-      expect(source).not.toMatch(/startHelper|loadHelperConfig|createProcessRegistry|createBackupEngine|createGitleaksScanner/)
+      const forbidden = HELPER_ONLY_NAMES.filter((name) => !SYNC_SCANNER_USERS.get(file)?.values.has(name))
+      expect(source).not.toMatch(new RegExp(forbidden.join('|')))
       // Nothing outside the helper entry imports the helper entry's modules.
       // The read-only history validator is the one helper-side module main may reuse (earlier-location confirmation); the entry modules stay out.
       if (!HELPER_ENTRY.has(file)) expect(source).not.toMatch(MAIN_HOST_USERS.has(file) ? /backup-helper\/(projections|writeflex-helper)['"]/ : /backup-helper\/(projections|writeflex-helper|history-projection)['"]/)
@@ -536,6 +549,7 @@ describe('the app embeds only the reviewed client', () => {
       'src/backup-helper/github-credentials.ts', 'src/backup-helper/inserted-scope.ts', 'src/backup-helper/projections.ts', 'src/backup-helper/writeflex-helper.ts',
       'src/main/backup-helper/connection.ts', 'src/main/backup-helper/earlier-locations.ts', 'src/main/backup-helper/outbox-store.ts', 'src/main/backup-helper/receipt-coverage.ts',
       'src/main/backup-helper/receipt-identity.ts', 'src/main/backup-helper/receipt-service.ts', 'src/main/backup-helper/receipt-stream.ts',
+      'src/main/git-vault-sync-types.ts', 'src/main/git-vault-sync.ts',
     ])
   })
 })

@@ -12,15 +12,22 @@ test('every statically named frontmatter key read in src is registered', () => {
   const checker = program.getTypeChecker()
   const files = program.getSourceFiles().filter(file => file.fileName.startsWith(resolve('src') + '/') && !file.isDeclarationFile)
   const aliases = new Set<ts.Symbol>()
+  const frontmatterTypes = new Map<ts.Type, boolean>()
   const frontmatter = (node: ts.Node): boolean => {
     const type = checker.getTypeAtLocation(node)
-    return (type.isUnion() ? type.types : [type]).some(t => t.getSymbol()?.name === 'Frontmatter' || (!!t.getProperty('extra') && (!!t.getProperty('author') || !!t.getProperty('title'))))
+    const known = frontmatterTypes.get(type)
+    if (known !== undefined) return known
+    const matches = (type.isUnion() ? type.types : [type]).some(t =>
+      t.getSymbol()?.name === 'Frontmatter' || (!!t.getProperty('extra') && (!!t.getProperty('author') || !!t.getProperty('title'))))
+    frontmatterTypes.set(type, matches)
+    return matches
   }
   const extraMap = (node: ts.Node): boolean => {
     if (ts.isParenthesizedExpression(node)) return extraMap(node.expression)
     if (ts.isBinaryExpression(node) && [ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.BarBarToken].includes(node.operatorToken.kind)) return extraMap(node.left)
     if (ts.isPropertyAccessExpression(node) && node.name.text === 'extra' && frontmatter(node.expression)) return true
-    return ts.isIdentifier(node) && !!checker.getSymbolAtLocation(node) && aliases.has(checker.getSymbolAtLocation(node)!)
+    const symbol = ts.isIdentifier(node) ? checker.getSymbolAtLocation(node) : undefined
+    return symbol !== undefined && aliases.has(symbol)
   }
   const walk = (node: ts.Node, visit: (node: ts.Node) => void): void => { visit(node); ts.forEachChild(node, child => walk(child, visit)) }
   for (const file of files) walk(file, node => {

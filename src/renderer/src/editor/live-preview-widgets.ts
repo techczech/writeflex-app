@@ -111,6 +111,15 @@ export class ImageWidget extends LivePreviewWidget {
   eq(other: WidgetType): boolean { return other instanceof ImageWidget && other.source === this.source && other.url === this.url && other.fallbackUrl === this.fallbackUrl && other.selected === this.selected }
   toDOM(): HTMLElement {
     const shell = this.shell('image')
+    if (/^http:\/\//i.test(this.url)) {
+      const placeholder = document.createElement('span')
+      placeholder.className = 'lp-image-blocked'
+      placeholder.textContent = this.alt
+        ? `${this.alt} · Image blocked. Use an HTTPS URL or a local file.`
+        : 'Image blocked. Use an HTTPS URL or a local file.'
+      shell.append(placeholder)
+      return shell
+    }
     const image = document.createElement('img')
     image.src = this.url
     image.alt = this.alt

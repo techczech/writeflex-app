@@ -1,19 +1,23 @@
 import { HISTORY_APPROVAL_BASENAME } from '../backup-helper/history-approvals'
-import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, protocol, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, powerMonitor, protocol, shell } from 'electron'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { existsSync, readFileSync, realpathSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createOutsideChangeFollower } from './sharing-outside-changes'
 import { applyFollowSignal, takeAtStart, watchFollowSignals } from './sharing-follow-signals'
+import type { GitSyncLifecycle } from './git-sync-app'
 import { onDocumentsChanged, onDocumentsChangedOutside, onSharingIdentityChanged, onDocumentsMoved, onDocumentsTrashed, onWindowWorkspaceBound, onWorkspaceOpened, reconcileSyncedCollectionsAfterWake, registerIpc } from './ipc'
 import { installUpdateNotices } from './update-notices'
 import { SettingsStore } from './settings'
 import { WindowManager } from './windows'
+import { THEME_SETTING } from '../shared/appearance'
+import { windowBackgrounds } from './window-appearance'
 import { buildAppMenu, noteFocusedWindow, noteSettingsMenuFocus, updateCollectionMenu } from './menu'
 import { agentDisposalsPending, allStates, isQuitting, onQuitCancelled, setQuitting, stateForSender, waitForAgentDisposals, type WindowState } from './state'
 import { duringRestartHold, restartHeld } from './restart-holds'
 import { UPDATE_TEST_BUILD, updateTestHeld } from './update-test-build'
+import { startUpdateTestControl } from './update-test-control'
 import { restartBlockers } from '../shared/update-install'
 import { createBackupRestartActivity, type BackupRestartActivity } from './backup-restart-activity'
 import { createRestartClose } from './restart-windows'
@@ -37,7 +41,8 @@ import { registerCliInstallIpc } from './cli/install-ipc'
 import { createBackupHelperService } from './backup-helper/service'
 import { registerBackupEnrolmentIpc, registerBackupHelperIpc, registerBackupReceiptIpc } from './backup-helper/ipc'
 import { createActiveBackupServices } from './backup-helper/active-services'
-import { backupHelperEntry, createBackupEnrolment } from './backup-helper/enrolment'
+import { createBackupEnrolment } from './backup-helper/enrolment'
+import { BACKUP_HELPER_ENTRY, standaloneHelperPath } from '../shared/backup-helper-entry'
 import { BACKUP_GITHUB_CONFIG } from './backup-github-config'
 import { createGitHubAuthStore, githubSecretsFiles } from './backup-helper/github-auth-store'
 import { createGitHubAuth } from './backup-helper/github-auth'
@@ -53,6 +58,8 @@ import { bundleIdentifierFor } from './cli/shim'
 import { agentIdsArg, confirmedAgentAction, type ConfirmDialog, agentSkillStateStore, createWriteFlexAgentSkills, decideOnboarding, type AgentSkillHostParams } from './agent-skill-host'
 import { exitPackagedSmoke, packagedSmokeIpcProbe, packagedSmokeReceipt, packagedSmokeRequested } from './packaged-smoke'
 import { applyMainFrameOnly } from './ipc-main-frame-only'
+import { trustedRenderer } from './renderer-boundary'
+import { registerWidgetProtocol } from './widget-protocol'
 import { removeOpenedWidgetCopiesSync } from './widget-open'
 import { applyWidgetNetworkSwitches } from './widget-network'
 import { openSecretsStore } from './secrets-store-electron'
@@ -67,9 +74,11 @@ import { renderFolioLink } from './sharing-folio'
 import { lookupHost, pinnedGet, safeRemotePictureFetch } from './sharing-remote-pictures'
 import { registerSharingPieceIpc } from './sharing-piece-ipc'
 
+declare const __WF_UPDATE_TEST__: boolean | undefined
+
 // Before any module registers an IPC listener: only a window's top frame is ever answered, so a frame
 // inside it (a widget, ticket 02) can reach no handler even if a later change gave subframes IPC.
-applyMainFrameOnly(ipcMain, { log: (line) => { console.warn(line); void recordMainProcessDiagnostic('ipc.refused', { line }) } })
+applyMainFrameOnly(ipcMain, { trusted: trustedRenderer, log: (line) => { console.warn(line); void recordMainProcessDiagnostic('ipc.refused', { line }) } })
 // Before `ready`: no DNS prefetch and no hyperlink auditing in any renderer (widget-network.ts).
 applyWidgetNetworkSwitches(app.commandLine)
 
@@ -85,6 +94,7 @@ if (app.isPackaged && packagedSmoke && app.isReady()) {
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'wf-reader', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+  { scheme: 'wf-widget', privileges: { standard: true, secure: true } },
   { scheme: 'wf-asset', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ])
 // Smoke mode must not re-register the protocol handler with the system.
@@ -124,6 +134,9 @@ if (!app.requestSingleInstanceLock()) {
   let settings: SettingsStore | null = null
   let closeSettings = async (): Promise<void> => {}
   let readingRoom: { close(): void } | null = null
+  // Git sync's checks start once IPC is registered; quit stops them and makes the one bounded send attempt.
+  let gitSync: GitSyncLifecycle | null = null
+  let ipcDisposal: Promise<void> | undefined
   // macOS delivers open-file before `ready`; buffer those paths until the manager exists.
   const bufferedFiles: string[] = []
   // macOS can likewise deliver a custom-scheme URL before `ready`; keep the same cold-start shape.
@@ -154,6 +167,10 @@ if (!app.requestSingleInstanceLock()) {
     configureMainProcessDiagnostics(join(app.getPath('userData'), 'main-process.log'))
     recordMainProcessDiagnostic('app.ready')
     await registerAssetProtocol()
+    registerWidgetProtocol(protocol, ipcMain)
+    ipcMain.on('clipboard:read-text', event => {
+      event.returnValue = trustedRenderer(event, 'editor') ? clipboard.readText() : ''
+    })
     readingRoom = await registerReadingRoom(undefined, {
       // The plugin watcher sent (or tried to send) what was waiting: every window's indicator updates.
       onOutboxChanged: (notice) => {
@@ -470,7 +487,9 @@ if (!app.requestSingleInstanceLock()) {
       settingsWebContents: () => settingsApp?.settingsWebContents() ?? null,
       onAuthChanged: () => settingsApp?.slotsChanged(),
     })
-    app.once('will-quit', ipc.dispose)
+    app.once('will-quit', () => { ipcDisposal = ipc.dispose() })
+    gitSync = ipc.gitSync
+    gitSync.start()
     sharedSettings.onPreferencesChanged((keys) => { for (const key of keys) readySettings.notifySharedChange(key); ipc.preferencesChanged(keys) })
     const windowManager = manager
     // The main window a menu command goes to: the focused one, else the last one focused, else a new one.
@@ -489,6 +508,22 @@ if (!app.requestSingleInstanceLock()) {
       slots: new AuthKeySlots(ipc.auth, () => settingsApp?.slotsChanged()),
       mainWindow,
       log: (line) => { void recordMainProcessDiagnostic('settings', { line }) },
+    })
+    // Keep the native frame's pre-paint colour in sync through resizes, reloads and OS changes.
+    const refreshWindowBackgrounds = (): void => {
+      const { editor, settings } = windowBackgrounds(readySettings.get(THEME_SETTING))
+      for (const { window } of allStates()) {
+        if (!window.isDestroyed()) window.setBackgroundColor(editor)
+      }
+      settingsApp?.settingsWindow()?.setBackgroundColor(settings)
+    }
+    nativeTheme.on('updated', refreshWindowBackgrounds)
+    const stopAppearance = readySettings.onChange(key => {
+      if (key === THEME_SETTING) refreshWindowBackgrounds()
+    })
+    app.once('will-quit', () => {
+      nativeTheme.removeListener('updated', refreshWindowBackgrounds)
+      stopAppearance()
     })
     manager.openSettings = (section) => {
       const source = allStates().find(state => state.window === BrowserWindow.getFocusedWindow())
@@ -537,9 +572,10 @@ if (!app.requestSingleInstanceLock()) {
     // A Sync now holds an update's restart until its cycle answers (ADR-0054).
     registerBackupHelperIpc(ipcMain, { ...backupHelper, syncNow: (senderId) => duringRestartHold('backup', () => backupHelper.syncNow(senderId)) })
     const backupReceipts = backupServices.receipts
-    // The helper runs as a child of this app only (supervisor.ts): this app's binary in Node mode on the
-    // helper's packaged bin.js, never inside this process and never after quit.
-    const helperEntry = backupHelperEntry(app.isPackaged, process.resourcesPath, app.getAppPath())
+    // The installed helper is a plain process with the backup program embedded in its executable.
+    const backupHelperLaunch = app.isPackaged
+      ? { command: standaloneHelperPath(process.resourcesPath) }
+      : { command: process.execPath, entry: join(app.getAppPath(), BACKUP_HELPER_ENTRY) }
     const githubBindings = new Map<number, number>()
     const trustedGitHubBinding = (senderId: number): string | null => {
       try {
@@ -569,7 +605,7 @@ if (!app.requestSingleInstanceLock()) {
         }
       },
     })
-    const githubSupervisor = createHelperSupervisor({ command: process.execPath, entry: helperEntry, historyApprovalFile: join(realpathSync(app.getPath('userData')), 'backup-helper', HISTORY_APPROVAL_BASENAME), credentials: args => githubAuth.credentials(args), exposure: githubAuth.exposure })
+    const githubSupervisor = createHelperSupervisor({ ...backupHelperLaunch, historyApprovalFile: join(realpathSync(app.getPath('userData')), 'backup-helper', HISTORY_APPROVAL_BASENAME), credentials: args => githubAuth.credentials(args), exposure: githubAuth.exposure })
     // An update's restart reads the helper's own cycles (ADR-0054): any helper of this app that runs, or may start
     // again on its own, is asked; its answer counts for 15 s; an answer it cannot give holds the restart.
     backupActivity = createBackupRestartActivity({
@@ -605,7 +641,7 @@ if (!app.requestSingleInstanceLock()) {
     backupEnrolment = createBackupEnrolment({
       dir: join(app.getPath('userData'), 'backup-helper'),
       windowRoot,
-      helperEntry: () => helperEntry,
+      helperEntry: () => backupHelperLaunch.entry ?? backupHelperLaunch.command,
       supervisor: githubSupervisor,
       githubBinding: vault => githubAuth.githubBinding(vault),
       githubUncertainty: () => githubStore.blocked() || githubStore.gate.debts().length > 0 || githubSupervisor.ownedChildren().length > 0,
@@ -692,6 +728,7 @@ if (!app.requestSingleInstanceLock()) {
       }
     }
 
+    if (typeof __WF_UPDATE_TEST__ === 'boolean' && __WF_UPDATE_TEST__) startUpdateTestControl()
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) manager!.createWindow() })
   })
 
@@ -702,7 +739,10 @@ if (!app.requestSingleInstanceLock()) {
     setQuitting(true)
     recordMainProcessDiagnostic('app.before-quit', { windows: BrowserWindow.getAllWindows().length })
   })
-  app.on('window-all-closed', () => { if (isQuitting() || process.platform !== 'darwin') app.quit() })
+  app.on('window-all-closed', () => {
+    recordMainProcessDiagnostic('app.window-all-closed', { quitting: isQuitting() })
+    if (isQuitting() || process.platform !== 'darwin') app.quit()
+  })
   app.on('quit', () => {
     readingRoom?.close()
     readingRoom = null
@@ -713,10 +753,11 @@ if (!app.requestSingleInstanceLock()) {
     if (agentShutdownFlushed) return
     event.preventDefault()
     const startedAt = Date.now()
-    void waitForCleanupWithTimeout(waitForAgentDisposals(), 1500, () => {
+    const agentCleanup = waitForCleanupWithTimeout(waitForAgentDisposals(), 1500, () => {
       recordMainProcessDiagnostic('app.will-quit.cleanup-timeout', { timeoutMs: 1500 })
       console.warn('[WriteFlex] Agent cleanup exceeded 1500 ms; continuing quit. See main-process.log.')
-    }).then(async (outcome) => {
+    })
+    void Promise.all([agentCleanup, gitSync?.stop()]).then(async ([outcome]) => {
       // Await this final line: the serialised logger first persists any queued timeout warning, then this
       // settlement, before the second app.quit() ends the process.
       await recordMainProcessDiagnostic('app.will-quit.cleanup-settled', { outcome, elapsedMs: Date.now() - startedAt })
@@ -726,6 +767,7 @@ if (!app.requestSingleInstanceLock()) {
       await waitForCleanupWithTimeout(manager?.openCollections.closeAll() ?? Promise.resolve(), 1000, () => {
         recordMainProcessDiagnostic('app.will-quit.close-collections-timeout', { timeoutMs: 1000 })
       })
+      await ipcDisposal
       try { await closeSettings() }
       catch { await recordMainProcessDiagnostic('settings.close.failed', { message: 'Settings flush failed during quit' }) }
       finally {

@@ -5,7 +5,7 @@ import { collectionCoverPaths, folioPieces, indexNotePath, readManifest, titleMa
 import { folioFrontMatter, type FolioFrontMatter } from './folio-front-matter'
 import { partTitle } from '../shared/folio-part-title'
 import { isAgentInstructionsName } from '../shared/folio-agent-files'
-import type { Workspace } from './workspace'
+import type { PlanReadWorkspace } from './plan'
 
 /** XML 1.0 disallows these controls and lone surrogates even in escaped Word properties.
  * Unicode mode preserves valid surrogate pairs (including supplementary-plane title text). */
@@ -41,7 +41,7 @@ export function exportDocumentTitle(source: string, folioPartPath?: string): str
  * the older fallbacks (title-matter and cover metadata, then those documents' headings). Title matter and the title
  * page use the same path and containment rules as every other Folio reader. `buffers`: open, unsaved texts by path.
  */
-export async function exportCollectionTitle(workspace: Workspace, dir: string, buffers: ReadonlyMap<string, string> = new Map(), fallback?: string, options: { frontMatter?: FolioFrontMatter; skipUnreadable?: boolean } = {}): Promise<string> {
+export async function exportCollectionTitle(workspace: PlanReadWorkspace, dir: string, buffers: ReadonlyMap<string, string> = new Map(), fallback?: string, options: { frontMatter?: FolioFrontMatter; skipUnreadable?: boolean } = {}): Promise<string> {
   const manifest = await readManifest(workspace, dir)
   const present = new Set((await workspace.listFiles()).map(file => file.path))
   const readNote = async (path: string): Promise<string | null> => {
@@ -89,7 +89,7 @@ export async function exportCollectionTitle(workspace: Workspace, dir: string, b
 
 /** The title page an export of the Folio at `dir` draws as its cover (folio-front-matter.ts, by the export's own
  *  rule: only one the Folio lists); null when there is none. */
-async function exportTitlePage(workspace: Workspace, dir: string): Promise<string | null> {
+async function exportTitlePage(workspace: PlanReadWorkspace, dir: string): Promise<string | null> {
   const listed = (await folioPieces(workspace, dir))?.pieces
   if (!listed) return null
   const { titlePage } = await folioFrontMatter(workspace, dir)

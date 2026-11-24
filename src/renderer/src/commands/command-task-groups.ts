@@ -5,7 +5,7 @@ import { COLLECTION_PAGE_COMMANDS } from '../components/collection-page-commands
 // Settings → Shortcuts all group by it. Pure data, so main can import it without CodeMirror.
 //
 // Design source: docs/design/2026-10-06-onboarding-and-command-discovery/command-map-writeflex.json.
-// tests/main/command-task-groups.test.ts compares this table with that map so they cannot drift.
+// tests/e2e/task-groups.spec.ts checks the task group names across all three screens.
 // Rows the map does not list (palette-only commands added since, and sheet mirror rows) were placed
 // by their neighbours in the map; a mirror row always takes its source command's group.
 export const TASK_GROUPS = [
@@ -340,6 +340,7 @@ export const commandTaskGroups: Readonly<Record<string, readonly [TaskGroup, str
   'idea.insertWikilink': ['Find and manage files', 'Links and wikilinks'],
   'sync.open': ['Find and manage files', 'Sync and backup'],
   'sync.status': ['Find and manage files', 'Sync and backup'],
+  'sync.send': ['Find and manage files', 'Sync and backup'],
   'sync.now': ['Find and manage files', 'Sync and backup'],
   'sync.check': ['Find and manage files', 'Sync and backup'],
   'sync.history': ['Find and manage files', 'Sync and backup'],
@@ -417,6 +418,8 @@ export const commandTaskGroups: Readonly<Record<string, readonly [TaskGroup, str
   'folio.undoLastChange': ['Collect and plan', 'Collections, Board and Folio outline'],
   'folio.linkFiles': ['Collect and plan', 'Collections, Board and Folio outline'],
   'folio.open': ['Collect and plan', 'Collections, Board and Folio outline'],
+  'folio.pick': ['Collect and plan', 'Collections, Board and Folio outline'],
+  'folio.allComments': ['Review and versions', 'Review changes'],
   'folio.previousPiece': ['Collect and plan', 'Collections, Board and Folio outline'],
   'folio.nextPiece': ['Collect and plan', 'Collections, Board and Folio outline'],
   'plan.addPart': ['Collect and plan', 'Collections, Board and Folio outline'],
@@ -537,6 +540,7 @@ export const commandTaskGroups: Readonly<Record<string, readonly [TaskGroup, str
   'sounds.ambient': ['Set up WriteFlex', 'Themes and sounds'],
   'appearance.darkTheme': ['Set up WriteFlex', 'Themes and sounds'],
   'appearance.lightTheme': ['Set up WriteFlex', 'Themes and sounds'],
+  'appearance.systemTheme': ['Set up WriteFlex', 'Themes and sounds'],
   'statusbar.disclosure': ['Set up WriteFlex', 'View and text size'],
   'app.commandPalette': ['Set up WriteFlex', 'Settings and shortcuts'],
   'app.settings': ['Set up WriteFlex', 'Settings and shortcuts'],

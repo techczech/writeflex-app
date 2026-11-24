@@ -1,3 +1,5 @@
+import { DEFAULT_THEME, THEME_SETTING } from './appearance'
+import { EXPERIMENTAL_GIT_SYNC_KEY, SYNC_VAULTS_KEY, migratedSyncPreferences } from './git-sync-settings'
 // WriteFlex's settings schema (the shared Settings window, export and import, `writeflex settings`) and
 // the bridge from the file WriteFlex used before shared settings.
 //
@@ -58,12 +60,13 @@ export const schema = defineSchema({
     { id: 'scratchpad', label: 'Scratchpad', icon: 'clipboard' },
   ],
   settings: [
+    { key: SYNC_VAULTS_KEY, label: 'Git vault sync preferences', section: 'history', group: 'Git sync', type: 'text', default: '{}', importable: false, help: 'Per-vault preferences on this Mac. Use the Git sync page or Change in the vault’s Sync tab.' },
     // ---- General / Appearance (All apps) ----
     on('integration.browserLinks', 'Open writeflex:// links from the browser', 'general', 'Links', 'Links of the form writeflex://open?… in a browser or another app open the document here.'),
     on('workspace.watchExternalChanges', 'Watch for external changes', 'general', 'Collections', 'Reflect edits made by other agents and apps in an open Collection.'),
     on('statusBar.showPlace', 'Show where you are in the status bar', 'general', 'Status bar'),
     on('chrome.actionBarVisible', 'Show the action bar', 'general', 'Action bar'),
-    choice('appearance.theme', 'Theme', 'appearance', 'Theme', [['light', 'Light'], ['dark', 'Dark']], 'light'),
+    choice(THEME_SETTING, 'Theme', 'appearance', 'Theme', [['light', 'Light'], ['dark', 'Dark'], ['system', 'Match system']], DEFAULT_THEME),
 
     on('updates.checkForNewVersions', 'Check for new versions', 'general', 'Updates'),
     on('updates.alphaVersions', 'Include alpha versions', 'general', 'Updates', undefined, false),
@@ -126,6 +129,7 @@ export const schema = defineSchema({
     choice('snapshots.retention', 'Keep history for', 'history', 'History', [['30', '30 days'], ['90', '90 days'], ['forever', 'Forever']], 'forever'),
 
     // ---- Advanced ----
+    on(EXPERIMENTAL_GIT_SYNC_KEY, 'Vault sync with Git (experimental)', 'advanced', 'Experimental', 'Lets a vault send its changes to its Git repository and bring in changes from your other Macs. Not yet proven between two Macs. While off, WriteFlex sends and receives nothing. Takes effect the next time WriteFlex starts.', false),
     { key: APP_KEYS_SETTING, label: 'Keys kept by WriteFlex itself', section: 'advanced', group: 'Keyboard', type: 'text', default: '', importable: false, validate: appKeysError, help: 'Shortcuts the Shortcuts page cannot hold: keys inside the Plan and lists, and keys from an older WriteFlex the shared shortcuts refuse. Written as {"command": "chord"}.' },
 
     // ---- Accounts and keys (slots; the values are never in this file) ----
@@ -184,6 +188,8 @@ export function legacyPreferenceKeys(): string[] {
 export function preferencesFromLegacy(file: unknown): Rec {
   const values = isRec(file) && isRec(file['values']) ? file['values'] : {}
   const out: Rec = {}
+  const sync = migratedSyncPreferences(values)
+  if (sync) out[SYNC_VAULTS_KEY] = sync
   for (const key of legacyPreferenceKeys()) {
     if (!Object.hasOwn(values, key)) continue
     const v = values[key]

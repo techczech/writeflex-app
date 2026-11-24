@@ -2,7 +2,7 @@
 // show its own dialog for it). Reads app.asar only; launches nothing.
 import { transformSync } from 'esbuild'
 import { builtinModules, createRequire } from 'node:module'
-import { join, resolve } from 'node:path'
+import { join, posix, resolve } from 'node:path'
 import { findSpecifiers, stripComments } from '../check-packaged-imports'
 
 interface AsarModule {
@@ -18,11 +18,11 @@ function loadAsar(): AsarModule {
 
 const ELECTRON_ALLOWED_NAMES = new Set(['app', 'crashReporter', 'dialog'])
 const STATIC_IMPORT = /\bimport\s*(?:([\w$]+)\s*,?\s*)?(?:\*\s*as\s+([\w$]+)|\{([^}]*)\})?\s*from\s*["']([^"']+)["']/gu
-const ALLOWED_DYNAMIC_IMPORT = /import\(\s*new URL\(\s*["']\.\/index\.js["']\s*,\s*import\.meta\.url\s*\)\.href\s*\)/gu
+const ALLOWED_DYNAMIC_IMPORT = /import\(\s*new URL\(\s*["']\.\/(?:index|writeflex-cli|publication-epub-worker)\.js["']\s*,\s*import\.meta\.url\s*\)\.href\s*\)/gu
 
 /**
  * The bootstrap may import only named `app`/`crashReporter`/`dialog` from electron, node: built-ins
- * (each named import must exist on the ESM namespace) and dynamically `./index.js`. Anything else
+ * (each named import must exist on the ESM namespace) and the fixed app, CLI and EPUB renderer entries. Anything else
  * (a chunk, a bare side-effect import) could fail to link before our handlers exist.
  * Returns the violations (empty when fine).
  */
@@ -58,7 +58,7 @@ export async function bootstrapImportViolations(source: string): Promise<string[
     if (!handled.has(specifier)) violations.push(`bootstrap imports "${specifier}" (unrecognised form)`)
   }
   if (/\brequire\s*\(/u.test(code)) violations.push('bootstrap calls require()')
-  if (/\bimport\s*\(/u.test(code.replace(ALLOWED_DYNAMIC_IMPORT, ''))) violations.push('bootstrap has a dynamic import other than ./index.js')
+  if (/\bimport\s*\(/u.test(code.replace(ALLOWED_DYNAMIC_IMPORT, ''))) violations.push('bootstrap has a dynamic import outside its fixed entry points')
   return violations
 }
 
@@ -78,6 +78,17 @@ export async function checkPackagedEntry(appPath: string, asar: AsarModule = loa
     if (violations.length > 0) return `packaged entry has unexpected imports: ${violations.join('; ')}`
     // Every file:-linked dependency is shipped as a copy under node_modules; it must be in the asar.
     const listed = new Set(asar.listPackage(archive).map((path) => path.replace(/^[\\/]/u, '').replaceAll('\\', '/')))
+    if (source.includes('./publication-epub-worker.js')) {
+      const build = posix.dirname(posix.dirname(entry))
+      const renderer = posix.join(build, 'renderer')
+      const workerPage = posix.join(renderer, 'publication-epub-worker.html')
+      const required = [posix.join(build, 'main/publication-epub-worker.js'), posix.join(build, 'preload/publication-epub-worker.js'), workerPage]
+      const missing = required.filter(path => !listed.has(path))
+      if (missing.length) return 'EPUB worker resources missing from app.asar: ' + missing.join(', ')
+      const markup = asar.extractFile(archive, workerPage).toString('utf8')
+      const script = /<script[^>]+src="(?:\.\/)?(assets\/[^"]+\.js)"/.exec(markup)?.[1]
+      if (!script || !listed.has(posix.join(renderer, script))) return 'EPUB worker script missing from app.asar'
+    }
     const missing = Object.entries(manifest.dependencies ?? {})
       .filter(([, spec]) => spec.startsWith('file:'))
       .map(([name]) => name)

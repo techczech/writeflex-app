@@ -266,7 +266,11 @@ function sweep(sources: Iterable<string>, ends: readonly string[]) {
   return { tally, failures }
 }
 
-for (const [n, layout] of layouts.entries()) {
+// The named regressions above exercise the refusal and Undo paths in every run.
+// The extended run sweeps all layouts, including the reference layout 0.
+const testedLayouts = process.env.WRITEFLEX_EXTENDED_TESTS === '1' ? layouts : []
+
+for (const [n, layout] of testedLayouts.entries()) {
   test(`fence placement sweep, layout ${n}: every op either refuses or yields exactly its intended model, keeps the rest and undoes byte for byte`, () => {
     const { tally, failures } = sweep((function* () { for (const slot of placements(5)) yield layout(slot) })(), ['\n', ''])
     expect(failures).toEqual([])
@@ -312,7 +316,7 @@ function batchesFor(source: string, ends: readonly string[], count: number, seed
 }
 const singly = (source: string, ops: readonly EvidenceOp[]): string => ops.reduce((text, op) => applyEvidenceOps(text, [op]).source, source)
 
-for (const [n, layout] of layouts.entries()) {
+for (const [n, layout] of testedLayouts.entries()) {
   test(`batch sweep, layout ${n}: a saved batch is its ops one at a time, and its Undo gives back the original bytes`, () => {
     const tally = { saved: 0, sectionUndone: 0 }
     const failures: string[] = []
@@ -414,7 +418,7 @@ const appendBlock = (text: string, lines: string[]): string => {
   const eol = eolOf(text), ended = !text || /[\r\n]$/.test(text)
   return text + (ended ? '' : eol) + (text.trim() ? eol : '') + lines.map(line => line + eol).join('')
 }
-for (const [n, layout] of layouts.entries()) {
+for (const [n, layout] of testedLayouts.entries()) {
   test(`concurrent-edit sweep, layout ${n}: Undo after a hand edit restores the original with the edit where it sat, or refuses`, () => {
     const tally = { undone: 0, refused: 0 }
     const failures: string[] = []

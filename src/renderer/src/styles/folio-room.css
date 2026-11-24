@@ -528,29 +528,32 @@ textarea.fr-syn{resize:vertical;box-sizing:border-box}.fr-edit:focus-visible,.fr
 
 .fvi-notstaged{margin:6px 0 4px 26px;padding:0;list-style:disc;font-size:12.5px;color:var(--ink-3)}.fvi-notstaged li{margin:2px 0}
 /* Manage Folio: ONE bar (R1/R2): back, name, views, Details, Split, and the outline's tools; no key legend (it is in the cheat sheet, ⌘/). */
-.fr-bar{display:flex;align-items:center;gap:6px;padding:7px 12px;flex-wrap:nowrap;min-width:0}
+.fr-bar{--folio-toolbar-control-height:27px;display:flex;align-items:center;gap:6px;padding:7px 12px;flex-wrap:nowrap;min-width:0}
 .fr-bar .fr-open{flex:0 0 auto;width:max-content;margin:0}
 .fr-bar .fr-open .folio-open{padding:0;background:none;width:max-content;flex:none}
 .fr-bar .fr-open .folio-open-split{width:max-content}
 .fr-bar .fr-open .back-control-label{overflow:visible;text-overflow:clip;min-width:auto}
+.fr-bar :is(.folio-open-main,.folio-open-caret){height:var(--folio-toolbar-control-height)}
 .fr-bar .fr-open .folio-open-main{width:max-content;max-width:none;overflow:hidden;background:var(--bg-elev);color:var(--ink-2);border:1px solid var(--line);border-right:0;font-weight:500}
 .fr-bar .fr-open .folio-open-main:hover{background:var(--hover)}
 .fr-bar .fr-open .folio-open-main kbd{display:none}
 .fr-bar .fr-open .folio-open-caret{background:var(--bg-elev);color:var(--ink-2);border:1px solid var(--line)}
+.fr-bar .fr-open :is(.folio-open-main,.folio-open-caret) .icon{color:currentColor}
 .fr-bar .fr-open .folio-open-split{box-shadow:none}
 .fr-bar .fr-crumb{flex:1 1 40px;min-width:0;overflow:hidden}
 .fr-bar .fr-crumb b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .fr-bar .fr-viewrow{display:contents}
 .fr-bar .fr-views{flex:0 1 auto;max-width:none;overflow:visible;gap:0}
-.fr-bar .fr-views button{padding:0 7px;height:27px}
+.fr-bar .fr-views button{padding:0 7px;height:var(--folio-toolbar-control-height)}
 .fr-bar .fr-views button:not([aria-selected="true"]) .fr-vl{display:none}
 .fr-bar .fr-views button .fr-vl{margin-left:5px}
-.fr-bar .fr-tb{height:27px;padding:0 7px;flex:none}
+.fr-bar .fr-tb{height:var(--folio-toolbar-control-height);padding:0 7px;flex:none}
 .fr-bar .fr-tb:not(.on) .fr-vl{display:none}
 .fr-bar .fr-viewrow>.g{display:none}
 .fr-bar .fr-tools,.fr-bar .fr-otools-inline{display:inline-flex;align-items:center;gap:4px;flex:none}
 .fr-bar .fr-otools-inline .fr-tb{font-size:0;gap:0;padding:0 7px;border:0;background:none}
 .fr-bar .fr-otools-inline .fr-tb svg{width:14px;height:14px}
-.fr-bar .fr-otools-inline .fr-heading-filter{font-size:11px;padding:3px 6px;width:104px;min-width:0;margin-left:0;max-width:140px}
+.fr-bar .cv-menu-trigger{height:var(--folio-toolbar-control-height);padding:0 8px!important}
+.fr-bar .fr-otools-inline .fr-heading-filter{height:var(--folio-toolbar-control-height);font-size:11px;padding:3px 6px;width:104px;min-width:0;margin-left:0;max-width:140px}
 /* The old key-legend footer kept the room's last row clear of the Scratchpad pill; without it the bottom actions sat under the pill. */
 .fr-mid{padding-bottom:44px;box-sizing:border-box}

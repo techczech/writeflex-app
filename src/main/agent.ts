@@ -1418,7 +1418,12 @@ export class WorkspaceAgent {
       }
     }
     const suggestionId = this.changeToSuggestion.get(changeId)
-    const live = suggestionId !== undefined && (await this.suggestions()).some((s) => s.id === suggestionId)
+    const liveSuggestion = suggestionId !== undefined ? (await this.suggestions()).find((s) => s.id === suggestionId) : undefined
+    // A comment the app's rename carried to the document's new name (changes.ts `followRename`) leaves its live
+    // proposal on the old name: it is settled from its record at the new name, never sent to a file that has gone.
+    const livePath = (liveSuggestion?.input as { path?: unknown } | undefined)?.path
+    const recordPath = liveSuggestion && typeof livePath === 'string' ? (await this.changes?.get(changeId))?.path : undefined
+    const live = liveSuggestion !== undefined && (recordPath === undefined || recordPath === livePath)
     if (suggestionId !== undefined && live) {
       if (action === 'reject') {
         const { settlementWarning: warning } = await this.discardSuggestion(suggestionId)

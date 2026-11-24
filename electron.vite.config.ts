@@ -16,18 +16,20 @@ const BUNDLED = ['@app-patterns/commands', '@app-patterns/settings', '@app-patte
 // file, built as its own bundle after the main preload (as a second input rollup would share chunks with
 // index.ts that the sandbox cannot load).
 function settingsPreload(): Plugin {
+  let outDir: string
   return {
     name: 'writeflex-settings-preload',
+    configResolved(config) { outDir = resolve(config.root, config.build.outDir) },
     apply: 'build',
     async closeBundle() {
-      await viteBuild({
+      for (const name of ['settings']) await viteBuild({
         configFile: false,
         logLevel: 'warn',
         build: {
-          outDir: resolve(__dirname, 'out/preload'),
+          outDir,
           emptyOutDir: false,
           minify: false,
-          lib: { entry: resolve(__dirname, 'src/preload/settings.ts'), formats: ['cjs'], fileName: () => 'settings.js' },
+          lib: { entry: resolve(__dirname, 'src/preload/' + name + '.ts'), formats: ['cjs'], fileName: () => name + '.js' },
           rollupOptions: { external: ['electron'] }
         }
       })
@@ -44,17 +46,43 @@ export default defineConfig(({ command }) => ({
     // The update-test flavour's switch (src/main/update-test-build.ts): false here, so its branches are dead code in
     // every production bundle. Only electron.vite.update-test.config.ts sets it true.
     define: { __WF_UPDATE_TEST__: 'false' },
-    // writeflex-cli.js is the command line the installed `writeflex` shim runs in Node mode
-    // (ELECTRON_RUN_AS_NODE=1), as TodoScout's refresh-cli does. It must import nothing from Electron.
+    // Bootstrap imports the fixed headless command entry before loading the desktop app.
     build: {
       ...(command === 'serve' ? { watch: {} } : {}),
       outDir: 'out/main',
-      rollupOptions: { input: { bootstrap: resolve(__dirname, 'src/main/bootstrap.ts'), index: resolve(__dirname, 'src/main/index.ts'), 'writeflex-cli': resolve(__dirname, 'src/main/writeflex-cli.ts') } }
+      rollupOptions: {
+        input: {
+          bootstrap: resolve(__dirname, 'src/main/bootstrap.ts'),
+          index: resolve(__dirname, 'src/main/index.ts'),
+          'writeflex-cli': resolve(__dirname, 'src/main/writeflex-cli.ts'),
+        }
+      }
     }
   },
-  preload: { plugins: [externalizeDepsPlugin({ exclude: BUNDLED }), settingsPreload()], build: { outDir: 'out/preload' } },
+  preload: {
+    plugins: [settingsPreload()],
+    build: {
+      outDir: 'out/preload',
+      externalizeDeps: false,
+      lib: { entry: resolve(__dirname, 'src/preload/index.ts'), formats: ['cjs'], fileName: () => 'index.cjs' },
+    },
+  },
   renderer: {
-    plugins: [react()],
+    plugins: [react(), {
+      name: 'writeflex-renderer-policy',
+      apply: 'build',
+      transformIndexHtml(_html, context) {
+        if (!context.filename.endsWith('/index.html')) return
+        return [{
+          tag: 'meta',
+          attrs: {
+            'http-equiv': 'Content-Security-Policy',
+            content: "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: wf-asset: https:; font-src 'self' data:; media-src 'self' blob: wf-asset:; connect-src 'self'; frame-src wf-reader: wf-widget:; base-uri 'none'; form-action 'none'",
+          },
+          injectTo: 'head-prepend',
+        }]
+      },
+    }],
     build: { outDir: 'out/renderer', manifest: true, rollupOptions: { input: { index: resolve(__dirname, 'src/renderer/index.html'), 'reader-host': resolve(__dirname, 'src/renderer/reader-host.html'), settings: resolve(__dirname, 'src/renderer/settings.html') } } },
     // Keep a single React and CodeMirror state instance across vendored packages.
     resolve: { dedupe: ['react', 'react-dom', '@codemirror/state'] }

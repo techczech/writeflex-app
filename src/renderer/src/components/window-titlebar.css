@@ -1,0 +1,10 @@
+.window-titlebar {
+  box-sizing: border-box;
+  height: 44px;
+  flex: none;
+  padding-inline-start: var(--window-controls-inset);
+  -webkit-app-region: drag;
+}
+.window-titlebar :is(button, input, select, [role="button"], [role="tab"]) {
+  -webkit-app-region: no-drag;
+}

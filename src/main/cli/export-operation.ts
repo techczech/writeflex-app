@@ -41,7 +41,7 @@ import { defaultReaderSources } from '../folio-version-sources'
 import { isFolioVersionId } from '../../shared/folio-version-records'
 import { sentToProblem, normaliseSentTo } from '../../shared/folio-version-export'
 import { folioFolderOf } from './folio-version-operations'
-import { CliError, type Operation } from './operation'
+import { CliError, type Operation, type ParsedArgs } from './operation'
 import { visiblePath } from './paths'
 import { applied, writeAccess } from './write-support'
 
@@ -77,7 +77,12 @@ async function claimStands(target: string, claim: Claim): Promise<boolean> {
   return !!standing && standing.isFile() && standing.ino === claim.ino && standing.dev === claim.dev && standing.size === 0
 }
 
-const FORMAT_BY_EXTENSION: Record<string, ExportFormat> = { '.html': 'html', '.htm': 'html', '.docx': 'docx' }
+const FORMAT_BY_EXTENSION: Record<string, ExportFormat | 'epub'> = { '.html': 'html', '.htm': 'html', '.docx': 'docx', '.epub': 'epub' }
+
+export function requestedExportFormat(args: ParsedArgs): ExportFormat | 'epub' | undefined {
+  const format = args.format === undefined ? FORMAT_BY_EXTENSION[extname(String(args.to)).toLowerCase()] : String(args.format).toLowerCase()
+  return format === 'html' || format === 'docx' || format === 'epub' ? format : undefined
+}
 
 export const EXPORT_OPERATIONS: Operation[] = [
   {
@@ -95,11 +100,12 @@ export const EXPORT_OPERATIONS: Operation[] = [
       if (args.confirm !== true) {
         throw new CliError('Export refused: it writes a file outside the Collection, so it must be asked for. Ask the person, then run it again with --confirm. Nothing was written.', 'refused', 'confirmation-needed')
       }
+      const typedTarget = resolve(ctx.cwd, String(args.to))
+      const format = requestedExportFormat(args)
+      if (format === 'epub') throw new CliError('EPUB export is not available in this build. Nothing was written.', 'refused')
+      if (format !== 'html' && format !== 'docx') throw new CliError('Give --format html, docx or epub, or a matching target extension.', 'usage')
       // With the app owning the Collection there is no write access, and none is needed to read.
       const ws = ctx.appOwnsCollection ? ctx.workspace : writeAccess(ctx).workspace
-      const typedTarget = resolve(ctx.cwd, String(args.to))
-      const format = args.format === undefined ? FORMAT_BY_EXTENSION[extname(typedTarget).toLowerCase()] : (String(args.format).toLowerCase() as ExportFormat)
-      if (format !== 'html' && format !== 'docx') throw new CliError('Give --format html or --format docx, or a target ending in .html or .docx.', 'usage')
       const versionId = args.version === undefined ? null : String(args.version).trim()
       const markTo = args['mark-sent-to'] === undefined ? null : String(args['mark-sent-to'])
       if (versionId === null && markTo !== null) throw new CliError('--mark-sent-to marks a saved Folio version, so it goes with --version <id>. Nothing was written.', 'usage')

@@ -12,6 +12,7 @@ import './styles/folio-version-cues.css'
 import './styles/file-versions.css'
 import './styles/scratchpad.css'
 import App from './app/App'
+import { holdEarlyChords } from './app/early-chords'
 import { RendererErrorBoundary, RendererErrorSurface, reportRendererError } from './app/RendererErrorBoundary'
 import { installWidgetE2EMount } from './widgets/widget-e2e-mount'
 import { isBenignWindowError } from './benign-window-error'
@@ -41,6 +42,12 @@ const unsavedTextApi: UnsavedTextApi = {
   closeUnsaved: () => window.writeflex.closeUnsaved(),
 }
 installUnsavedText(unsavedTextApi)
+// A chord pressed before the app's keyboard listener exists waits for it (early-chords.ts).
+holdEarlyChords()
+// Test-only: presses that land in that gap for certain (React has not rendered yet).
+if (window.writeflex.e2eEnabled && window.writeflex.e2eEarlyKeys) {
+  for (const init of JSON.parse(window.writeflex.e2eEarlyKeys) as KeyboardEventInit[]) document.body.dispatchEvent(new KeyboardEvent('keydown', { ...init, bubbles: true, cancelable: true }))
+}
 
 window.addEventListener('error', (event) => {
   if (isBenignWindowError(event.message)) { console.warn(event.message); return }

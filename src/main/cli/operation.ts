@@ -1,3 +1,4 @@
+type PublicationRuntime = never
 /**
  * The command line's operation table: one entry per operation, with a name, a task group, a typed
  * argument schema, a behaviour class and a run function. Later tickets add write operations to the
@@ -27,6 +28,7 @@ export type ArgSpec = {
 export type OutputMode = 'text' | 'json'
 
 export type OperationContext = {
+  publicationRuntime?: PublicationRuntime
   workspace: Workspace
   output: OutputMode
   /** Hands a URL to the operating system (`open`); injected so tests never launch anything. */

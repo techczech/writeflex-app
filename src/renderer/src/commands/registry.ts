@@ -474,6 +474,8 @@ const commandDefinitions: CommandDefinition[] = [
   // Open Folio (ticket C): the Folio page's big button. ⌘↵ is the page's own key (a full overlay over the editor, where
   // ⌘↵ toggles a checkbox / accepts a change), so it documents the chord on the sheet without claiming it.
   { id: 'folio.linkFiles', label: "Link this Folio's chapters to their files", keywords: ['folio', 'chapter', 'file', 'identity', 'links'], group: 'Collections', surfaces: ['palette'] },
+  { id: 'folio.pick', label: 'Open a Folio…', keywords: ['folio', 'folios', 'find folio', 'open folio', 'list folios', 'vault'], group: 'Collections', surfaces: ['palette'] },
+  { id: 'folio.allComments', label: 'All comments in this Folio', keywords: ['folio', 'comments', 'suggested edits', 'review', 'whole folio', 'all parts'], group: 'Collections', surfaces: ['palette'] },
   { id: 'folio.open', label: 'Open Folio', keys: '⌘↵', keywords: ['folio', 'outline', 'open at', 'first part'], group: 'Collections', surfaces: ['palette', 'sheet'], sheetColumn: 0, claimsChord: false },
   // ⇧⌘↵ on the Folio's page opens the Open at… menu (FolioOpenButton.tsx); the page owns the chord, so it only documents it here.
   { id: 'folio.openAt', label: 'Open Folio at another part', keys: '⇧⌘↵', keywords: ['folio', 'open at', 'part', 'menu'], group: 'Collections', surfaces: ['sheet', 'menu'], sheetColumn: 0, claimsChord: false },
@@ -585,6 +587,7 @@ const commandDefinitions: CommandDefinition[] = [
   // the existing renderer-owned chords; every key already has a cheat-sheet row.
   { id: 'sync.open', label: 'Open Sync', keywords: ['sync', 'backup', 'vault'], group: 'Files and versions', surfaces: ['palette'] },
   { id: 'sync.status', label: 'Show sync status', keywords: ['sync', 'backup', 'vault'], group: 'Files and versions', surfaces: ['palette'] },
+  { id: 'sync.send', label: 'Send now', keywords: ['sync', 'send'], group: 'Files and versions', surfaces: ['palette', 'menu'] },
   { id: 'sync.now', label: 'Sync now', keywords: ['sync', 'backup', 'vault'], group: 'Files and versions', surfaces: ['palette'] },
   { id: 'sync.check', label: 'Check for remote changes', keywords: ['sync', 'backup', 'vault'], group: 'Files and versions', surfaces: ['palette'] },
   { id: 'sync.history', label: 'Open backup history', keywords: ['sync', 'backup', 'vault'], group: 'Files and versions', surfaces: ['palette'] },

@@ -33,7 +33,8 @@ afterEach(async () => { await fx.dispose() })
 async function intoFile(argv: string[], outFile: string): Promise<{ code: number | null; err: string }> {
   const out = await open(outFile, 'w')
   try {
-    const child = spawn(process.execPath, [ENTRY, ...argv], { stdio: ['ignore', out.fd, 'pipe'], env: { HOME: fx.appData, PATH: '/usr/bin:/bin' } })
+    const run = `import { runCommandLine } from ${JSON.stringify(ENTRY)}; process.exitCode = await runCommandLine(process.argv.slice(1))`
+    const child = spawn(process.execPath, ['-e', run, '--', ...argv], { stdio: ['ignore', out.fd, 'pipe'], env: { HOME: fx.appData, PATH: '/usr/bin:/bin' } })
     let err = ''
     child.stderr!.on('data', (chunk: Buffer) => { err += chunk.toString('utf8') })
     const code = await new Promise<number | null>((done, fail) => { child.once('error', fail); child.once('close', done) })

@@ -24,10 +24,10 @@ import { WRITEFLEX_SELF_AUTHOR_NAME } from '../shared/part-title-proposal'
 import { folioSaveOf } from '../shared/folio-version-records'
 import { assertCollectionWritable } from './collection-write-gate'
 import { runBounded, type BoundedOptions } from './bounded-child'
-import { systemGit } from './developer-tools'
 import { appendStoreLine, StoreAppendRefused } from './checked-store-append'
 import { isReplicaVersionId } from './replica-versions'
 import { FOLIO_SAVE_COMMITS_JOURNAL_REL, folioSaveCommitLine, withoutUnfinishedFolioSaves } from './folio-save-commit'
+import { systemGit } from './developer-tools'
 
 export const WRITEFLEX_AGENT_AUTHOR: AuthorIdentity = { name: 'WriteFlex Agent' }
 

@@ -19,6 +19,7 @@ const probe = String.raw`
   void mock.module('electron', () => ({
     app: { getPath: () => home, getVersion: () => '0.0.0-test', isPackaged: false, quit: () => {} },
     BrowserWindow: class {},
+    nativeTheme: { shouldUseDarkColors: false },
     webFrameMain: { fromId: () => null },
     dialog: { showMessageBox: async () => ({ response: 1 }) },
     shell: { openExternal: async () => {} },

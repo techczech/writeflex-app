@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Telescope, Compass, Ellipsis, GitCommitHorizontal, StickyNote, type LucideIcon } from 'lucide-react'
+import { Telescope, Compass, Ellipsis, GitCommitHorizontal, MessageSquare, StickyNote, type LucideIcon } from 'lucide-react'
 import { fitPaneTabs, type RightPaneTab } from '../app/pane-layout'
 import { AGENT_ICON } from './agent-icon'
 
@@ -7,6 +7,8 @@ type TabSpec = { id: RightPaneTab; label: string; icon: LucideIcon; chord?: stri
 
 /** Last in the row, and only while the person has opened it (the title-bar Guide button). */
 const GUIDE_TAB: TabSpec = { id: 'guide', label: 'Guide', icon: Compass }
+/** "All comments in this Folio": only while it is open; before the Guide. */
+const COMMENTS_TAB: TabSpec = { id: 'folio-comments', label: 'Comments', icon: MessageSquare }
 /** Only while the Scratchpad is docked here; before the Guide. */
 const SCRATCHPAD_TAB: TabSpec = { id: 'scratchpad', label: 'Scratchpad', icon: StickyNote }
 /** The three standing tabs, in the one order they ever appear (house rule R6): Versions, Agent, Research. */
@@ -15,7 +17,7 @@ const BASE_TABS: readonly TabSpec[] = [
   { id: 'agent', label: 'Agent', icon: AGENT_ICON, chord: '⌘J', keys: 'Meta+J' },
   { id: 'research', label: 'Research', icon: Telescope },
 ]
-const SPEC = new Map([GUIDE_TAB, SCRATCHPAD_TAB, ...BASE_TABS].map((tab) => [tab.id, tab]))
+const SPEC = new Map([GUIDE_TAB, SCRATCHPAD_TAB, COMMENTS_TAB, ...BASE_TABS].map((tab) => [tab.id, tab]))
 
 /** What the fit is computed from, all read from the real layout. */
 type RowMetrics = { widths: number[]; available: number; gap: number; more: number }
@@ -33,6 +35,8 @@ type RightPaneTabsProps = {
   guideShown?: boolean
   /** The Scratchpad is docked here: its tab follows the three standing ones. */
   scratchpadDocked?: boolean
+  /** "All comments in this Folio" is open: its tab comes before the Guide. */
+  commentsShown?: boolean
 }
 
 /**
@@ -50,8 +54,8 @@ type RightPaneTabsProps = {
  * move, ↵ activates, Esc closes back to the "…". Chords and ⌃⌘Tab never pass through this row, so
  * they reach hidden tabs as they reach the rest — and the tab they activate enters the row.
  */
-export function RightPaneTabs({ active, onSelect, guideShown = false, scratchpadDocked = false }: RightPaneTabsProps): JSX.Element {
-  const TABS = useMemo<readonly TabSpec[]>(() => [...BASE_TABS, ...(scratchpadDocked ? [SCRATCHPAD_TAB] : []), ...(guideShown ? [GUIDE_TAB] : [])], [guideShown, scratchpadDocked])
+export function RightPaneTabs({ active, onSelect, guideShown = false, scratchpadDocked = false, commentsShown = false }: RightPaneTabsProps): JSX.Element {
+  const TABS = useMemo<readonly TabSpec[]>(() => [...BASE_TABS, ...(scratchpadDocked ? [SCRATCHPAD_TAB] : []), ...(commentsShown ? [COMMENTS_TAB] : []), ...(guideShown ? [GUIDE_TAB] : [])], [guideShown, scratchpadDocked, commentsShown])
   const rowRef = useRef<HTMLDivElement | null>(null)
   const measureRef = useRef<HTMLDivElement | null>(null)
   const moreRef = useRef<HTMLButtonElement | null>(null)

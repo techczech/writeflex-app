@@ -8,16 +8,21 @@ import { e2eHidden, openMain } from './window-presentation'
 // Two steps, because the key slots need the agent's credential store, which registerIpc opens:
 //   openSharedSettings()   migration, then the store; preferences are read from it from here on
 //   installSettingsHost()  the window, the menu bar, the IPC (bridle-settings:), the slots
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
+import { registerRenderer } from './renderer-boundary'
+import { decideNavigation } from './navigation'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { installSettingsWith, type ElectronDeps, type SecretSlots, type SettingsHost } from '@app-patterns/settings-electron/main'
 import { FRAME_MAIN_COMMANDS, MENUS, registry, writeflexIdOf } from '../shared/bridle-commands'
+import { THEME_SETTING } from '../shared/appearance'
+import { windowBackgrounds } from './window-appearance'
+import { TRAFFIC_LIGHT_POSITION } from '../shared/window-chrome'
 import { APP_NAME, schema } from '../shared/settings-schema'
 import type { SettingsStore as LegacySettingsStore } from './settings'
 
 /** Custom pages of the Settings window (renderer/src/settings-pages.tsx); the window may be opened at them. */
-export const CUSTOM_PAGES = ['sign-in', 'model', 'voice', 'counted', 'command-line', 'get-started', 'backup', 'sharing', 'scratchpad', 'updates'] as const
+export const CUSTOM_PAGES = ['git-sync', 'sign-in', 'model', 'voice', 'counted', 'command-line', 'get-started', 'backup', 'sharing', 'scratchpad', 'updates'] as const
 
 /** The channel a menu click on a renderer command travels on (never `settings:` or `bridle-settings:`). */
 export const MENU_COMMAND_CHANNEL = 'menu:command'
@@ -69,11 +74,19 @@ export function installSettingsHost(w: HostWiring): SettingsApp {
     buildFromTemplate: (template) => Menu.buildFromTemplate(template as Item[]),
     setApplicationMenu: () => {},
   }
+  const url = settingsPageUrl()
   const showOnReady = !e2eHidden() // hidden in end-to-end runs: nothing appears on screen
   // Electron's BrowserWindow lookup excludes subclasses. Return an ordinary instance so menus,
   // notifications and updater restart can find Settings through the same native APIs as the editor.
   function SettingsBrowserWindow(options: Electron.BrowserWindowConstructorOptions): BrowserWindow {
-    return new BrowserWindow({ ...options, webPreferences: { ...options.webPreferences, backgroundThrottling: false } })
+    const window = new BrowserWindow({
+      ...options,
+      backgroundColor: windowBackgrounds(w.shared.store.view().settings[THEME_SETTING]).settings,
+      ...(process.platform === 'darwin' ? { trafficLightPosition: TRAFFIC_LIGHT_POSITION } : {}),
+      webPreferences: { ...options.webPreferences, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false },
+    })
+    registerRenderer(window.webContents, url, 'settings')
+    return window
   }
   // A hidden run must never open a native picker or confirmation on the working desktop.
   const settingsDialog = e2eHidden() ? {
@@ -101,7 +114,7 @@ export function installSettingsHost(w: HostWiring): SettingsApp {
     },
     extraSections: [...CUSTOM_PAGES],
     pathKind: () => 'folder',
-    window: { preload: join(__dirname, '../preload/settings.js'), url: settingsPageUrl(), title: 'WriteFlex Settings', showOnReady },
+    window: { preload: join(__dirname, '../preload/settings.js'), url, title: 'WriteFlex Settings', showOnReady },
     appInfo: { icon: 'feather', cli: 'writeflex' },
   })
   followSharedSettingsMenu(w.shared, host)
@@ -114,6 +127,18 @@ export function installSettingsHost(w: HostWiring): SettingsApp {
       noteSettingsWindow(window)
       if (!observed.has(window)) {
         observed.add(window)
+        const openExternal = (target: string) => {
+          if (!e2eHidden() && decideNavigation(url, target) === 'external') void shell.openExternal(target)
+        }
+        window.webContents.on('will-navigate', (event, target) => {
+          if (decideNavigation(url, target) === 'allow') return
+          event.preventDefault()
+          if (event.initiator === window.webContents.mainFrame) openExternal(target)
+        })
+        window.webContents.setWindowOpenHandler(({ url: target }) => {
+          openExternal(target)
+          return { action: 'deny' }
+        })
         window.webContents.on('before-input-event', () => window.webContents.setIgnoreMenuShortcuts(false))
       }
     },

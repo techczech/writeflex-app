@@ -11,7 +11,7 @@ export type LeftPaneTab = 'files' | 'outline' | 'search' | 'sync'
 export function normaliseLeftPaneTab(value: unknown): LeftPaneTab {
   return value === 'outline' || value === 'search' || value === 'files' || value === 'sync' ? value : 'files'
 }
-export type RightPaneTab = 'guide' | 'agent' | 'scratchpad' | 'versions' | 'research'
+export type RightPaneTab = 'guide' | 'agent' | 'scratchpad' | 'versions' | 'research' | 'folio-comments'
 
 /**
  * The tabs that are always there, in the one order they ever appear (house rule R6, owner decision D1,
@@ -26,6 +26,16 @@ export const rightPaneTabsFor = (guideOpen: boolean, scratchpadDocked = false): 
   ...(scratchpadDocked ? (['scratchpad'] as const) : []),
   ...(guideOpen ? (['guide'] as const) : []),
 ]
+
+/**
+ * The tabs with "All comments in this Folio" (rough edges, 24 Nov 2026) while it is open: after the standing tabs,
+ * the Scratchpad and Sync, before the Guide. Like the Guide it is there only while the person has opened it.
+ */
+export function withFolioComments(tabs: readonly RightPaneTab[], open: boolean): readonly RightPaneTab[] {
+  if (!open) return tabs
+  const guide = tabs.indexOf('guide')
+  return guide < 0 ? [...tabs, 'folio-comments'] : [...tabs.slice(0, guide), 'folio-comments', ...tabs.slice(guide)]
+}
 
 /**
  * The tab the right sidebar shows: the one the person chose, else Versions. A chosen Guide that is not open
@@ -310,6 +320,8 @@ export type PaneLayoutDeps = {
   onRightTabOpened: (tab: RightPaneTab) => void
   /** The person has opened the Guide tab (the title-bar Guide button): it is last in the row. */
   guideShown?: boolean
+  /** "All comments in this Folio" is open: its tab is in the row. */
+  folioCommentsShown?: boolean
   /** The Scratchpad is actually docked, rather than floating or collapsed. */
   scratchpadDocked?: boolean
   viewportWidth?: number
@@ -346,7 +358,9 @@ export type PaneLayout = {
 export function usePaneLayout(deps: PaneLayoutDeps): PaneLayout {
   const [leftTab, setLeftTab] = useState<LeftPaneTab>(() => normaliseLeftPaneTab('files'))
   const [chosenRightTab, setChosenRightTab] = useState<RightPaneTab | null>(null)
-  const rightTab = resolveRightPaneTab(chosenRightTab, deps.guideShown === true, deps.scratchpadDocked === true, deps.defaultRightTab)
+  const resolvedRightTab = resolveRightPaneTab(chosenRightTab, deps.guideShown === true, deps.scratchpadDocked === true, deps.defaultRightTab)
+  // A chosen Comments tab that has been closed falls back like a closed Guide.
+  const rightTab = resolvedRightTab === 'folio-comments' && deps.folioCommentsShown !== true ? (deps.defaultRightTab ?? 'versions') : resolvedRightTab
   const [leftPaneCollapsed, setLeftPaneCollapsed] = useState(deps.initialCollapsed?.left === true)
   const [rightPaneCollapsed, setRightPaneCollapsed] = useState(deps.initialCollapsed?.right === true)
   const [leftPaneWidth, setLeftPaneWidth] = useState<number>(() => readPaneWidth('wf:leftPaneWidth', 268))

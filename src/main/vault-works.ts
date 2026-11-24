@@ -73,6 +73,8 @@ export type MarkdownFacts = {
   piece: 'one' | 'many' | null
   /** A machine-stub index note (declaration plus at most a heading): never a main document. */
   stub: boolean
+  /** Frontmatter `title` as declared (trimmed); null or absent when none. A Folio's Index Note carries its title here. */
+  declaredTitle?: string | null
 }
 
 export type VaultReader = {
@@ -537,6 +539,11 @@ export function detectVaultWorks(
     // status"); a manifest part's heading names a section, not the work.
     const main = [`${name}.md`, 'README.md', 'index.md'].map((candidate) => inDir(folder, candidate)).find(mainCandidate) ?? null
     const work = newWork(folder, 'folio', main, name, manifestStatus)
+    // The Folio is listed by its own title, not by its README's heading (Dominik, 6 Nov 2026: two Folios whose
+    // READMEs both said "What this folio is" could not be told apart). The Index Note's declared `title` (what the
+    // Details card writes, export-title.ts's first answer), then the manifest's `title`; else the rule above.
+    const own = facts(inDir(folder, `_${name}_INDEX.md`))?.declaredTitle?.trim() || manifest?.title?.trim() || ''
+    if (own) work.title = own
     if (manifest) {
       const parts = new Set<string>()
       for (const { path } of manifestPartEntries(folder, manifest, fileSet)) {
@@ -650,7 +657,8 @@ export function markdownFactsFrom(content: string, path: string, title: string):
     const lines = body.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
     stub = lines.length === 0 || (lines.length === 1 && /^#{1,6}\s+\S/.test(lines[0]))
   }
-  return { title, status, piece, stub, runningOrder: declaresRunningOrder(content), heading: hasHeading(content, path, title) }
+  const declaredTitle = frontmatter?.title?.trim() || null
+  return { title, status, piece, stub, runningOrder: declaresRunningOrder(content), heading: hasHeading(content, path, title), declaredTitle }
 }
 
 const HEADING_LIKE = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|=+[ \t]*$|-+[ \t]*$)/m

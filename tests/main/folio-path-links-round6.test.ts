@@ -14,7 +14,9 @@ import { MANIFEST_NAME } from '../../src/main/folio'
 import { invalidateFolioOrderFacts } from '../../src/main/folio-order-cache'
 import { invalidateFolioPlaces } from '../../src/main/folio-place'
 import { registerPlanIpcHandlers, type PlanIpcHandler } from '../../src/main/plan-ipc'
+import { renameFolder } from '../../src/main/rename-doors'
 import { Workspace } from '../../src/main/workspace'
+import { renameDoorWorld } from '../helpers/rename-door-world'
 
 let root: string
 let ws: Workspace
@@ -140,58 +142,34 @@ test('"Write it out" refuses ./Node_Modules/x where the disk holds the hidden no
 
 // ---- (c) A folder rename waits on the agent only when it has something to repair ----
 
-const renameProbe = String.raw`
-  import { mock } from 'bun:test'
-  import { electronMainStandIn } from './tests/helpers/electron-main-stand-in.ts'
-  import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-  import { tmpdir } from 'node:os'
-  import { join } from 'node:path'
-  const root = await mkdtemp(join(tmpdir(), 'writeflex-folder-rename-r6-'))
-  const handlers = new Map()
-  const ipcMain = { handle: (channel, handler) => handlers.set(channel, handler), removeHandler: (channel) => handlers.delete(channel) }
-  void mock.module('electron', () => ({
-    ...electronMainStandIn,
-    app: { getPath: () => root, getVersion: () => '0.0.0-test', isPackaged: false },
-    clipboard: { write: () => {} }, dialog: {}, ipcMain,
-    shell: { openExternal: async () => {}, showItemInFolder: () => {}, trashItem: async () => {} },
-  }))
-  const [{ registerIpc }, { registerWindow }, { Workspace }] = await Promise.all([
-    import('./src/main/ipc.ts'), import('./src/main/state.ts'), import('./src/main/workspace.ts'),
-  ])
-  const state = registerWindow({ webContents: { id: 17, send: () => {} }, on: () => {}, isDestroyed: () => false })
-  state.workspace = new Workspace(root)
-  registerIpc(
-    { openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} },
-    { modelDefaults: () => ({}), recents: () => [] },
-    {},
-  )
-  const rename = (path, newName) => handlers.get('folder:rename')({ sender: { id: 17 } }, { path, newName })
-  const timeout = (ms) => new Promise((resolve) => setTimeout(() => resolve('timed out'), ms))
-  await mkdir(join(root, 'empty'), { recursive: true })
-  await mkdir(join(root, 'book', 'contents'), { recursive: true })
-  await writeFile(join(root, 'book', 'contents', 'a.md'), '# Alpha\n')
-  await writeFile(join(root, 'book', '_book_INDEX.md'), '# book\n\n- [[./contents/a]]\n')
+test('a folder rename with nothing to repair never waits on the agent; one with a repair checkpoints on it', async () => {
+  const world = await renameDoorWorld()
+  const timeout = (ms: number) => new Promise((resolve) => setTimeout(() => resolve('timed out'), ms))
+  await mkdir(join(world.root, 'empty'), { recursive: true })
+  await world.write('book/contents/a.md', '# Alpha\n')
+  await world.write('book/_book_INDEX.md', '# book\n\n- [[./contents/a]]\n')
 
   // An agent that never finishes starting: a rename with nothing to repair does not wait for it.
-  state.agentReady = new Promise(() => {})
-  const plain = await Promise.race([rename('empty', 'still-empty'), timeout(5000)])
+  world.setAgent(new Promise(() => {}))
+  const plain = await Promise.race([renameFolder(world.deps, 'empty', 'still-empty'), timeout(5000)])
 
   // An agent that finishes starting a little later: a rename with a repair waits for it and checkpoints the note.
-  const checkpointed = []
-  const agent = { checkpointFile: async (path) => { checkpointed.push(path) } }
-  state.agentReady = new Promise((resolve) => setTimeout(() => resolve(agent), 200))
-  const repaired = await Promise.race([rename('book/contents', 'chapters'), timeout(10000)])
-  console.log(JSON.stringify({ plain, repaired, checkpointed, index: await readFile(join(root, 'book', '_book_INDEX.md'), 'utf8') }))
-  process.exit(0)
-`
+  world.setAgent(new Promise((resolve) => setTimeout(() => resolve(world.recordingAgent), 200)))
+  const repaired = await Promise.race([renameFolder(world.deps, 'book/contents', 'chapters'), timeout(10000)])
+  expect(plain).toEqual({ path: 'still-empty', repair: { writtenPaths: [], unrepairedReferences: [], receipts: [] } })
+  expect(repaired).toEqual({ path: 'book/chapters', repair: { writtenPaths: [INDEX], unrepairedReferences: [], receipts: [expect.objectContaining({ path: INDEX })] } })
+  expect(world.checkpoints).toEqual([INDEX])
+  expect(world.changedOnDisk).toEqual([[INDEX]])
+  expect(await world.read(INDEX)).toBe('# book\n\n- [[./chapters/a]]\n')
 
-test('a folder rename with nothing to repair never waits on the agent; one with a repair checkpoints on it', async () => {
-  const child = Bun.spawn([process.execPath, '-e', renameProbe], { cwd: new URL('../..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe' })
-  const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
-  if (exitCode !== 0) throw new Error(`The folder rename probe failed: ${stderr}`)
-  const result = JSON.parse(stdout.trim().split('\n').at(-1)!)
-  expect(result.plain).toEqual({ path: 'still-empty', repair: { writtenPaths: [], unrepairedReferences: [] } })
-  expect(result.repaired).toEqual({ path: 'book/chapters', repair: { writtenPaths: [INDEX], unrepairedReferences: [] } })
-  expect(result.checkpointed).toEqual([INDEX])
-  expect(result.index).toBe('# book\n\n- [[./chapters/a]]\n')
-}, 60_000)
+  // An agent whose start-up failed: the folder moves and each repair write is refused, the note left as it was.
+  const failed = Promise.reject(new Error('Choose a model to continue.'))
+  failed.catch(() => {})
+  world.setAgent(failed)
+  const refused = await renameFolder(world.deps, 'book/chapters', 'final')
+  expect(refused.path).toBe('book/final')
+  expect(refused.repair.writtenPaths).toEqual([])
+  expect(refused.repair.unrepairedReferences).toEqual([expect.stringContaining('[[./chapters/a]]')])
+  expect(await world.read(INDEX)).toBe('# book\n\n- [[./chapters/a]]\n')
+})
+

@@ -30,7 +30,7 @@ import {
  *  resolver form is the Collection bundle's ONE exception (Task 7): it returns the id of a section
  *  inside the same file, or null for a target that is not in the bundle — which falls back to text,
  *  so a wikilink never becomes a dead anchor. */
-export type WikilinkPolicy = 'text' | { resolve: (target: string) => string | null }
+export type WikilinkPolicy = 'text' | { resolve: (target: string) => string | null; href?: true }
 
 /** What becomes of `![alt](src)`.
  *  - `'keep'` — emit the src as the writer wrote it (what a clipboard paste wants: the receiving
@@ -56,6 +56,13 @@ export type SvgFencePolicy = 'inline' | { resolve: (source: string) => string | 
 export type WidgetHtmlPolicy = 'text' | { withheld: string } | { resolve: (path: string) => string | null }
 
 export type HtmlOptions = {
+  /** EPUB uses the same document model, with a portable paragraph and footnote treatment. */
+  epub?: {
+    text: (escaped: string) => string
+    anchor: (markup: string) => string | null
+    widget: (path: string) => string
+    code: (language: string, source: string) => string | null
+  }
   /** Main supplies verified local HTML. Clipboard keeps embed text by default. */
   widgets?: WidgetHtmlPolicy
   /** Bundle-only: map a local Markdown link to its in-file section, or omit its href. */
@@ -144,6 +151,7 @@ function slug(text: string): string {
 }
 
 type Emitter = {
+  epub?: HtmlOptions['epub']
   options: Required<Pick<HtmlOptions, 'linkTarget' | 'widgets' | 'wikilinks' | 'images' | 'svgFences' | 'standalone' | 'idPrefix' | 'headingOffset' | 'stableHeadingIds' | 'stableBlockIds' | 'tableRegions'>>
   missingImages: string[]
   usedIds: Set<string>
@@ -176,6 +184,13 @@ function inlines(parts: Inline[], emitter: Emitter): string {
   let out = ''
   for (let index = 0; index < parts.length; index++) {
     const part = parts[index]
+    if (part.kind === 'html' && emitter.epub) {
+      const next = parts[index + 1]
+      if (next?.kind === 'html') {
+        const anchor = emitter.epub.anchor(part.text + next.text)
+        if (anchor !== null) { out += anchor; index++; continue }
+      }
+    }
     if (part.kind === 'html' && KBD_OPEN.test(part.text)) {
       let close = -1
       for (let next = index + 1; next < parts.length; next++) {
@@ -197,7 +212,10 @@ function inlines(parts: Inline[], emitter: Emitter): string {
 
 function inline(part: Inline, emitter: Emitter): string {
   switch (part.kind) {
-    case 'text': return escapeHtml(part.text)
+    case 'text': {
+      const text = escapeHtml(part.text)
+      return emitter.epub ? emitter.epub.text(text) : text
+    }
     case 'emphasis': return `<em>${inlines(part.children, emitter)}</em>`
     case 'strong': return `<strong>${inlines(part.children, emitter)}</strong>`
     case 'strike': return `<s>${inlines(part.children, emitter)}</s>`
@@ -222,12 +240,14 @@ function inline(part: Inline, emitter: Emitter): string {
       const label = escapeHtml(part.label)
       if (emitter.options.wikilinks === 'text') return label
       const anchor = emitter.options.wikilinks.resolve(part.target)
-      return anchor ? `<a href="#${escapeAttribute(anchor)}">${label}</a>` : label
+      const href = anchor && (emitter.options.wikilinks.href ? attributeUrl(anchor, 'link') : '#' + escapeAttribute(anchor))
+      return href ? `<a href="${href}">${label}</a>` : label
     }
     case 'footnote': {
       const id = `${emitter.options.idPrefix}fn-${part.index}`
       const back = `${emitter.options.idPrefix}fnref-${part.index}-${part.occurrence}`
-      return `<sup id="${escapeAttribute(back)}"><a href="#${escapeAttribute(id)}" style="${STYLE.backref}">${part.index}</a></sup>`
+      const role = emitter.epub ? ' class="footnote-ref"' : ''
+      return `<sup${role} id="${escapeAttribute(back)}"><a href="#${escapeAttribute(id)}" style="${STYLE.backref}">${part.index}</a></sup>`
     }
   }
 }
@@ -343,9 +363,12 @@ function block(entry: Block, emitter: Emitter, suppressBlockId = false): string[
         const style = item.task !== null && !entry.ordered ? STYLE.taskItem : STYLE.item
         return `<li${id} style="${style}">${opened}${rest.join('')}</li>`
       }).join('')
-      return [`<${tag}${lettering.type}${start} style="${STYLE.list}${lettering.style}">${items}</${tag}>`]
+      const portableType = emitter.epub && entry.lettering ? ' class="' + entry.lettering.numbering + '"' : ''
+      return [`<${tag}${lettering.type}${start}${portableType} style="${STYLE.list}${lettering.style}">${items}</${tag}>`]
     }
     case 'code': {
+      const compiled = emitter.epub?.code(entry.language, entry.text)
+      if (compiled !== undefined && compiled !== null) return [compiled]
       // A ```svg fence is one of the app's object types and the editor DRAWS it, so an export and a
       // copy draw it too — through the app's own sanitiser (shared/sanitise-svg), never a second
       // one. A fence the sanitiser refuses falls back to code, which is what makes a removal a
@@ -373,17 +396,19 @@ function block(entry: Block, emitter: Emitter, suppressBlockId = false): string[
     }
     case 'rule': return [`<hr${nextBlockId(emitter)} style="${STYLE.rule}" />`]
     case 'widget': {
+      if (emitter.epub) return [emitter.epub.widget(entry.path)]
       if (emitter.options.widgets === 'text') return [`<p${nextBlockId(emitter)} style="${STYLE.paragraph}">${escapeHtml(entry.source)}</p>`]
       if ('withheld' in emitter.options.widgets) return [`<p${nextBlockId(emitter)} role="note" style="${STYLE.paragraph}">${escapeHtml(emitter.options.widgets.withheld)}</p>`]
       const page = entry.refusal ? null : emitter.options.widgets.resolve(entry.path)
       return [page === null ? '<p role="note">Interactive widget unavailable: the local HTML file could not be included.</p>' : exportedWidget(page)]
     }
-    case 'html': return [`<p${nextBlockId(emitter)} style="${STYLE.paragraph}"><code style="${STYLE.code}">${escapeHtml(entry.text)}</code></p>`]
+    case 'html': return [emitter.epub?.anchor(entry.text) ?? `<p${nextBlockId(emitter)} style="${STYLE.paragraph}"><code style="${STYLE.code}">${escapeHtml(entry.text)}</code></p>`]
     case 'table': {
       const cell = (content: Inline[], index: number, header: boolean): string => {
         const align = ALIGN[entry.alignments[index] ?? ''] ?? ''
         const tag = header ? 'th' : 'td'
-        return `<${tag} style="${header ? STYLE.headerCell : STYLE.cell}${align}">${inlines(content, emitter)}</${tag}>`
+        const attribute = emitter.epub && align ? ' align="' + (entry.alignments[index] === 'centre' ? 'center' : entry.alignments[index]) + '"' : ''
+        return `<${tag}${attribute} style="${header ? STYLE.headerCell : STYLE.cell}${align}">${inlines(content, emitter)}</${tag}>`
       }
       const head = entry.header.length
         ? `<thead><tr>${entry.header.map((content, index) => cell(content, index, true)).join('')}</tr></thead>`
@@ -414,7 +439,7 @@ function footnoteList(footnotes: Footnote[], emitter: Emitter): string {
       `<a href="#${escapeAttribute(`${emitter.options.idPrefix}fnref-${note.index}-${occurrence + 1}`)}" style="${STYLE.backref}">&#8617;</a>`).join(' ')
     return `<li id="${escapeAttribute(id)}" style="${STYLE.item}">${body} ${backs}${content.slice(1).join('')}</li>`
   }).join('')
-  return `<section style="${STYLE.footnotes}"><ol style="${STYLE.list}">${items}</ol></section>`
+  return `<section${emitter.epub ? ' class="footnotes"' : ''} style="${STYLE.footnotes}"><ol style="${STYLE.list}">${items}</ol></section>`
 }
 
 /**
@@ -422,9 +447,14 @@ function footnoteList(footnotes: Footnote[], emitter: Emitter): string {
  * cannot reach the output by any path.
  */
 export function toHtml(markdown: string, options: HtmlOptions = {}): HtmlResult {
+  return renderDocumentHtml(readDocument(markdown), options)
+}
+
+export function renderDocumentHtml(read: MarkdownDocument, options: HtmlOptions = {}): HtmlResult {
   const idPrefix = options.idPrefix ?? ''
   const rootSectionAnchor = `${idPrefix}document`
   const emitter: Emitter = {
+    epub: options.epub,
     options: {
       widgets: options.widgets ?? 'text',
       linkTarget: options.linkTarget ?? ((href) => href),
@@ -444,7 +474,6 @@ export function toHtml(markdown: string, options: HtmlOptions = {}): HtmlResult 
     blockOrder: 0,
     interactionTargets: [],
   }
-  const read = readDocument(markdown)
   const document = options.links === 'external-only' ? externalLinksOnly(read) : read
   const body = blocks(document.blocks, emitter).join('\n') + (document.footnotes.length ? '\n' : '')
   const html = body + footnoteList(document.footnotes, emitter)

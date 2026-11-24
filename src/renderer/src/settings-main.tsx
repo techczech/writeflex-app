@@ -11,8 +11,11 @@ import './styles/sharing.css'
 import './settings-page.css'
 import { currentPages } from './settings-current-pages'
 import { MENUS } from '../../shared/bridle-commands'
+import { THEME_SETTING } from '../../shared/appearance'
+import { useAppearance } from './hooks/useAppearance'
 import { ACCOUNT_SLOTS, schema } from '../../shared/settings-schema'
 import { settingsDisplaySchema, settingsShortcutDisplay } from './settings-display'
+import { WindowTitlebar } from './components/WindowTitlebar'
 import { useCustomPages, usePlatformVoices } from './settings-pages'
 
 const bridge = window.bridleSettings
@@ -39,6 +42,7 @@ type Opened = { section: string; sheet?: SheetState; n: number }
 function SettingsApp(): React.JSX.Element | null {
   const voices = usePlatformVoices()
   const [view, setView] = useState<SettingsView | null>(null)
+  useAppearance(view?.state.settings[THEME_SETTING])
   const [opened, setOpened] = useState<Opened>({ section: 'general', n: 0 })
   const [seenAt, setSeenAt] = useState(() => Date.now())
   const open = useCallback(async (req: SectionRequest): Promise<void> => {
@@ -85,7 +89,7 @@ function SettingsApp(): React.JSX.Element | null {
   const pages = [...customPages.filter(p => p.id !== 'command-line'), ...currentPages(view, (section, sheet) => setOpened(o => ({ section, sheet, n: o.n + 1 })))]
   return (
     <>
-      <div className="wf-titlebar">Settings</div>
+      <WindowTitlebar className="wf-titlebar"><span>Settings</span></WindowTitlebar>
       {view.problem && <div role="alert" className="wf-settings-problem">{view.problem}</div>}
       <SettingsWindow
         key={opened.n}
