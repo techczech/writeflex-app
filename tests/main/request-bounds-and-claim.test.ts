@@ -28,11 +28,11 @@ let app: AppSide | undefined
 beforeEach(async () => {
   fx = await writeFixture()
   app = undefined
-})
+}, 30_000)
 afterEach(async () => {
   await app?.close()
   await fx.dispose()
-})
+}, 30_000)
 
 // Large fixtures own removal within their existing body budget. The short afterEach remains
 // the backstop; capture the fixture so a timed-out continuation cannot clean up a later fixture.
@@ -103,7 +103,7 @@ test('requests answered again from their record are remembered up to a count, ho
     await mkdir(fx.handledDir, { recursive: true, mode: 0o700 })
     // Three inboxes' worth of requests that each have a receipt and a file that cannot be removed (a
     // folder stands at the name), so each is remembered as answered again: more than is ever kept.
-    const perRound = Math.ceil(MAX_NAMES_REMEMBERED / 3) + 100
+    const perRound = Math.ceil((MAX_NAMES_REMEMBERED + 1) / 3)
     let met = 0
     for (let round = 0; round < 3; round += 1) {
       const ids = numbered(perRound, (index) => newRequestId(new Date(Date.UTC(2026, round, 1) + index * 1000)))
@@ -122,7 +122,7 @@ test('requests answered again from their record are remembered up to a count, ho
     expect(met).toBeGreaterThan(MAX_NAMES_REMEMBERED)
     expect(side.executor.remembered.repeated).toBe(MAX_NAMES_REMEMBERED)
   } finally { await finishBulkFixture(fixture) }
-}, 240_000)
+}, 600_000) // Cross the real 4,000-entry cap with two durable writes per request, even on a busy Studio.
 
 test('clearing the outbox is bounded too: a look removes what is stale among the entries it lists, says the listing was cut, and the next look goes on', async () => {
   const fixture = fx

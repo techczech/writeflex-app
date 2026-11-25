@@ -139,6 +139,22 @@ export async function plantRequest(fx: WriteFixture, operation: string, args: Re
   return id
 }
 
+/** Plant a bulk inbox fixture with one address lookup and bounded concurrent writes. */
+export async function plantRequestBatch(
+  fx: WriteFixture,
+  operation: string,
+  requests: ReadonlyArray<{ id: string; args: Record<string, unknown> }>,
+): Promise<void> {
+  const inbox = join(fx.root, INBOX_DIR)
+  await mkdir(inbox, { recursive: true })
+  const to = [await fixtureAddress(fx)]
+  for (let from = 0; from < requests.length; from += 20) {
+    await Promise.all(requests.slice(from, from + 20).map(({ id, args }) =>
+      writeFile(join(inbox, `${id}.json`), `${JSON.stringify({ version: 1, id, operation, args, to })}\n`),
+    ))
+  }
+}
+
 export const inboxNames = async (fx: WriteFixture): Promise<string[]> => (existsSync(join(fx.root, INBOX_DIR)) ? (await readdir(join(fx.root, INBOX_DIR))).sort() : [])
 export const outboxNames = async (fx: WriteFixture): Promise<string[]> => (existsSync(join(fx.root, OUTBOX_DIR)) ? (await readdir(join(fx.root, OUTBOX_DIR))).sort() : [])
 export const replyTo = async (fx: WriteFixture, id: string): Promise<Reply> => JSON.parse(await readFile(join(fx.root, OUTBOX_DIR, `${id}.json`), 'utf8')) as Reply

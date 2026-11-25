@@ -318,7 +318,7 @@ function composerFor(c) {
     input.maxLength = 60;
     input.autocomplete = 'name';
     input.value = readerName;
-    var label = h('label', 'lab', openComments ? 'Every reader of this link sees this name beside each open comment' : authorName + ' sees this name beside each comment');
+    var label = h('label', 'lab', 'Name shown with your comments and proposed edits');
     label.htmlFor = input.id;
     el = h('section', 'nitem comp', h('header', 'ch', icon('user', 16), h('b', '', 'Your name')), label, input,
       h('p', 'esc', 'Asked once in this browser. You can change it later.'),
@@ -333,12 +333,17 @@ function composerFor(c) {
     var lab = h('label', 'lab', c.replyTo ? 'Your reply' : c.kind === 'note' ? 'Your comment' : 'Edit selected text here');
     lab.htmlFor = area.id;
     var sendBtn = button('primary', 'send', [icon('send', 14), 'Send'], '\u2318\u21b5');
+    c.audience = h('p', 'esc');
+    c.audience.id = 'wf-composer-audience';
+    c.audience.setAttribute('aria-live', 'polite');
+    area.setAttribute('aria-describedby', c.audience.id);
+    sendBtn.setAttribute('aria-describedby', c.audience.id);
     var parts = [h('header', 'ch', icon(c.kind === 'note' ? 'note' : 'pencil', 16), h('b', '', c.replyTo ? 'Reply to ' + c.replyName : c.kind === 'note' ? 'Comment' : 'Propose edit'))];
     if (c.kind === 'note') parts.push(h('p', 'cq', h('span', 'lab', 'On these words'), h('q', '', q)));
-    if (personalLink) parts.push(h('p', 'esc', 'Commenting as ', h('b', '', readerName)));
+    if (personalLink) parts.push(h('p', 'esc', c.kind === 'edit' ? 'Proposing as ' : 'Commenting as ', h('b', '', readerName)));
     parts.push(lab, area);
     if (c.kind === 'edit') parts.push(h('span', 'lab dif-lab', 'Preview of changes'), h('div', 'difbox'));
-    parts.push(h('div', 'acts', sendBtn, button('ghost', 'cancel', ['Cancel'], 'Esc')));
+    parts.push(c.audience, h('div', 'acts', sendBtn, button('ghost', 'cancel', ['Cancel'], 'Esc')));
     el = h('section', 'nitem comp k-' + c.kind);
     parts.forEach(function (p) { el.appendChild(p); });
     el.setAttribute('aria-label', c.kind === 'note' ? 'Write a comment' : 'Propose an edit');
@@ -364,6 +369,15 @@ function composerFor(c) {
   el.setAttribute('data-comp', c.kind);
   return el;
 }
+function refreshComposerAudience(c) {
+  if (!c || !c.audience || c.sending) return;
+  // A live mode change can narrow a draft's audience until it is queued.
+  if (!openComments) c.visibility = 'private';
+  var item = c.replyTo ? 'reply' : c.kind === 'edit' ? 'proposed edit' : 'comment';
+  var who = c.visibility === 'open' ? 'You, the author and other readers of this link' : 'Only you and the author';
+  var message = c.replyTo && !openComments ? 'Replies can only be sent while comments are open.' : who + ' can see this ' + item + ' and your name.';
+  if (c.audience.textContent !== message) c.audience.textContent = message;
+}
 function refreshComposer() {
   var c = state.composer;
   if (!c || !c.el) return;
@@ -378,9 +392,10 @@ function refreshComposer() {
 }
 function openComposer(kind, cap, extra) {
   if ((kind === 'note' || kind === 'edit') && !readerName) return openComposer('name', cap, { next: kind, nextExtra: extra });
-  var c = { kind: kind, cap: cap, text: kind === 'edit' && cap ? cap.anchor.quote : '', next: null, reason: null, noteKind: null };
+  var c = { kind: kind, cap: cap, text: kind === 'edit' && cap ? cap.anchor.quote : '', next: null, reason: null, noteKind: null, visibility: openComments ? 'open' : 'private' };
   Object.keys(extra || {}).forEach(function (k) { c[k] = extra[k]; });
   c.el = composerFor(c);
+  refreshComposerAudience(c);
   state.composer = c;
   refreshComposer();
   render();
@@ -468,6 +483,10 @@ function fetchMine(legacy) {
     return res.json().then(function (body) {
       if (personalLink) personalOpeningRecorded = true;
       openComments = !legacy && body.mode === 'open';
+      if (state.composer) {
+        refreshComposerAudience(state.composer);
+        refreshComposerAudience(state.composer.resume);
+      }
       olderComments = !legacy && body.more === true;
       sent = noteList(body && body.notes, 'open');
       keepSent();
@@ -492,7 +511,7 @@ function sendComposer() {
   refreshComposer();
   var send = c.el.querySelector('[data-act="send"]');
   if (send.disabled) return;
-  var n = { id: randomId(16), kind: c.kind, name: readerName, text: c.text.trim(), anchor: c.cap.anchor, writtenAt: Date.now(), receivedAt: null, state: 'unsent', reason: null, replyTo: c.replyTo || null, mine: true, visibility: openComments ? 'open' : 'private' };
+  var n = { id: randomId(16), kind: c.kind, name: readerName, text: c.text.trim(), anchor: c.cap.anchor, writtenAt: Date.now(), receivedAt: null, state: 'unsent', reason: null, replyTo: c.replyTo || null, mine: true, visibility: c.visibility };
   outbox.push(n);
   keepOutbox();
   if (navigator.onLine === false || state.flushing) { setOffline(navigator.onLine === false || state.offline); closeComposer(); return; }

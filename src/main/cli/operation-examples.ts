@@ -32,6 +32,7 @@ export const EXAMPLES: Record<string, string> = {
   capture: 'writeflex capture talks/york.md --kind table --title "Hebb\'s rule, one line" --prompt "the biology rule" --stdin < table.md',
   move: 'writeflex move talks/budget.md archive/budget-2026.md',
   'move-folder': 'writeflex move-folder talks/2025 archive/2025',
+  'check-large-files': 'writeflex check-large-files',
   trash: 'writeflex trash drafts/old-outline.md',
   undo: 'writeflex undo --list',
   replace: 'writeflex --source claude-code replace talks/york.md --target "Intro about assessment." --with "A sharper opening." --note "Tighter first line"',

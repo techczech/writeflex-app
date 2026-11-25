@@ -3,7 +3,10 @@ import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, utimes, wr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { factsReader } from '../../src/main/file-facts'
-import { Workspace } from '../../src/main/workspace'
+import { SearchIndex } from '../../src/main/search-index'
+import { pieceTitle } from '../../src/main/search-query'
+import { extractFrontmatterTags, Workspace } from '../../src/main/workspace'
+import { createWatchRouter } from '../../src/main/workspace-watcher'
 
 const original = {
   'a.md': '# Oldalpha\n',
@@ -105,6 +108,115 @@ test('the watcher still invalidates a same-size rewrite with the same listing mt
     await reopened.searchIndex.flush()
     await noticeBeforeLoad.searchIndex.flush()
   })
+})
+
+function gate(): { promise: Promise<void>; release: () => void } {
+  let release!: () => void
+  const promise = new Promise<void>((resolve) => { release = resolve })
+  return { promise, release }
+}
+
+test('a same-stamp watcher rewrite wins over a search read that already captured the old bytes', async () => {
+  await withCollection(async (root, cacheDir, open) => {
+    const ws = open()
+    const captured = gate()
+    const releaseOld = gate()
+    let hold = true
+    const index = new SearchIndex(async (path) => {
+      const content = await readFile(ws.absolute(path), 'utf8')
+      if (path === 'a.md' && hold) {
+        hold = false
+        captured.release()
+        await releaseOld.promise
+      }
+      return content
+    }, extractFrontmatterTags, undefined, pieceTitle, { root, dir: cacheDir })
+    Object.assign(ws, { searchIndex: index })
+
+    const observed = gate()
+    const watcher = createWatchRouter(ws, (paths) => {
+      ws.searchIndex.invalidate(paths)
+      observed.release()
+    }, 0)
+    const older = ws.search('oldalpha')
+    try {
+      await captured.promise
+      const a = join(root, 'a.md')
+      const old = await stat(a)
+      await writeFile(a, '# Newalpha\n')
+      await utimes(a, oldTime, oldTime)
+      const edited = await stat(a)
+      expect([edited.mtimeMs, edited.size]).toEqual([old.mtimeMs, old.size])
+      watcher.take('a.md')
+      await observed.promise
+
+      await index.ensure([{ path: 'a.md', modifiedAt: edited.mtimeMs, size: edited.size }])
+      expect(index.title('a.md')).toBe('Newalpha')
+      releaseOld.release()
+      expect((await older).total).toBe(0)
+      expect(index.title('a.md')).toBe('Newalpha')
+      expect((await ws.search('newalpha')).matches.map((match) => match.path)).toEqual(['a.md'])
+      expect((await ws.search('unchanged')).total).toBe(1)
+      expect(index.reads).toBe(Object.keys(original).length + 1)
+
+      await index.flush()
+      const reopened = open()
+      expect((await reopened.search('oldalpha')).total).toBe(0)
+      expect((await reopened.search('newalpha')).total).toBe(1)
+      expect(reopened.searchIndex.reads).toBe(0)
+    } finally {
+      watcher.dispose()
+      releaseOld.release()
+      await older
+      await index.flush()
+    }
+  })
+})
+
+test('a failed older read cannot remove a newer successful read', async () => {
+  const started = gate()
+  const releaseOld = gate()
+  let first = true
+  const index = new SearchIndex(async () => {
+    if (first) {
+      first = false
+      started.release()
+      await releaseOld.promise
+      throw new Error('The old read failed')
+    }
+    return 'fresh'
+  }, () => [])
+  const files = [{ path: 'a.md', modifiedAt: 1, size: 5 }]
+  const older = index.ensure(files)
+  await started.promise
+  await index.refresh(files)
+  releaseOld.release()
+  await older
+  expect(index.current(files[0])?.content).toBe('fresh')
+})
+
+test.each(['invalidate', 'clear'] as const)('%s revokes reads already running and queued', async (action) => {
+  const started = gate()
+  const releaseOld = gate()
+  const index = new SearchIndex(async (path) => {
+    if (path === 'running.md') {
+      started.release()
+      await releaseOld.promise
+    }
+    return path
+  }, () => [], 1)
+  const files = ['running.md', 'queued.md'].map((path) => ({ path, modifiedAt: 1, size: 10 }))
+  const older = index.refresh(files)
+  await started.promise
+  if (action === 'clear') index.clear()
+  else index.invalidate(files.map((file) => file.path))
+  releaseOld.release()
+  await older
+  expect(index.size).toBe(0)
+  expect(index.reads).toBe(1)
+  await index.refresh(files)
+  expect(index.size).toBe(2)
+  expect(index.reads).toBe(3)
 })
 
 const badSnapshots: Array<[string, (valid: string) => string]> = [

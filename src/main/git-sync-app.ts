@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { SendProgress, pendingFingerprint } from './git-sync-progress'
+import { SendProgress, pendingFingerprint, isLargeSyncRefusal, retryBlockChanged } from './git-sync-progress'
 /** Window-bound orchestration. The engine owns Git safety; the renderer supplies fresh buffer paths. */
 import { e2eWriteHooksAllowed } from '../shared/e2e-write-hooks'
 import { app, ipcMain } from 'electron'
@@ -9,7 +9,7 @@ import { EXPERIMENTAL_GIT_SYNC_KEY, EXPERIMENTAL_GIT_SYNC_OFF, SYNC_VAULTS_KEY, 
 import { randomUUID, createHash } from 'node:crypto'
 import { createGitVaultSync } from './git-vault-sync'
 import { setSyncAppendProtection } from './git-vault-sync-private-history'
-import { syncGit } from './git-vault-sync-git'
+import { machineState, syncGit } from './git-vault-sync-git'
 import { inspectGitVault } from './git-vault-discovery'
 import { stopSentences } from '../shared/git-sync-view'
 import { developerToolsPresent, installDeveloperTools, recheckDeveloperTools, MISSING_TOOLS_MESSAGE } from './developer-tools'
@@ -127,7 +127,7 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
     return take(0)
   }
   const engine = createGitVaultSync({ settings, ownWrite, withFileLock })
-  type Slot = { /** Issue 257: the backup tool's evidence and the folder's ignored writing, read from records only. */ protection?: RemoteProtection; /** Issue 257: when WriteFlex last saved here (any vault, sync on or off), newest last, at most 50. */ saves?: number[]; /** A quit's send did not finish: its intent is kept until a send here confirms nothing is left. */ quitMark?: boolean; /** What the writer is told about that writing. */ leftAtQuit?: 'sending' | 'waiting' | 'sent'; result: GitVaultSyncResult; discovery: Awaited<ReturnType<typeof inspectGitVault>>; busy: boolean; followUp?: 'send' | 'manual-send' | 'fetch'; wait: number; editedAt?: number; failedAt?: number; next: number; checked: number; gitFolder: boolean; firstEdited?: number; edits: Record<string, number>; progress: SendProgress }
+  type Slot = { /** Issue 257: the backup tool's evidence and the folder's ignored writing, read from records only. */ protection?: RemoteProtection; /** Issue 257: when WriteFlex last saved here (any vault, sync on or off), newest last, at most 50. */ saves?: number[]; /** A quit's send did not finish: its intent is kept until a send here confirms nothing is left. */ quitMark?: boolean; /** What the writer is told about that writing. */ leftAtQuit?: 'sending' | 'waiting' | 'sent'; result: GitVaultSyncResult; discovery: Awaited<ReturnType<typeof inspectGitVault>>; busy: boolean; saveVersion: number; statusDue?: number; statusStartedAt?: number; followUp?: 'send' | 'manual-send' | 'fetch'; checkQueued?: boolean; wait: number; editedAt?: number; failedAt?: number; next: number; checked: number; gitFolder: boolean; firstEdited?: number; edits: Record<string, number>; progress: SendProgress }
   const { refreshProtection, currentProtection, tool } = createRemoteCopy(settings)
   const slots = new Map<string, Slot>(), requests = new Map<string, { sender: number; root: string; windowRoot: string; resolve: (paths: string[]) => void }>()
   const waitKey = (root: string) => 'git-sync.wait.' + createHash('sha256').update(root).digest('hex')
@@ -166,6 +166,16 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
   const resumeKey = (root: string) => waitKey(root) + '.resume'
   const markQuit = (root: string, on: boolean): Promise<boolean> => settings.setDurable(resumeKey(root), on, 'Send on next open').catch(() => false)
   const quitMarked = (root: string) => settings.get(resumeKey(root)) === true
+  /** Machine-value persistence inside setDurable is synchronous: intent must reach disk before save bookkeeping,
+   *  including when this vault has not finished its first load. Later saves reuse it until a confirmed send clears it. */
+  function recordPending(root: string, at: number): number {
+    const key = waitKey(root) + '.pendingSince', first = Number(settings.get(key))
+    if (first) return first
+    void settings.setDurable(key, at, 'Pending sync time').then(written => {
+      if (!written) console.warn('Git sync could not record the pending time for the next opening.')
+    }).catch(error => console.warn('Git sync could not record a save:', error instanceof Error ? error.message : error))
+    return at
+  }
   /** Turning sync off retires the intent: the writing stays here and is not the previous quit's to send any more. */
   async function retireQuitMark(root: string, slot: Slot) { slot.quitMark = false; slot.leftAtQuit = undefined; await markQuit(root, false) }
   async function loadOnce(root: string) {
@@ -181,13 +191,14 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
       const found = await developerToolsPresent()
         ? { result: await engine.status(root), discovery: await inspectForApp(root), gitFolder: await syncGit(root).run(['rev-parse', '--git-dir']).then(r => r.code === 0, () => false) }
         : withoutTools(root)
-      slot = { ...found, busy: false, wait: [1, 3, 10].includes(Number(settings.get(waitKey(root)))) ? Number(settings.get(waitKey(root))) : 3, next: 0, checked: 0, firstEdited: Number(settings.get(waitKey(root) + '.pendingSince')) || undefined, edits: {}, progress:new SendProgress() }
+      slot = { ...found, busy: false, saveVersion: 0, wait: [1, 3, 10].includes(Number(settings.get(waitKey(root)))) ? Number(settings.get(waitKey(root))) : 3, next: 0, checked: 0, firstEdited: Number(settings.get(waitKey(root) + '.pendingSince')) || undefined, edits: {}, progress:new SendProgress() }
       // A quit whose bounded send did not finish leaves its next-open intent. Opening sends at once and tells the
       // writer; the intent is cleared only once that send confirms against the other copy that nothing is left, never
       // on a local inspection alone (which may have failed and found nothing).
       if (slot.result.enabled && slot.discovery.state !== 'tools-missing' && quitMarked(root)) {
         slot.quitMark = true
-        if (slot.result.pending.length || slot.result.internalPending.length) slot.leftAtQuit = 'sending'
+        if(isLargeSyncRefusal(slot.result.reason?.code))slot.leftAtQuit='waiting'
+        else if (slot.result.pending.length || slot.result.internalPending.length) slot.leftAtQuit = 'sending'
         // Nothing seen waiting, but the check could not run: that is no proof the writing arrived.
         else if (slot.result.reason || slot.discovery.state !== 'ready') slot.leftAtQuit = 'waiting'
       }
@@ -202,15 +213,52 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
     loading.set(root, work)
     try { return await work } finally { if (loading.get(root) === work) loading.delete(root) }
   }
+  /** A check begun before a newer save cannot remove that save from the visible pending state. */
+  function keepSaves(slot: Slot, result: GitVaultSyncResult, version: number): GitVaultSyncResult {
+    if (slot.saveVersion === version || !result.enabled) return result
+    return { ...result,
+      pending: [...new Map([...result.pending, ...slot.result.pending].map(d => [d.path, d])).values()],
+      internalPending: [...new Set([...result.internalPending, ...slot.result.internalPending])],
+      ...(!result.reason && !result.pairs.length ? { state: 'waiting-to-send' as const } : {}),
+    }
+  }
+  function finished(root: string, slot: Slot) {
+    slot.busy = false
+    if(slot.checkQueued&&slot.result.enabled&&members(root).length){slot.checkQueued=false;void checkLarge(root,slot);return}
+    const followUp = slot.followUp; slot.followUp = undefined
+    if (followUp && slot.result.enabled && members(root).length) void operate(root, followUp !== 'fetch', followUp === 'manual-send')
+  }
+  async function checkLarge(root:string,slot:Slot) {
+    if(slot.busy){slot.checkQueued=true;return}
+    const version=slot.saveVersion;slot.busy=true;slot.statusDue=undefined
+    try{slot.result=keepSaves(slot,await engine.checkLargeFiles(root),version)}finally{finished(root,slot)}
+  }
+  async function unchangedRefusal(root:string,slot:Slot):Promise<boolean> {
+    if(!isLargeSyncRefusal(slot.result.reason?.code)||!slot.result.retryBlock)return false
+    if(await retryBlockChanged(root,slot.result.retryBlock))return false
+    slot.next=Date.now()+600_000
+    if(slot.leftAtQuit==='sending')slot.leftAtQuit='waiting'
+    return true
+  }
+  async function refreshStatus(root: string, slot: Slot) {
+    const version = slot.saveVersion
+    slot.statusDue = undefined; slot.statusStartedAt = Date.now(); slot.busy = true
+    try { slot.result = keepSaves(slot, await engine.status(root), version) }
+    catch (error) { console.warn('Git sync could not inspect saved writing:', error instanceof Error ? error.message : error) }
+    finally { finished(root, slot) }
+  }
   async function operate(root: string, send: boolean, manual = false) {
     const slot = await load(root)
     if (!slot.result.enabled || slot.discovery.state === 'tools-missing') return
     if (slot.busy) { slot.followUp = manual && send ? 'manual-send' : slot.followUp === 'manual-send' ? 'manual-send' : send ? 'send' : slot.followUp ?? 'fetch'; return }
-    const editAtStart = slot.editedAt
+    const editVersion = slot.saveVersion
+    // Send and receive inspect the vault too; they cover the waiting status request.
+    slot.statusDue = undefined
     slot.busy = true
     try {
+      if(!manual&&await unchangedRefusal(root,slot))return
       const before = await pendingFingerprint(root, [...slot.result.internalPending,...slot.result.pending.map(d=>d.path)])
-      if(send && !slot.progress.shouldSend(before,manual)) {slot.editedAt=undefined;return}
+      if(send && !slot.progress.shouldSend(before,manual)) {if(slot.saveVersion===editVersion)slot.editedAt=undefined;return}
       const headBefore = send ? await syncGit(root).text(['rev-parse','HEAD']) : undefined
       const unsavedPaths = await buffers(root)
       if (settings.get('git-vault-sync.enabled.' + createHash('sha256').update(root).digest('hex')) !== true) return
@@ -218,19 +266,27 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
       if (!members(root).length) return
       // Only what this operation itself brought in refreshes editors (the shown list may be an earlier one, kept).
       const arrived = result.received ?? []
-      slot.result = result; slot.checked = Date.now()
-      if(send && slot.progress.completed(before,await pendingFingerprint(root,[...result.internalPending,...result.pending.map(d=>d.path)]),result.internalPending.length>0,!result.reason,headBefore!==await syncGit(root).text(['rev-parse','HEAD']))) {slot.editedAt=undefined;console.warn('Git sync paused automatic sending because internal work made no progress. A new change will retry it.')}
-      if ((result.pending.length || result.internalPending.length) && slot.editedAt === undefined) { slot.editedAt = Date.now(); slot.firstEdited ??= slot.editedAt; settings.set(waitKey(root) + '.pendingSince', slot.firstEdited, 'Pending sync time', { log: false }) }
+      slot.result = keepSaves(slot, result, editVersion); slot.checked = Date.now()
+      if (send) {
+        const after = await pendingFingerprint(root, [...result.internalPending, ...result.pending.map(d => d.path)])
+        const newCommit = headBefore !== await syncGit(root).text(['rev-parse', 'HEAD'])
+        if (slot.saveVersion === editVersion && slot.progress.completed(before, after, result.internalPending.length > 0, !result.reason, newCommit)) {
+          slot.editedAt = undefined
+          console.warn('Git sync paused automatic sending because internal work made no progress. A new change will retry it.')
+        }
+      }
+      if ((result.pending.length || result.internalPending.length) && slot.editedAt === undefined) { slot.editedAt = Date.now(); slot.firstEdited ??= recordPending(root, slot.editedAt) }
       if (result.reason && send && slot.leftAtQuit === 'sending') slot.leftAtQuit = 'waiting'
-      if (result.reason) { slot.failedAt ??= slot.firstEdited ?? Date.now(); slot.next = Date.now() + 60_000 * Math.min(10, 2 ** Math.min(3, Math.floor((Date.now() - slot.failedAt) / 60_000))) }
-      else { slot.failedAt = undefined; slot.next = Date.now() + 60_000; if (send && slot.editedAt === editAtStart && !result.pending.length && !result.internalPending.length) { slot.editedAt = undefined; slot.firstEdited = undefined; settings.set(waitKey(root) + '.pendingSince', 0, 'Pending sync time', { log: false }); if (slot.quitMark && await markQuit(root, false)) { slot.quitMark = false; if (slot.leftAtQuit) slot.leftAtQuit = 'sent' } } }
+      if(isLargeSyncRefusal(result.reason?.code)){slot.failedAt=undefined;slot.next=Date.now()+600_000}
+      else if (result.reason) { slot.failedAt ??= slot.firstEdited ?? Date.now(); slot.next = Date.now() + 60_000 * Math.min(10, 2 ** Math.min(3, Math.floor((Date.now() - slot.failedAt) / 60_000))) }
+      else { slot.failedAt = undefined; slot.next = Date.now() + 60_000; if (send && slot.saveVersion === editVersion && !result.pending.length && !result.internalPending.length) { slot.editedAt = undefined; slot.firstEdited = undefined; settings.set(waitKey(root) + '.pendingSince', 0, 'Pending sync time', { log: false }); if (slot.quitMark && await markQuit(root, false)) { slot.quitMark = false; if (slot.leftAtQuit) slot.leftAtQuit = 'sent' } } }
       // Existing watcher/renderer path owns clean refresh and dirty-buffer protection.
       const paths = [...new Set([...arrived.map(d => d.path), ...result.pairs.flatMap(p => [p.local, p.other])])]
       for (const state of members(root)) { const ownPaths=translatedPaths(root,canonicalSyncRoot(state.workspace!.root),paths); if(ownPaths.length) { changed(state, ownPaths); state.window.webContents.send('file:changed-on-disk', ownPaths) } }
     } catch {
       slot.result = { ...slot.result, reason: { code: 'operation-failed', message: 'The editor could not confirm which documents are saved.' }, state: 'stopped' }
       slot.next = Date.now() + 60_000
-    } finally { slot.busy = false; const followUp = slot.followUp; slot.followUp = undefined; if (followUp && slot.result.enabled && members(root).length) void operate(root, followUp !== 'fetch', followUp === 'manual-send') }
+    } finally { finished(root, slot) }
   }
   ipcMain.handle('git-sync:call', async (event, input: { action: string; value?: unknown }) => {
     const displayRoot = stateForSender(event.sender.id).workspace?.root
@@ -259,6 +315,7 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
       if (preferences[id]) await settings.updateSyncVault(id,{path:root})
       if (slot.result.enabled) { slot.checked = Date.now(); void operate(root, false) }
     } else if (input.action === 'send' || input.action === 'fetch') await operate(root, input.action === 'send', true)
+    else if (input.action === 'check-large-files') await checkLarge(root,slot)
     else if (input.action === 'done' && typeof input.value === 'string') slot.result = await engine.dismissPair(root, input.value)
     else if (input.action === 'wait' && [1, 3, 10].includes(Number(input.value))) { slot.wait = Number(input.value); await settings.set(waitKey(root), slot.wait, 'Automatic sync wait', { log: false }) }
     else if (input.action === 'open' && slot.result.enabled) { slot.checked = Date.now(); void operate(root, slot.quitMark === true) }
@@ -286,6 +343,7 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
     if(value.wait!==undefined) {if(![1,3,10].includes(value.wait))throw new Error('Choose 1, 3 or 10 minutes.');await settings.updateSyncVault(id,{wait:value.wait as 1|3|10});(await load(root)).wait=value.wait}
   }
   savedHook = (windowRoot, savedPath) => {
+    const at = Date.now()
     const saved = canonicalSyncRoot(windowRoot), file = savedPath === undefined ? undefined : join(saved, savedPath)
     // A save belongs to every vault whose folder holds the saved document, whichever window it was made in: the
     // vault around a nested Collection's window, and a synced vault nested inside the window's folder. That vault is
@@ -298,7 +356,26 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
     }
     for (const root of roots) {
       const path = file === undefined ? undefined : relative(root, file)
-      void load(root).then(async slot => { slot.saves = [...(slot.saves ?? []), Date.now()].slice(-50); if (!slot.result.enabled) return; slot.progress.changed(); slot.editedAt = Date.now(); slot.firstEdited ??= slot.editedAt; if (path) slot.edits[path] = slot.editedAt; settings.set(waitKey(root) + '.pendingSince', slot.firstEdited, 'Pending sync time', { log: false }); if (!slot.busy) { slot.result = await engine.status(root); if (!slot.result.pending.length && !slot.result.internalPending.length && !slot.result.reason) { slot.editedAt = undefined; slot.firstEdited = undefined; settings.set(waitKey(root) + '.pendingSince', 0, 'Pending sync time', { log: false }) } } })
+      if (settings.get(enabledKey(root)) === true) recordPending(root, at)
+      const note = (slot: Slot) => {
+        slot.saves = [...(slot.saves ?? []), at].slice(-50)
+        if (!slot.result.enabled) return
+        slot.progress.changed(); slot.saveVersion++; slot.editedAt = at
+        slot.firstEdited ??= recordPending(root, at)
+        if (path) {
+          slot.edits[path] = at
+          if (machineState(path)) {
+            if (!slot.result.internalPending.includes(path)) slot.result = { ...slot.result, internalPending: [...slot.result.internalPending, path] }
+          } else if (!slot.result.pending.some(d => d.path === path)) slot.result = { ...slot.result, pending: [...slot.result.pending, { path, kind: 'changed' }] }
+        }
+        if (!slot.result.reason && !slot.result.pairs.length) slot.result = { ...slot.result, state: 'waiting-to-send' }
+        // One trailing request, clamped to thirty seconds since the last scheduled status pass. A running
+        // operation absorbs this save's status request; keepSaves retains its pending paths if the result is older.
+        if (!slot.busy) slot.statusDue = Math.max(at + 5000, (slot.statusStartedAt ?? -Infinity) + 30_000)
+      }
+      const slot = slots.get(root)
+      if (slot) note(slot)
+      else void load(root).then(note)
         // The save has already landed; sync bookkeeping failing afterwards must not surface as an unhandled rejection.
         .catch(error => console.warn('Git sync could not record a save:', error instanceof Error ? error.message : error))
     }
@@ -308,9 +385,10 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
       if (!members(root).length || slot.discovery.state === 'tools-missing') continue
       slot.result.enabled = settings.get('git-vault-sync.enabled.' + createHash('sha256').update(root).digest('hex')) === true
       slot.wait = Number(settings.get(waitKey(root))) || 3
-      if (!slot.result.enabled || slot.busy || Date.now() < slot.next) continue
-      if (slot.editedAt && Date.now() - slot.editedAt >= slot.wait * 60_000) void operate(root, true)
-      else if (Date.now() - slot.checked >= 600_000 && members(root).some(s => s.window.isFocused())) void operate(root, false)
+      if (!slot.result.enabled || slot.busy) continue
+      if (Date.now() >= slot.next && slot.editedAt && Date.now() - slot.editedAt >= slot.wait * 60_000) void operate(root, true)
+      else if (Date.now() >= slot.next && Date.now() - slot.checked >= 600_000 && members(root).some(s => s.window.isFocused())) void operate(root, false)
+      else if (slot.statusDue !== undefined && Date.now() >= slot.statusDue) void refreshStatus(root, slot)
     }
   }
   let timer: ReturnType<typeof setInterval> | undefined
@@ -324,6 +402,7 @@ export function registerGitSync(settings: SettingsStore, changed: (state: Return
       slot.quitMark = true
       let recorded = await markQuit(root, true)
       if (!recorded) console.warn('Git sync could not record unsent writing for the next opening; it will try again after sending.')
+      if(await unchangedRefusal(root,slot))return
       const result = await short.send(root, { unsavedPaths: members(root).length ? await buffers(root) : [] })
       if (!result.reason && !result.pending.length && !result.internalPending.length) { slot.quitMark = false; await markQuit(root, false) }
       else if (!recorded && !(recorded = await markQuit(root, true))) console.warn('Git sync could not record unsent writing for the next opening. It stays waiting here and goes with the next automatic send.')

@@ -4,8 +4,23 @@
  */
 import { expect, test } from 'bun:test'
 import {
-  COMPARE_ROWS_SHOWN, compareFileBytes, compareTables, linesChangedBetween, readsAsText, suggestedCopyName, usedBySentence, workingSentence,
+  COMPARE_ROWS_SHOWN, compareFileBytes, compareTables, fileRestoreMessage, linesChangedBetween, readsAsText, suggestedCopyName, usedBySentence, workingSentence,
 } from '../../src/shared/file-versions'
+
+test('restore feedback names the committed file and the safety version when recording history failed', () => {
+  const file = 'scores-3.csv'
+  const path = `report/data/${file}`
+  const safety = { id: 'v2', name: 'Before restoring v1' }
+  expect(fileRestoreMessage(file, 1, { restored: null, path, safety })).toBe(
+    'scores-3.csv was restored from v1. WriteFlex could not record a new version for the restore. The previous working copy was saved first as “Before restoring v1”.',
+  )
+  expect(fileRestoreMessage(file, 1, { restored: null, path, safety: null })).toBe(
+    'scores-3.csv was restored from v1. WriteFlex could not record a new version for the restore.',
+  )
+  expect(fileRestoreMessage(file, 1, { restored: { id: 'v3', name: 'Restored: Pilot run', number: 3 }, safety })).toBe(
+    'Restored v1 as scores-3.csv after saving the working copy as “Before restoring v1”',
+  )
+})
 
 const end = (label: string, bytes = 0) => ({ label, bytes })
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text)

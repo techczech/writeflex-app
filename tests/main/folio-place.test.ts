@@ -51,7 +51,7 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   await rm(root, { recursive: true, force: true })
-})
+}, 30_000)
 const write = async (rel: string, content: string): Promise<void> => {
   await mkdir(join(root, rel, '..'), { recursive: true })
   await writeFile(join(root, rel), content, 'utf8')
@@ -144,7 +144,7 @@ test('switching between pieces of a Folio walks nothing in the workspace, and a 
   expect(await folioPlace(ws, `paper/${names[0]}`)).toMatchObject({ position: 2, total: 2, previous: { path: `paper/${names[1]}` }, next: null })
   expect(counts.whole).toBe(0)
   expect(counts.folder).toBe(2)
-})
+}, 30_000) // Seed 3,000 unrelated documents before asserting that none are walked.
 
 test('a neighbour title comes from the start of a large file', async () => {
   await write(`paper/${MANIFEST_NAME}`, manifest(['a.md', 'b.md']))

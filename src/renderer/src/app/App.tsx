@@ -140,7 +140,6 @@ import { SharingPage } from '../components/sharing/SharingPage'
 import { SharesList } from '../components/sharing/SharesList'
 import type { PieceSharingView, ShareMark } from '../../../shared/sharing-links'
 import { MakeVaultSheet } from '../components/MakeVaultSheet'
-import { useVaultPresence } from '../hooks/useVaultPresence'
 import { useVaultSidebarPrefs } from '../hooks/useVaultSidebarPrefs'
 import type { SwitcherChoice } from '../components/VaultSwitcherMenu'
 import { SWITCH_CLOSE_TIMED_OUT_MESSAGE, switchStayedMessage, type CloseKept, type RootSwitchTarget } from '../../../shared/vault-switcher'
@@ -815,8 +814,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const guideInRow = guideOpen
   // "All comments in this Folio" (rough edges, 24 Nov 2026): the right pane's Comments tab, in the row only once opened.
   const [folioCommentsOpen, setFolioCommentsOpen] = useState(false)
-  const [folioCommentsDir, setFolioCommentsDir] = useState<string | null>(null)
-  const [folioCommentCurrent, setFolioCommentCurrent] = useState<string | null>(null)
   const [exampleChanges, setExampleChanges] = useState(0)
   // Main asked this window to open its Guide tab (it is taken with the next Guide-context read).
   const [guideWanted, setGuideWanted] = useState(0)
@@ -1041,7 +1038,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // moving between pieces does not blink the line; any other file clears it first. A slower earlier
   // answer is dropped.
   const backTarget = active ?? lastEditablePath ?? tabs[0] ?? null
-  const { index: paletteVaultIndex } = useVaultSidebar(root ?? '', listingReady)
+  const vaultSidebar = useVaultSidebar(root, listingReady)
+  const { index: paletteVaultIndex, status: folioIndexStatus, retryIndex: retryFolioIndex } = vaultSidebar
+  const rootIsVault = vaultSidebar.vault ? true : folioIndexStatus === 'folder' ? false : null
   // The vault's Folios by their own title (Quick open's Folios section and Open a Folio…).
   const paletteFolios = useMemo(() => vaultFolios(paletteVaultIndex), [paletteVaultIndex])
   // The open Folio named by its own title (rough edges, row 3): the title bar's Manage Folio and the Folio line under the
@@ -2877,7 +2876,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   }, [open])
   // All comments in this Folio: a row opens its part at its place; the tab stays, so the next row is one click away.
   const jumpToFolioComment = useCallback((path: string, id: string) => {
-    setFolioCommentCurrent(id)
     // A row the margin's filter hides would not be selectable: show everything again first.
     if (shownReviewIdsRef.current && !shownReviewIdsRef.current.has(id)) setMarginFilterState((state) => withMode({ ...state, filter: {} }, 'review'))
     if (path === active && collectionDir === null && loadedFile === active) selectChange(id)
@@ -4128,8 +4126,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // file open. It drops the overlay AND puts the keyboard back somewhere real. Editor commands
   // additionally self-focus the view via view.focus(); that is idempotent with this, so ordering
   // runPaletteCommand as close-then-run is safe.
-  // Vaults ticket 03: is this root a vault (follows `vault:changed`), and the Make-vault sheet that makes it one.
-  const rootIsVault = useVaultPresence(root)
   // The vault switcher (vaults ticket 06): opened from the sidebar's root name or the palette.
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const openSwitcher = useCallback(() => {
@@ -4158,19 +4154,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   }, [closeOverlay, openCollection])
   // All comments in this Folio: opens (or re-selects) the Comments tab on the Folio that is open now.
   const openFolioComments = useCallback(() => {
-    if (openFolioDir === null) return
-    setFolioCommentsDir(openFolioDir)
     setFolioCommentsOpen(true)
     openRightTab('folio-comments')
-  }, [openFolioDir, openRightTab])
+  }, [openRightTab])
   const closeFolioComments = useCallback(() => {
     setFolioCommentsOpen(false)
-    setFolioCommentCurrent(null)
   }, [])
-  // The tab follows the writer into another Folio; between a part and its Folio page it keeps its Folio.
-  useEffect(() => {
-    if (folioCommentsOpen && openFolioDir !== null) setFolioCommentsDir(openFolioDir)
-  }, [folioCommentsOpen, openFolioDir])
   const openSharingSetup = useCallback(() => {
     closeOverlay()
     setSharingSetupOpen(true)
@@ -5418,8 +5407,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       { id: 'plan.open', run: openPlan },
       { id: 'folio.linkFiles',   disabled: openFolioDir === null, disabledReason: 'Open a Folio first', run: () => { if (openFolioDir !== null) void requestIdentityLinks.current(openFolioDir, true) } },
       { id: 'folio.open',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its files first', run: openFolio },
-      { id: 'folio.pick',   disabled: paletteFolios.length === 0, disabledReason: rootIsVault === true ? 'This vault has no Folios' : 'Folios are listed in a vault; this folder is not one', run: () => openPalette('folios') },
-      { id: 'folio.allComments',   disabled: openFolioDir === null, disabledReason: 'Open a Folio or one of its parts first', run: openFolioComments },
+      { id: 'folio.pick',   disabled: rootIsVault !== true, disabledReason: rootIsVault === false ? 'Folios are listed in a vault; this folder is not one' : 'Open a vault first', run: () => openPalette('folios') },
+      { id: 'folio.allComments',   disabled: collectionDir === null && (active === null || folioPlace === null), disabledReason: 'Open a Folio or one of its parts first', run: openFolioComments },
       { id: 'research.capture',   disabled: researchProject == null, disabledReason: 'Open a Piece or a Folio first', run: openResearchCapture },
       { id: 'folio.movePieceUp',   disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('up') } },
       { id: 'folio.movePieceDown',   disabled: !folioPlace, disabledReason: 'This file is not in a Folio', run: () => { void runFolioCommand('down') } },
@@ -5821,6 +5810,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     openPlan,
     openFolio,
     openFolioDir,
+    openFolioComments,
     folioPlace,
     runFolioCommand,
     runFolioPlanCommand,
@@ -8362,6 +8352,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 }}>
                   <Sidebar
                     listingReady={listingReady}
+                    vaultSidebar={vaultSidebar}
                     files={files}
                     syncMarks={syncStatus.presentation.marks}
                     checklistProgress={checklistProgress}
@@ -9122,9 +9113,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
               {folioCommentsOpen && (
                 <div className={rightTab === 'folio-comments' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Comments">
                   <FolioCommentsPane
-                    dir={folioCommentsDir}
-                    title={folioCommentsDir === null ? null : paletteVaultIndex?.labels[folioCommentsDir] ?? null}
-                    currentId={folioCommentCurrent}
+                    root={root ?? null}
+                    collectionDir={collectionDir}
+                    activePath={active}
                     onJump={jumpToFolioComment}
                     onClose={closeFolioComments}
                   />
@@ -9193,6 +9184,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           initialQuery={overlayActive === 'commands' ? paletteSeed : ''}
           files={files}
           folios={paletteFolios}
+          folioIndexStatus={folioIndexStatus}
+          onRetryFolioIndex={retryFolioIndex}
           onOpenFolio={openFolioFromPalette}
           titles={paletteVaultIndex?.labels}
           hiddenPaths={paletteVaultIndex?.hidden.paths}

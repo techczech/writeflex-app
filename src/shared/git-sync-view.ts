@@ -1,11 +1,14 @@
-import type { GitVaultSyncResult, GitSyncReasonCode, GitSyncReason } from '../main/git-vault-sync-types'
+import type { GitVaultSyncResult, GitSyncReasonCode, GitSyncReason, GitSyncHeldFile, GitSyncLargeCheck } from '../main/git-vault-sync-types'
 import type { GitVaultDiscovery } from '../main/git-vault-discovery'
 import type { BackupToolInfo, RemoteProtection } from './remote-protection'
 export const stopSentences: Record<GitSyncReasonCode, string> = {
+  'held-file-in-history': 'An unsent commit contains a large file. Nothing is being sent. Send that commit with Git, then try again.',
+  'large-file-changed-elsewhere': 'A large file differs in the other copy. Update this folder with Git and Git LFS, then sync carries on by itself.',
   'repository-state': 'This folder is not ready to receive changes. Finish the other operation in your repository, then try again.',
   'repository-changed': 'This folder or its branch has moved or changed. Check where it is kept, then turn sync off and on again.',
   unsupported: 'This folder uses a file or repository arrangement that WriteFlex cannot safely update. Update it with Git.',
   'sibling-changes': 'Another folder in this repository has changes that block the update. Save those changes with Git, then try again.',
+  'large-file-needs-checking': 'A large file is held back because WriteFlex could not confirm it as unchanged. This file is not being sent. Other writing is sent automatically.',
   'local-changes': 'A document has newer writing or a separate saved version waiting. Finish saving it, then try again.',
   'index-busy': 'Another application is saving this repository. Wait for it to finish, then try again.',
   'secret-found': 'A possible password or key was found in a document. Remove it, then try again.',
@@ -25,10 +28,11 @@ export type GitView = { root: string; result: GitVaultSyncResult; discovery: Git
 export function gitState(view: GitView, now = Date.now()) {
   const r = view.result
   const offline = r.reason?.code === 'network-unavailable' && (r.pending.length > 0 || r.internalPending.length > 0) && view.failedAt !== undefined && now - view.failedAt < 900000
-  return r.reason && !offline ? 4 : r.pairs.length ? 5 : r.pending.length || r.internalPending.length || offline ? 3 : r.incoming.length ? 2 : 1
+  return r.reason && !offline ? 4 : r.pairs.length ? 5 : r.pending.length || r.internalPending.length || offline ? 3 : r.held?.length ? 6 : r.incoming.length ? 2 : 1
 }
 export const shortReason: Record<GitSyncReasonCode, string> = {
   'repository-state': 'needs attention', 'repository-changed': 'needs attention', unsupported: 'needs attention',
+  'large-file-needs-checking': 'check a large file', 'held-file-in-history': 'needs attention', 'large-file-changed-elsewhere':'needs attention',
   'sibling-changes': 'needs attention', 'local-changes': 'check a document', 'index-busy': 'needs attention',
   'secret-found': 'check a document', 'scanner-unavailable': 'needs attention', 'auth-refused': 'sign in',
   'network-unavailable': 'offline', 'push-rejected': 'needs attention', 'operation-failed': 'needs attention',
@@ -40,7 +44,9 @@ export const leftAtQuitSentence = { sending: 'Some writing was not sent when Wri
 export const documents = (n: number) => `${n} document${n === 1 ? '' : 's'}`
 export function stopSentence(reason: GitSyncReason): string {
   // The engine's sentence names this Mac's Git version.
+  if (reason.code === 'held-file-in-history' || reason.code === 'large-file-changed-elsewhere') return reason.message || stopSentences[reason.code]+(reason.document?` Document or folder: ${reason.document}.`:'')
   if (reason.code === 'git-renames' && reason.message) return reason.message
+  if (reason.code === 'large-file-needs-checking') return `${reason.document ?? 'A large file'} is held back because WriteFlex could not confirm it as unchanged without reading its contents. This file is not being sent. Other writing is sent automatically.`
   if (reason.code === 'secret-found') {
     const path = reason.document ?? 'a document'
     const where = /(?:^|\/)\.bridle\/objects\//.test(path) ? `a saved version of a document (${path})` : path
@@ -51,9 +57,17 @@ export function stopSentence(reason: GitSyncReason): string {
 export const shortPath = (path: string) => path.length > 40 ? path.slice(0, 17) + '…' + path.slice(-22) : path
 
 
-export type GitSyncAction = 'open' | 'status' | 'enable' | 'disable' | 'send' | 'fetch' | 'done' | 'wait' | 'e2e-idle' | 'install-tools' | 'check-tools'
+export type GitSyncAction = 'open' | 'status' | 'enable' | 'disable' | 'send' | 'fetch' | 'done' | 'wait' | 'e2e-idle' | 'install-tools' | 'check-tools' | 'check-large-files'
 export interface GitSyncAppPort {
   call(input: { action: GitSyncAction; value?: unknown }): Promise<GitView | null>
   buffers(input: { id: string; root: string; paths: string[] }): Promise<void>
   onPrepare(callback: (input: { id: string; root: string }) => void): () => void
+}
+
+export function heldSentence(file:GitSyncHeldFile, canSync=true):string {
+ const why=file.cause==='lfs'?'a Git version uses Git LFS':'its saved file or a Git version is over 100 MB'
+ return `${file.path} is held back because ${why} and ${file.state==='changed'?'its contents have changed':'WriteFlex could not confirm it as unchanged'}. This file is not being sent. ${canSync?'Other writing is sent automatically.':'Other writing is waiting for sync to resume.'}`
+}
+export function largeCheckSentence(check:GitSyncLargeCheck):string {
+ return check.state==='unchanged'?`${check.path} matches its committed contents. WriteFlex saved the check on this Mac. This check sent nothing.`:check.state==='changed'?`${check.path} has changed and stays held back. This file is not being sent. Other writing is sent automatically.`:`${check.path} could not be confirmed as unchanged and stays held back. This file is not being sent. Other writing is sent automatically.`
 }

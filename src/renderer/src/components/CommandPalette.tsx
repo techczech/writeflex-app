@@ -9,6 +9,7 @@ import { AgentLaunchIcon, orderSkills, skillDisplayName } from './AgentSkillSurf
 import { launchesAgent } from './agent-icon'
 import type { TaskGroup } from '../commands/command-task-groups'
 import { NO_CHECKLIST_PROGRESS, type ChecklistProgressMap } from '../hooks/useChecklistProgress'
+import type { VaultSidebarView } from '../hooks/useVaultSidebar'
 import { ChecklistProgressChip } from './ChecklistProgressChip'
 import { TaskGroupIcon } from './task-group-icon'
 import { TOP_VIEW, commandCountText, groupCrumb, groupRowKey, groupSubsections, paletteFooterHint, paletteKeyAction, taskGroupCounts, type PaletteView } from './palette-groups'
@@ -49,6 +50,8 @@ type CommandPaletteProps = {
   mode: PaletteMode
   /** The vault's Folios (title and folder path): a Folios section in files mode, the whole list in folios mode. */
   folios?: readonly FolioRow[]
+  folioIndexStatus?: VaultSidebarView['status']
+  onRetryFolioIndex?: () => void
   /** Open a Folio's page: App opens it and closes the sheet. */
   onOpenFolio?: (path: string) => void
   /** Workspace files (relative POSIX paths), for files mode. */
@@ -97,6 +100,14 @@ export type PaletteMode = 'files' | 'commands' | 'folios'
 
 /** Quick open lists this many Folios above the files; Open a Folio… lists them all. */
 const QUICK_OPEN_FOLIOS = 5
+
+const FOLIO_STATUS_MESSAGE = {
+  checking: 'Loading Folios…',
+  loading: 'Loading Folios…',
+  failed: 'Could not load Folios.',
+  unavailable: 'Could not check whether this folder is a vault.',
+  folder: 'Folios are listed in a vault; this folder is not one',
+}
 
 /** A selectable palette row (arrow navigation flattens these across sections). */
 export type PaletteItem =
@@ -280,6 +291,8 @@ export function CommandPalette({
   titles,
   hiddenPaths,
   folios,
+  folioIndexStatus = 'ready',
+  onRetryFolioIndex,
   onOpenFolio,
   checklistProgress = NO_CHECKLIST_PROGRESS,
   folders,
@@ -318,7 +331,8 @@ export function CommandPalette({
 
   const flatItems = useMemo(() => sections.flatMap((section) => section.items), [sections])
 
-  // A new query, mode or view re-ranks the list — start the highlight at the top again, unless a
+  const folioSheetStatus = mode === 'folios' ? folioIndexStatus : undefined
+  // When the list re-ranks or Folios finish loading, start the highlight at the top again, unless a
   // step back names the group row to land on. Before paint, so no frame shows the old highlight.
   useLayoutEffect(() => {
     const key = selectKeyRef.current
@@ -328,7 +342,7 @@ export function CommandPalette({
     inputRef.current?.focus()
     // flatItems is read only to place the highlight after a view change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, mode, view])
+  }, [query, mode, view, folioSheetStatus])
 
   function openGroup(group: TaskGroup): void {
     setQuery('')
@@ -379,7 +393,7 @@ export function CommandPalette({
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setSelected((s) => Math.min(s + 1, flatItems.length - 1))
+      if (flatItems.length > 0) setSelected((s) => Math.min(s + 1, flatItems.length - 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setSelected((s) => Math.max(s - 1, 0))
@@ -426,6 +440,9 @@ export function CommandPalette({
     }
   }
 
+  const folioEmptyMessage = folioIndexStatus === 'ready'
+    ? (folios?.length ? 'No Folios match' : 'This vault has no Folios')
+    : FOLIO_STATUS_MESSAGE[folioIndexStatus]
   let flatIndex = -1
   return (
     <div
@@ -459,7 +476,16 @@ export function CommandPalette({
         </div>
         <div className="pal-list" ref={listRef}>
           {flatItems.length === 0 && (
-            <div className="pal-empty">{mode === 'files' ? 'No names match' : mode === 'folios' ? ((folios?.length ?? 0) === 0 ? 'This vault has no Folios' : 'No Folios match') : 'No commands match'}</div>
+            <div className="pal-empty">
+              {mode === 'folios' ? (
+                <>
+                  <span role="status">{folioEmptyMessage}</span>
+                  {folioIndexStatus === 'failed' && onRetryFolioIndex && (
+                    <>{' '}<button className="btn" type="button" onClick={onRetryFolioIndex}>Try again</button></>
+                  )}
+                </>
+              ) : mode === 'files' ? 'No names match' : 'No commands match'}
+            </div>
           )}
           {sections.map((section) => (
             <div key={section.label}>

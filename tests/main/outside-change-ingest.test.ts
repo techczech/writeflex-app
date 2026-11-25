@@ -22,7 +22,7 @@ import { REQUEST_MAX_AGE_MS } from '../../src/main/request-executor'
 import { Workspace, isHiddenWorkspacePath } from '../../src/main/workspace'
 import { NOT_A_DOCUMENT_PATH_LABEL } from '../../src/shared/outside-source'
 import { YORK, writeFixture, type WriteFixture } from '../helpers/cli-write-fixture'
-import { content, inboxNames, openAsApp, outboxNames, plantRequest, replyTo, type AppSide } from '../helpers/request-app'
+import { content, inboxNames, openAsApp, outboxNames, plantRequest, plantRequestBatch, replyTo, type AppSide } from '../helpers/request-app'
 
 let fx: WriteFixture
 let app: AppSide
@@ -54,9 +54,10 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   resumeCollectionWrites(fx.root)
+  await app.executor.dispose()
   await app.close()
   await fx.dispose()
-})
+}, 30_000)
 
 const REPLACE = { path: 'talks/york.md', target: 'Intro about assessment.', with: 'A sharper opening.' }
 const ledger = (): Promise<Change[]> => new ChangeStore(new Workspace(fx.root)).list()
@@ -186,9 +187,11 @@ test('hundreds of waiting requests are added in one write of the ledger, oldest 
   const count = 300
   await fx.write('many.md', Array.from({ length: count }, (_, index) => `Sentence number ${index} here.`).join('\n\n'))
   // Made hours ago, while the app was closed: older than a direct request may be.
-  for (let index = 0; index < count; index += 1) {
-    await plantRequest(fx, 'replace', { path: 'many.md', target: `Sentence number ${index} here.`, with: `Changed ${index}.`, source: 'codex' }, { id: madeAgo(REQUEST_MAX_AGE_MS * 4 - index * 1000) })
-  }
+  const started = Date.now() - REQUEST_MAX_AGE_MS * 4
+  await plantRequestBatch(fx, 'replace', Array.from({ length: count }, (_, index) => ({
+    id: newRequestId(new Date(started + index * 1000)),
+    args: { path: 'many.md', target: `Sentence number ${index} here.`, with: `Changed ${index}.`, source: 'codex' },
+  })))
   const writesBefore = changes.counted.writes
   const drained = await app.executor.drain()
   expect(drained.review).toMatchObject({ filed: count, changes: count, closed: 0, left: 0 })
@@ -199,7 +202,7 @@ test('hundreds of waiting requests are added in one write of the ledger, oldest 
   expect(await inboxNames(fx)).toEqual([])
   expect(await outboxNames(fx)).toEqual([])
   expect(reviewed).toBe(1)
-})
+}, 30_000) // File and settle 300 real requests in one ledger write.
 
 test('a request read twice is added once: after a crash before it was cleared, and when the same file is planted again', async () => {
   const id = await plantRequest(fx, 'replace', REPLACE)
@@ -228,10 +231,12 @@ test('a request read twice is added once: after a crash before it was cleared, a
 
 test('one look reads a bounded number of requests, oldest first, and leaves the rest untouched for the next look', async () => {
   const count = MAX_REQUESTS_PER_PASS + 20
-  for (let index = 0; index < count; index += 1) {
-    // Spread over the sources, so that no one source's share of the ledger is what stops it.
-    await plantRequest(fx, 'insert', { path: 'notes.md', text: `Planted ${index}.`, ...(index % 3 === 0 ? {} : { source: index % 3 === 1 ? 'codex' : 'claude-code' }) }, { id: madeAgo(10_000_000 - index * 1000) })
-  }
+  const started = Date.now() - 10_000_000
+  // Spread over the sources, so that no one source's share of the ledger is what stops it.
+  await plantRequestBatch(fx, 'insert', Array.from({ length: count }, (_, index) => ({
+    id: newRequestId(new Date(started + index * 1000)),
+    args: { path: 'notes.md', text: `Planted ${index}.`, ...(index % 3 === 0 ? {} : { source: index % 3 === 1 ? 'codex' : 'claude-code' }) },
+  })))
   const names = await inboxNames(fx)
   const first = await app.executor.drain()
   expect(first.review).toMatchObject({ filed: MAX_REQUESTS_PER_PASS, left: 20, leftBecause: ['look-limit'], limits: { requestsPerLook: MAX_REQUESTS_PER_PASS } })
@@ -242,7 +247,8 @@ test('one look reads a bounded number of requests, oldest first, and leaves the 
   const second = await app.executor.drain()
   expect(second.review).toMatchObject({ filed: 20, left: 0 })
   expect(await ledger()).toHaveLength(count)
-})
+// This journey files 520 requests and persists their replies through the real executor.
+}, 30_000)
 
 const LIMITS = { maxUndecided: MAX_UNDECIDED_OUTSIDE_CHANGES, maxUndecidedBytes: 1e9, maxRefused: 10, maxPerSource: MAX_UNDECIDED_PER_SOURCE, maxPerRequest: MAX_CHANGES_PER_REQUEST }
 const seed = (id: string, source: string, text = `Seed ${id}.`) => ({

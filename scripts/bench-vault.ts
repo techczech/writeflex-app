@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { electronMainStandIn } from '../tests/helpers/electron-main-stand-in'
 import { generateSyntheticVault, VAULT_SEED } from '../tests/fixtures/synthetic-vault'
+import type { Collection } from '../src/main/collection'
 import type { MarkdownFile, SearchResult } from '../src/main/workspace'
 import type { VaultIndex } from '../src/shared/vault-index'
 import type { WindowState } from '../src/main/state'
@@ -21,6 +22,7 @@ const { values } = parseArgs({ options: {
   runs: { type: 'string', default: '7' },
   json: { type: 'string' },
   previews: { type: 'boolean' },
+  writing: { type: 'boolean' },
 } })
 const files = Number(values.files)
 const runs = Number(values.runs)
@@ -30,6 +32,12 @@ if (!Number.isSafeInteger(files) || files < 5 || !Number.isSafeInteger(runs) || 
 
 const budgets = {
   'open vault': 1500,
+  'startup to editor read (IPC)': undefined,
+  'first Files listing (IPC)': undefined,
+  'first Quick Open ranking': 50,
+  'repeat Quick Open ranking': 50,
+  'switch document read (IPC)': undefined,
+  'open Collection (IPC)': undefined,
   'first search after open': 500,
   'repeat search': 250,
   'quick-open name search': 50,
@@ -106,6 +114,7 @@ try {
     }
     return {
       state,
+      bind: (root: string) => bindWorkspace(state, root, settings, () => false),
       call,
       close: async () => {
         window.emit('closed')
@@ -146,6 +155,51 @@ try {
       ok(await previous.call<VaultIndex | null>('vault:index'))
     } finally {
       await previous.close()
+    }
+
+    if (values.writing) {
+      const session = launch()
+      try {
+        const editorRead = await measure(session, 'startup to editor read (IPC)', async () => {
+          await session.bind(root)
+          const context = await session.call<{ root: string }>('workspace:context')
+          return session.call<{ content: string }>('file:read', 'edit.md', 'editor').then((read) => ({ context, read }))
+        })
+        deepStrictEqual(editorRead.context.root, root)
+        ok(editorRead.read.content.includes('# edit'))
+
+        const listing = await measure(session, 'first Files listing (IPC)', () => session.call<Listing>('workspace:get'))
+        deepStrictEqual(listing.files.length, files)
+        const first = await measure(session, 'first search after open', () => session.call<SearchResult>('workspace:search', 'benchneedle'))
+        ok(first.matches.some(({ path }) => path === 'references.md'))
+        const repeat = await measure(session, 'repeat search', () => session.call<SearchResult>('workspace:search', 'field notes'))
+        ok(repeat.total > 0)
+
+        const index = await session.call<VaultIndex | null>('vault:index')
+        ok(index)
+        const quick = (query: string) => buildCommandPaletteSections({
+          mode: 'files', query, ...listing, commands: [], skills: [],
+          activeFile: 'edit.md', recentIds: [], titles: index.labels, hiddenPaths: index.hidden.paths,
+        })
+        for (const [journey, query, path] of [
+          ['first Quick Open ranking', 'rename-me', 'rename-me.md'],
+          ['repeat Quick Open ranking', 'references', 'references.md'],
+        ] as const) {
+          const result = await measure(session, journey, () => quick(query))
+          ok(result.flatMap(({ items }) => items).some((item) => item.kind === 'file' && item.file.path === path))
+        }
+
+        const switched = await measure(session, 'switch document read (IPC)', () =>
+          session.call<{ content: string }>('file:read', 'references.md', 'editor'))
+        ok(switched.content.includes('Benchneedle.'))
+
+        const collection = await measure(session, 'open Collection (IPC)', () =>
+          session.call<Collection>('collection:list', { dir: 'rename-folder', includeSearchText: true }))
+        ok(collection.rows.some(({ path }) => path === 'rename-folder/inside.md'))
+      } finally {
+        await session.close()
+      }
+      continue
     }
 
     const opened = launch()

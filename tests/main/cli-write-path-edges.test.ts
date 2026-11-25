@@ -107,8 +107,9 @@ test('search returns no text from a listed document that is a link by the time i
   await fx.write('visible.md', '# Visible\n\nThe word quillwort appears here too.\n')
   /** Takes the listing, then puts a link at a listed name before anything is read. */
   class SwappedAfterListing extends CommandLineWorkspace {
-    override async listFiles(): ReturnType<CommandLineWorkspace['listFiles']> {
-      const listed = await super.listFiles()
+    // Search lists through listFilesAndFolders (the Files tree's walk); swap after that listing.
+    override async listFilesAndFolders(): ReturnType<CommandLineWorkspace['listFilesAndFolders']> {
+      const listed = await super.listFilesAndFolders()
       await rm(join(this.root, 'notes.md'))
       await symlink(hidden, join(this.root, 'notes.md'))
       return listed

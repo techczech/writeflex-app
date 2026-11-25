@@ -1,7 +1,7 @@
 import { expect } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, readFile, readdir, lstat, rm, realpath } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, readdir, lstat, rm, realpath, open, chmod } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { SnapshotStore } from '@bridle/core'
@@ -75,4 +75,38 @@ export async function seed(f: Awaited<ReturnType<typeof fixture>>) {
   f.git(f.a, 'add', '.writeflex', '.bridle'); f.git(f.a, 'commit', '-m', 'Existing intentionally tracked app history'); f.git(f.a, 'push')
   running(await f.B.fetchAndIntegrate(f.bv))
   return first
+}
+
+/** Real LFS/local transport and a sparse ordinary blob; all baseline work precedes observation. */
+export async function largeFiles(f: Awaited<ReturnType<typeof fixture>>, sizes = [151_000_000, 100_000_001]) {
+  const paths = ['inspection.lfs', 'large.bin']
+  const log = join(f.base, 'lfs-calls.txt'), filter = join(f.base, 'lfs-filter')
+  const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'"
+  await writeFile(filter, `#!/bin/sh\nprintf '%s\\n' "$1" >> ${quote(log)}\nexec /opt/homebrew/bin/git-lfs "$@" 2>> ${quote(log)}\n`)
+  await chmod(filter, 0o755)
+  await writeFile(log, '')
+  for (const root of [f.a, f.b]) {
+    f.git(root, 'lfs', 'install', '--local')
+    f.git(root, 'config', '--unset', 'filter.lfs.process')
+    f.git(root, 'config', 'filter.lfs.clean', quote(filter) + ' clean -- %f')
+    f.git(root, 'config', 'filter.lfs.smudge', quote(filter) + ' smudge -- %f')
+    f.git(root, 'config', 'fetch.unpackLimit', '10000')
+    f.git(root, 'config', 'lfs.standalonetransferagent', 'recording')
+    f.git(root, 'config', 'lfs.customtransfer.recording.path', filter)
+    f.git(root, 'config', 'lfs.customtransfer.recording.args', 'standalone-file')
+    f.git(root, 'config', 'lfs.customtransfer.recording.concurrent', 'false')
+  }
+  await f.put(f.a, '.gitattributes', '*.lfs filter=lfs diff=lfs merge=lfs -text\n')
+  for (let i = 0; i < paths.length; i++) {
+    const file = await open(join(f.a, paths[i]), 'w')
+    try { await file.truncate(sizes[i]) } finally { await file.close() }
+  }
+  try { f.git(f.a, 'add', '.gitattributes', ...paths) } catch (error) { throw new Error('LFS fixture setup: ' + await readFile(log, 'utf8'), { cause: error }) }
+  f.git(f.a, 'commit', '-m', 'Synthetic large baselines')
+  f.git(f.a, 'push'); f.git(f.b, 'pull', '--ff-only')
+  const setupCalls = (await readFile(log, 'utf8')).trim().split('\n')
+  expect(setupCalls).toContain('standalone-file'); expect(setupCalls).toContain('smudge')
+  for (const root of [f.a, f.b]) expect((await lstat(join(root, paths[0]))).size).toBe(sizes[0])
+  await writeFile(log, '')
+  return { paths, sizes, log, filter, calls: async () => (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean), reset: () => writeFile(log, '') }
 }

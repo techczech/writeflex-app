@@ -1,7 +1,7 @@
 import { expect } from 'bun:test'
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { createBackupEngine, createGitleaksScanner, urlDigest } from '@app-patterns/vault-sync'
 import { ordinaryScopeTest } from '@app-patterns/vault-sync/helper/host'
 import { appendHistoryApproval, HISTORY_APPROVAL_ENV } from '../../src/backup-helper/history-approvals'
@@ -13,22 +13,24 @@ import { versionTextReader } from '../../src/main/cli/history-store'
 import { readVersionContent } from '../../src/main/version-content'
 import { earlierFixture } from './backup-earlier-fixture'
 import { findGitleaks, missingBuild, testRequiring } from '../helpers/built-output'
+import { findBackupGit, stageHelperRuntime } from '../helpers/backup-helper-runtime'
 
 const NODE = Bun.which('node')
-const GIT = Bun.which('git') ?? '/Library/Developer/CommandLineTools/usr/bin/git'
+const GIT = findBackupGit()
 const GITLEAKS = findGitleaks()
-const testHelper = testRequiring(missingBuild('out/backup-helper/writeflex-backup-helper.js') ?? (NODE ? undefined : 'Node is missing from PATH') ?? (GITLEAKS ? undefined : 'gitleaks executable is missing'))
+const testHelper = testRequiring(missingBuild('out/backup-helper/writeflex-backup-helper.js') ?? (NODE ? undefined : 'Node is missing from PATH') ?? (GIT ? undefined : 'real Git is missing (Apple stub is unsuitable)') ?? (GITLEAKS ? undefined : 'gitleaks executable is missing'))
 testHelper('built helper preview and ongoing engine capture require exact private authority; all 213 names restore',async()=>{
   const f=earlierFixture(),remote=join(f.base,'remote.git'),file=join(f.base,'private','earlier-locations.jsonl')
-  const env={PATH:'/usr/bin:/bin:/usr/sbin:/sbin',HOME:f.base,GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1'}
-  const git=(cwd:string,args:string[])=>{const r=spawnSync(GIT,args,{cwd,env});if(r.status!==0)throw new Error(r.stderr.toString());return r.stdout}
+  const { executable, entry } = stageHelperRuntime(f.base, NODE!)
+  const env={PATH:'/usr/bin:/bin:/usr/sbin:/sbin',HOME:f.base,TMPDIR:f.base,GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1'}
+  const git=(cwd:string,args:string[])=>{const r=spawnSync(GIT!,args,{cwd,env});if(r.status!==0)throw new Error(r.stderr.toString());return r.stdout}
   git(f.base,['init','-q','--bare',remote]);git(f.root,['init','-q']);git(f.root,['remote','add','origin',remote])
   writeFileSync(join(f.root,'a.md'),'Synthetic current text\n')
   const config=join(f.base,'synthetic-config.json')
   writeFileSync(config,JSON.stringify({configVersion:2,machineId:'synthetic',tools:{git:GIT,gitleaks:GITLEAKS},vaults:[{id:'v',path:f.root,include:WRITEFLEX_SCOPE.include,exclude:WRITEFLEX_SCOPE.exclude,history:WRITEFLEX_HISTORY}]}))
   const preview=(approved:boolean)=>{
-    const r=spawnSync(NODE!,[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'preview','--config',config,'--vault','v'],{env:{...env,...(approved?{[HISTORY_APPROVAL_ENV]:file}:{})},timeout:10000,maxBuffer:4*1024*1024})
-    expect(r.status).toBe(0);return JSON.parse(r.stdout.toString())
+    const r=spawnSync(executable,[entry,'preview','--config',config,'--vault','v'],{env:{...env,...(approved?{[HISTORY_APPROVAL_ENV]:file}:{})},timeout:10000,maxBuffer:4*1024*1024})
+    expect(r.status,r.stderr.toString()).toBe(0);return JSON.parse(r.stdout.toString())
   }
   expect(preview(false).history.state).toBe('unavailable')
   // A planted vault record is not consulted.
@@ -39,7 +41,7 @@ testHelper('built helper preview and ongoing engine capture require exact privat
   appendHistoryApproval(file,f.root,c.earlier,()=>true)
   expect(preview(true).history).toMatchObject({state:'complete',summary:{namedVersions:213}})
   const bridged = await new Promise<any>((resolveResult,reject) => {
-    const child = spawn(NODE!,[resolve(import.meta.dir,'../../out/backup-helper/writeflex-backup-helper.js'),'--github-credentials','preview','--config',config,'--vault','v'],{env:{...env,[HISTORY_APPROVAL_ENV]:file},stdio:['ignore','pipe','pipe','pipe','pipe']})
+    const child = spawn(executable,[entry,'--github-credentials','preview','--config',config,'--vault','v'],{env:{...env,[HISTORY_APPROVAL_ENV]:file},stdio:['ignore','pipe','pipe','pipe','pipe']})
     let stdout='',stderr=''
     const timer=setTimeout(()=>{child.kill('SIGTERM');reject(new Error('synthetic bridge timed out'))},10000)
     child.stdout!.on('data',c=>stdout+=c);child.stderr!.on('data',c=>stderr+=c)

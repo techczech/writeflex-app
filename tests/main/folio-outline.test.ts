@@ -96,7 +96,7 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   await rm(root, { recursive: true, force: true })
-})
+}, 30_000) // The cache-cap regression leaves 2,010 documents to remove.
 const write = async (rel: string, content: string): Promise<void> => {
   await mkdir(join(root, rel, '..'), { recursive: true })
   await writeFile(join(root, rel), content, 'utf8')

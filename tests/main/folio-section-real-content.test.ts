@@ -1,4 +1,4 @@
-import { test, expect } from 'bun:test'
+import { expect } from 'bun:test'
 import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -9,10 +9,11 @@ import { folioOutline } from '../../src/main/folio-outline'
 import { folioOutlineFlow } from '../../src/shared/folio-heading-flow'
 import { sectionOutlineRows } from '../../src/shared/folio-sections'
 import { withSectionPage } from '../../src/main/folio-section-role'
+import { testRequiring } from '../helpers/built-output'
 
 // Opt-in local acceptance check. The source is read only; only its temporary copy is marked.
 const source = process.env.WRITEFLEX_REAL_SECTION_SOURCE
-const real = source ? test : test.skip
+const real = testRequiring(source ? undefined : 'set WRITEFLEX_REAL_SECTION_SOURCE to the local acceptance fixture')
 real('real linguistics book has ten sections, with Introduction outside; source bytes and timestamps stay unchanged', async () => {
   const root = await mkdtemp(join(tmpdir(), 'folio-real-sections-'))
   try {
