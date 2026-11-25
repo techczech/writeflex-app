@@ -9,7 +9,7 @@ import { WorkspaceAgent } from '../../src/main/agent'
 import { ChangeStore, type NewChange } from '../../src/main/changes'
 import { saveNamedVersion } from '../../src/main/save-version'
 import { compareVersionRange } from '../../src/main/version-compare'
-import { readVersionContent, restoreVersionContent } from '../../src/main/version-content'
+import { historyRestoreCheckpoints, readVersionContent, restoreVersionContent } from '../../src/main/version-content'
 import { humanAuthorForWorkspace, VersionStore, type Version } from '../../src/main/versions'
 import { Workspace } from '../../src/main/workspace'
 import { writeFixture, type WriteFixture } from '../helpers/cli-write-fixture'
@@ -93,7 +93,7 @@ test('a version saved with the app closed is listed by the app, and its text is 
   expect(compared).toMatchObject({ fromContent: FIRST, toContent: SECOND, direction: 'forward' })
   expect((await fx.bytes('talks/horse.md')).equals(Buffer.from(SECOND))).toBe(true)
   // The restore says which version the buffer was based on (save fix): the one on disk.
-  await restoreVersionContent(app.versions, app.agent, app.workspace, { id: first.id, basis: { kind: 'disk', text: SECOND } })
+  await restoreVersionContent(app.versions, { readSnapshotContent: (id) => app.agent.readSnapshotContent(id), ...historyRestoreCheckpoints(app.agent) }, app.workspace, { id: first.id, basis: { kind: 'disk', text: SECOND } })
   expect((await fx.bytes('talks/horse.md')).equals(Buffer.from(FIRST))).toBe(true)
 })
 

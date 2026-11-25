@@ -4,6 +4,7 @@ import { developerToolsPresent, installDeveloperTools } from './developer-tools'
 import { requireSettingsPagePreference } from './main-window-settings'
 import { receiveCommandMenu, invokeNativeMenuCommand } from './menu'
 import type { MenuCommand, MenuFocus } from '../shared/command-menu'
+import { readEditorFile } from './editor-read'
 import { readDiaryGlance } from './diary-views'
 import { askConfirm, registerConfirmIpc } from './confirm-ask'
 import { createFolioManifest } from './folio-manifest-create'
@@ -37,7 +38,7 @@ import type { MainSaveReceipt } from './backup-helper/receipt-service'
 import { basisAllows, isSaveBasis } from '../shared/save-basis'
 import { e2eWriteHooksAllowed } from '../shared/e2e-write-hooks'
 import { preserveVersion } from './preserve-version'
-import { assertRelativeWorkspacePath, DiskChangedUnderBuffer, isRescuedEmptyWriteRefusal, NameTaken, type RescuedEmptyWriteRefusal, sanitiseFileName, SaveWithoutBasis, Workspace, type MarkdownFile } from './workspace'
+import { assertRelativeWorkspacePath, DiskChangedUnderBuffer, DocumentChangedError, isRescuedEmptyWriteRefusal, NameTaken, type RescuedEmptyWriteRefusal, sanitiseFileName, SaveWithoutBasis, Workspace, type MarkdownFile } from './workspace'
 import { listingEntryOf, type CollectionChanged } from '../shared/listing-patch'
 import { RestoreNotCompletedError } from './restore-failure'
 import { toggleAgentNoteTask } from './tasks'
@@ -126,8 +127,8 @@ import { GuideProgressStore } from './guide-progress-store'
 import { GUIDE_LINKS, isGuideLink } from './guide-connections'
 import { TASK_GROUPS, type TaskGroup } from '../renderer/src/commands/command-task-groups'
 import { resolveModelDefaults, type ResolvedModelDefaults, type SettingsStore, type SettingValue } from './settings'
-import { readVersionContent, replicaAwareReader, restoreVersionContent, type VersionContentRequest } from './version-content'
-import { preserveDocumentVersion, replicaCheckpointer, replicaHistoryRoute, SyncReplicaSession } from './sync-replica-session'
+import { historyRestoreCheckpoints, readVersionContent, replicaAwareReader, restoreVersionContent, type VersionContentRequest } from './version-content'
+import { preserveDocumentVersion, replicaRestoreCheckpoints, replicaHistoryRoute, SyncReplicaSession } from './sync-replica-session'
 import { replicaRecoveryDir } from './replica-save-cycles'
 import { versionTextReader } from './cli/history-store'
 import { compareVersionRange, type VersionCompareRequest } from './version-compare'
@@ -965,7 +966,7 @@ export function registerIpc(
     const source = result.filePaths[0]!
     return requireWorkspace(state).saveNamedImage(await readFile(source), source.split('/').at(-1) ?? `image${extname(source)}`)
   })
-  ipcMain.handle('assets:save-image', async (event, input: unknown) => {
+  const imagePayload = (input: unknown) => {
     if (!input || typeof input !== 'object') throw new Error('Invalid image payload.')
     const candidate = input as { bytes?: unknown; ext?: unknown }
     if (typeof candidate.ext !== 'string') throw new Error('Invalid image extension.')
@@ -978,7 +979,46 @@ export function registerIpc(
       if (bytes.length > 16 * 1024 * 1024) throw new Error('The PNG is larger than 16 MiB.')
       if (!signature.every((byte, index) => bytes[index] === byte)) throw new Error('The PNG signature is invalid.')
     }
-    return requireWorkspace(stateForSender(event.sender.id)).saveImage(bytes, candidate.ext)
+    return { bytes, ext: candidate.ext }
+  }
+  ipcMain.handle('assets:save-image', async (event, input: unknown) => {
+    const { bytes, ext } = imagePayload(input)
+    return requireWorkspace(stateForSender(event.sender.id)).saveImage(bytes, ext)
+  })
+  const pendingAreaImages = new WeakMap<Electron.WebContents, Map<string, (() => Promise<void>) | null>>()
+  ipcMain.handle('assets:prepare-area-image', async (event, bytes: unknown, root: unknown) => {
+    if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) throw new Error('Invalid Area image owner.')
+    const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
+    if (workspace.root !== root) throw new Error('The destination Collection changed before the Area image could be saved.')
+    const image = imagePayload({ bytes, ext: 'png' })
+    let pending = pendingAreaImages.get(event.sender)
+    if (!pending) pendingAreaImages.set(event.sender, pending = new Map())
+    if (pending.size >= 16) throw new Error('Too many Area drops are in progress.')
+    const receipt = randomUUID()
+    // Reserve an entry before saving so concurrent drops share the same limit.
+    pending.set(receipt, null)
+    try {
+      const { path, discard } = await workspace.prepareAreaImage(image.bytes)
+      if (state.workspace !== workspace) {
+        await discard()
+        throw new Error('The destination Collection changed while the Area image was saved.')
+      }
+      pending.set(receipt, discard)
+      return { path, receipt }
+    } catch (error) {
+      pending.delete(receipt)
+      throw error
+    }
+  })
+  ipcMain.handle('assets:finish-area-image', async (event, receipt: unknown, inserted: unknown) => {
+    if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame
+      || typeof receipt !== 'string' || typeof inserted !== 'boolean') throw new Error('Invalid Area image receipt.')
+    const pending = pendingAreaImages.get(event.sender)
+    const discard = pending?.get(receipt)
+    if (!pending || !discard) throw new Error('The Area image receipt is missing.')
+    pending.delete(receipt)
+    if (!inserted) await discard()
   })
   ipcMain.handle('workspace:context', async (event) => {
     const state = stateForSender(event.sender.id)
@@ -1971,30 +2011,36 @@ export function registerIpc(
     if (!isSaveBasis(input?.basis)) throw new SaveWithoutBasis(input?.path ?? 'the document')
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
+    const versions = requireVersions(state)
+    const bound = state.bindGeneration
+    const live = () => state.bindGeneration === bound && state.workspace === workspace
     const replicas = state.syncReplicas ?? null
-    // Outside a synced Collection a restore needs the agent's checkpoints, as it always has.
+    const liveAgent = () => live() ? state.agent : null
     const agent = replicas ? null : await requireAgent(state)
-    // In a OneDrive Collection the text a restore replaces is kept by the replica store first, locally and
-    // durably, with no agent; an agent already running also checkpoints, one still starting is not waited for.
-    const checkpointFile = replicas
-      ? replicaCheckpointer({
-        replicas,
-        read: async (path) => (await workspace.readFile(path).catch(() => null))?.content ?? null,
-        liveAgent: () => state.agent ?? null,
-      })
-      : async (path: string) => { await agent!.checkpointFile(path) }
-    const restorer = {
-      readSnapshotContent: (id: string) => versionReader(state).readSnapshotContent(id),
-      checkpointFile,
+    const reader = replicas
+      ? replicaAwareReader(workspace.root, async () => liveAgent(), versionTextReader(workspace.root), (sha) => replicas.localBytes(sha))
+      : replicaAwareReader(workspace.root, async () => agent)
+    const checkpoints = replicas
+      ? replicaRestoreCheckpoints({ replicas, liveAgent })
+      : historyRestoreCheckpoints(agent!, versions)
+    const assertLive = () => {
+      if (!live()) throw new Error('The Collection changed before the restore could finish.')
     }
     try {
-      const restored = await restoreVersionContent(requireVersions(state), restorer, workspace, { ...input, basis: input.basis })
-      if (restored && replicas) sendSafe(state, 'versions:changed', null)
-      if (restored?.file.path) notifyCollectionChanged(state, [restored.file.path])
+      assertLive()
+      const restored = await restoreVersionContent(versions, { ...checkpoints, readSnapshotContent: (id) => reader.readSnapshotContent(id) }, workspace, { ...input, basis: input.basis }, assertLive)
+      if (restored && 'written' in restored && live()) {
+        sendSafe(state, 'versions:changed', null)
+        if (restored.file.path) notifyCollectionChanged(state, [restored.file.path])
+      }
       return restored
     } catch (error) {
       if (error instanceof DiskChangedUnderBuffer) {
         return { refused: 'disk-changed' as const, path: error.path, diskText: error.diskText, message: error.message }
+      }
+      if (error instanceof DocumentChangedError) {
+        const disk = await workspace.readFile(error.path).catch(() => null)
+        return { refused: 'disk-changed' as const, path: error.path, diskText: disk?.content ?? null, message: 'The document changed on disk before the restore.' }
       }
       throw error
     }
@@ -2017,12 +2063,22 @@ export function registerIpc(
     shell.showItemInFolder(absolute)
   })
 
-  ipcMain.handle('file:read', async (event, path: string, purpose?: unknown) => {
+  ipcMain.handle('file:read', async (event, path: string) => {
     const state = stateForSender(event.sender.id)
     const workspace = requireWorkspace(state)
     const result = await workspace.readFile(path)
     if (state.workspace !== workspace) throw new Error('The folder changed while reading the document.')
-    if (purpose === 'editor') {
+    return result
+  })
+
+  ipcMain.handle('file:read-editor', async (event, path: string, root: string) => {
+    const state = stateForSender(event.sender.id)
+    const workspace = state.workspace
+    if (!workspace || workspace.root !== root) return { kind: 'stale' }
+    const bound = state.bindGeneration
+    const result = await readEditorFile(workspace, path)
+    if (state.bindGeneration !== bound || state.workspace !== workspace) return { kind: 'stale' }
+    if (result.kind === 'read') {
       state.workspaceWatcher?.noteRead(result.file.path, result.content, async () =>
         (await workspace.readFile(path)).content)
     }
@@ -2079,7 +2135,9 @@ export function registerIpc(
     const workspace = requireWorkspace(stateForSender(event.sender.id))
     // A vault's works and Writing only hidden set decide which subfolders the Folder dashboard lists.
     const vault = vaultIndexService ? await vaultIndexService.get(workspace) : null
-    return listCollection(workspace, collectionDir(input), vault, { includeSearchText: input?.includeSearchText === true })
+    const dir = collectionDir(input)
+    const listing = await workspace.listFilesAndFolders(dir)
+    return listCollection(workspace, dir, vault, { includeSearchText: input?.includeSearchText === true, listing })
   })
   ipcMain.handle('collection:status', async (event, input: { dir?: string }) =>
     collectionStatus(requireWorkspace(stateForSender(event.sender.id)), collectionDir(input)))

@@ -40,7 +40,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { basename, join } from "node:path";
 import {
   assertNotInZoteroDataDirectory,
@@ -210,9 +210,9 @@ export type ZoteroLivenessSignal =
 
 export interface ZoteroLivenessProbes {
   /** Identified Zotero executables. Defaults to filtering `ps` by executable only. */
-  runningZoteroProcesses?: () => string[];
+  runningZoteroProcesses?: () => string[] | Promise<string[]>;
   /** Processes holding the database file open. Defaults to `lsof`. */
-  processesHoldingDatabase?: (databasePath: string) => string[];
+  processesHoldingDatabase?: (databasePath: string) => string[] | Promise<string[]>;
 }
 
 export interface ZoteroLiveness {
@@ -224,13 +224,15 @@ export interface ZoteroLiveness {
 export type LivenessCommandRunner = (
   command: string,
   arguments_: string[],
-) => string;
+) => string | Promise<string>;
 
-function runLivenessCommand(command: string, arguments_: string[]): string {
-  return execFileSync(command, arguments_, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 5_000,
+function runLivenessCommand(signal?: AbortSignal): LivenessCommandRunner {
+  return (command, arguments_) => new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    execFile(command, arguments_, { encoding: "utf8", signal, timeout: 5_000 }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(stdout);
+    }).stdin?.end();
   });
 }
 
@@ -245,13 +247,13 @@ function outputLines(output: string): string[] {
  * Read a command whose successful output cannot legitimately be empty. Any unusable reading throws,
  * so the liveness caller's existing catch reports the corresponding probe as open.
  */
-function requiredCommandOutputLines(
+async function requiredCommandOutputLines(
   command: string,
   arguments_: string[],
   runner: LivenessCommandRunner,
   emptyMessage: string,
-): string[] {
-  const lines = outputLines(runner(command, arguments_));
+): Promise<string[]> {
+  const lines = outputLines(await runner(command, arguments_));
   if (lines.length === 0) {
     throw new Error(emptyMessage);
   }
@@ -262,18 +264,18 @@ function requiredCommandOutputLines(
  * Read a matcher command for which exit status 1 means "no matches". Other failures still throw,
  * so the liveness caller reports an unreadable probe as open.
  */
-function matchingCommandOutputLines(
+async function matchingCommandOutputLines(
   command: string,
   arguments_: string[],
   runner: LivenessCommandRunner,
-): string[] {
+): Promise<string[]> {
   try {
-    return outputLines(runner(command, arguments_));
+    return outputLines(await runner(command, arguments_));
   } catch (error) {
     // `lsof` exits 1 when nothing holds the file. That is a trustworthy empty reading, unlike a
     // failed `ps`, whose output must always contain at least the process running the probe.
-    const status = (error as { status?: number }).status;
-    if (status === 1) {
+    const failure = error as { code?: number; status?: number; killed?: boolean; signal?: string };
+    if ((failure?.code ?? failure?.status) === 1 && !failure.killed && !failure.signal) {
       return [];
     }
     throw error;
@@ -296,11 +298,11 @@ export function filterRunningZoteroProcesses(processLines: string[]): string[] {
   });
 }
 
-export function runningZoteroProcessesFromPs(
-  runner: LivenessCommandRunner = runLivenessCommand,
-): string[] {
+export async function runningZoteroProcessesFromPs(
+  runner: LivenessCommandRunner = runLivenessCommand(),
+): Promise<string[]> {
   return filterRunningZoteroProcesses(
-    requiredCommandOutputLines(
+    await requiredCommandOutputLines(
       "/bin/ps",
       ["-axo", "pid=,comm="],
       runner,
@@ -347,12 +349,12 @@ export function holdersExcludingSelf(
   return holders;
 }
 
-export function processesHoldingDatabaseFromLsof(
+export async function processesHoldingDatabaseFromLsof(
   databasePath: string,
-  runner: LivenessCommandRunner = runLivenessCommand,
-): string[] {
+  runner: LivenessCommandRunner = runLivenessCommand(),
+): Promise<string[]> {
   return holdersExcludingSelf(
-    matchingCommandOutputLines(
+    await matchingCommandOutputLines(
       "/usr/sbin/lsof",
       ["-F", "pc", "--", databasePath],
       runner,
@@ -370,20 +372,22 @@ export function processesHoldingDatabaseFromLsof(
  *
  * A probe that throws is reported as a signal too: an unreadable probe is not a closed Zotero.
  */
-export function zoteroLibraryLiveness(
+export async function zoteroLibraryLiveness(
   databasePath: string,
   probes: ZoteroLivenessProbes = {},
-): ZoteroLiveness {
+  signal?: AbortSignal,
+): Promise<ZoteroLiveness> {
   const signals: ZoteroLivenessSignal[] = [];
   const details: string[] = [];
 
-  const runningProcesses =
-    probes.runningZoteroProcesses ?? runningZoteroProcessesFromPs;
-  const holders =
-    probes.processesHoldingDatabase ?? processesHoldingDatabaseFromLsof;
+  const runCommand = runLivenessCommand(signal);
+  const runningProcesses = probes.runningZoteroProcesses
+    ?? (() => runningZoteroProcessesFromPs(runCommand));
+  const holders = probes.processesHoldingDatabase
+    ?? ((path: string) => processesHoldingDatabaseFromLsof(path, runCommand));
 
   try {
-    const processes = runningProcesses();
+    const processes = await runningProcesses();
     if (processes.length > 0) {
       signals.push("zotero-process-running");
       details.push(`A Zotero process is running: ${processes.join("; ")}`);
@@ -398,7 +402,7 @@ export function zoteroLibraryLiveness(
   }
 
   try {
-    const openedBy = holders(databasePath);
+    const openedBy = await holders(databasePath);
     if (openedBy.length > 0) {
       signals.push("database-file-open");
       details.push(
@@ -453,6 +457,8 @@ export interface ZoteroAnnotationWriteSessionOptions {
   /** Additive second forbidden tree, exactly as the general guard treats it (ADR-0012 §1). */
   zoteroDataDirectory?: string;
   liveness?: ZoteroLivenessProbes;
+  /** Cancels an in-flight liveness check when its desktop owner closes. */
+  signal?: AbortSignal;
   schemaPin?: ZoteroStructuralSchemaVersions;
   /** How many pre-write copies to keep. Older ones are deleted, newest first. */
   keepBackups?: number;
@@ -628,10 +634,10 @@ function pruneBackups(backupDirectory: string, keep: number): void {
  * 5. Take an exclusive lock — the last reading of "is Zotero open", and the one that cannot be
  *    fooled, because it asks SQLite instead of asking the operating system about names.
  */
-export function openZoteroAnnotationWriteSession(
+export async function openZoteroAnnotationWriteSession(
   databaseDriver: SqliteDriver,
   options: ZoteroAnnotationWriteSessionOptions,
-): ZoteroAnnotationWriteSession | ZoteroAnnotationWriteRefusal {
+): Promise<ZoteroAnnotationWriteSession | ZoteroAnnotationWriteRefusal> {
   const databasePath =
     options.databasePath ??
     join(discoverZoteroDataDirectory().path, "zotero.sqlite");
@@ -654,8 +660,8 @@ export function openZoteroAnnotationWriteSession(
     };
   }
 
-  const liveness = zoteroLibraryLiveness(databasePath, options.liveness ?? {});
-  if (liveness.open) {
+  const liveness = await zoteroLibraryLiveness(databasePath, options.liveness, options.signal);
+  if (liveness.open || options.signal?.aborted) {
     return {
       code: "zotero-is-open",
       details: liveness.details,

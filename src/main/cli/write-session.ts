@@ -545,12 +545,13 @@ export class WritingWorkspace extends CommandLineWorkspace {
   override async renameFolder(): Promise<{ path: string }> { return notFromHere('rename folders') }
   override async renameFile(): Promise<FileReadResult> { return notFromHere('rename files') }
   override async saveImage(): Promise<{ path: string }> { return notFromHere('save images') }
+  override async prepareAreaImage(): Promise<never> { return notFromHere('prepare Area images') }
   override async saveNamedImage(): Promise<{ path: string }> { return notFromHere('save images') }
 }
 
 const BARRED: Record<string, string> = {
   saveEditorText: 'save editor text', duplicateFile: 'duplicate files', createFolder: 'create folders', renameFolder: 'rename folders',
-  renameFile: 'rename files', saveImage: 'save images', saveNamedImage: 'save images',
+  renameFile: 'rename files', saveImage: 'save images', prepareAreaImage: 'prepare Area images', saveNamedImage: 'save images',
 }
 
 /**

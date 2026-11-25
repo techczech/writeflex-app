@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { pastedImagePath } from '../../src/main/workspace'
 import { mkdtempSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs'
-import { link, readFile } from 'node:fs/promises'
+import { link, readFile, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Workspace, sanitiseFileName } from '../../src/main/workspace'
@@ -26,6 +26,24 @@ test('pasted image paths use the timestamp and suffix collisions', () => {
   const stamp = new Date('2026-07-12T09:30:12Z')
   expect(pastedImagePath('png', stamp, () => false)).toBe('assets/pasted-2026-07-12-093012.png')
   expect(pastedImagePath('.jpeg', stamp, (path) => path === 'assets/pasted-2026-07-12-093012.jpeg')).toBe('assets/pasted-2026-07-12-093012-2.jpeg')
+})
+
+test('discarding an Area removes its own PNG and preserves a replacement at the same path', async () => {
+  const ws = new Workspace(makeRoot())
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jf2sAAAAASUVORK5CYII=', 'base64')
+  const refused = await ws.prepareAreaImage(bytes)
+  const replaced = await ws.prepareAreaImage(bytes)
+  expect(refused.path).not.toBe(replaced.path)
+  await refused.discard()
+  expect(existsSync(join(ws.root, refused.path))).toBe(false)
+
+  const replacedPath = join(ws.root, replaced.path)
+  const movedPath = join(ws.root, 'assets', 'moved.png')
+  await rename(replacedPath, movedPath)
+  writeFileSync(replacedPath, 'another writer’s asset')
+  await expect(replaced.discard()).rejects.toThrow('changed after the Area drop wrote it')
+  expect(await readFile(replacedPath, 'utf8')).toBe('another writer’s asset')
+  expect(await readFile(movedPath)).toEqual(bytes)
 })
 
 describe('duplicateFile', () => {

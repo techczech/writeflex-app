@@ -23,6 +23,7 @@ import { Workspace, isHiddenWorkspacePath } from '../../src/main/workspace'
 import { NOT_A_DOCUMENT_PATH_LABEL } from '../../src/shared/outside-source'
 import { YORK, writeFixture, type WriteFixture } from '../helpers/cli-write-fixture'
 import { content, inboxNames, openAsApp, outboxNames, plantRequest, plantRequestBatch, replyTo, type AppSide } from '../helpers/request-app'
+import { waitForWatch } from '../helpers/watch-test-target.mjs'
 
 let fx: WriteFixture
 let app: AppSide
@@ -332,7 +333,26 @@ test('one request carries a bounded number of Changes: a larger one is refused b
   expect(await ledger()).toHaveLength(MAX_CHANGES_PER_REQUEST)
 })
 
-test('a reply that cannot be written does not stall the look: every request is settled and cleared, the signed answer is kept, the failure is told once', async () => {
+test('the inbox watch reports two unwritable replies once for the look', async () => {
+  await plantRequestBatch(fx, 'insert', [
+    { id: madeAgo(50), args: { path: 'notes.md', text: 'One.' } },
+    { id: madeAgo(40), args: { path: 'notes.md', text: 'Two.' } },
+  ])
+  const outbox = join(fx.root, OUTBOX_DIR)
+  await mkdir(outbox, { recursive: true })
+  await chmod(outbox, 0o555)
+  const reports: Array<[string, Record<string, unknown>]> = []
+  const watch = watchRequestInbox(app.restarted({ changes }), { pollMs: 3_600_000, report: (event, details) => { reports.push([event, details]) } })
+  try {
+    await waitForWatch(() => reports.some(([event]) => event === 'failed'), 'the inbox failure report')
+    expect(reports.filter(([event]) => event === 'failed')).toEqual([['failed', { root: fx.root, message: expect.stringContaining('A reply could not be written'), repliesNotWritten: 2 }]])
+  } finally {
+    await watch.dispose()
+    await chmod(outbox, 0o755)
+  }
+})
+
+test('a reply that cannot be written does not stall the look: every request is settled and cleared and its signed answer is kept', async () => {
   const first = await plantRequest(fx, 'replace', REPLACE, { id: madeAgo(300) })
   const bad = await plantRequest(fx, 'replace', { path: 'talks/york.md', target: 'not there', with: 'x' }, { id: madeAgo(200) })
   const last = await plantRequest(fx, 'insert', { path: 'notes.md', text: 'After the failure.' }, { id: madeAgo(100) })
@@ -347,17 +367,6 @@ test('a reply that cannot be written does not stall the look: every request is s
     expect((await ledger()).map((change) => change.status).sort()).toEqual(['pending', 'pending', 'rejected'])
     // The next look has nothing to do again.
     expect((await app.executor.drain()).review).toBeUndefined()
-    // The watch tells the failure once for the look, not once per request. No wall-clock margin: the
-    // test waits for the report itself.
-    await plantRequest(fx, 'insert', { path: 'notes.md', text: 'One.' }, { id: madeAgo(50) })
-    await plantRequest(fx, 'insert', { path: 'notes.md', text: 'Two.' }, { id: madeAgo(40) })
-    const reports: Array<[string, Record<string, unknown>]> = []
-    let told: () => void = () => {}
-    const failure = new Promise<void>((resolve) => { told = resolve })
-    const watch = watchRequestInbox(app.restarted({ changes }), { pollMs: 3_600_000, report: (event, details) => { reports.push([event, details]); if (event === 'failed') told() } })
-    await failure
-    await watch.dispose()
-    expect(reports.filter(([event]) => event === 'failed')).toEqual([['failed', { root: fx.root, message: expect.stringContaining('A reply could not be written'), repliesNotWritten: 2 }]])
   } finally {
     await chmod(join(fx.root, OUTBOX_DIR), 0o755)
   }
@@ -365,7 +374,11 @@ test('a reply that cannot be written does not stall the look: every request is s
   // The command line can still find out what happened to each, because each kept answer is SIGNED
   // with this Collection's key and verifies.
   type Answer = { id: string; outcome: string; verified: boolean; reason?: string; code?: string; operation?: string }
-  const answers = async (): Promise<Answer[]> => (await fx.cli(['waiting'])).json.result!.settled as Answer[]
+  const answers = async (): Promise<Answer[]> => {
+    const { json } = await fx.cli(['waiting'])
+    expect(json.ok).toBe(true)
+    return json.result!.settled as Answer[]
+  }
   const mine = (all: Answer[]): Answer[] => all.filter((one) => [first, bad, last].includes(one.id)).sort((a, b) => (a.id < b.id ? -1 : 1))
   expect(mine(await answers())).toEqual([
     { id: first, outcome: 'filed', verified: true, operation: 'replace', at: expect.any(String) },
@@ -403,7 +416,9 @@ test('a reply that cannot be written does not stall the look: every request is s
   // And a later ownership has a new key, under which the earlier answers still do not verify.
   await createReplyKey(fx.keys, fx.root)
   expect(mine(await answers()).map((one) => one.outcome)).toEqual(['unknown', 'unknown', 'unknown'])
-})
+// The combined real-file scenario hit 7.9 s on the loaded Studio on 25 Nov. The
+// report has its own case now. Allow time here for the real ledger and CLI reads.
+}, 15000)
 
 test('while the app does not hold the Collection, or cannot write it, a shown-first request waits and is added later', async () => {
   const id = await plantRequest(fx, 'replace', REPLACE, { id: madeAgo(REQUEST_MAX_AGE_MS * 10) })

@@ -1,7 +1,7 @@
 // Entry of the Settings window: the shared @app-patterns/settings-react window over WriteFlex's schema and
 // command registry, plus WriteFlex's own pages. State and every action come from main through the
 // preload bridge (window.bridleSettings); nothing here reads or writes a file.
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { SettingsWindow, type RowHint, type SheetState, type Slot } from '@app-patterns/settings-react'
 import type { SectionRequest, SettingsView } from '@app-patterns/settings-electron'
@@ -38,19 +38,21 @@ const ROW_HINTS: Record<string, RowHint> = {
 
 type Opened = { section: string; sheet?: SheetState; n: number }
 
-function SettingsApp(): React.JSX.Element | null {
+function SettingsApp(): React.JSX.Element {
   const voices = usePlatformVoices()
   const [view, setView] = useState<SettingsView | null>(null)
   useAppearance(view?.state.settings[THEME_SETTING])
   const [opened, setOpened] = useState<Opened>({ section: 'general', n: 0 })
   const [seenAt, setSeenAt] = useState(() => Date.now())
-  const open = useCallback(async (req: SectionRequest): Promise<void> => {
-    let sheet: SheetState | undefined
-    if (req.action === 'import') {
-      const picked = await bridge.importPick()
-      if (picked) sheet = { kind: picked.preview.refused ? 'refused' : 'import', fileName: picked.fileName, preview: picked.preview }
-    }
-    setOpened((o) => ({ section: req.section, ...(sheet ? { sheet } : {}), n: o.n + 1 }))
+  const [viewFailed, setViewFailed] = useState(false)
+  const [importFailed, setImportFailed] = useState(false)
+  const sectionVersion = useRef(0)
+  const readView = useRef<(() => void) | null>(null)
+  const showSection = useCallback((section: string, sheet?: SheetState): number => {
+    const n = ++sectionVersion.current
+    setImportFailed(false)
+    setOpened({ section, n, ...(sheet ? { sheet } : {}) })
+    return n
   }, [])
 
   useEffect(() => {
@@ -64,17 +66,63 @@ function SettingsApp(): React.JSX.Element | null {
   }, [])
 
   useEffect(() => {
-    void bridge.view().then((v) => {
-      setView(v)
-      if (v.request) void open(v.request)
+    let live = true
+    let hasView = false
+    let latestRead = 0
+    let pendingImport: { section: string; n: number } | null = null
+
+    const startImport = (): void => {
+      if (!hasView || !pendingImport) return
+      const { section, n } = pendingImport
+      pendingImport = null
+      const isCurrent = () => live && n === sectionVersion.current
+      if (!isCurrent()) return
+      void Promise.resolve(bridge.importPick()).then((picked) => {
+        if (!isCurrent() || !picked) return
+        showSection(section, {
+          kind: picked.preview.refused ? 'refused' : 'import', fileName: picked.fileName, preview: picked.preview,
+        })
+      }, () => { if (isCurrent()) setImportFailed(true) })
+    }
+    const open = (request: SectionRequest): void => {
+      const n = showSection(request.section)
+      pendingImport = request.action === 'import' ? { section: request.section, n } : null
+      startImport()
+    }
+    const acceptView = (next: SettingsView): void => {
+      hasView = true
+      setView(next)
+      setViewFailed(false)
+    }
+
+    const offChanged = bridge.onChanged((next) => {
+      acceptView(next)
+      startImport()
     })
-    const offChanged = bridge.onChanged(setView)
-    const offSection = bridge.onSection((r) => void open(r))
+    const offSection = bridge.onSection(open)
+    const read = (): void => {
+      const n = ++latestRead
+      // A pushed view supersedes any pending read of the initial view.
+      const isCurrent = () => live && n === latestRead && !hasView
+      setViewFailed(false)
+      void bridge.view().then((next) => {
+        if (!isCurrent()) return
+        acceptView(next)
+        // The host can return the original open request on retry. Any section already received wins.
+        if (next.request && sectionVersion.current === 0) open(next.request)
+        else startImport()
+      }, () => { if (isCurrent()) setViewFailed(true) })
+    }
+    readView.current = read
+    // Subscribe first. In development, let StrictMode discard its first effect before the one-shot host request.
+    queueMicrotask(() => { if (live) read() })
     return () => {
+      live = false
+      readView.current = null
       offChanged()
       offSection()
     }
-  }, [open])
+  }, [showSection])
 
   // ChatGPT is a sign-in, not a key: its row offers Sign out, and signing in is on the Sign in page.
   const slots = useMemo<Slot[] | undefined>(() => view?.slots.map((s) => ({
@@ -82,14 +130,26 @@ function SettingsApp(): React.JSX.Element | null {
     group: 'Model providers',
     ...(ACCOUNT_SLOTS.has(s.id) ? { kind: 'account' as const, icon: 'message-circle' } : { icon: 'key-round' }),
   })), [view])
-  const customPages = useCustomPages(view, useCallback(() => setOpened(o => ({ section: 'accounts', n: o.n + 1 })), []))
+  const customPages = useCustomPages(view, useCallback(() => { showSection('accounts') }, [showSection]))
 
-  if (!view) return null
-  const pages = [...customPages.filter(p => p.id !== 'command-line'), ...currentPages(view, (section, sheet) => setOpened(o => ({ section, sheet, n: o.n + 1 })))]
+  const titlebar = <WindowTitlebar className="wf-titlebar"><span>Settings</span></WindowTitlebar>
+  if (!view) return (
+    <>
+      {titlebar}
+      {viewFailed ? (
+        <div role="alert" className="bsw-notice wf-settings-problem">
+          <span>Settings could not be loaded.</span>
+          <button type="button" className="bsw-btn" onClick={() => readView.current?.()}>Try again</button>
+        </div>
+      ) : <div role="status" className="wf-settings-loading">Loading settings…</div>}
+    </>
+  )
+  const pages = [...customPages.filter(p => p.id !== 'command-line'), ...currentPages(view, showSection)]
   return (
     <>
-      <WindowTitlebar className="wf-titlebar"><span>Settings</span></WindowTitlebar>
-      {view.problem && <div role="alert" className="wf-settings-problem">{view.problem}</div>}
+      {titlebar}
+      {view.problem && <div role="alert" className="bsw-notice wf-settings-problem">{view.problem}</div>}
+      {importFailed && <div role="alert" className="bsw-notice wf-settings-problem">Could not start the settings import.</div>}
       <SettingsWindow
         key={opened.n}
         className="wf-settings"

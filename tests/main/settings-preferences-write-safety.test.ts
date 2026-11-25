@@ -17,7 +17,7 @@ import { commandRegistry } from '../../src/renderer/src/commands/registry'
 import { effectiveSheetChords } from '../../src/renderer/src/commands/chords'
 
 const version = '0.27.0-alpha.2'
-const fresh = () => mkdtempSync(join(tmpdir(), 'wf-settings-fixes-'))
+const fresh = () => mkdtempSync(join(tmpdir(), 'wf-settings-write-safety-'))
 const legacy = (dir: string, values = {}) => {
   const path = join(dir, 'settings.json')
   writeFileSync(path, JSON.stringify({ values }))

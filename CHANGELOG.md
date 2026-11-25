@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.29.0-alpha.6] — 2026-11-25
+
+An alpha: early, and it can break.
+
+### Changed
+- Restoring an older version first checks that a readable copy of your current text is kept, in ordinary and OneDrive folders, and refuses if it cannot.
+- Closing the tab of a deleted file throws away only the text you confirmed.
+- A file that is briefly unreadable (OneDrive downloading it, or locked) keeps its tab and draft and offers Retry instead of looking deleted.
+- Word and HTML export open for what you asked to export.
+- Opening a Collection is much faster in large vaults; switching documents is a little faster.
+- The Collection file list and Settings offer Try again when they cannot load; a failed list no longer looks empty.
+- The Board stays on the Collection you are in; Tab stays inside the command palette.
+- Decline all declines only the edits it asked about; Name Version saves for the part or Folio it was opened on; Compare shows only the current comparison.
+- Open a Folio ignores out-of-date lookups; Collection lists refresh cleanly; the Folio workspace decides between Open and Start outline from one current read.
+- Dragging a ReadFlex Area into a draft works straight after you draw it; a refused drop leaves no stray image or quote.
+- Backup status no longer flickers to "connecting" while it retries.
+
 ## [0.29.0-alpha.5] — 2026-11-25
 
 An alpha: early, and it can break.

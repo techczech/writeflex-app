@@ -25,7 +25,7 @@ export const TITLE_PASSTHROUGH = new Set<PropertyKey>([
   'exclusive', 'exclusiveAll', 'writersWaiting', 'assertWritable', 'commitOnlyOver', 'assertOnDisk',
   'withWriteReceipts', 'recordingOperationWrites', 'outsideCallRecords', 'changedSinceRead', 'receiptFor', 'receiptForOwnRoute',
   'recordOwnWrite', 'forgetOwnWrites', 'wasRecentlyWrittenByApp', 'announceWriteNotice',
-  'saveImage', 'saveNamedImage', 'createFile', 'duplicateFile', 'removeFileOverRead', 'setAsideBackupRecord',
+  'saveImage', 'prepareAreaImage', 'saveNamedImage', 'createFile', 'duplicateFile', 'removeFileOverRead', 'setAsideBackupRecord',
   'moveToTrash', 'createFolder', 'renameFolder', 'renameFile', 'writeAppStoreFile',
 ])
 export const TITLE_BLOCKED = new Set<PropertyKey>(['constructor', 'session'])

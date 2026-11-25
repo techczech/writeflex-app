@@ -36,13 +36,14 @@
  * version into the synced store; a text not written there stays in local recovery for the next open.
  */
 import { isSyncedLocation } from './sync-location'
-import { readReplicaRecordsSync, REPLICA_DIR, replicaVersionsFor, sha256Hex, wasPublishedByThisApp, type ReplicaVersions } from './replica-versions'
+import { readReplicaRecordsSync, REPLICA_DIR, REPLICA_SNAPSHOT_PREFIX, replicaVersionsFor, sha256Hex, wasPublishedByThisApp, type ReplicaVersions } from './replica-versions'
 import type { HistoryRoute } from './workspace-watcher'
 import { localRecoveryBytes, localRecoveryVersions, ReplicaSaveCycles, withinGrace } from './replica-save-cycles'
 import type { Version } from '../engine'
 import { readSettled, reconcileSyncCopies, type ReconcileReport } from './sync-reconcile'
 import type { PreserveResult } from '../shared/preserve-receipt'
 import type { SaveBasis } from '../shared/save-basis'
+import type { VersionRestoreCheckpoints } from './version-content'
 import type { Workspace } from './workspace'
 import { posix } from 'node:path'
 
@@ -180,23 +181,35 @@ export class SyncReplicaSession {
    * given, in the store as soon as it can be written. No agent, and no waiting for OneDrive.
    */
   async preserve(path: string, text: string): Promise<PreserveResult> {
+    return this.#preserve(path, text, 'preserve')
+  }
+
+  /** A restore names the exact text to keep and receives a readable replica snapshot id. */
+  async keepBeforeRestore(path: string, text: string): Promise<PreserveResult> {
+    return this.#preserve(path, text, 'before-restore')
+  }
+
+  async #preserve(path: string, text: string, cause: 'preserve' | 'before-restore'): Promise<PreserveResult> {
     if (this.#closing) return { kept: false, refused: 'unavailable' }
     const expected = sha256Hex(Buffer.from(text, 'utf8'))
     const disk = await readSettled(this.workspace.absolute(path), { settleMs: 0 })
-    if (disk.kind !== 'settled') return { kept: false, refused: 'unavailable' }
+    if (disk.kind !== 'settled' || this.#closing) return { kept: false, refused: 'unavailable' }
     if (disk.sha !== expected) return { kept: false, refused: 'mismatch' }
     try {
-      void this.#track(this.cycles.keepBefore(path, disk.bytes, 'preserve'))
-      return { kept: true, receipt: { store: 'replica-versions', entryId: `pending:${expected.slice(0, 16)}`, sha256: expected } }
+      if (cause === 'before-restore') {
+        const local = await this.#track(this.cycles.keepBefore(path, disk.bytes, cause))
+        const copy = this.cycles.recovery.read(local.name)
+        if (this.#closing || copy?.kind !== 'before' || copy.path !== path || copy.cause !== cause || sha256Hex(copy.bytes) !== expected) {
+          return { kept: false, refused: 'unavailable' }
+        }
+        void this.#track(local.publish())
+        return { kept: true, receipt: { store: 'replica-versions', entryId: REPLICA_SNAPSHOT_PREFIX + expected, sha256: expected } }
+      }
+      void this.#track(this.cycles.keepBefore(path, disk.bytes, cause))
+      return { kept: true, receipt: { store: 'replica-versions', entryId: 'pending:' + expected.slice(0, 16), sha256: expected } }
     } catch {
       return { kept: false, refused: 'unavailable' }
     }
-  }
-
-  /** The text a restore is about to replace: kept locally and durably first (throws when it cannot be). */
-  keepBeforeRestore(path: string, text: string): void {
-    if (this.#closing) throw new Error('The Collection is closing in this window.')
-    void this.#track(this.cycles.keepBefore(path, text, 'before-restore'))
   }
 
   /**
@@ -466,28 +479,26 @@ export async function preserveDocumentVersion(input: {
   return input.preserveVersion({ text, history: agentNow ? async () => (await agentNow).snapshotForPreserve(path) : null })
 }
 
-/** What a restore needs of an agent: a checkpoint of the document in History. */
-export type CheckpointingAgent = { checkpointFile: (path: string) => Promise<unknown> }
-
 /**
- * The checkpoint a restore makes before and after it writes (version-content.ts `restoreVersionContent`),
- * in a OneDrive Collection: the text it replaces is kept by the replica store (locally and durably, with
- * no agent) the first time; an agent already running also checkpoints, an agent still starting is never
- * waited for, and its failure does not stop a restore the replica store has covered.
+ * In OneDrive the local replica copy covers recovery independently of History. Only a live agent is
+ * asked for the optional checkpoints, and a failure there does not change the outcome.
  */
-export function replicaCheckpointer(input: {
+export function replicaRestoreCheckpoints(input: {
   replicas: SyncReplicaSession
-  read: (path: string) => Promise<string | null>
-  liveAgent: () => CheckpointingAgent | null
-}): (path: string) => Promise<void> {
-  let keptBefore = false
-  return async (path) => {
-    if (!keptBefore) {
-      keptBefore = true
-      const current = await input.read(path)
-      if (current !== null) input.replicas.keepBeforeRestore(path, current)
-    }
-    const live = input.liveAgent()
-    if (live) await live.checkpointFile(path).catch(() => {})
+  liveAgent: () => { checkpointFile(path: string): Promise<unknown> } | null
+}): VersionRestoreCheckpoints {
+  async function optionalCheckpoint(path: string): Promise<void> {
+    try { await input.liveAgent()?.checkpointFile(path) } catch { /* the replica copy covers recovery */ }
+  }
+  return {
+    async preserveBeforeRestore(path, text) {
+      const kept = await input.replicas.keepBeforeRestore(path, text)
+      if (kept.kept) await optionalCheckpoint(path)
+      return kept
+    },
+    async checkpointRestored(path) {
+      await optionalCheckpoint(path)
+      return true
+    },
   }
 }

@@ -7,13 +7,12 @@ import { spawnSync } from 'node:child_process'
 import { createReaderResources } from '../../src/main/reading-room-resources'
 import { readerHostDevelopment } from '../../scripts/reader-host-development'
 import { build } from 'vite'
+import { waitForWatch } from '../helpers/watch-test-target.mjs'
 const A = resolve(import.meta.dir, '../..')
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
-async function wait(check: () => boolean) {
-  const start = performance.now()
-  while (!check() && performance.now() - start < 5000) await new Promise(r => setTimeout(r, 10))
-  expect(check()).toBe(true)
-}
+// On the Studio at peak load 27.2, recovery was still building at the old 5 s
+// deadline. Allow 12 s per real Rollup rebuild while keeping every phase bounded.
+const waitForBuild = (check: () => boolean, phase: string) => waitForWatch(check, phase, 12000)
 // Use the installed callback bodies verbatim. Only their process boundary is passive.
 function installedObserver(project: string, calls: string[]) {
   const installed = readFileSync(A + '/node_modules/electron-vite/dist/chunks/lib-7y7CgM8M.js', 'utf8')
@@ -70,7 +69,9 @@ async function fixture(body: (f: any) => Promise<void>) {
 test('initial reader failure cannot launch or clear usable main output', async () => {
   await fixture(async (f: any) => {
     writeFileSync(f.dependency, f.original + '\nexport const broken = ;\n')
-    await f.start(); await wait(() => f.errors.length === 1)
+    await f.start()
+    await waitForBuild(() => f.ends.length >= 1, 'the initial invalid host build')
+    expect(f.errors).toHaveLength(1)
     console.log(JSON.stringify({ phase: 'initial-failure', calls: f.calls, errors: f.errors.map(String), mainExists: existsSync(f.output), native: false }))
     expect(f.calls).toEqual([])
     expect(readFileSync(f.output, 'utf8')).toBe('last usable main')
@@ -79,10 +80,13 @@ test('initial reader failure cannot launch or clear usable main output', async (
 test('finite real watcher preserves running output on host and main failure and recovers once each', async () => {
   await fixture(async (f: any) => {
     writeFileSync(f.dependency, f.original + '\nexport const broken = ;\n')
-    await f.start(); await wait(() => f.errors.length === 1)
+    await f.start()
+    await waitForBuild(() => f.ends.length >= 1, 'the initial invalid host build')
+    expect(f.errors).toHaveLength(1)
     expect(f.calls).toEqual([]); expect(readFileSync(f.output, 'utf8')).toBe('last usable main')
     writeFileSync(f.dependency, f.original)
-    await wait(() => f.calls.includes('initial-launch'))
+    await waitForBuild(() => f.ends.length >= 2, 'the repaired host build')
+    expect(f.errors).toHaveLength(1)
     expect(f.calls).toEqual(['initial-launch'])
     const directory = async (n: number) => (await import(f.output + '?generation=' + n)).readerHostDirectory(f.output)
     const vendor = dirname(dirname(realpathSync(A + '/node_modules/@readflex/reader-embed/vendor/reader/reader.html')))
@@ -90,12 +94,15 @@ test('finite real watcher preserves running output on host and main failure and 
     const key = [...before.assets.keys()].find(k => k.startsWith('assets/') && k.endsWith('.js'))!
     const bytes = before.read(key), mainBytes = readFileSync(f.output)
     writeFileSync(f.dependency, f.original + '\nexport const brokenAgain = ;\n')
-    await wait(() => f.errors.length === 2)
+    await waitForBuild(() => f.ends.length >= 3, 'the invalid running host build')
+    expect(f.errors).toHaveLength(2)
     expect(f.calls).toEqual(['initial-launch']); expect(readFileSync(f.output)).toEqual(mainBytes); expect(before.read(key)).toEqual(bytes)
     const marker = 'Reader view state prototype refused.'
     expect(f.original).toContain(marker)
     writeFileSync(f.dependency, f.original.replaceAll(marker, 'Reader view state refreshed prototype refused.'))
-    await wait(() => f.calls.filter((x: string) => x === 'restart').length === 1)
+    await waitForBuild(() => f.ends.length >= 4, 'the refreshed host build')
+    expect(f.errors).toHaveLength(2)
+    expect(f.calls.filter((x: string) => x === 'restart')).toHaveLength(1)
     const next = await directory(1), after = createReaderResources(vendor, next)
     expect(next).not.toBe(first); expect(after.mapHash).not.toBe(before.mapHash); expect(before.read(key)).toEqual(bytes)
     expect([...after.assets.keys()].filter(k => k.startsWith('reader/') || k.startsWith('lib/'))).toHaveLength(244)
@@ -106,14 +113,15 @@ test('finite real watcher preserves running output on host and main failure and 
     const usable = readFileSync(f.output)
     f.setOutputFailure(true)
     writeFileSync(f.main, f.mainOriginal.replace("ordinaryMain='before'", "ordinaryMain='refused'"))
-    await wait(() => f.errors.length === 3)
+    await waitForBuild(() => f.ends.length >= 5, 'the refused main output')
+    expect(f.errors).toHaveLength(3)
     expect(f.calls.filter((x: string) => x === 'restart')).toHaveLength(1); expect(readFileSync(f.output)).toEqual(usable)
     expect(before.read(key)).toEqual(bytes)
     f.setOutputFailure(false)
     writeFileSync(f.main, f.mainOriginal.replace("ordinaryMain='before'", "ordinaryMain='after'"))
-    await wait(() => f.calls.filter((x: string) => x === 'restart').length === 2)
+    await waitForBuild(() => f.ends.length >= 6, 'the repaired main output')
+    expect(f.errors).toHaveLength(3)
     expect((await import(f.output + '?generation=2')).ordinaryMain).toBe('after')
-    await wait(() => f.ends.length >= 6)
     expect(f.calls.filter((x: string) => x === 'initial-launch')).toHaveLength(1)
     expect(f.calls.filter((x: string) => x === 'restart')).toHaveLength(2)
     const config = readFileSync(A + '/electron.vite.config.ts', 'utf8')
@@ -121,4 +129,6 @@ test('finite real watcher preserves running output on host and main failure and 
     expect(config.slice(config.indexOf('  preload:'))).toBe(entry.slice(entry.indexOf('  preload:')))
     console.log(JSON.stringify({ phase: 'finite-recovery', calls: f.calls, errors: f.errors.map(String), first, next, oldMap: before.mapHash, newMap: after.mapHash, oldMainPreserved: true, oldMapStable: true, native: false }))
   })
-}, 20000)
+// Six real builds plus fixture I/O. The contended Studio completed all six in
+// 7.2 s on 25 Nov. Keep the test deadline above two slow build phases and cleanup.
+}, 35000)

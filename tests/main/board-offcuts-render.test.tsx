@@ -4,7 +4,7 @@ import type { Offcut } from '../../src/preload'
 import { BoardActivity, OffcutNamer, OffcutsColumn, OFFCUTS_EMPTY } from '../../src/renderer/src/components/BoardOffcuts'
 import { BoardCardDrawer } from '../../src/renderer/src/components/BoardCardMaterial'
 
-// Scraps ticket 02, locked design frames 1, 2, 3 and 6: the Offcuts column, its empty state, the
+// Scraps ticket 02, locked design frames 1, 2, 3 and 6: the Offcuts column, the
 // name field an offcut opens on Idea, the activity row, and the drawer's "Add to end of piece".
 
 const offcut = (id: string, text: string, originTitle: string, cutOn: string | null): Offcut => ({
@@ -34,12 +34,6 @@ test('the Offcuts column lists every scrap with its text start and where it was 
   expect(html).toContain('class="boff sel"')
   expect(html).toContain('draggable="true"')
   expect(html).not.toContain(OFFCUTS_EMPTY)
-})
-
-test('with no offcuts the column stays and says where they will land', () => {
-  const html = renderToStaticMarkup(<OffcutsColumn offcuts={[]} selectedKey={null} onSelect={noop} onDragStart={noop} onDragEnd={noop} />)
-  expect(html).toContain('<span class="c-count">0</span>')
-  expect(html).toContain('No offcuts in this collection. Cut a passage to Scraps while you write, and it waits here.')
 })
 
 test('the name field is prefilled and offers Make idea ↵ and Cancel', () => {

@@ -36,7 +36,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Transaction, type StateCommand } from '@codemirror/state'
 import type { Command as EditorViewCommand } from '@codemirror/view'
 import { isolateHistory, redo, undo, undoDepth } from '@codemirror/commands'
-import type { AgentObjectNote, AttributedChange, Change, CollectionTarget, ExplicitSessionState, FileReadResult, ProseEditInput, RenameFileResult, Scrap, SearchMatch, SettingValue, ShelfRow, SkillMeta, Suggestion, ThreadRunComplete, Version, VersionCompareEndpointId, VersionCompareResult } from '../../../preload'
+import type { EditorReadResult } from '../../../shared/editor-read'
+import type { AgentObjectNote, AttributedChange, Change, CollectionTarget, ExplicitSessionState, FileReadResult, ProseEditInput, RenameFileResult, Scrap, SearchMatch, SettingValue, ShelfRow, SkillMeta, Suggestion, ThreadRunComplete, Version, VersionCompareEndpointId } from '../../../preload'
 import type { ClipboardKind, FileRenamePlan } from '../../../preload'
 import type { ReadingRoomWriteRefusal, ReadingRoomWriteResult } from '../../../preload'
 import { createOutboxSyncRunner, outboxResultAnnouncement } from '../reading-room-sync'
@@ -64,6 +65,7 @@ import { BackNameProvider } from '../components/BackControl'
 import { useVaultSidebar } from '../hooks/useVaultSidebar'
 import { ConfirmHost } from '../components/ConfirmCard'
 import { askConfirm } from '../components/confirm-bus'
+import { closeDocumentTab } from './close-document-tab'
 import { StatusBar } from '../components/StatusBar'
 import type { ReviewAsk } from '../components/ReviewBulkPopovers'
 import { FocusPicker } from '../components/FocusPicker'
@@ -157,6 +159,7 @@ import { OPEN_VERSION_NUDGE_EVENT, OPEN_VERSION_REQUEST_EVENT, anyVersionRead, s
 import { registerVersionSendHost, sendVersionSelectionFromCommand } from '../scratchpad/version-send'
 import { ROOM_VIEWS } from '../../../shared/folio-room'
 import { folderIsFolio } from './folio-routing'
+import { createFolioOpenNavigation, type FolioOpenDecision } from './folio-open-navigation'
 import { dispatchSidebar } from '../plan/folio-sidebar'
 import { exportPlaceFor } from './export-collection-dir'
 import { OutlinePane, type OutlineRequest } from '../components/OutlinePane'
@@ -181,7 +184,7 @@ import { isLosslessItemId as isLosslessScrapId } from '../../../shared/scratchpa
 import { VersionsPane } from '../components/VersionsPane'
 import { summariseRun } from '../../../engine'
 import { ComparePane } from '../components/ComparePane'
-import { compareHighlightsForEditor, compareToColumnMode, shouldRefreshWorkingCompare } from '../components/compare-live'
+import { documentCompareMarks, useDocumentCompare } from './document-compare'
 import { SuggestionCallout, type CalloutViewRequest } from '../components/SuggestionCallout'
 import { classifyExternalDrop, type DroppedPath } from '../external-drop'
 import { CheatSheet } from '../components/CheatSheet'
@@ -190,6 +193,7 @@ import { FolioVersionsCursorPanel } from '../components/FolioVersionsCursorPanel
 import { setMarginSince, useFolioCues } from '../plan/folio-cues-store'
 import { cueChipText, cueTotal, embedOnLine } from '../../../shared/folio-version-changes'
 import { createSaveGate, describeSheetChange, refusalSentence, SAVING_NOW, savedToast, saveChanged, type SaveChoice } from './folio-version-save'
+import { createNameVersionChooser, type NameVersionQuestion, type NameVersionSubject } from './name-version-chooser'
 import type { FolioSheetFacts } from '../../../main/folio-version-sheet'
 import { ExportSheet, type ExportPresetOpenAction, type ExportScope, type ExportSheetOutcome } from '../components/ExportSheet'
 import type { ExportFormat, FolioLeftOut, FolioPlace, HtmlExportOptions, TocDepthScope, TocDepthSource } from '../../../preload'
@@ -231,7 +235,7 @@ import { settingsPageOf } from './settings-page-of'
 import { APP_DISPATCHED_EDITOR_IDS, parseOverrides, resolveChord, SHORTCUT_OVERRIDES_KEY, shortcutCaptureActive, subscribeShortcutCapture } from '../commands/chords'
 import { suggestionAnchors, uniqueRange } from '../editor/suggestion-anchor'
 import { flashApplied, minimisedAppliedRange } from '../editor/applied-flash'
-import { closeRefusalMessage, mayWriteUnderDiskNotice, removedTabDiscardQuestion, sameDiskNotice, type ExternalDiskNotice } from '../editor/reconcile'
+import { closeRefusalMessage, diskNoticeRefusalMessage, mayWriteUnderDiskNotice, removedTabDiscardQuestion, sameDiskNotice, type ExternalDiskNotice } from '../editor/reconcile'
 import { basisFromBaseline } from '../../../shared/save-basis'
 import type { EditorViewMode } from '../editor/view-mode'
 import type { SuggestionResolutionEffect } from '../editor/suggestion-resolution-history'
@@ -243,7 +247,8 @@ import { myEditsSessionIds, reviewModeOf, toggleMode, trackWaitingAgain, withMod
 import { kindSegmentOf, shownIds, withKindSegment, withoutKinds, type KindSegment } from './margin-filter'
 import { reviewLine, reviewLineCompact } from '../components/status-bar-model'
 import { countMenu, viewCountsOf, whoChipLabel, withoutWho, type CountMenuAction } from './margin-count-menu'
-import { batchProgress, bulkTargets, declineQuestion, EMPTY_BATCH, nextBatch, runTargets, sendBackScope, visibleSelection, waitingEditIds, type DeclineQuestion, type ReviewBatch, type SendBackScope } from './margin-bulk'
+import { batchProgress, bulkTargets, EMPTY_BATCH, nextBatch, runTargets, sendBackScope, visibleSelection, waitingEditIds, type ReviewBatch, type SendBackScope } from './margin-bulk'
+import { createDeclineConfirmation, type DeclineRequest } from './decline-confirmation'
 import { EMPTY_HEAD_FILTER, type HeadFilterState } from './margin-head-state'
 import { useDismissedNotApplied, useOutsideDock } from './outside-dock'
 import type { BatchResult, BatchTarget } from '../../../shared/outside-batch-review'
@@ -388,7 +393,6 @@ function versionTimestamp(ts: number): string {
  * option; flip to false to bring the popup back.
  */
 const INLINE_REVIEW = true
-const COMPARE_LIVE_DIFF_DEBOUNCE_MS = 700
 /** What the status bar says while a window close waits for its documents to be written. */
 const CLOSING_STATUS = 'Saving before closing…'
 const CLOSING_STATUS_AFTER_MS = 1000
@@ -744,11 +748,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [waitingHistory, setWaitingHistory] = useState<Array<{ from: string; count: number }>>([])
   const [historyAttachments, setHistoryAttachments] = useState<Array<{ from: string; to: string }>>([])
   const [historyAttachmentUndo, setHistoryAttachmentUndo] = useState<{ path: string; id: string; files: number } | null>(null)
-  const [versionCompare, setVersionCompare] = useState<VersionCompareResult | null>(null)
-  const [versionCompareLoading, setVersionCompareLoading] = useState(false)
-  const [versionCompareError, setVersionCompareError] = useState('')
-  const [compareView, setCompareView] = useState<{ fromId: VersionCompareEndpointId; toId: VersionCompareEndpointId } | null>(null)
-  const [liveCompareRefreshTick, setLiveCompareRefreshTick] = useState(0)
   const [historicalView, setHistoricalView] = useState<HistoricalView | null>(null)
   // Read after an asynchronous confirm card: the view the card was asked about may have closed meanwhile.
   const historicalViewRef = useRef(historicalView)
@@ -933,6 +932,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   workbenchRef.current = workbench
   const lastWidgetStepRef = useRef<WorkbenchStep | null>(null)
   lastWidgetStepRef.current = lastWidgetStep
+  const pendingWidgetCreate = useRef<WorkbenchStep | null>(null)
   /** The rename path's hold and buffer follow, for a widget step that moves documents (set below, where they are made). */
   const moveHoldRef = useRef<{
     withPathsSaved: <T>(paths: readonly string[] | (() => readonly string[]), act: () => Promise<T>) => Promise<{ result: T } | null>
@@ -944,7 +944,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   restoredIdentityRoot.current = root
   const namingInFlight = useRef(new Map<string, Promise<string>>())
   const namingCandidates = useRef(new Map<string, NamingCandidate>())
-  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, renamed: renameTab, close, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, listingReady, canRestoreTabsEarly, boardDir, (path) => namingInFlight.current.has(path) || unsaved.textOf(path) !== undefined, path => {
+  // The changed-on-disk notices (disk-notices.ts): the ref the save seam (writePath) reads in the turn a
+  // notice is raised, and the same notices for rendering. Their actions are bound below (useDiskNotices).
+  const diskNoticeStore = useDiskNoticeStore()
+  const { ref: externalDiskNoticesRef, notices: externalDiskNotices } = diskNoticeStore
+  const [folioOpenNavigation] = useState(() => createFolioOpenNavigation(readFolioOpenParts))
+  const { retire: retireOpenFolio } = folioOpenNavigation
+  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, renamed: renameTab, close: closeTabInStrip, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, listingReady, canRestoreTabsEarly, boardDir, (path) => namingInFlight.current.has(path) || unsaved.textOf(path) !== undefined || externalDiskNoticesRef.current.get(path)?.kind === 'unavailable', path => {
     if (path.includes('://')) return
     const restoredRoot = root
     void window.writeflex.readFolioPlace(path).then(place => {
@@ -1016,14 +1022,37 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [folderPieceChoices, setFolderPieceChoices] = useState<FolderPieceChoice[]>([])
   const [sidebarCollectionSummary, setSidebarCollectionSummary] = useState<{ pieceCount: number; folderPiecePaths: Set<string> } | null>(null)
   const boardSeenStatusesRef = useRef(new Set<string>())
+  const folioBoardSeenStatuses = useMemo(() => new Set<string>(), [root, collectionDir])
   const folderPieceContextDir = collectionDir !== null ? collectionDir : boardActive ? boardDir : null
   // Outline switching (ticket 13): opening from Files or Search arms it for that file; every other way of
   // opening disarms it. See app/outline-switch.ts.
   const outlineSwitchRef = useRef<OutlineSwitchState>(OUTLINE_SWITCH_IDLE)
   const noteOpenSource = useCallback((path: string, source: OpenSource) => { outlineSwitchRef.current = noteFileOpened(outlineSwitchRef.current, path, source) }, [])
-  const open = useCallback((path: string) => { noteOpenSource(path, 'other'); setCollectionDir(null); setOpenPlanRequested(false); openTab(path) }, [openTab, noteOpenSource])
-  const activate = useCallback((path: string) => { setCollectionDir(null); setOpenPlanRequested(false); setSelectedFolderPiece(null); activateTab(path) }, [activateTab])
-  const cycle = useCallback((dir: 1 | -1) => { setCollectionDir(null); setOpenPlanRequested(false); setSelectedFolderPiece(null); cycleTab(dir) }, [cycleTab])
+  const open = useCallback((path: string) => {
+    retireOpenFolio()
+    noteOpenSource(path, 'other')
+    setCollectionDir(null)
+    setOpenPlanRequested(false)
+    openTab(path)
+  }, [retireOpenFolio, openTab, noteOpenSource])
+  const activate = useCallback((path: string) => {
+    retireOpenFolio()
+    setCollectionDir(null)
+    setOpenPlanRequested(false)
+    setSelectedFolderPiece(null)
+    activateTab(path)
+  }, [retireOpenFolio, activateTab])
+  const cycle = useCallback((dir: 1 | -1) => {
+    retireOpenFolio()
+    setCollectionDir(null)
+    setOpenPlanRequested(false)
+    setSelectedFolderPiece(null)
+    cycleTab(dir)
+  }, [retireOpenFolio, cycleTab])
+  const close = useCallback((path: string) => {
+    retireOpenFolio()
+    closeTabInStrip(path)
+  }, [retireOpenFolio, closeTabInStrip])
   const { favourites, toggle: toggleFavourite } = useFavourites(root)
   // The window's writing session (Task 12): +words · elapsed · wpm across every tab for the window's
   // lifetime. App owns it because it sees both a file's load baseline and its every edit.
@@ -1088,6 +1117,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [railFocusRequest, setRailFocusRequest] = useState(0)
   const [queryInsertionContext, setQueryInsertionContext] = useState<QueryInsertionContext | null>(null)
   const queryInsertionContextRef = useRef<QueryInsertionContext | null>(null)
+  const boardQueryContextRef = useRef<QueryInsertionContext | null>(null)
   const [queryInsertConfirm, setQueryInsertConfirm] = useState<QueryInsertionContext | null>(null)
   const collectionSurfaceMountedRef = useRef(false)
   collectionSurfaceMountedRef.current = boardActive || collectionDir !== null || railOpen
@@ -1224,10 +1254,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [slowSavePaths, setSlowSavePaths] = useState<Set<string>>(() => new Set())
   const [lastSavedAt, setLastSavedAt] = useState<Map<string, number>>(() => new Map())
   const [statusDisclosureRequest, setStatusDisclosureRequest] = useState(0)
-  // The changed-on-disk notices (disk-notices.ts): the ref the save seam (writePath) reads in the turn a
-  // notice is raised, and the same notices for rendering. Their actions are bound below (useDiskNotices).
-  const diskNoticeStore = useDiskNoticeStore()
-  const { ref: externalDiskNoticesRef, notices: externalDiskNotices } = diskNoticeStore
   // An update's restart waits while this window holds text whose last save failed, or a document that changed on
   // disk with the writer's choice not made yet (ADR-0054). Main reads only these two flags.
   const restartHoldUnsaved = saveFailures.size > 0
@@ -1241,9 +1267,21 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   activeRef.current = active
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
-  const compareViewRef = useRef(compareView)
-  compareViewRef.current = compareView
-  const liveCompareRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const documentWorkspaceRef = useRef<object | null>(null)
+  useLayoutEffect(() => {
+    // A return to the same root is a new lifetime for queued reads and confirmations.
+    documentWorkspaceRef.current = typeof root === 'string' ? {} : null
+    return () => { documentWorkspaceRef.current = null }
+  }, [root])
+  const readEditorDocument = useCallback(async (path: string): Promise<EditorReadResult> => {
+    const workspace = documentWorkspaceRef.current
+    if (!workspace || typeof root !== 'string') return { kind: 'stale' }
+    const result = await window.writeflex.readEditorFile(path, root)
+      .catch((): EditorReadResult => ({ kind: 'unavailable' }))
+    return documentWorkspaceRef.current === workspace ? result : { kind: 'stale' }
+  }, [root])
+  const readCompareWorking = useCallback((path: string) => editorRef.current?.docFor(path) ?? undefined, [])
+  const { compare: documentCompare, compareView } = useDocumentCompare(root ?? null, active, readCompareWorking)
   // A monotonic save signal for the outline's disk-backed folder scope: bumped whenever a save lands
   // on disk, so a just-saved bookmark/comment/task re-scans into the folder view without a scope toggle.
   const [savedTick, setSavedTick] = useState(0)
@@ -1303,7 +1341,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const historicalActiveRef = useRef(historicalActive)
   historicalActiveRef.current = historicalActive
   const compareActive = compareView !== null
-  const compareToEditable = compareView ? compareToColumnMode(compareView.toId) === 'editable-working' : false
+  const compareToEditable = compareView?.selection.toId === 'working'
   const insertionTarget = lastEditablePath && tabs.includes(lastEditablePath) ? lastEditablePath : null
   const railActivePath = active ?? (boardActive ? insertionTarget : null)
   const railDir = collectionDir ?? (boardActive ? boardDir : active ? activeCollectionDir : '')
@@ -1347,10 +1385,20 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     setQueryInsertConfirm(null)
     if (bubbleHeldFocus) restoreEditorFocus()
   }, [restoreEditorFocus])
-  const updateQueryInsertionContext = useCallback((context: QueryInsertionContext) => {
+  const updateQueryInsertionContext = useCallback((context: QueryInsertionContext | null) => {
     queryInsertionContextRef.current = context
     setQueryInsertionContext(context)
   }, [])
+  const updateBoardQueryContext = useCallback((context: QueryInsertionContext | null) => {
+    const previous = boardQueryContextRef.current
+    boardQueryContextRef.current = context
+    // A Board that loses its projection may clear its context, but not a Rail choice made since.
+    if (context !== null || queryInsertionContextRef.current === previous) updateQueryInsertionContext(context)
+  }, [updateQueryInsertionContext])
+  const requestBoardQueryInsertion = useCallback((context: QueryInsertionContext) => {
+    updateBoardQueryContext(context)
+    setQueryInsertConfirm(context)
+  }, [updateBoardQueryContext])
   const requestQueryInsertion = useCallback((context: QueryInsertionContext) => {
     updateQueryInsertionContext(context)
     setQueryInsertConfirm(context)
@@ -1674,21 +1722,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       .catch(() => { void window.writeflex.replyFolioFlush(id, false) })
   }), [flushPaths, root])
 
-  const queueLiveCompareRefresh = useCallback((path: string) => {
-    if (!shouldRefreshWorkingCompare(compareViewRef.current, activeRef.current, path)) return
-    if (liveCompareRefreshTimer.current) clearTimeout(liveCompareRefreshTimer.current)
-    liveCompareRefreshTimer.current = setTimeout(() => {
-      liveCompareRefreshTimer.current = null
-      setLiveCompareRefreshTick((tick) => tick + 1)
-    }, COMPARE_LIVE_DIFF_DEBOUNCE_MS)
-  }, [])
-
-  useEffect(
-    () => () => {
-      if (liveCompareRefreshTimer.current) clearTimeout(liveCompareRefreshTimer.current)
-    },
-    [],
-  )
+  const queueLiveCompareRefresh = documentCompare.queueWorkingRefresh
 
   const diaryActivityTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   // The texts are held and counted once per pause: a word count is a whole-document pass, too dear
@@ -1927,6 +1961,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   /** Open the Plan. `folioDir` is the Folio's own folder (the line and title-bar button pass it: a
    *  piece in a sub-folder can belong to a different Collection than the Folio it names). */
   const openPlanIn = useCallback((folioDir?: string) => {
+    retireOpenFolio()
     void (async () => {
       const current = activeRef.current
       if (current && (await flushPaths([current])).status !== 'saved') {
@@ -1954,28 +1989,42 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       setCollectionDir(targetDir)
       void requestIdentityLinks.current(targetDir)
     })()
-  }, [activeCollectionDir, activateTab, boardActive, boardDir, close, collectionDir, flash, lastEditablePath, flushPaths])
+  }, [retireOpenFolio, activeCollectionDir, activateTab, boardActive, boardDir, close, collectionDir, flash, lastEditablePath, flushPaths])
   // The palette and the Board/Collection buttons call this with no argument: the folder is then found as before.
   const openPlan = useCallback(() => openPlanIn(), [openPlanIn])
   const openFolioPlan = useCallback(() => { if (folioPlace) openPlanIn(folioPlace.dir) }, [folioPlace, openPlanIn])
   // All Open Folio entry points share the explicit editor route, including the header's menu.
   const openFolioDir = collectionDir ?? folioPlace?.dir ?? null
+  const readingVersionNow = useAnyReadingVersion()
+  // Renew the context on every committed navigation, including those that bypass the ordinary tab commands.
+  const folioOpenContext = useMemo(() => ({ workspace: root, dir: openFolioDir }), [
+    root, openFolioDir, activeTab, boardDir, collectionDir, workspaceFolioDir, openPlanRequested, roomTextPath,
+    historicalView, compareView?.selection.fromId, compareView?.selection.toId, readingVersionNow, sharingPageOpen, sharesListOpen,
+  ])
+  useLayoutEffect(() => {
+    folioOpenNavigation.bind(folioOpenContext)
+    return () => folioOpenNavigation.bind(null)
+  }, [folioOpenNavigation, folioOpenContext])
+  const applyFolioOpen = useRef<(decision: FolioOpenDecision) => void>(() => {})
+  useLayoutEffect(() => {
+    applyFolioOpen.current = (decision) => {
+      if (decision.kind === 'empty') {
+        flash('This folder is not a Folio with parts to open.')
+        return
+      }
+      borrowedSidebar.current ??= { tab: leftTab, collapsed: leftPaneCollapsed }
+      setFolioEditingDir(decision.dir)
+      open(decision.path)
+      requestOutline('showFolio')
+      void requestIdentityLinks.current(decision.dir)
+    }
+  }, [open, requestOutline, leftTab, leftPaneCollapsed, flash])
   const openFolioAt = useCallback((path: string) => {
-    if (openFolioDir === null) return
-    borrowedSidebar.current ??= { tab: leftTab, collapsed: leftPaneCollapsed }
-    setFolioEditingDir(openFolioDir)
-    open(path)
-    requestOutline('showFolio')
-    void requestIdentityLinks.current(openFolioDir)
-  }, [openFolioDir, open, requestOutline, leftTab, leftPaneCollapsed])
+    folioOpenNavigation.openAt(folioOpenContext, path, applyFolioOpen.current)
+  }, [folioOpenNavigation, folioOpenContext])
   const openFolio = useCallback(() => {
-    if (openFolioDir === null) return
-    void readFolioOpenParts(openFolioDir).then((parts) => {
-      const target = folioOpenTarget(parts)
-      if (target === null) flash('This folder is not a Folio with parts to open.')
-      else openFolioAt(target)
-    })
-  }, [openFolioDir, openFolioAt, flash])
+    void folioOpenNavigation.openDefault(folioOpenContext, decision => applyFolioOpen.current(decision))
+  }, [folioOpenNavigation, folioOpenContext])
   // Running order from the Outline: the writes go through main by path (see main/folio-running-order.ts).
   const [folioRefreshTick, setFolioRefreshTick] = useState(0)
   // Late-bound: the reconciliation with the disk is declared below.
@@ -2000,7 +2049,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       isSaved: (path) => owner.isSaved(path),
       refusedUnderNotice: (path) => {
         const notice = externalDiskNoticesRef.current.get(path)
-        return notice ? changedOnDiskMessage(path, notice.kind) : undefined
+        if (!notice) return undefined
+        return notice.kind === 'unavailable' ? diskNoticeRefusalMessage(path, notice) : changedOnDiskMessage(path, notice.kind)
       },
       settled: (path) => owner.settled(path),
       save: savePath,
@@ -2131,7 +2181,15 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
 
   // The shared overlay guard: while a sheet is up the window's own capture-phase shortcuts stand
   // down (they read isOpenRef below). Reused by Tasks 15/17 for their overlays, and by the Merge sheet.
-  const overlay = useOverlayGuard()
+  // Opening another overlay or dismissing one cancels export preparation in this window.
+  const pendingExportOpen = useRef<number | null>(null)
+  const cancelPendingExport = useCallback(() => { pendingExportOpen.current = null }, [])
+  const nameVersionChooser = useMemo(createNameVersionChooser, [])
+  const cancelOverlayPreparation = useCallback(() => {
+    cancelPendingExport()
+    nameVersionChooser.cancelPreparation()
+  }, [cancelPendingExport, nameVersionChooser])
+  const overlay = useOverlayGuard(cancelOverlayPreparation)
   const { active: overlayActive, isOpenRef: overlayOpenRef, open: openOverlay, close: closeOverlay, hold: holdOverlay } = overlay
   const bumpSaved = useCallback(() => setSavedTick((tick) => tick + 1), [])
   // Raise, clear and move a notice; what the app does for the owner's answer to a read of the disk; Reload,
@@ -2143,7 +2201,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     diskMerge, diskMergeBusy, openMerge: openDiskMerge, cancelMerge: cancelDiskMerge, runMerge: runDiskMerge,
   } = useDiskNotices(diskNoticeStore, {
     owner, unsaved, tabs, tabsRef, files, active, activeRef, editorRef, loadedPath, guardRefusalPath, refusalReasons, uncheckpointed,
-    overlay, bufferNow, savePath, cancelAutosaveFor, queueLiveCompareRefresh, bumpSaved, flash,
+    overlay, bufferNow, savePath, cancelAutosaveFor, queueAutosave, readEditorDocument, queueLiveCompareRefresh, bumpSaved, flash,
   })
   reconcileWithDiskRef.current = (paths) => reconcileExternalDiskChanges(paths, { now: true })
   diskChangedUnderBufferRef.current = noteDiskChangedUnderBuffer
@@ -2316,8 +2374,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     setVersions([])
     setWaitingHistory([])
     setHistoryAttachments([])
-    setVersionCompare(null)
-    setVersionCompareError('')
     void reloadChanges()
     void reloadVersions()
   }, [reloadChanges, reloadVersions])
@@ -2483,77 +2539,88 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // refusal stops the restore, and the writer is told why); the restore then carries that baseline as its
   // basis, and main compares it before the pre-restore checkpoint and again at the rename. Text typed
   // while the restore ran is not replaced: the restored version is then an outside change to it.
-  const restoreVersionOverBuffer = useCallback(async (path: string, request: { id: string; snapshotId?: string }, name: string): Promise<boolean> => {
+  const restoreVersionOverBuffer = useCallback(async (path: string, request: { id: string; snapshotId?: string }, name: string): Promise<void> => {
     cancelAutosaveFor(path)
     if (guardRefusalPath.current === path) guardRefusalPath.current = null
     // A route of the document owner (parcel 2a): the buffer is written until saved, and the restore runs
     // holding the document's queue, so no save of it interleaves. The basis is the baseline the flush
     // left, read in the turn of its last check (Sol M1, round 2); the buffer takes the restored text only
     // from the restore's own receipt, and only when nothing was typed while it ran.
-    type Restored = { kind: 'failed' } | { kind: 'refused'; diskText: string | null } | { kind: 'restored'; outcome: MainWriteOutcome }
+    type Restored =
+      | { kind: 'failed'; message?: string }
+      | { kind: 'refused'; diskText: string | null }
+      | { kind: 'restored'; outcome: MainWriteOutcome; recoveryName: string | null }
     const flushed = await owner.withFlushed([path], async (snapshots): Promise<Restored> => {
+      if (rootNow.current !== root) return { kind: 'failed' }
       const snapshot = snapshots.get(path)!
-      const result = await window.writeflex.restoreVersion({ ...request, basis: basisFromBaseline(snapshot.baselineDisk) })
-      if (!result) return { kind: 'failed' }
-      if ('refused' in result) return { kind: 'refused', diskText: result.diskText }
-      return { kind: 'restored', outcome: owner.replaceFromMain(path, result, { since: snapshot.gen, mode: 'replace' }) }
+      const result = await window.writeflex.restoreVersion({ ...request, path, basis: basisFromBaseline(snapshot.baselineDisk) })
+      if (rootNow.current !== root || !result) return { kind: 'failed' }
+      if ('refused' in result) {
+        return result.refused === 'disk-changed'
+          ? { kind: 'refused', diskText: result.diskText }
+          : { kind: 'failed', message: result.message }
+      }
+      return {
+        kind: 'restored',
+        outcome: owner.replaceFromMain(path, result, { since: snapshot.gen, mode: 'replace' }),
+        recoveryName: result.status === 'restored-with-history-error' ? result.recovery.name : null,
+      }
     })
+    if (rootNow.current !== root) return
     if (flushed.status !== 'acted') {
       const reason = guardRefusalPath.current === path ? refusalReasons.current.get(path) : undefined
       const fallback = flushed.status === 'still-unsaved'
         ? `${path.split('/').at(-1) ?? path} was still being edited while it was saved.`
         : `Could not save ${path.split('/').at(-1) ?? path} first.`
       flash(`“${name}” was not restored. ${reason ?? fallback}`)
-      return false
+      return
     }
     const done = flushed.result
     if (done.kind === 'failed') {
-      flash(`Could not restore “${name}”.`)
-      return false
+      flash(done.message ? `“${name}” was not restored. ${done.message}` : `Could not restore “${name}”.`)
+      return
     }
     if (done.kind === 'refused') {
       const buffer = bufferNow(path)
       if (buffer !== null) noteDiskChangedUnderBuffer(path, done.diskText, buffer)
       flash(`“${name}” was not restored: ${path.split('/').at(-1) ?? path} changed on disk. Choose Reload or Keep mine above the text.`)
-      return false
+      return
     }
     if (done.outcome.kind === 'moved') {
       // Typing arrived while the restore ran: kept, and asked about against the restored version.
       cancelAutosaveFor(path)
       raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText: done.outcome.diskText })
-      return true
-    }
-    // The owner raised the banner for a readback that is not the receipt; otherwise the buffer is the restore.
-    if (done.outcome.kind !== 'outside') clearExternalDiskNotice(path)
-    return true
-  }, [owner, bufferNow, cancelAutosaveFor, clearExternalDiskNotice, flash, noteDiskChangedUnderBuffer, raiseExternalDiskNotice])
+    } else if (done.outcome.kind !== 'outside') clearExternalDiskNotice(path)
+    if (done.recoveryName) uncheckpointed.current.add(path)
+    else uncheckpointed.current.delete(path)
+    setSavedTick((n) => n + 1)
+    agent.noteUserSave()
+    await Promise.all([reloadChanges(), reloadVersions()])
+    if (rootNow.current !== root) return
+    flash(done.recoveryName
+      ? `Restored “${name}”. The restored text could not be checkpointed. Your earlier text is in Versions under “${done.recoveryName}”.`
+      : `Restored “${name}”`)
+  }, [owner, bufferNow, cancelAutosaveFor, clearExternalDiskNotice, flash, noteDiskChangedUnderBuffer, raiseExternalDiskNotice, agent.noteUserSave, reloadChanges, reloadVersions, root])
   const restoreHistoricalVersion = useCallback(() => {
+    if (historicalView?.kind !== 'version') return
     void (async () => {
-      if (!historicalView || historicalView.kind !== 'version') return
       if (!(await askConfirm({ title: `Restore “${historicalView.version.name}” as the current document?`, detail: 'It replaces the text you have now.', recover: 'Your current text is kept as a version first; restore it from the Versions tab if you change your mind.', confirmLabel: 'Restore' }))) return
       const restore = restoreHistoricalView(historicalView)
       // The card is asynchronous (Sol S1): restore only if this version view and its document are still the ones showing.
-      if (historicalViewRef.current !== historicalView || loadedPath.current !== restore.path) {
+      if (rootNow.current !== root || historicalViewRef.current !== historicalView || loadedPath.current !== restore.path) {
         flash(`“${historicalView.version.name}” was not restored: the document changed while the card was open.`)
         return
       }
       // The live buffer (kept aside while the view shows the past) is what the flush writes.
       editorRef.current?.exitHistorical()
       setHistoricalView(null)
-      const restored = await restoreVersionOverBuffer(
+      await restoreVersionOverBuffer(
         restore.path,
         { id: restore.versionId, ...(restore.snapshotId ? { snapshotId: restore.snapshotId } : {}) },
         historicalView.version.name,
       )
-      if (!restored) return
-      uncheckpointed.current.delete(restore.path)
-      setSavedTick((n) => n + 1)
-      agent.noteUserSave()
-      await reloadChanges()
-      await reloadVersions()
-      flash(`Restored “${historicalView.version.name}”`)
-    })()
-  }, [historicalView, flash, restoreVersionOverBuffer, agent.noteUserSave, reloadChanges, reloadVersions])
+    })().catch(() => flash(`Could not restore “${historicalView.version.name}”.`))
+  }, [historicalView, flash, restoreVersionOverBuffer, root])
   // Restore straight from a version row — the same flow as the view banner's Restore, without
   // requiring the read-only view first (walk find 2026-07-11: "no restore on old versions").
   const restoreVersionFromRow = useCallback(
@@ -2565,7 +2632,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         }
         if (!(await askConfirm({ title: `Restore “${version.name}” as the current document?`, detail: 'It replaces the text you have now.', recover: 'Your current text is kept as a version first; restore it from the Versions tab if you change your mind.', confirmLabel: 'Restore' }))) return
         // The card is asynchronous (Sol S1): the document must still be the one open.
-        if (loadedPath.current !== version.path) {
+        if (rootNow.current !== root || loadedPath.current !== version.path) {
           flash(`“${version.name}” was not restored: the document changed while the card was open.`)
           return
         }
@@ -2573,64 +2640,22 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           editorRef.current?.exitHistorical()
           setHistoricalView(null)
         }
-        const restored = await restoreVersionOverBuffer(
+        await restoreVersionOverBuffer(
           version.path,
           { id: version.id, ...(version.snapshotId ? { snapshotId: version.snapshotId } : {}) },
           version.name,
         )
-        if (!restored) return
-        uncheckpointed.current.delete(version.path)
-        setSavedTick((n) => n + 1)
-        agent.noteUserSave()
-        await reloadChanges()
-        await reloadVersions()
-        flash(`Restored “${version.name}”`)
-      })()
+      })().catch(() => flash(`Could not restore “${version.name}”.`))
     },
-    [active, flash, historicalView, restoreVersionOverBuffer, agent.noteUserSave, reloadChanges, reloadVersions],
+    [active, flash, restoreVersionOverBuffer, root],
   )
-  const compareVersionRange = useCallback(
-    (fromId: VersionCompareEndpointId, toId: VersionCompareEndpointId) => {
-      void (async () => {
-        if (!active) return
-        setVersionCompareLoading(true)
-        setVersionCompareError('')
-        try {
-          const result = await window.writeflex.compareVersions({
-            path: active,
-            fromId,
-            toId,
-            currentContent: editorRef.current?.currentDoc(),
-          })
-          if (activeRef.current !== active) return
-          setVersionCompare(result)
-        } catch (error) {
-          if (activeRef.current !== active) return
-          setVersionCompare(null)
-          setVersionCompareError(error instanceof Error ? error.message : 'Could not compare these versions.')
-        } finally {
-          if (activeRef.current === active) setVersionCompareLoading(false)
-        }
-      })()
-    },
-    [active],
-  )
-  useEffect(() => {
-    if (!compareView) return
-    compareVersionRange(compareView.fromId, compareView.toId)
-  }, [compareView, compareVersionRange])
-  useEffect(() => {
-    if (!compareView || compareView.toId !== 'working' || liveCompareRefreshTick === 0) return
-    compareVersionRange(compareView.fromId, compareView.toId)
-  }, [compareView, compareVersionRange, liveCompareRefreshTick])
-  useEffect(() => {
-    if (!compareView || !compareToEditable || !versionCompare) {
-      editorRef.current?.setCompareHighlights({ marks: [] })
-      return
-    }
-    const doc = editorRef.current?.view()?.state.doc.toString() ?? versionCompare.toContent
-    editorRef.current?.setCompareHighlights(compareHighlightsForEditor(versionCompare.changes, doc))
-  }, [compareView, compareToEditable, versionCompare])
+  useLayoutEffect(() => {
+    const editor = editorRef.current
+    const doc = compareView && loadedFile === compareView.selection.path && editor?.path() === loadedFile
+      ? editor.view()?.state.doc.toString() ?? null
+      : null
+    editor?.setCompareHighlights(documentCompareMarks(compareView, doc))
+  }, [compareView, loadedFile])
   const openCompareView = useCallback(
     (fromId: VersionCompareEndpointId, toId: VersionCompareEndpointId) => {
       if (!active) {
@@ -2642,45 +2667,30 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         editorRef.current?.exitHistorical()
         setHistoricalView(null)
       }
-      setVersionCompare(null)
-      setVersionCompareError('')
-      setCompareView({ fromId, toId })
+      void documentCompare.open(fromId, toId)
     },
-    [active, flash, historicalView],
+    [active, documentCompare, flash, historicalView],
   )
   const closeCompareView = useCallback(() => {
-    setCompareView(null)
-    setVersionCompare(null)
-    setVersionCompareError('')
+    documentCompare.close()
     editorRef.current?.view()?.focus()
-  }, [])
-  const setCompareFrom = useCallback((fromId: VersionCompareEndpointId) => {
-    setCompareView((current) => current ? { ...current, fromId } : current)
-  }, [])
-  const setCompareTo = useCallback((toId: VersionCompareEndpointId) => {
-    setCompareView((current) => current ? { ...current, toId } : current)
-  }, [])
-  const swapCompareView = useCallback(() => {
-    setCompareView((current) => current ? { fromId: current.toId, toId: current.fromId } : current)
-  }, [])
+  }, [documentCompare])
+  const swapCompareView = documentCompare.swap
   const getEditableCompareToScrollElement = useCallback(() => editorRef.current?.view()?.scrollDOM ?? null, [])
-  useEffect(() => {
-    if (!active && compareView) closeCompareView()
-  }, [active, closeCompareView, compareView])
   const renameVersion = useCallback(
     (id: string, name: string) => {
       void (async () => {
         try {
           await window.writeflex.renameVersion(id, name)
           await reloadVersions()
-          setVersionCompare(null)
+          void documentCompare.refreshRenamedVersion(root, active, id)
           flash(`Renamed version “${name.trim()}”`)
         } catch (error) {
           flash(error instanceof Error ? error.message : 'Could not rename that version.')
         }
       })()
     },
-    [flash, reloadVersions],
+    [active, documentCompare, flash, reloadVersions, root],
   )
   const toggleHideStrikes = useCallback(() => setHideStrikes((v) => !v), [])
   const toggleHideInserts = useCallback(() => setHideInserts((v) => !v), [])
@@ -2763,7 +2773,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // The agent's items sent back with a note: their cards say Sent back until they are settled (renderer memory only).
   const [sentBackIds, setSentBackIds] = useState<ReadonlySet<string>>(() => new Set())
   // The Decline all confirmation or the Send back popover over the review line. Decline holds the ids it asked about.
-  const [reviewAskState, setReviewAskState] = useState<{ kind: 'decline'; ids: string[]; question: DeclineQuestion; whole?: boolean } | { kind: 'send-back'; scope: SendBackScope } | null>(null)
+  const [declineConfirmation] = useState(createDeclineConfirmation)
+  const [reviewAskState, setReviewAskState] = useState<{ kind: 'decline'; request: DeclineRequest } | { kind: 'send-back'; scope: SendBackScope } | null>(null)
+  const dismissReviewAsk = useCallback(() => {
+    declineConfirmation.cancel()
+    setReviewAskState(null)
+  }, [declineConfirmation])
   // Ticket 06 (from 14): Accepts main refused because the change could not be placed. The item still waits; its card says
   // Could not be applied, with the reason, until the writer declines it or the text changes (then Accept is offered again).
   const [refusedAccepts, setRefusedAccepts] = useState<ReadonlyMap<string, { reason: string; doc: string | null }>>(() => new Map())
@@ -3077,6 +3092,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // Index Note lands a file on disk; the main-process push refreshes the tree exactly as an agent
   // write does. New piece then refreshes first (so the file is in `files`) and opens it in a tab.
   const openCollection = useCallback((dir: string) => {
+    retireOpenFolio()
     void (async () => {
       const current = activeRef.current
       if (current && (await flushPaths([current])).status !== 'saved') {
@@ -3108,7 +3124,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       setCollectionDir(dir)
       if (await folderIsFolio(dir, window.writeflex)) void requestIdentityLinks.current(dir)
     })()
-  }, [flash, flushPaths, boardActive, lastEditablePath, activateTab, close, open, requestOutline, leftTab, leftPaneCollapsed])
+  }, [retireOpenFolio, flash, flushPaths, boardActive, lastEditablePath, activateTab, close, open, requestOutline, leftTab, leftPaneCollapsed])
   // The Folder dashboard command: the Files tree's keyboard-focused folder row, else the open file's folder,
   // else the whole collection (the same ruling as the New file target, minus a file row's parent).
   const openFolderDashboard = useCallback(() => {
@@ -4531,22 +4547,23 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
 
 
   // The per-part Save Version sheet, unchanged (⇧⌘S outside a Folio; "This part only" in one; the Versions pane's own button).
-  const openPartVersionSheet = useCallback(() => {
-    if (!active) {
+  const openPartVersionSheetFor = useCallback((path: string | null) => {
+    if (path === null) {
       flash('Open a document before saving a version.')
       return
     }
+    if (activeRef.current !== path) return
     setVersionName('')
     setVersionDialogError('')
     setChangesOpen(true)
     openRightTab('versions')
     openOverlay('version')
-  }, [active, flash, openOverlay, openRightTab])
+  }, [flash, openOverlay, openRightTab])
 
   // Folio versions (ticket 04). The Folio the writer is in: the Folio workspace's own folder, or the Folio the open file belongs to.
   // The ⇧⌘S choice and the whole-Folio sheet are modals; neither writes anything until the sheet's own button.
   type FolioSaveState =
-    | { stage: 'choose'; last: SaveChoice; dir: string; partName: string; parts: number | null }
+    | { stage: 'choose'; question: NameVersionQuestion }
     | { stage: 'sheet'; /** Which sheet this is: a save answers only to the sheet it was started from. */ sheetId: number; dir: string; facts: FolioSheetFacts; folioName: string; busy: boolean; error: string; changed: string[] | null; /** A name the finishing offer of the decide step proposes (ticket 16). */ suggestedName?: string }
     | null
   const [folioSave, setFolioSaveState] = useState<FolioSaveState>(null)
@@ -4591,28 +4608,70 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       folioSaveGate.current.end(token)
     }
   }, [flushWriterChangesNow, flushPaths, documentsUnder, flash, openOverlay, root, setFolioSave, folioSheetIsUp])
+  // A committed navigation gets a fresh identity, including a return to the same part and Collection.
+  const nameVersionSubject = useMemo<NameVersionSubject>(() => ({
+    part: active,
+    basis: collectionDir !== null
+      ? { kind: 'collection', path: collectionDir }
+      : folioPlacePath === null ? null : { kind: 'part', path: folioPlacePath },
+  }), [root, active, activeTab, collectionDir, openPlanRequested, roomTextPath, folioPlacePath])
+  const nameVersionSubjectRef = useRef<NameVersionSubject | null>(null)
+  useLayoutEffect(() => {
+    nameVersionSubjectRef.current = nameVersionSubject
+    return () => {
+      nameVersionSubjectRef.current = null
+      nameVersionChooser.cancel()
+    }
+  }, [nameVersionSubject, nameVersionChooser])
+
+  const dismissNameVersion = useCallback(() => {
+    nameVersionChooser.cancel()
+    if (folioSaveRef.current?.stage === 'choose') {
+      setFolioSave(null)
+      closeOverlay()
+    }
+  }, [nameVersionChooser, closeOverlay, setFolioSave])
+  useLayoutEffect(() => {
+    if (folioSave?.stage !== 'choose') return
+    if (overlayActive === 'folioSaveChoose' && nameVersionChooser.isOffered(folioSave.question)) return
+    nameVersionChooser.cancelQuestion(folioSave.question)
+    setFolioSave(null)
+    if (overlayActive === 'folioSaveChoose') closePalette()
+  }, [nameVersionSubject, nameVersionChooser, folioSave, overlayActive, setFolioSave, closePalette])
+  useEffect(() => {
+    const cancelOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') nameVersionChooser.cancelPreparation()
+    }
+    window.addEventListener('keydown', cancelOnEscape, true)
+    return () => window.removeEventListener('keydown', cancelOnEscape, true)
+  }, [nameVersionChooser])
+
+  const openPartVersionSheet = useCallback(() => {
+    dismissNameVersion()
+    openPartVersionSheetFor(activeRef.current)
+  }, [dismissNameVersion, openPartVersionSheetFor])
   // ⇧⌘S: in a Folio it asks "Whole Folio or this part only?" with the last answer first; elsewhere it is the per-part sheet.
   const requestNameVersion = useCallback(() => {
-    void (async () => {
-      const held = folioSaveGate.current.held()
-      if (held === 'saving') { flash(SAVING_NOW); return }
-      if (held !== null || folioSheetIsUp()) return
-      const dir = await folioVersionDir().catch(() => null)
-      if (dir === null) { openPartVersionSheet(); return }
-      const last = await window.writeflex.folioVersionSave.choice().catch((): SaveChoice => 'folio')
-      // The part count and the open part's name come from the same read the sheet makes (a quiet one: nothing is flushed or written).
-      const facts = await window.writeflex.folioVersionSave.sheet(dir).catch(() => null)
-      const here = active ? facts?.partList.find((entry) => entry.path === active) : undefined
-      // Another way in may have won while the reads above were out.
-      if (folioSaveGate.current.held() !== null || folioSheetIsUp()) return
-      setFolioSave({ stage: 'choose', last, dir, partName: here ? `${here.order} ${here.title}` : '', parts: facts && facts.refused === undefined ? facts.parts : null })
-      openOverlay('folioSaveChoose')
-    })()
-  }, [folioVersionDir, openPartVersionSheet, active, openOverlay, flash, setFolioSave, folioSheetIsUp])
+    dismissNameVersion()
+    if (folioSaveGate.current.held() === 'saving') { flash(SAVING_NOW); return }
+    void nameVersionChooser.request({
+      currentSubject: () => nameVersionSubjectRef.current,
+      busy: () => folioSaveGate.current.held() !== null || folioSheetIsUp(),
+      readDir: async (basis) => basis.kind === 'collection'
+        ? window.writeflex.readFolioDir(basis.path)
+        : (await window.writeflex.readFolioPlace(basis.path))?.dir ?? null,
+      readLastChoice: () => window.writeflex.folioVersionSave.choice(),
+      readFacts: (dir) => window.writeflex.folioVersionSave.sheet(dir),
+      openPartSheet: openPartVersionSheetFor,
+      showQuestion: (question) => {
+        setFolioSave({ stage: 'choose', question })
+        openOverlay('folioSaveChoose')
+      },
+    })
+  }, [dismissNameVersion, nameVersionChooser, openPartVersionSheetFor, openOverlay, flash, setFolioSave, folioSheetIsUp])
   // File ▸ Save Folio Version… and the palette entry: straight to the sheet, no question.
   // Folio versions ticket 07: Open Folio Version Read-only opens the version the Versions tab shows. From any other tab it takes the writer to the Versions tab to choose one.
   const versionRead = useAnyVersionRead()
-  const readingVersionNow = useAnyReadingVersion()
   const openFolioVersionReadOnly = useCallback(() => {
     const detail = { handled: false }
     window.dispatchEvent(new CustomEvent(OPEN_READ_ONLY_EVENT, { detail }))
@@ -4666,12 +4725,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   )
   // `suggestedName` comes from the decide step's finishing offer. A click handler passes its event here too, which is no name.
   const requestSaveFolioVersion = useCallback((suggestedName?: unknown) => {
+    dismissNameVersion()
     void (async () => {
       const dir = await folioVersionDir().catch(() => null)
       if (dir === null) { flash('Open a Folio first: a Folio version keeps the whole Folio.'); return }
       await openFolioSaveSheet(dir, typeof suggestedName === 'string' ? suggestedName : undefined)
     })()
-  }, [folioVersionDir, flash, openFolioSaveSheet])
+  }, [dismissNameVersion, folioVersionDir, flash, openFolioSaveSheet])
   // Folio versions ticket 06: the change cues. The Folio the open file belongs to is read again whenever the open file or the Collection
   // changes; its cues (Binder dots, the chip below, the margin's heading, the working-draft row) share one read (folio-cues-store.ts).
   const [cueDir, setCueDir] = useState<string | null>(null)
@@ -4750,21 +4810,24 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       return refusalSentence(error)
     }
   }, [flash, reloadVersions])
-  const chooseSaveScope = useCallback((choice: SaveChoice) => {
-    if (folioSave?.stage !== 'choose') return
-    const dir = folioSave.dir
-    void window.writeflex.folioVersionSave.setChoice(choice).catch(() => false)
+  const chooseSaveScope = useCallback((question: NameVersionQuestion, choice: SaveChoice) => {
+    const shown = folioSaveRef.current
+    if (shown?.stage !== 'choose' || shown.question !== question) return
+    const target = nameVersionChooser.take(question, choice)
     setFolioSave(null)
     closeOverlay()
-    if (choice === 'part') openPartVersionSheet()
-    else void openFolioSaveSheet(dir)
-  }, [folioSave, closeOverlay, openPartVersionSheet, openFolioSaveSheet, setFolioSave])
+    if (!target) return
+    void window.writeflex.folioVersionSave.setChoice(target.scope).catch(() => false)
+    if (target.scope === 'part') openPartVersionSheetFor(target.path)
+    else void openFolioSaveSheet(target.dir)
+  }, [nameVersionChooser, closeOverlay, openPartVersionSheetFor, openFolioSaveSheet, setFolioSave])
   const closeFolioSave = useCallback(() => {
     // The sheet cannot be closed under a running save: its own buttons and Escape are off then, and so is this.
     if (folioSaveGate.current.held() === 'saving') return
+    nameVersionChooser.cancel()
     setFolioSave(null)
     closePalette()
-  }, [closePalette, setFolioSave])
+  }, [nameVersionChooser, closePalette, setFolioSave])
 
   const clearDocument = useCallback(() => {
     const path = activeRef.current
@@ -5036,6 +5099,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if (!current) return
     const target = folderBrowsePath(files, current, direction)
     if (!target || target === current) return
+    retireOpenFolio()
     // The owner writes the buffer until it is saved, detaches it in the turn of the last check, and forgets
     // it only if nothing moved since (document-owner.ts; Muse M1, round 2): typing during the flush is
     // written first, or the browse does not happen.
@@ -5054,7 +5118,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     }
     setCollectionDir(null)
     replaceActiveTab(target)
-  }, [files, flash, replaceActiveTab, owner, cancelAutosaveFor, clearExternalDiskNotice])
+  }, [retireOpenFolio, files, flash, replaceActiveTab, owner, cancelAutosaveFor, clearExternalDiskNotice])
 
   // Writing goal (Round A T5, ADR-0002/0019/0028): a `goal:` in the ACTIVE document's frontmatter
   // upgrades the status-bar count cell into the Goal Gauge — one instrument, upgraded, never a
@@ -5124,78 +5188,118 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [exportSubject, setExportSubject] = useState<
     { openId: number; workspaceRoot: string; path: string; title: string; words: number; collection: { dir: string; name: string; pieces: number; htmlPieces?: number; leftOut?: FolioLeftOut[] } | null; inFolio: boolean; presetAction?: ExportPresetOpenAction; tocDepthHomes: Record<ExportScope, ExportTocDepthHome | null> } | null
   >(null)
-  // Each open of the sheet gets a new id, so the sheet remounts and its scope starts from this open's default.
   const exportOpenSeq = useRef(0)
-  const openExportSheet = useCallback(async (from?: string, presetAction?: ExportPresetOpenAction, fromCollection?: string) => {
-    // The quiet menu exports the ROW it was opened on; the palette exports the active document.
-    const viewed = fromCollection === undefined ? null : await window.writeflex.listCollection(fromCollection)
-    if (viewed && viewed.rows.length === 0) { flash('There are no documents in this collection to export.'); return }
-    const path = viewed?.rows[0]?.path ?? viewed?.cover?.path ?? from ?? activeRef.current
-    if (!path) { flash('Open a document to export it'); return }
-    if (!root) { flash('Open a vault to export a document'); return }
-    const text = path === activeRef.current
-      ? editorRef.current?.currentDoc() ?? ''
-      : await window.writeflex.readFile(path).then((read) => read.content).catch(() => '')
-    let collection: { dir: string; name: string; pieces: number; htmlPieces?: number; leftOut?: FolioLeftOut[] } | null = null
-    let inFolio = false
+  useLayoutEffect(() => cancelPendingExport, [root, cancelPendingExport])
+  useLayoutEffect(() => {
+    if (overlayActive === 'export' && exportSubject?.workspaceRoot !== root) closeOverlay()
+  }, [root, overlayActive, exportSubject, closeOverlay])
+  useEffect(() => {
+    // The sheet has no key handler until its facts arrive. Escape can dismiss that pending open too.
+    const cancelOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') cancelPendingExport()
+    }
+    window.addEventListener('keydown', cancelOnEscape, true)
+    return () => window.removeEventListener('keydown', cancelOnEscape, true)
+  }, [cancelPendingExport])
+
+  const openExportSheet = useCallback(async (
+    from?: string,
+    presetAction?: ExportPresetOpenAction,
+    fromCollection?: { dir: string; folio: boolean },
+  ) => {
+    // The quiet menu exports its row. Capture the palette's active document before any reads.
+    const requestedPath = from ?? activeRef.current
+    if (overlayActive === 'export') closeOverlay()
+    const openId = ++exportOpenSeq.current
+    pendingExportOpen.current = openId
+    const isCurrent = (): boolean => pendingExportOpen.current === openId
+
     try {
-      const place = await exportPlaceFor(path, {
-        folioDirOf: async (of) => (await window.writeflex.readFolioPlace(of))?.dir ?? null,
-        hasManifest: async (of) => (await window.writeflex.readFolioPieces(of)) !== null,
-        collectionDirFor,
-      })
-      const dir = fromCollection ?? place.dir
-      // Main resolves the Folio: the pieces HTML will write, and the listed entries it will leave out.
-      // A Folio writes its listed pieces in both formats; any other Collection writes its own rows.
-      const folio = await window.writeflex.readFolioPieces(dir)
-      if (fromCollection !== undefined || folio || (await window.writeflex.collection.status(dir)).collection) {
-        const listed = await window.writeflex.listCollection(dir)
-        const htmlPieces = folio ? folio.pieces.length : listed.rows.length
-        if (htmlPieces || listed.rows.length || folio || place.inFolio) {
-          const sources = documentsUnder(folderPrefix(dir)).flatMap((path) => {
-            const source = bufferNow(path) ?? unsaved.textOf(path)
-            return source === null || source === undefined ? [] : [{ path, source }]
-          })
-          collection = { dir, name: await window.writeflex.exportTitle({ scope: 'collection', dir, sources }), pieces: htmlPieces, htmlPieces, ...(folio?.leftOut.length ? { leftOut: folio.leftOut } : {}) }
-          inFolio = fromCollection !== undefined || place.inFolio
-        }
+      if (!fromCollection && !requestedPath) { flash('Open a document to export it'); return }
+      if (!root) { flash('Open a vault to export a document'); return }
+
+      const viewed = fromCollection ? await window.writeflex.listCollection(fromCollection.dir) : null
+      const viewedFolio = fromCollection ? await window.writeflex.readFolioPieces(fromCollection.dir) : null
+      if (fromCollection?.folio && !viewedFolio) {
+        // A Folio can be declared by its Index Note alone. A manifest that exists but failed to
+        // resolve is different: the Collection rows do not verify that Folio's scope.
+        const declaration = await window.writeflex.readFolioDeclaration(fromCollection.dir)
+        if (!declaration.isFolio || declaration.manifest) throw new Error('Could not read the Folio.')
       }
+      if (!isCurrent()) return
+      const path = fromCollection ? viewed?.rows[0]?.path ?? viewedFolio?.pieces[0] : requestedPath
+      if (!path) { flash('There are no documents in this collection to export.'); return }
+      const text = bufferNow(path) ?? unsaved.textOf(path) ?? (await window.writeflex.readFile(path)).content
+      if (!isCurrent()) return
+
+      let collection: { dir: string; name: string; pieces: number; htmlPieces?: number; leftOut?: FolioLeftOut[] } | null = null
+      let inFolio = false
+      try {
+        const place = fromCollection ? { dir: fromCollection.dir, inFolio: true } : await exportPlaceFor(path, {
+          folioDirOf: async (of) => (await window.writeflex.readFolioPlace(of))?.dir ?? null,
+          hasManifest: async (of) => (await window.writeflex.readFolioPieces(of)) !== null,
+          collectionDirFor,
+        })
+        const { dir } = place
+        // A Folio writes its listed pieces in both formats. Other Collections write their own rows.
+        const folio = fromCollection ? viewedFolio : await window.writeflex.readFolioPieces(dir)
+        if (viewed || folio || (await window.writeflex.collection.status(dir)).collection) {
+          const listed = viewed ?? await window.writeflex.listCollection(dir)
+          const htmlPieces = folio ? folio.pieces.length : listed.rows.length
+          if (htmlPieces || listed.rows.length || folio || place.inFolio) {
+            const sources = documentsUnder(folderPrefix(dir)).flatMap((path) => {
+              const source = bufferNow(path) ?? unsaved.textOf(path)
+              return source === null || source === undefined ? [] : [{ path, source }]
+            })
+            collection = { dir, name: await window.writeflex.exportTitle({ scope: 'collection', dir, sources }), pieces: htmlPieces, htmlPieces, ...(folio?.leftOut.length ? { leftOut: folio.leftOut } : {}) }
+            inFolio = place.inFolio
+          }
+        }
+      } catch (error) {
+        // Discovering an additional scope is optional for a piece. A menu request already names its scope.
+        if (fromCollection) throw error
+      }
+      if (!isCurrent()) return
+
+      // Contents depth is optional. Read it from the piece and the Folio's Index Note, preferring open text.
+      const readHome = (input: TocDepthScope): Promise<TocDepthSource | null> =>
+        window.writeflex.readTocDepth(input).catch(() => null)
+      const pieceSource = await readHome({ kind: 'document', path })
+      const collectionSource = collection ? await readHome({ kind: 'folio', dir: collection.dir }) : null
+      const pieceBuffer = bufferNow(path)
+      if (pieceSource && pieceBuffer !== null) pieceSource.depth = tocDepthOf(pieceBuffer)
+      if (collectionSource) {
+        const indexBuffer = bufferNow(collectionSource.path)
+        if (indexBuffer !== null) collectionSource.depth = tocDepthOf(indexBuffer)
+      }
+      const homeOf = (source: TocDepthSource | null, label: string): ExportTocDepthHome | null =>
+        source ? { label, depth: source.depth } : null
+      const title = await window.writeflex.exportTitle({ scope: 'piece', path, source: text })
+      if (!isCurrent()) return
+      setExportSubject({
+        openId,
+        workspaceRoot: root,
+        path,
+        title,
+        words: countUnits(text, { excludeCommentLines: true }).words,
+        collection,
+        inFolio,
+        ...(presetAction ? { presetAction } : {}),
+        tocDepthHomes: {
+          piece: homeOf(pieceSource, 'this document (toc_depth in its frontmatter)'),
+          collection: homeOf(collectionSource, `${collection?.name ?? 'this Folio'} (toc_depth in its Index Note)`),
+        },
+      })
+      openOverlay('export')
     } catch {
-      collection = null // a folder that cannot be read is simply not a Collection for this sheet
+      if (isCurrent()) {
+        const source = fromCollection ? (fromCollection.folio ? 'Folio' : 'Collection') : 'document'
+        flash(`Could not prepare this ${source} for export. Check the source and try again.`)
+      }
+    } finally {
+      if (isCurrent()) cancelPendingExport()
     }
-    // The Contents depth each scope keeps in its own file: the document's `toc_depth`, the Folio's in its
-    // Index Note (none when the folder has no Index Note). An open document's own text is what it says.
-    // Read only: a depth the writer chooses is saved by main when the HTML export runs.
-    const readHome = (input: TocDepthScope): Promise<TocDepthSource | null> =>
-      window.writeflex.readTocDepth(input).catch(() => null)
-    const pieceScope: TocDepthScope = { kind: 'document', path }
-    const collectionScope: TocDepthScope | null = collection ? { kind: 'folio', dir: collection.dir } : null
-    const pieceSource = await readHome(pieceScope)
-    const collectionSource = collectionScope ? await readHome(collectionScope) : null
-    const pieceBuffer = bufferNow(path)
-    if (pieceSource && pieceBuffer !== null) pieceSource.depth = tocDepthOf(pieceBuffer)
-    if (collectionSource) {
-      const indexBuffer = bufferNow(collectionSource.path)
-      if (indexBuffer !== null) collectionSource.depth = tocDepthOf(indexBuffer)
-    }
-    const homeOf = (source: TocDepthSource | null, label: string): ExportTocDepthHome | null =>
-      source ? { label, depth: source.depth } : null
-    setExportSubject({
-      openId: ++exportOpenSeq.current,
-      workspaceRoot: root,
-      path,
-      title: await window.writeflex.exportTitle({ scope: 'piece', path, source: text }),
-      words: countUnits(text, { excludeCommentLines: true }).words,
-      collection,
-      inFolio,
-      ...(presetAction ? { presetAction } : {}),
-      tocDepthHomes: {
-        piece: homeOf(pieceSource, 'this document (toc_depth in its frontmatter)'),
-        collection: homeOf(collectionSource, `${collection?.name ?? 'this Folio'} (toc_depth in its Index Note)`),
-      },
-    })
-    openOverlay('export')
-  }, [flash, openOverlay, root, documentsUnder, bufferNow])
+  }, [flash, openOverlay, closeOverlay, overlayActive, root, documentsUnder, bufferNow, unsaved, cancelPendingExport])
 
   /** A piece under an unanswered changed-on-disk notice is not exported: the file may not be what is on
    *  screen (2b review P2). The sentence for the export sheet, or undefined when no notice stands. */
@@ -5772,6 +5876,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     toggleAmbientSound,
     setSetting,
     openGoalDialog,
+    openExportSheet,
     copyOut,
     clearDocument,
     cycle,
@@ -6136,90 +6241,113 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     appChordIndexRef.current.get(resolved)?.()
   }, [overlayOpenRef])
 
-  // Tab activation loads the file into the editor. switchTo prefers the per-path cached buffer
-  // (EditorPane's EditorState map — unsaved edits, cursor, undo history) over the disk content,
-  // which only seeds FRESH buffers; the disk read still always refreshes the dirty baseline.
+  // A read belongs to the activation and workspace that started it. Retry also belongs to the
+  // notice it answers and takes its turn in the owner's queue.
+  const activationRef = useRef<object | null>(null)
+  useLayoutEffect(() => {
+    activationRef.current = active ? {} : null
+    return () => { activationRef.current = null }
+  }, [active, root])
+  const activateDocument = useCallback((path: string, expected?: ExternalDiskNotice): Promise<void> => {
+    const activation = activationRef.current
+    const workspace = documentWorkspaceRef.current
+    const isCurrent = () => activation !== null && activationRef.current === activation
+      && workspace !== null && documentWorkspaceRef.current === workspace && activeRef.current === path
+      && (!expected || externalDiskNoticesRef.current.get(path) === expected)
+    const readAndShow = async () => {
+      if (!isCurrent()) return
+      const read = await readEditorDocument(path)
+      if (!isCurrent() || read.kind === 'stale') return
+      const standing = externalDiskNoticesRef.current.get(path)
+      if (read.kind !== 'read') {
+        const held = editorRef.current?.docFor(path) ?? unsaved.textOf(path)
+        if (held === undefined || held === null) {
+          loadedPath.current = null
+          setLoadedFile(null)
+          if (read.kind === 'unavailable') raiseForOutside(path, { kind: 'unavailable', dirty: false })
+          else {
+            if (standing?.kind === 'unavailable') clearExternalDiskNotice(path)
+            flash(`Could not read ${path}`)
+          }
+          return
+        }
+        const mode = modeForFile(path, held)
+        setWriterMode(mode)
+        editorRef.current?.switchTo(path, held, mode)
+        const dirty = owner.activatedHeld(path, editorRef.current?.currentDoc() ?? held)
+        loadedPath.current = path
+        setLoadedFile(path)
+        raiseForOutside(path, { kind: read.kind === 'missing' ? 'removed' : 'unavailable', dirty })
+        return
+      }
+
+      const { content } = read
+      const mode = modeForFile(path, content)
+      setWriterMode(mode)
+      // switchTo keeps a cached buffer. The owner compares it with the disk version just read.
+      const action = owner.activated(path, content, () => {
+        editorRef.current?.switchTo(path, content, mode)
+        return editorRef.current?.currentDoc() ?? content
+      })
+      setLastEditablePath(path)
+      loadedPath.current = path
+      setLoadedFile(path)
+      if (action === 'conflict') {
+        raiseForOutside(path, { kind: 'conflict', diskText: content })
+      } else if (standing?.kind === 'unavailable' || standing?.kind === 'removed') {
+        raiseForOutside(path, action === 'replaced' ? { kind: 'replaced', diskText: content } : { kind: 'none' })
+      }
+      // First sight fixes the session's word baseline. Re-activation leaves it in place.
+      const shown = editorRef.current?.currentDoc() ?? content
+      session.observe(path, shown)
+      void window.writeflex.diary.prime(path, countWords(shown, { excludeCommentLines: true }))
+    }
+    // Navigation can show a cached draft during its save, or open a file that will join a folder
+    // rename in progress. The owner still orders writes and watcher reconciliation for that path.
+    return expected ? owner.inQueue(path, readAndShow) : readAndShow()
+  }, [owner, readEditorDocument, unsaved, modeForFile, raiseForOutside, clearExternalDiskNotice, flash, session.observe])
   useEffect(() => {
     if (!active) {
       loadedPath.current = null
       setLoadedFile(null)
       return
     }
-    let cancelled = false // a fast tab switch must not let the older read land after the newer one
-    void window.writeflex
-      .readEditorFile(active)
-      .then(({ content }) => {
-        if (cancelled) return
-        setLastEditablePath(active)
-        loadedPath.current = active
-        setLoadedFile(active)
-        const mode = modeForFile(active, content)
-        setWriterMode(mode)
-        // switchTo may restore a CACHED buffer, ignoring the fresh disk read. The owner reconciles it with
-        // this read as the watcher would (reconcile.ts): byte for byte, never "clean" while a write of
-        // unknown outcome stands (Sol M2, M3), and replaced only when it is saved (document-owner.ts).
-        const action = owner.activated(active, content, () => {
-          editorRef.current?.switchTo(active, content, mode)
-          return editorRef.current?.currentDoc() ?? content
-        })
-        if (action === 'conflict') {
-          // A cached buffer with unsaved text, and the disk moved under it while the tab was away: the
-          // buffer is still based on the old version (main compares against it), and the writer is asked.
-          cancelAutosaveFor(active)
-          if (!sameDiskNotice(externalDiskNoticesRef.current.get(active), 'changed', content)) {
-            raiseExternalDiskNotice(active, { kind: 'changed', dirty: true, diskText: content })
-          }
-        }
-        // First sight of this file this session fixes its word baseline (a re-activation is a no-op
-        // in useSession, since the count is unchanged) — the +words tally measures from here on.
-        session.observe(active, editorRef.current?.currentDoc() ?? content)
-        void window.writeflex.diary.prime(active, countWords(editorRef.current?.currentDoc() ?? content, { excludeCommentLines: true }))
-        // The buffer for `active` is now live: flush a folder-scope outline jump queued for this file.
-        if (pendingLine.current?.path === active) {
-          editorRef.current?.goToLine(pendingLine.current.line)
-          pendingLine.current = null
-        }
-        // …and flush a queued search jump the same way, selecting the match (Task 14).
-        if (pendingMatch.current?.path === active) {
-          const m = pendingMatch.current
-          editorRef.current?.goToMatch(m.line, m.column, m.length)
-          pendingMatch.current = null
-        }
-      })
-      .catch(() => {
-        if (cancelled) return
-        // The file cannot be read (removed on disk), and the tab holds text of its own: the tab's cached
-        // buffer, or the text the registry keeps. It is shown without a disk read, under the removed
-        // notice (Sol S1, round 2): the tab must not name this file while the editor shows another.
-        const held = editorRef.current?.docFor(active) ?? unsaved.textOf(active) ?? null
-        if (held === null) {
-          flash(`Could not read ${active}`)
-          return
-        }
-        loadedPath.current = active
-        setLoadedFile(active)
-        const mode = modeForFile(active, held)
-        setWriterMode(mode)
-        editorRef.current?.switchTo(active, held, mode)
-        const buffer = editorRef.current?.currentDoc() ?? held
-        const dirty = owner.activatedRemoved(active, buffer)
-        cancelAutosaveFor(active)
-        if (!sameDiskNotice(externalDiskNoticesRef.current.get(active), 'removed', null)) {
-          raiseExternalDiskNotice(active, { kind: 'removed', dirty, diskText: null })
-        }
-      })
+    void activateDocument(active)
     return () => {
-      cancelled = true
-      // A cross-file jump queues pendingLine and opens the target; the flush above clears it once that
-      // buffer is live. But if the user switches AWAY before this file's readFile resolves, the flush
-      // never runs — so drop the queued line here IF it still targets THIS (now-departing) file. A newer
-      // jump (rapid double cross-file click) has already repointed pendingLine at its own target, so the
-      // path check leaves that one intact; only the abandoned queue-until-ready is cleared, which would
-      // otherwise yank the caret on a LATER unrelated activation of this same file.
+      // A jump waiting for an abandoned activation must not land on a later visit to this tab.
       if (pendingLine.current?.path === active) pendingLine.current = null
       if (pendingMatch.current?.path === active) pendingMatch.current = null
     }
-  }, [active, flash, owner, session.observe, modeForFile, cancelAutosaveFor, raiseExternalDiskNotice])
+  }, [active, activateDocument])
+  useLayoutEffect(() => {
+    const created = pendingWidgetCreate.current
+    if (created && created.documentPath !== active) pendingWidgetCreate.current = null
+    const editor = editorRef.current
+    const view = editor?.view()
+    if (!editor || !view || !active || loadedFile !== active || editor.path() !== active) return
+
+    // Until this commit the editor can still be hidden under .no-doc. Focus and publish the DOM
+    // selection only once the incoming buffer is visible.
+    if (pendingLine.current?.path === active) {
+      editor.goToLine(pendingLine.current.line)
+      pendingLine.current = null
+    }
+    if (pendingMatch.current?.path === active) {
+      const { line, column, length } = pendingMatch.current
+      editor.goToMatch(line, column, length)
+      pendingMatch.current = null
+    }
+    if (created?.documentPath === active) {
+      pendingWidgetCreate.current = null
+      // Bind widget Undo to the history the writer receives after Create.
+      if (lastWidgetStepRef.current?.undoId === created.undoId && view.state.doc.toString() === created.documentText) {
+        view.dispatch({ annotations: isolateHistory.of('full') })
+        const historyDepth = undoDepth(view.state)
+        setLastWidgetStep((current) => current?.undoId === created.undoId ? { ...current, historyDepth } : current)
+      }
+    }
+    view.focus()
+  }, [active, loadedFile])
 
   useEffect(() => {
     const dismiss = (event: KeyboardEvent): void => {
@@ -6379,6 +6507,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   useEffect(
     () => {
       const onCloseRequested = async (): Promise<void> => {
+        retireOpenFolio()
         // Ack immediately — before the (possibly slow) flush — so main knows the renderer is alive. A
         // blank/crashed renderer never reaches this line.
         void window.writeflex.acknowledgeClose()
@@ -6472,7 +6601,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       const off = window.writeflex.onCloseRequested(() => { void onCloseRequested() })
       return () => { closeRequestRef.current = null; off() }
     },
-    [flushEveryDirtyBuffer, flushWriterChangesNow, flash, owner],
+    [retireOpenFolio, flushEveryDirtyBuffer, flushWriterChangesNow, flash, owner],
   )
 
   // A status line main sends this window (an open that found the folder's window still being switched to).
@@ -6480,10 +6609,11 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
 
   // The vault switcher's choice (vaults ticket 06; review 2026-10-16): main opens the chosen root in a
   // new window at this window's place and closes this one by its ordinary close, which writes every
-  // document as any close does (the close handler above). This page does nothing first. When it is
+  // document as any close does (the close handler above). When this page is
   // still here afterwards, the switch did not happen: another window shows the root (focused), the
   // folder is busy, the dialog was cancelled, or the close was kept open (a write failed).
   const switchToRoot = useCallback(async (target: RootSwitchTarget): Promise<void> => {
+    cancelPendingExport()
     try {
       const result = await window.writeflex.switchRoot(target)
       if (result.status === 'focused') flash(`${result.root.split('/').at(-1) ?? result.root} is open in another window`)
@@ -6492,7 +6622,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     } catch (error) {
       flash(humanReadableError(error, 'WriteFlex could not open that folder.'))
     }
-  }, [flash])
+  }, [flash, cancelPendingExport])
   const chooseFromSwitcher = useCallback((choice: SwitcherChoice) => {
     if (choice.kind === 'root') void switchToRoot({ root: choice.root })
     else if (choice.kind === 'open-folder') void switchToRoot({ dialog: true })
@@ -6835,6 +6965,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // The editor drops the closed file's cached buffer state and its dirty bookkeeping with it.
   const closeTab = useCallback(
     async (path: string) => {
+      retireOpenFolio()
       if (isBoardTabId(path)) {
         boardSeenStatusesRef.current.clear()
         close(path)
@@ -6845,18 +6976,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         setWorkbench((current) => (current && widgetWorkbenchTabId(current.documentPath) === path ? null : current))
         return
       }
+      const workspace = documentWorkspaceRef.current
       if (isUntitledPiece(path.split('/').at(-1) ?? '')) path = await settleAutoNameRef.current(path)
-      // Saving is automatic (ADR-0012): closing a document never prompts and never discards. Flush any
-      // pending write first (savePath reads a background tab from EditorPane's cache); only a FAILED write
-      // keeps the tab open, so the edits stay recoverable rather than lost. Read the SYNCHRONOUS dirty ref
-      // (not the render-stale `dirtyPaths` state): a type-then-immediately-close-last-tab must not slip
-      // past the flush before React commits, since the last-tab close force-closes the window (Codex P1).
-      // The document owner writes the buffer until it is saved (typing during that save or the checkpoint
-      // is written too, Sol M4), detaches it in the turn of the last check, and forgets it only if nothing
-      // moved since (document-owner.ts). Always send the existing close-checkpoint event. Main gates the
-      // tier-2 checkpoint by Settings and uses the same event for ADR-0031's one automatic Initial version.
-      // A checkpoint that fails (a removed file: ENOENT) is a refusal, never a throw (Sol r3 S1).
-      const fileName = path.split('/').at(-1) ?? path
       if (guardRefusalPath.current === path) guardRefusalPath.current = null
       // The app's own traces of the tab, once the owner has forgotten its buffer.
       const closeForgotten = (): void => {
@@ -6870,35 +6991,17 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         close(path)
       }
       cancelAutosaveFor(path)
-      const flushed = await owner.withFlushed([path], () => {
-        if (!owner.forgetIfSaved(path)) return false
-        closeForgotten()
-        return true
-      }, { detach: true, afterSave: (p) => window.writeflex.checkpoint(p, { auto: true }) })
-      if (flushed.status === 'refused') {
-        // A file removed on disk (Muse S1, round 2; Sol r3 S1, also when the tab is clean and its checkpoint
-        // failed): the save is refused until the writer chooses Keep mine, which writes the file again.
-        // Closing the tab is the other answer: the text in it is discarded, and only when the writer
-        // confirms that, here, in so many words.
-        if (externalDiskNoticesRef.current.get(path)?.kind === 'removed' && await askConfirm({ title: `Close ${fileName} and discard its text?`, detail: `${fileName} was removed on disk, and this tab holds text that is not saved anywhere.`, recover: 'Cancel keeps the tab; Keep mine above the text writes the file again.', confirmLabel: 'Discard and close' })) {
-          // The card is asynchronous (Sol S1): discard only if the file is still removed and the tab still open.
-          if (externalDiskNoticesRef.current.get(path)?.kind !== 'removed' || !tabsRef.current.includes(path)) {
-            flash(`${fileName} changed while the card was open; nothing was discarded`)
-            return
-          }
-          owner.discardConfirmed(path)
-          closeForgotten()
-          flash(`Closed ${fileName}; the text that was only in the tab was discarded`)
-          return
-        }
-        if (guardRefusalPath.current !== path) flash(`Could not save ${fileName} — the tab stays open`)
-        return
-      }
-      if (flushed.status === 'still-unsaved' || !flushed.result) {
-        flash(`${fileName} was still being edited while it was saved — the tab stays open`)
-      }
+      await closeDocumentTab(path, {
+        owner,
+        notice: () => externalDiskNoticesRef.current.get(path),
+        isCurrentTab: () => workspace !== null && documentWorkspaceRef.current === workspace && tabsRef.current.includes(path),
+        checkpoint: (p) => window.writeflex.checkpoint(p, { auto: true }),
+        closeForgotten,
+        saveRefusalReported: () => guardRefusalPath.current === path,
+        flash,
+      })
     },
-    [close, owner, cancelAutosaveFor, setSaveFailed, setSaveSlow, flash, clearFileWriterState, clearExternalDiskNotice],
+    [retireOpenFolio, close, owner, cancelAutosaveFor, setSaveFailed, setSaveSlow, flash, clearFileWriterState, clearExternalDiskNotice],
   )
 
   // The room's text pane asks for a part's file: open it as any open does (a tab, the editor's own buffer, saves and conflict handling),
@@ -6920,9 +7023,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         // No tab is open: the window closes. Through the same gate as every close; if something is
         // still unsaved or being written, the close handler's flush runs first.
         // Writer-review records still waiting: the close handler drains them first.
-        else if (!writerChangesIdle() || !closeWindowIfClean()) closeRequestRef.current?.()
+        else {
+          retireOpenFolio()
+          if (!writerChangesIdle() || !closeWindowIfClean()) closeRequestRef.current?.()
+        }
       }),
-    [activeTab, tabs, pinnedTabs, recentTabs, closeTab, writerChangesIdle],
+    [activeTab, tabs, pinnedTabs, recentTabs, closeTab, writerChangesIdle, retireOpenFolio],
   )
 
   // ---- Sidebar file management (ADR-0017, the Quiet Menu) ---------------------------------------
@@ -7516,7 +7622,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       // The owner's read of the disk, with the file main returned as what is there (document-owner.ts,
       // applyOutside): queued behind any route holding the path, or `now` from inside one.
       const path = file.file.path
-      raiseForOutside(path, await owner.applyOutside(path, async () => file.content, options))
+      raiseForOutside(path, await owner.applyOutside(path, async () => ({ kind: 'read', content: file.content }), options))
     },
     [owner, raiseForOutside],
   )
@@ -7532,6 +7638,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   /** The Board for a Folio, drawn inside its workspace's Cards tab: the same Board, its offcuts, Sources rail and Undo included. */
   const renderFolioBoard = (folio: { dir: string; name: string; onLeave: () => void; onOutline: () => void }): JSX.Element => (
     <Board
+      key={root}
       label="Sources and offcuts"
       dir={folio.dir}
       name={folio.name}
@@ -7541,10 +7648,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       onStatus={flash}
       onListSources={(path, sourceDir) => setPieceSourcesRequest({ path, dir: sourceDir })}
       setPieceStatus={setBoardPieceStatus}
-      seenStatuses={boardSeenStatusesRef.current}
+      seenStatuses={folioBoardSeenStatuses}
       onFolderPieceSelected={setSelectedFolderPiece}
-      onQueryContext={updateQueryInsertionContext}
-      onInsertQuery={requestQueryInsertion}
+      onQueryContext={updateBoardQueryContext}
+      onInsertQuery={requestBoardQueryInsertion}
       onOpenPlan={folio.onOutline}
       onOpenCollection={folio.onLeave}
     />
@@ -7654,7 +7761,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   outsideSourceBulkRef.current = (action) => {
     // The source of the item in hand when it came from outside; otherwise the source with the most waiting.
     const current = dockChanges.find((change) => change.id === reviewCursorRef.current?.currentId)?.outsideSource
-    setReviewAskState(null)
+    dismissReviewAsk()
     outsideSourceBulk.open(action, current && current !== 'reader' ? current : undefined)
   }
 
@@ -7908,44 +8015,45 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     void acceptMany(targets.ids)
     setPickedCards(new Set())
   }, [acceptAllPending, acceptMany, flash, acceptWriterSession])
+  const declineContext = useMemo(() => ({
+    workspace: root ?? null,
+    piece: active,
+    collection: collectionDir ?? (boardActive ? boardDir : null),
+  }), [root, active, collectionDir, boardActive, boardDir])
+  const declineNow = useRef({ context: declineContext, changes: dockChanges, discardRun, rejectMany })
+  useLayoutEffect(() => {
+    declineNow.current = { context: declineContext, changes: dockChanges, discardRun, rejectMany }
+    const retired = declineConfirmation.retire(declineContext)
+    if (retired) {
+      setReviewAskState((state) => state?.kind === 'decline' && state.request === retired ? null : state)
+    }
+  }, [declineConfirmation, declineContext, dockChanges, discardRun, rejectMany])
   const askDecline = useCallback(() => {
     const { reviewModels: models, pickedCards: picked, marginFilter: filter } = bulkRef.current
-    if (!models) {
-      // No piece's margin (a collection page): the whole pending run, as before, but it still asks.
-      const pending = dockChanges.filter((change) => change.status === 'pending')
-      if (pending.length === 0) { flash('No pending changes to decline'); return }
-      const model = buildMarginModel({ changes: dockChanges, document: '', view: 'margin' })
-      const ids = pending.map((change) => change.id)
-      setReviewAskState({ kind: 'decline', ids, question: declineQuestion(model, ids), whole: true })
-      return
-    }
-    const targets = runTargets(models.shown, picked, filter, 'decline')
-    if (targets.declinable.length === 0) { flash('No edits to decline'); return }
-    setReviewAskState({ kind: 'decline', ids: targets.declinable, question: declineQuestion(models.shown, targets.declinable) })
-  }, [dockChanges, flash])
+    const request = declineConfirmation.request({ ...declineNow.current, shown: models?.shown, picked, filter })
+    if (!request) { flash(models ? 'No edits to decline' : 'No pending changes to decline'); return }
+    setReviewAskState({ kind: 'decline', request })
+  }, [declineConfirmation, flash])
   const openSendBack = useCallback((open = true) => {
+    dismissReviewAsk()
+    if (!open) return
     const models = bulkRef.current.reviewModels
-    if (!open) { setReviewAskState(null); return }
     setReviewAskState({ kind: 'send-back', scope: models ? sendBackScope(models.shown) : sendBackScope(buildMarginModel({ changes: dockChanges, document: '', view: 'margin' })) })
-  }, [dockChanges])
+  }, [dismissReviewAsk, dockChanges])
   const reviewAsk = useMemo<ReviewAsk | null>(() => {
     const ask = reviewAskState
     if (!ask) return null
     const cancel = (): void => { setReviewAskState(null); restoreEditorFocus() }
     if (ask.kind === 'decline') {
+      const { request } = ask
       return {
-        kind: 'decline', question: ask.question, onCancel: cancel,
+        kind: 'decline', question: request.question,
+        onCancel: () => { if (declineConfirmation.cancel(request)) cancel() },
         onConfirm: () => {
-          setReviewAskState(null)
-          if (ask.whole) discardRun()
-          else {
-            // Only what still waits: one settled while the question was open is left alone.
-            const waiting = new Set(dockChanges.filter((change) => change.status === 'pending' || change.status === 'held').map((change) => change.id))
-            const ids = ask.ids.filter((id) => waiting.has(id))
-            if (ids.length > 0) void rejectMany(ids)
-          }
+          const current = declineNow.current
+          if (!declineConfirmation.resolve(request, current.context, current.changes, current)) return
           setPickedCards(new Set())
-          restoreEditorFocus()
+          cancel()
         },
       }
     }
@@ -7958,7 +8066,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         if (ask.scope.ids.length > 0) setSentBackIds((current) => new Set([...current, ...ask.scope.ids]))
       },
     }
-  }, [reviewAskState, dockChanges, discardRun, rejectMany, sendRunBack, restoreEditorFocus])
+  }, [reviewAskState, declineConfirmation, sendRunBack, restoreEditorFocus])
   const runCountMenuAction = useCallback((action: CountMenuAction) => {
     switch (action.type) {
       case 'step': stepReview(action.direction); break
@@ -7981,9 +8089,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       }
       case 'toggle-margin': toggleMargin(); break
       case 'save-version': openPartVersionSheet(); break
-      case 'outside-source': setReviewAskState(null); outsideSourceBulk.open(action.action, action.source); break
+      case 'outside-source': dismissReviewAsk(); outsideSourceBulk.open(action.action, action.source); break
     }
-  }, [stepReview, nextPieceWithItems, bulkAccept, toggleMargin, openPartVersionSheet, outsideSourceBulk])
+  }, [stepReview, nextPieceWithItems, bulkAccept, toggleMargin, openPartVersionSheet, outsideSourceBulk, dismissReviewAsk])
   // The one handler for the run-level review keys. The margin acts on its selection, else on what its filter shows; with no margin mounted
   // (no document open, a collection page) the keys fall back to the whole pending run.
   marginCommandRef.current = (what): void => {
@@ -8446,7 +8554,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 onShowRoomText={setRoomTextPath}
                 roomTextLoaded={loadedFile}
                 roomEditor={editorRef}
-                onRunCommand={id => { if (id === 'export.document') void openExportSheet(undefined, undefined, collectionDir); else actionsHereApi.runCommand(id) }}
+                onRunCommand={actionsHereApi.runCommand}
+                onExport={source => void openExportSheet(undefined, undefined, source)}
                 onRename={async name => {
                   if (!collectionDir) throw new Error('Rename the workspace folder in Finder.')
                   if (name === collectionDir.split('/').at(-1)) return
@@ -8584,27 +8693,34 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             <div className={`external-change-banner${activeExternalDiskNotice.kind === 'removed' ? ' removed' : ''}`} role="status" aria-live="polite">
               <TriangleAlert className="icon" aria-hidden="true" />
               <span className="external-change-copy">
-                <strong>{activeExternalDiskNotice.kind === 'removed' ? 'Removed on disk' : activeExternalDiskNotice.again ? 'Changed on disk again' : 'Changed on disk'}</strong>
+                <strong>{activeExternalDiskNotice.kind === 'unavailable' ? 'File cannot be read' : activeExternalDiskNotice.kind === 'removed' ? 'Removed on disk' : activeExternalDiskNotice.again ? 'Changed on disk again' : 'Changed on disk'}</strong>
                 <span>
-                  {activeExternalDiskNotice.kind === 'removed'
-                    ? 'This tab is still safe in WriteFlex.'
-                    : 'Your unsaved writing is untouched.'}
+                  {activeExternalDiskNotice.kind === 'unavailable'
+                    ? (loadedFile === active ? 'This tab is still open. Try reading the file again.' : 'Try again when the file is available.')
+                    : activeExternalDiskNotice.kind === 'removed' ? 'This tab is still safe in WriteFlex.' : 'Your unsaved writing is untouched.'}
                 </span>
               </span>
               <span className="external-change-actions">
-                <button className="cbtn" type="button" onClick={() => void reloadExternalDiskVersion()}>
-                  <RefreshCw className="icon sm" aria-hidden="true" />
-                  Reload
-                </button>
-                {offersMerge(activeExternalDiskNotice) && (
-                  <button className="cbtn" type="button" onClick={openDiskMerge}>
-                    <GitMerge className="icon sm" aria-hidden="true" />
-                    Merge
+                {activeExternalDiskNotice.kind === 'unavailable' && active ? (
+                  <button className="cbtn primary" type="button" onClick={() => void activateDocument(active, activeExternalDiskNotice)}>
+                    <RefreshCw className="icon sm" aria-hidden="true" />
+                    Retry
                   </button>
-                )}
-                <button className="cbtn primary" type="button" onClick={() => void keepExternalBuffer()}>
-                  {activeExternalDiskNotice.dirty || activeExternalDiskNotice.kind === 'removed' ? 'Keep mine' : 'Keep open'}
-                </button>
+                ) : <>
+                  <button className="cbtn" type="button" onClick={() => void reloadExternalDiskVersion()}>
+                    <RefreshCw className="icon sm" aria-hidden="true" />
+                    Reload
+                  </button>
+                  {offersMerge(activeExternalDiskNotice) && (
+                    <button className="cbtn" type="button" onClick={openDiskMerge}>
+                      <GitMerge className="icon sm" aria-hidden="true" />
+                      Merge
+                    </button>
+                  )}
+                  <button className="cbtn primary" type="button" onClick={() => void keepExternalBuffer()}>
+                    {activeExternalDiskNotice.dirty || activeExternalDiskNotice.kind === 'removed' ? 'Keep mine' : 'Keep open'}
+                  </button>
+                </>}
               </span>
             </div>
           )}
@@ -8642,7 +8758,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             onInsertReference={insertReference}
             onInsertWidget={insertWidget}
             ref={editorRef}
-            hasDocument={active !== null}
+            hasDocument={active !== null && loadedFile === active}
             folioPlace={active !== null && collectionDir === null && !distractionFree ? shownFolioPlace : null}
             onOpenFolioPlan={openFolioPlan}
             onOpenFolioPiece={open}
@@ -8884,6 +9000,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                   return flushed.result
                 }}
                 onCreated={(step) => {
+                  pendingWidgetCreate.current = step
                   setLastWidgetStep(step)
                   if (step.documentPath !== workbench.documentPath) {
                     // The document moved into its own folder: the tab opened for it under its old name goes, and the
@@ -8892,17 +9009,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                     setWorkbench(null)
                     open(step.documentPath)
                   } else leaveWorkbench(step.documentPath)
-                  // The keyboard goes back to the document, where ⌘Z takes the widget back out while the editor's own
-                  // history is where it is now: closed here (no later typing joins an earlier edit), its depth kept.
-                  window.setTimeout(() => {
-                    if (editorRef.current?.path() !== step.documentPath) return
-                    const view = editorRef.current?.view()
-                    if (!view) return
-                    view.dispatch({ annotations: isolateHistory.of('full') })
-                    const historyDepth = undoDepth(view.state)
-                    setLastWidgetStep((current) => (current?.undoId === step.undoId ? { ...current, historyDepth } : current))
-                    view.focus()
-                  }, 0)
                   flash('Record browser added. ⌘Z takes it back out.')
                 }}
                 onBack={() => leaveWorkbench(workbench.documentPath)}
@@ -8915,6 +9021,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           {boardActive && (
             <div className="board-page-overlay">
               <Board
+                key={root}
                 onBack={backTarget ? () => open(backTarget) : undefined}
                 dir={boardDir}
                 name={collectionName ?? 'Collection'}
@@ -8926,8 +9033,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 setPieceStatus={setBoardPieceStatus}
                 seenStatuses={boardSeenStatusesRef.current}
                 onFolderPieceSelected={setSelectedFolderPiece}
-                onQueryContext={updateQueryInsertionContext}
-                onInsertQuery={requestQueryInsertion}
+                onQueryContext={updateBoardQueryContext}
+                onInsertQuery={requestBoardQueryInsertion}
                 onOpenPlan={openPlan}
                 onOpenCollection={() => openCollection(boardDir)}
               />
@@ -9000,13 +9107,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           {compareView && (
             <ComparePane
               versions={versions}
-              result={versionCompare}
-              loading={versionCompareLoading}
-              error={versionCompareError}
-              fromId={compareView.fromId}
-              toId={compareView.toId}
-              onFromChange={setCompareFrom}
-              onToChange={setCompareTo}
+              result={compareView.result}
+              loading={compareView.loading}
+              error={compareView.error}
+              fromId={compareView.selection.fromId}
+              toId={compareView.selection.toId}
+              onFromChange={documentCompare.setFrom}
+              onToChange={documentCompare.setTo}
               onSwap={swapCompareView}
               onBack={closeCompareView}
               getEditableToScrollElement={getEditableCompareToScrollElement}
@@ -9301,7 +9408,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           onCancel={closePalette}
         />
       )}
-      {overlayActive === 'export' && exportSubject && (
+      {overlayActive === 'export' && exportSubject && exportSubject.workspaceRoot === root && (
         <ExportSheet
           key={exportSubject.openId}
           workspaceRoot={exportSubject.workspaceRoot}
@@ -9338,7 +9445,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         />
       )}
       {overlayActive === 'folioSaveChoose' && folioSave?.stage === 'choose' && (
-        <SaveChooser last={folioSave.last} partName={folioSave.partName} parts={folioSave.parts} onChoose={chooseSaveScope} onCancel={closeFolioSave} />
+        <SaveChooser last={folioSave.question.last} partName={folioSave.question.partName} parts={folioSave.question.parts} onChoose={(choice) => chooseSaveScope(folioSave.question, choice)} onCancel={closeFolioSave} />
       )}
       {overlayActive === 'folioSave' && folioSave?.stage === 'sheet' && (
         <FolioVersionSheet key={folioSave.sheetId} {...(folioSave.suggestedName !== undefined ? { initialName: folioSave.suggestedName } : {})} facts={folioSave.facts} folioName={folioSave.folioName} today={new Date()} busy={folioSave.busy} error={folioSave.error} changed={folioSave.changed} onCancel={closeFolioSave} onSave={(input) => void runFolioSave(input)} />

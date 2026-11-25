@@ -1,7 +1,15 @@
 // The document owner (src/renderer/src/app/document-owner.ts; docs/plans/saving-over-an-outside-change/
 // document-owner-plan.md, parcel 1), driven with fake ports, the real unsaved registry and a main that
 // compares bytes as main does. Each test names the guard it proves.
-import { describe, expect, it } from 'bun:test'
+import { readEditorFile } from '../../src/main/editor-read'
+import { Workspace } from '../../src/main/workspace'
+import { afterAll, describe, expect, it } from 'bun:test'
+import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { cleanUpScratch, trackScratch } from '../helpers/scratch-dirs'
+import { closeDocumentTab } from '../../src/renderer/src/app/close-document-tab'
+import { registerConfirmHost, settleConfirm } from '../../src/renderer/src/components/confirm-bus'
 import { textForSave } from '../../src/shared/line-endings'
 import { basisAllows, type SaveBasis } from '../../src/shared/save-basis'
 import type { ExternalDiskNotice } from '../../src/renderer/src/editor/reconcile'
@@ -104,7 +112,7 @@ describe('the owner holds the queue while a route acts', () => {
     let applying: ReturnType<typeof owner.applyOutside> | null = null
     await owner.withFlushed([P], async () => {
       h.disk = 'Outside.\n'
-      applying = owner.applyOutside(P, async () => h.disk as string)
+      applying = owner.applyOutside(P, async () => ({ kind: 'read', content: h.disk as string }))
       await tick(30)
       appliedDuring = h.buffer
     })
@@ -213,7 +221,7 @@ describe('the receipt is the baseline (Muse r3 M1)', () => {
     h.answer = (doc) => { h.disk = 'X\n'; return { content: 'X\n', written: doc } }
     expect(await owner.save(P)).toBe(false)
     h.answer = null
-    expect(await owner.reload(P, async () => h.disk as string)).toEqual({ ok: true, diskText: 'X\n' })
+    expect(await owner.reload(P, async () => ({ kind: 'read', content: h.disk as string }))).toEqual({ ok: true, diskText: 'X\n' })
     expect(h.buffer).toBe('X\n')
     // The owner's own mark is cleared (the registry's mark of unknown outcome stays: accepted residual).
     h.registry.beginWrite(P, 'X\n').succeeded()
@@ -224,7 +232,7 @@ describe('the receipt is the baseline (Muse r3 M1)', () => {
     const { h, owner, type } = harness('S\n')
     h.disk = 'X\n'
     let answer!: (text: string) => void
-    const reloading = owner.reload(P, () => new Promise<string>((resolve) => { answer = resolve }))
+    const reloading = owner.reload(P, async () => ({ kind: 'read', content: await new Promise<string>((resolve) => { answer = resolve }) }))
     await tick()
     // The read is pending; the writer types.
     type('S and typing after Reload\n')
@@ -235,7 +243,7 @@ describe('the receipt is the baseline (Muse r3 M1)', () => {
     expect(h.registry.textOf(P)).toBe('S and typing after Reload\n')
     expect(owner.baselineDiskOf(P)).toBe('S\n')
     // Typing before the press is the writer's to give up: a Reload pressed after it takes the disk.
-    expect(await owner.reload(P, async () => h.disk as string)).toEqual({ ok: true, diskText: 'X\n' })
+    expect(await owner.reload(P, async () => ({ kind: 'read', content: h.disk as string }))).toEqual({ ok: true, diskText: 'X\n' })
     expect(h.buffer).toBe('X\n')
   })
 
@@ -258,6 +266,154 @@ describe('the receipt is the baseline (Muse r3 M1)', () => {
     expect(h.registry.textOf(P)).toBe('S\n')
     expect(h.registry.diskIsUnknown(P)).toBe(true)
     expect(owner.isSaved(P)).toBe(false)
+  })
+})
+
+describe('closing a removed document tab', () => {
+  afterAll(cleanUpScratch)
+
+  async function beginClose() {
+    const directory = trackScratch(await mkdtemp(join(tmpdir(), 'wf-tab-discard-')))
+    const file = join(directory, P)
+    await writeFile(file, 'Original text.\n')
+    const { h, owner, type } = harness(await readFile(file, 'utf8'))
+    type('My unsaved text.\n')
+    await rename(file, join(directory, 'moved.md'))
+    const outcome = await owner.applyOutside(P, () => readEditorFile(new Workspace(directory), P))
+    if (outcome.kind !== 'removed') throw new Error('Fixture did not produce a removal')
+    const notice: ExternalDiskNotice = { kind: 'removed', dirty: outcome.dirty, diskText: null }
+    h.notices.set(P, notice)
+    let closes = 0
+    let currentTab = true
+    const workspace = {}
+    let currentWorkspace = workspace
+    const messages: string[] = []
+    let showing!: (label: string) => void
+    const card = new Promise<string>((resolve) => { showing = resolve })
+    registerConfirmHost((pending) => {
+      if (pending) showing(pending.spec.confirmLabel)
+    })
+    const closed = closeDocumentTab(P, {
+      owner,
+      notice: () => h.notices.get(P),
+      isCurrentTab: () => currentTab && currentWorkspace === workspace,
+      checkpoint: async () => { throw new Error('Unexpected checkpoint') },
+      closeForgotten: () => {
+        closes += 1
+        currentTab = false
+        h.notices.delete(P)
+      },
+      saveRefusalReported: () => true,
+      flash: (message) => { messages.push(message) },
+    })
+    const label = await Promise.race([card, closed.then(() => null)])
+    if (label === null) {
+      registerConfirmHost(null)
+      throw new Error('Close finished without asking for confirmation')
+    }
+    const answer = async (approved: boolean): Promise<void> => {
+      try {
+        settleConfirm(approved)
+        await closed
+      } finally {
+        registerConfirmHost(null)
+      }
+    }
+    return {
+      h, owner, type, notice, label, answer, closes: () => closes, messages,
+      changeWorkspace: () => { currentWorkspace = {} },
+    }
+  }
+
+  it('keeps the buffer and unsaved entry when text arrived after the card was asked', async () => {
+    const { h, type, label, answer, closes, messages } = await beginClose()
+    const later = 'My unsaved text.\nMore writing after the question.\n'
+    type(later)
+    await answer(true)
+    expect(label).toBe('Discard and close')
+    expect(h.buffer).toBe(later)
+    expect(h.registry.textOf(P)).toBe(later)
+    expect(closes()).toBe(0)
+    expect(messages.at(-1)).toContain('try closing the tab again')
+  })
+
+  it('keeps the buffer and unsaved entry when a different removal notice has replaced the first', async () => {
+    const { h, notice, answer, closes } = await beginClose()
+    h.notices.set(P, { ...notice })
+    await answer(true)
+    expect(h.buffer).toBe('My unsaved text.\n')
+    expect(h.registry.textOf(P)).toBe(h.buffer!)
+    expect(closes()).toBe(0)
+  })
+
+  it('keeps an identically edited new document record at the reused path', async () => {
+    const { h, owner, type, answer, closes } = await beginClose()
+    owner.drop(P)
+    const base = 'A reopened document.\n'
+    h.buffer = base
+    owner.activated(P, base, () => base)
+    type('My unsaved text.\n')
+    await answer(true)
+    expect(h.buffer).toBe('My unsaved text.\n')
+    expect(h.registry.textOf(P)).toBe(h.buffer!)
+    expect(owner.baselineOf(P)).toBe(base)
+    expect(closes()).toBe(0)
+  })
+
+  it('keeps the tab when its workspace lifetime has ended', async () => {
+    const { h, answer, closes, changeWorkspace } = await beginClose()
+    changeWorkspace()
+    await answer(true)
+    expect(h.buffer).toBe('My unsaved text.\n')
+    expect(h.registry.textOf(P)).toBe(h.buffer!)
+    expect(closes()).toBe(0)
+  })
+
+  it('keeps the text when a queued operation still owns the buffer', async () => {
+    const { h, owner, answer, closes } = await beginClose()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const queued = owner.inQueue(P, () => gate)
+    try {
+      await answer(true)
+      expect(h.buffer).toBe('My unsaved text.\n')
+      expect(h.registry.textOf(P)).toBe(h.buffer!)
+      expect(closes()).toBe(0)
+    } finally {
+      release()
+      await queued
+    }
+  })
+
+  it('keeps the text when another writer still holds the unsaved registry entry', async () => {
+    const { h, answer, closes } = await beginClose()
+    const release = h.registry.hold(P)
+    try {
+      await answer(true)
+      expect(h.buffer).toBe('My unsaved text.\n')
+      expect(h.registry.textOf(P)).toBe(h.buffer!)
+      expect(closes()).toBe(0)
+    } finally {
+      release()
+    }
+  })
+
+  it('keeps the buffer and unsaved entry when the writer cancels', async () => {
+    const { h, answer, closes } = await beginClose()
+    await answer(false)
+    expect(h.buffer).toBe('My unsaved text.\n')
+    expect(h.registry.textOf(P)).toBe(h.buffer!)
+    expect(closes()).toBe(0)
+  })
+
+  it('closes once and clears the matching owner record, buffer and unsaved entry on approval', async () => {
+    const { h, owner, answer, closes } = await beginClose()
+    await answer(true)
+    expect(h.buffer).toBeNull()
+    expect(h.registry.clean()).toBe(true)
+    expect(owner.generationsOf(P)).toBeUndefined()
+    expect(h.notices.has(P)).toBe(false)
+    expect(closes()).toBe(1)
   })
 })
 

@@ -38,7 +38,7 @@ export type OverlayGuard = {
  * is up (focus lives in its input, so CM6 never sees the keystrokes and the global handlers bail on
  * `isOpenRef`).
  */
-export function useOverlayGuard(): OverlayGuard {
+export function useOverlayGuard(onTransition?: () => void): OverlayGuard {
   const [active, setActive] = useState<OverlayId | null>(null)
   const isOpenRef = useRef(false)
   const heldRef = useRef<OverlayId | null>(null)
@@ -46,16 +46,18 @@ export function useOverlayGuard(): OverlayGuard {
 
   const open = useCallback((id: OverlayId) => {
     if (heldRef.current !== null && heldRef.current !== id) return
+    onTransition?.()
     isOpenRef.current = true
     activeRef.current = id
     setActive(id)
-  }, [])
+  }, [onTransition])
   const close = useCallback(() => {
+    onTransition?.()
     heldRef.current = null
     isOpenRef.current = false
     activeRef.current = null
     setActive(null)
-  }, [])
+  }, [onTransition])
   const hold = useCallback((held: boolean) => {
     heldRef.current = held ? activeRef.current : null
   }, [])

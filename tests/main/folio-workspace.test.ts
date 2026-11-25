@@ -145,7 +145,7 @@ test('a symbol-keyed member of Workspace is caught by the enumeration and refuse
 /** The Workspace members that write, move, remove or make something other than the five writers, listed here by
  *  hand from workspace.ts (an oracle independent of the view's own lists). */
 const KNOWN_MUTATING = [
-  'saveFileOverRead', 'saveEditorText', 'saveImage', 'saveNamedImage', 'duplicateFile', 'moveToTrash',
+  'saveFileOverRead', 'saveEditorText', 'saveImage', 'prepareAreaImage', 'saveNamedImage', 'duplicateFile', 'moveToTrash',
   'createFolder', 'renameFolder', 'renameFile', 'receiptForOwnRoute', 'writeAppStoreFile',
 ]
 /** Blocked though they write nothing themselves: `constructor` makes a bare Workspace; `assertWritable` is the gate a
@@ -190,6 +190,7 @@ const aimedAtOther = (trash: (absolute: string) => Promise<void>): Record<string
   saveFileOverRead: ['other/contents/notes.md', 'HIJACKED\n', NOTES],
   saveEditorText: ['other/contents/notes.md', 'HIJACKED\n', { kind: 'disk', text: NOTES }],
   saveImage: [new Uint8Array([1, 2, 3]), 'png'],
+  prepareAreaImage: [new Uint8Array([1, 2, 3])],
   saveNamedImage: [new Uint8Array([1, 2, 3]), 'evil.png'],
   duplicateFile: ['other/contents/notes.md'],
   moveToTrash: ['other/contents/notes.md', trash],

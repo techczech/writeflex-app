@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import { Transaction } from '@codemirror/state'
 import { isolateHistory } from '@codemirror/commands'
+import type { EditorReadResult } from '../../../shared/editor-read'
 import type { ConflictPick } from '../../../shared/three-way-merge'
 import type { EditorHandle } from '../components/EditorPane'
 import { diskNoticeRefusalMessage, keepMineWrites, minimalReplace, noticeAfterRefusal, refusalMayReload, sameDiskNotice, type ExternalDiskNotice } from '../editor/reconcile'
@@ -77,11 +78,10 @@ export function stepForOutside(standing: ExternalDiskNotice | undefined, outcome
       // The other version stays on disk until the writer chooses Reload or Keep mine. The same version as the
       // banner already up: that notice stays (a Keep mine clicked on it stays its answer).
       return { notice: noticeAfterOutsideWrite(standing, outcome.diskText) ?? 'keep', cancelAutosave: true, replaced: false }
-    case 'removed': {
-      // A file gone from disk is a question whether or not the buffer held unsaved text: no automatic write
-      // recreates it until the writer chooses Keep mine (reconcile.ts, mayWriteUnderDiskNotice).
-      const raise = !sameDiskNotice(standing, 'removed', null) || (outcome.dirty && !standing?.dirty)
-      return { notice: raise ? { kind: 'removed', dirty: outcome.dirty, diskText: null } : 'keep', cancelAutosave: true, replaced: false }
+    case 'removed':
+    case 'unavailable': {
+      const raise = !sameDiskNotice(standing, outcome.kind, null) || (outcome.dirty && !standing?.dirty)
+      return { notice: raise ? { kind: outcome.kind, dirty: outcome.dirty, diskText: null } : 'keep', cancelAutosave: true, replaced: false }
     }
   }
 }
@@ -138,6 +138,8 @@ export type DiskNoticeDeps = {
   bufferNow: (path: string) => string | null
   savePath: (path: string, answered?: ExternalDiskNotice) => Promise<boolean>
   cancelAutosaveFor: (path: string) => void
+  queueAutosave: (path: string) => void
+  readEditorDocument: (path: string) => Promise<EditorReadResult>
   queueLiveCompareRefresh: (path: string) => void
   /** The buffer took the disk version: rendered saved state moves on. */
   bumpSaved: () => void
@@ -146,7 +148,7 @@ export type DiskNoticeDeps = {
 
 export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
   const { ref: noticesRef, notices, setNotices } = store
-  const { owner, unsaved, tabs, tabsRef, files, active, activeRef, editorRef, loadedPath, guardRefusalPath, refusalReasons, uncheckpointed, bufferNow, savePath, cancelAutosaveFor, queueLiveCompareRefresh, bumpSaved, flash } = deps
+  const { owner, unsaved, tabs, tabsRef, files, active, activeRef, editorRef, loadedPath, guardRefusalPath, refusalReasons, uncheckpointed, bufferNow, savePath, cancelAutosaveFor, queueAutosave, readEditorDocument, queueLiveCompareRefresh, bumpSaved, flash } = deps
   const { active: overlayActive, open: openOverlay, close: closeOverlay, hold: holdOverlay } = deps.overlay
 
   const clear = useCallback((path: string) => {
@@ -174,16 +176,19 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
   // What the app raises for the owner's answer to a read of the disk (the watcher's, and a file main
   // returned after writing it: reconcileAppliedFile).
   const raiseForOutside = useCallback((path: string, outcome: OutsideOutcome): void => {
-    const step = stepForOutside(noticesRef.current.get(path), outcome)
+    const standing = noticesRef.current.get(path)
+    const step = stepForOutside(standing, outcome)
     if (!step) return
     if (step.cancelAutosave) cancelAutosaveFor(path)
-    if (step.notice === 'clear') clear(path)
-    else if (step.notice !== 'keep') raise(path, step.notice)
+    if (step.notice === 'clear') {
+      clear(path)
+      if (standing?.kind === 'unavailable' && !owner.unchangedSinceSave(path)) queueAutosave(path)
+    } else if (step.notice !== 'keep') raise(path, step.notice)
     if (step.replaced) {
       bumpSaved()
       queueLiveCompareRefresh(path)
     }
-  }, [noticesRef, cancelAutosaveFor, clear, raise, bumpSaved, queueLiveCompareRefresh])
+  }, [noticesRef, owner, cancelAutosaveFor, queueAutosave, clear, raise, bumpSaved, queueLiveCompareRefresh])
 
   // The watcher (and a refused save over a clean buffer) asks the owner to apply what is on disk now. It
   // runs in the path's queue, after any route holding it (document-owner.ts); the owner replaces a buffer
@@ -192,21 +197,28 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
   const reconcile = useCallback(async (paths: string[], options: { now?: boolean } = {}): Promise<void> => {
     await Promise.all(paths.map(async (path) => {
       if (!tabsRef.current.includes(path)) return
-      const outcome = await owner.applyOutside(path, async () => (await window.writeflex.readFile(path)).content, options)
+      const outcome = await owner.applyOutside(path, async () => {
+        const result = await readEditorDocument(path)
+        return tabsRef.current.includes(path) ? result : { kind: 'stale' }
+      }, options)
       if (!tabsRef.current.includes(path)) return
       raiseForOutside(path, outcome)
     }))
-  }, [owner, tabsRef, raiseForOutside])
+  }, [owner, tabsRef, readEditorDocument, raiseForOutside])
 
   // Main refused a write because the file changed after main read it (an accept's refusal): the owner reads
   // the disk and the writer is asked with the notice, whatever the watcher delivers (it holds events back
   // for a while after a write of ours). Final review round 2, finding 2.
-  const askAboutRefusedWrite = useCallback(async (path: string, options: { now: boolean }): Promise<void> => {
-    if (!tabsRef.current.includes(path)) return
-    const outcome = await owner.refusedOnDisk(path, async () => (await window.writeflex.readFile(path)).content, options)
-    if (!tabsRef.current.includes(path)) return
-    raiseForOutside(path, outcome)
-  }, [owner, tabsRef, raiseForOutside])
+  const askAboutRefusedWrite = useCallback(async (path: string, options: { now: boolean }, expected?: ExternalDiskNotice): Promise<void> => {
+    const isCurrent = () => tabsRef.current.includes(path) && (!expected || noticesRef.current.get(path) === expected)
+    if (!isCurrent()) return
+    const outcome = await owner.refusedOnDisk(path, async () => {
+      if (!isCurrent()) return { kind: 'stale' }
+      const result = await readEditorDocument(path)
+      return isCurrent() ? result : { kind: 'stale' }
+    }, options)
+    if (isCurrent()) raiseForOutside(path, outcome)
+  }, [owner, tabsRef, noticesRef, readEditorDocument, raiseForOutside])
 
   // Main refused a write: the disk no longer holds the version the buffer was based on (its basis). The
   // buffer is kept and the writer is asked, as for any outside change; automatic saves stop. A buffer with
@@ -215,6 +227,14 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
   // and the buffer is replaced only by the writer's choice.
   const noteDiskChangedUnderBuffer = useCallback((path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice) => {
     cancelAutosaveFor(path)
+    // A guarded refusal may carry null when it could not read back. Confirm absence before
+    // offering either recreation or discard, and protect the buffer during that re-read.
+    if (diskText === null) {
+      const notice: ExternalDiskNotice = { kind: 'unavailable', dirty: true, diskText: null }
+      raise(path, notice)
+      void askAboutRefusedWrite(path, { now: false }, notice)
+      return
+    }
     const baseline = owner.baselineOf(path)
     if (refusalMayReload({ baseline, buffer, diskUnknown: unsaved.diskIsUnknown(path), answering }) && owner.unchangedSinceSave(path)) {
       void reconcile([path])
@@ -227,7 +247,7 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
     const message = diskNoticeRefusalMessage(path, notice)
     refusalReasons.current.set(path, message)
     flash(message)
-  }, [owner, unsaved, noticesRef, refusalReasons, cancelAutosaveFor, flash, raise, reconcile])
+  }, [owner, unsaved, noticesRef, refusalReasons, cancelAutosaveFor, flash, raise, reconcile, askAboutRefusedWrite])
 
   // A write was made and the file read back holds other text: another program wrote it between the
   // commit and the readback. The buffer stays based on what was written, and the writer is asked
@@ -251,9 +271,17 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
   const reload = useCallback(async () => {
     const path = activeRef.current
     if (!path) return
+    const notice = noticesRef.current.get(path)
+    if (!notice || notice.kind === 'unavailable') return
+    const isCurrent = () => activeRef.current === path && noticesRef.current.get(path) === notice
     cancelAutosaveFor(path)
     // The writer's choice: the owner replaces the buffer with the disk version, in the path's queue.
-    const reloaded = await owner.reload(path, async () => (await window.writeflex.readFile(path)).content)
+    const reloaded = await owner.reload(path, async () => {
+      if (!isCurrent()) return { kind: 'stale' }
+      const result = await readEditorDocument(path)
+      return isCurrent() ? result : { kind: 'stale' }
+    })
+    if (!isCurrent() || (!reloaded.ok && reloaded.reason === 'stale')) return
     if (reloaded.ok) {
       uncheckpointed.current.delete(path)
       clear(path)
@@ -264,10 +292,9 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
       // Typing after Reload was pressed is kept: nothing replaced, the notice stays up for the new text.
       flash(`${path} was not reloaded: you typed after choosing Reload. Choose Reload or Keep mine again.`)
     } else {
-      raise(path, { kind: 'removed', dirty: owner.isDirty(path), diskText: null })
-      flash(`${path} is no longer on disk`)
+      raiseForOutside(path, { kind: reloaded.reason === 'missing' ? 'removed' : 'unavailable', dirty: !owner.unchangedSinceSave(path) })
     }
-  }, [owner, activeRef, uncheckpointed, cancelAutosaveFor, clear, bumpSaved, flash, queueLiveCompareRefresh, raise])
+  }, [owner, activeRef, noticesRef, readEditorDocument, uncheckpointed, cancelAutosaveFor, clear, bumpSaved, flash, queueLiveCompareRefresh, raiseForOutside])
 
   // "Keep mine": the writer's choice, and the one write a notice over unsaved text lets through. The
   // buffer goes to disk over the other version, as the answer to the notice that was on screen; the
@@ -276,13 +303,14 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
     const path = activeRef.current
     if (!path) return
     const notice = noticesRef.current.get(path)
+    if (!notice || notice.kind === 'unavailable') return
     // Keep mine is the writer's explicit choice and is carried out against the notice whatever the dirty
     // dot says now (Sol S5: an undo can clear the dot while the disk holds another version). Only a notice
     // raised over a buffer with nothing unsaved, that still has nothing unsaved, is answered by dismissing it.
     if (keepMineWrites(notice, owner.isDirty(path) || unsaved.textOf(path) !== undefined || !owner.unchangedSinceSave(path))) {
       cancelAutosaveFor(path)
       if (guardRefusalPath.current === path) guardRefusalPath.current = null
-      if (!notice || !(await owner.keepMine(path, notice))) {
+      if (!(await owner.keepMine(path, notice))) {
         if (guardRefusalPath.current !== path) flash(`Could not save ${path.split('/').at(-1) ?? path}. Your version is still only in this tab.`)
         return
       }

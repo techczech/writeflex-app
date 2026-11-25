@@ -45,9 +45,9 @@ export function externalContentReconcileAction(input: {
 
 /** The banner raised for an open file whose disk copy changed or went away under it. `dirty`: the buffer
  *  held unsaved text then. `diskText`: the disk text the banner was raised for (null when the file is gone
- *  or could not be read); Keep mine is a choice against exactly that text. `again`: raised because the
+ *  or unavailable); Keep mine is a choice against exactly that text. `again`: raised because the
  *  disk moved once more while the writer was answering an earlier banner with Keep mine. */
-export type ExternalDiskNotice = { kind: 'changed' | 'removed'; dirty: boolean; diskText: string | null; again?: boolean }
+export type ExternalDiskNotice = { kind: 'changed' | 'removed' | 'unavailable'; dirty: boolean; diskText: string | null; again?: boolean }
 
 /**
  * May this buffer be written while `notice` stands for its path? A notice raised over unsaved text is a
@@ -59,6 +59,7 @@ export type ExternalDiskNotice = { kind: 'changed' | 'removed'; dirty: boolean; 
  */
 export function mayWriteUnderDiskNotice(notice: ExternalDiskNotice | undefined, answered?: ExternalDiskNotice): boolean {
   if (!notice) return true
+  if (notice.kind === 'unavailable') return false
   if (notice.kind === 'changed' && !notice.dirty) return true
   return notice === answered
 }
@@ -70,7 +71,8 @@ export function mayWriteUnderDiskNotice(notice: ExternalDiskNotice | undefined, 
  */
 export function saveBasisFor(baselineDisk: string | undefined, notice?: ExternalDiskNotice, answered?: ExternalDiskNotice): SaveBasis {
   if (answered && notice === answered) {
-    return answered.diskText === null ? { kind: 'new' } : { kind: 'keep-mine', text: answered.diskText }
+    if (answered.kind === 'removed') return { kind: 'new' }
+    if (answered.kind === 'changed' && answered.diskText !== null) return { kind: 'keep-mine', text: answered.diskText }
   }
   return basisFromBaseline(baselineDisk)
 }
@@ -117,13 +119,14 @@ export function noticeAfterRefusal(standing: ExternalDiskNotice | undefined, dis
  * registry holds), is answered by dismissing it: there is nothing of the writer's to keep.
  */
 export function keepMineWrites(notice: ExternalDiskNotice | undefined, unsavedNow: boolean): boolean {
-  if (!notice) return false
+  if (!notice || notice.kind === 'unavailable') return false
   return notice.kind === 'removed' || notice.dirty || unsavedNow
 }
 
 /** What the status bar says when a save or a close is refused for that reason. */
 export function diskNoticeRefusalMessage(path: string, notice: ExternalDiskNotice): string {
   const name = path.split('/').at(-1) ?? path
+  if (notice.kind === 'unavailable') return `${name} could not be read. Try reading it again above the text; nothing was saved.`
   if (notice.again) {
     return notice.kind === 'removed'
       ? `${name} was removed on disk after the banner was shown. The banner now says so; nothing was saved.`

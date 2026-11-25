@@ -44,7 +44,7 @@ import { gitBlobOid, gitBlobOids, readDurableBytes } from './durable-file'
 import { OutboxDamaged, OutboxStore } from './outbox-store'
 import { computeCoverage, type CapturedDoc } from './receipt-coverage'
 import { nextClientIdentity, randomHex32, writerIncarnation, type ClientIdentity } from './receipt-identity'
-import { ReceiptStream, type ReceiptsPort } from './receipt-stream'
+import { ReceiptStream, type ReceiptsPort, type StreamOptions } from './receipt-stream'
 import { BACKUP_HELPER_TRIAL_DISABLED, type BackupHelperTrial } from './trial-config'
 
 /** The save's 2 000 ms budget for an exact durable write start (§10.3). */
@@ -97,6 +97,7 @@ export type BackupReceiptServiceOptions = {
   now?: () => number
   requestTimeoutMs?: number
   retryMs?: (attempt: number) => number
+  scheduleRetry?: StreamOptions['scheduleRetry']
   startBudgetMs?: number
 }
 
@@ -281,6 +282,7 @@ export function createBackupReceiptService(options: BackupReceiptServiceOptions)
           now,
           ...(options.requestTimeoutMs !== undefined ? { requestTimeoutMs: options.requestTimeoutMs } : {}),
           ...(options.retryMs ? { retryMs: options.retryMs } : {}),
+          ...(options.scheduleRetry ? { scheduleRetry: options.scheduleRetry } : {}),
           verifyDurable: async (path, blob) => {
             const bytes = await readDurableBytes(join(real, path))
             const format = store.value.objectFormat ?? 'sha1'

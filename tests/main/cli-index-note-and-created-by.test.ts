@@ -17,7 +17,7 @@ import type { JournalEntry } from '../../src/main/cli/journal'
 import { ChangeStore } from '../../src/main/changes'
 import { indexNotePath } from '../../src/main/folio'
 import { parseFrontmatter } from '../../src/main/frontmatter'
-import { readVersionContent, restoreVersionContent } from '../../src/main/version-content'
+import { historyRestoreCheckpoints, readVersionContent, restoreVersionContent } from '../../src/main/version-content'
 import { VersionStore, type Version } from '../../src/main/versions'
 import { Workspace } from '../../src/main/workspace'
 import { createdBy, writeFixture, type CliRun, type WriteFixture } from '../helpers/cli-write-fixture'
@@ -203,7 +203,7 @@ for (const route of ['direct', 'request'] as const) {
       const rewritten = 'The writer rewrote it, and removed the line.\n'
       await writeFile(join(fx.root, 'a.md'), rewritten)
       // The restore says which version the buffer was based on (save fix): the writer's, on disk.
-      await restoreVersionContent(opened.versions, opened.agent, opened.workspace, { id: versions[0].id, basis: { kind: 'disk', text: rewritten } })
+      await restoreVersionContent(opened.versions, { readSnapshotContent: (id) => opened.agent.readSnapshotContent(id), ...historyRestoreCheckpoints(opened.agent) }, opened.workspace, { id: versions[0].id, basis: { kind: 'disk', text: rewritten } })
       expect(await fx.read('a.md')).toBe(text)
       expect(existsSync(join(fx.root, '.writeflex', 'owner.lock'))).toBe(false)
     }, 60_000)

@@ -1,7 +1,8 @@
-import type { VersionStore, Version } from './versions'
-import type { EditorSaveResult } from './workspace'
+import { WRITEFLEX_SELF_AUTHOR, type VersionStore, type Version } from './versions'
+import type { EditorSaveResult, SaveFileOptions } from './workspace'
 import type { SaveBasis } from '../shared/save-basis'
 import { replicaSnapshotHash, replicaVersionsFor } from './replica-versions'
+import { preserveVersion, sha256Of, type PreserveReceipt, type PreserveResult } from './preserve-version'
 
 export type VersionContentRequest = {
   id?: string
@@ -14,14 +15,48 @@ export type SnapshotContentReader = {
   readSnapshotContent(entryId: string): Promise<string | null>
 }
 
-export type VersionRestorer = SnapshotContentReader & {
-  checkpointFile(path: string): Promise<void>
+export type VersionRestoreCheckpoints = {
+  preserveBeforeRestore(path: string, text: string): Promise<PreserveResult>
+  checkpointRestored(path: string, text: string): Promise<boolean>
+}
+
+type VersionRestorer = SnapshotContentReader & VersionRestoreCheckpoints
+
+export const RESTORE_RECOVERY_NAME = 'Before a version was restored'
+
+export type VersionRestoreResult =
+  | { refused: 'recovery-unverified'; message: string }
+  | (EditorSaveResult & { status: 'restored' })
+  | (EditorSaveResult & {
+    status: 'restored-with-history-error'
+    recovery: PreserveReceipt & { name: string }
+  })
+
+/** History checkpoints for named-document restore. The pre-write copy has a row the writer can return to. */
+export function historyRestoreCheckpoints(
+  history: SnapshotContentReader & { snapshotForPreserve(path: string): Promise<{ id: string; hash: string } | null> },
+  versions?: VersionStore,
+): VersionRestoreCheckpoints {
+  const capture = (path: string, text: string) => preserveVersion({ text, history: () => history.snapshotForPreserve(path) })
+  return {
+    async preserveBeforeRestore(path, text) {
+      const result = await capture(path, text)
+      if (!result.kept) return result
+      if (await history.readSnapshotContent(result.receipt.entryId) !== text) return { kept: false, refused: 'unavailable' }
+      await versions?.append({ path, name: RESTORE_RECOVERY_NAME, author: WRITEFLEX_SELF_AUTHOR, snapshotId: result.receipt.entryId })
+      return result
+    },
+    async checkpointRestored(path, text) {
+      return (await capture(path, text)).kept
+    },
+  }
 }
 
 /** Writes that commit only over the version the open buffer was based on (shared/save-basis.ts). */
 export type VersionFileWriter = {
+  assertDocumentPath(path: string): void
   assertOnDisk(path: string, basis: SaveBasis): Promise<void>
-  saveFileOver(path: string, content: string, basis: SaveBasis): Promise<EditorSaveResult>
+  saveFileOver(path: string, content: string, basis: SaveBasis, options?: SaveFileOptions): Promise<EditorSaveResult>
 }
 
 export type VersionContentResult = {
@@ -99,12 +134,33 @@ export async function restoreVersionContent(
   restorer: VersionRestorer,
   writer: VersionFileWriter,
   input: VersionContentRequest & { basis: SaveBasis },
-): Promise<EditorSaveResult | null> {
+  beforeCommit?: SaveFileOptions['beforeCommit'],
+): Promise<VersionRestoreResult | null> {
   const result = await readVersionContent(versions, restorer, input)
   if (!result?.path || result.content === null) return null
-  await writer.assertOnDisk(result.path, input.basis)
-  await restorer.checkpointFile(result.path)
-  const file = await writer.saveFileOver(result.path, result.content, input.basis)
-  await restorer.checkpointFile(result.path)
-  return file
+  const { path, content } = result
+  const { basis } = input
+  writer.assertDocumentPath(path)
+  await writer.assertOnDisk(path, basis)
+  if (basis.kind !== 'disk' && basis.kind !== 'keep-mine') {
+    return { refused: 'recovery-unverified', message: 'Open the current document first so its text can be kept.' }
+  }
+  const expected = sha256Of(basis.text)
+  const preserved = await restorer.preserveBeforeRestore(path, basis.text).catch(() => null)
+  if (!preserved?.kept || !preserved.receipt?.entryId || preserved.receipt.sha256 !== expected) {
+    // An outside edit can also explain a failed preservation. Report that through the conflict notice.
+    await writer.assertOnDisk(path, basis)
+    return { refused: 'recovery-unverified', message: 'The current text could not be verified in version history.' }
+  }
+  const file = await writer.saveFileOver(path, content, basis, {
+    beforeCommit,
+    // The textual basis alone cannot distinguish invalid UTF-8 from a literal replacement character.
+    expect: { fingerprint: preserved.receipt.sha256 },
+  })
+  const checkpointed = await restorer.checkpointRestored(path, file.written).catch(() => false)
+  if (checkpointed) return { ...file, status: 'restored' }
+  return {
+    ...file, status: 'restored-with-history-error',
+    recovery: { ...preserved.receipt, name: RESTORE_RECOVERY_NAME },
+  }
 }

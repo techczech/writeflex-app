@@ -370,7 +370,7 @@ describe('tab switches and cancelled timers never drop an obligation', () => {
     const { h, clock, owner, scheduler, type } = harness()
     type('a.md', 'mine\n')
     scheduler.cancel('a.md')
-    const reloaded = await owner.reload('a.md', async () => 'start\n')
+    const reloaded = await owner.reload('a.md', async () => ({ kind: 'read', content: 'start\n' }))
     expect(reloaded.ok).toBe(true)
     await clock.advance(AUTOSAVE_DEADLINE_MS)
     expect(h.writes).toEqual([])

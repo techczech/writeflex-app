@@ -108,7 +108,7 @@ describe('an Area arriving in the draft', () => {
       isCurrent: () => true,
       onStatus: (message) => events.push(`status:${message}`),
       recordQuotation: async () => { events.push('record') },
-      saveImage: async () => { events.push('save'); return { path: 'assets/area.png' } },
+      saveImage: async () => { events.push('save'); return { path: 'assets/area.png', finish: async () => {} } },
     })
     expect(result).toBe('inserted')
     expect(events[0]).toBe('save')
@@ -136,10 +136,10 @@ describe('an Area arriving in the draft', () => {
       isCurrent: () => false,
       onStatus: (message) => events.push(message),
       recordQuotation: async () => { events.push('record') },
-      saveImage: async () => ({ path: 'assets/area.png' }),
+      saveImage: async () => ({ path: 'assets/area.png', finish: async () => {} }),
     })
     expect(result).toBe('stale')
-    expect(events).toEqual(['Area capture saved, but the destination draft changed before insertion.'])
+    expect(events).toEqual(['The destination draft changed before the Area could be inserted.'])
   })
 
   test('turns a thrown editor transaction into a handled insertion failure', async () => {
@@ -149,10 +149,33 @@ describe('an Area arriving in the draft', () => {
       isCurrent: () => true,
       onStatus: (message) => events.push(message),
       recordQuotation: async () => { events.push('record') },
-      saveImage: async () => ({ path: 'assets/area.png' }),
+      saveImage: async () => ({ path: 'assets/area.png', finish: async () => {} }),
     })
     expect(result).toBe('failed')
     expect(events).toEqual(['Could not insert the Area capture: transaction refused'])
+  })
+
+  test.each(['changed', 'refused', 'threw'])('rolls back only the new image when insertion %s', async (failure) => {
+    const existing = 'assets/existing.png'
+    const path = 'assets/new-area.png'
+    const files = new Set([existing])
+    let recorded = false
+    const result = await commitReadingRoomAreaDrop(valid, {
+      insert: () => {
+        if (failure === 'threw') throw new Error('transaction refused')
+        return false
+      },
+      isCurrent: () => failure !== 'changed',
+      onStatus: () => {},
+      recordQuotation: () => { recorded = true },
+      saveImage: async () => {
+        files.add(path)
+        return { path, finish: async (inserted: boolean) => { if (!inserted) files.delete(path) } }
+      },
+    })
+    expect(result).toBe(failure === 'changed' ? 'stale' : 'failed')
+    expect([...files]).toEqual([existing])
+    expect(recorded).toBe(false)
   })
 
   test('keeps a successful insertion when quotation recording fails', async () => {
@@ -162,7 +185,7 @@ describe('an Area arriving in the draft', () => {
       isCurrent: () => true,
       onStatus: (message) => events.push(message),
       recordQuotation: async () => { throw new Error('Zotero is open') },
-      saveImage: async () => ({ path: 'assets/area.png' }),
+      saveImage: async () => ({ path: 'assets/area.png', finish: async () => {} }),
     })
     expect(result).toBe('inserted-without-provenance')
     expect(events).toEqual([

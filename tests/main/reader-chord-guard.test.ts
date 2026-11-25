@@ -5,7 +5,13 @@ import { eventToChord, nativeEditRoleChord } from '../../src/renderer/src/app/sh
 
 test('Reader forwarding cannot run native Edit chords on the hidden main editor', () => {
   const source = readFileSync('src/renderer/src/app/App.tsx', 'utf8')
-  const callback = source.slice(source.indexOf('const runReaderChord = useCallback('), source.indexOf('// Tab activation loads'))
+  // Slice the callback by its own start and dependency list, not by a neighbouring comment.
+  const start = source.indexOf('const runReaderChord = useCallback(')
+  const endMarker = '}, [overlayOpenRef])'
+  const end = source.indexOf(endMarker, start)
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+  const callback = source.slice(start, end + endMarker.length)
   const js = ts.transpile(callback + '\nreturn runReaderChord', { target: ts.ScriptTarget.ES2022 })
   const runs: string[] = []
   const index = new Map(['⌘A', '⌘Z', '⇧⌘Z', '⌘X', '⌘C', '⌘V', '⌥⇧⌘V', '⌃⌘S'].map(key => [key, () => runs.push(key)]))

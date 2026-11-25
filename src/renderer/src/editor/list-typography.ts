@@ -98,7 +98,7 @@ function listDecorations(view: EditorView): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>()
   const seen = new Set<number>()
   const boxes = taskBoxesDrawn(view.state)
-  const boxPx = boxes ? TASK_BOX_ADVANCE_EM * parseFloat(getComputedStyle(view.contentDOM).fontSize) : 0
+  let boxPx: number | undefined
   for (const range of view.visibleRanges) {
     const first = view.state.doc.lineAt(range.from).number
     const last = view.state.doc.lineAt(range.to).number
@@ -108,7 +108,8 @@ function listDecorations(view: EditorView): DecorationSet {
       const line = view.state.doc.line(lineNumber)
       if (!realMarker(view, line.from, line.text)) continue
       const box = boxes && taskBoxOnLine(view.state, line, false)
-      const style = listLineStyle(line.text, (prefix) => measurePrefix(view, prefix), box ? boxPx : null)
+      const taskAdvance = box ? (boxPx ??= TASK_BOX_ADVANCE_EM * parseFloat(getComputedStyle(view.contentDOM).fontSize)) : null
+      const style = listLineStyle(line.text, (prefix) => measurePrefix(view, prefix), taskAdvance)
       if (!style) continue
       builder.add(line.from, line.from, Decoration.line({
         class: 'wf-list-line',

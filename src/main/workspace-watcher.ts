@@ -228,6 +228,7 @@ export function createWorkspaceWatcher(
   debounceMs = WATCH_BURST_DEBOUNCE_MS,
   history?: HistoryRoute,
   sharingIdentityChanged?: () => void,
+  { startupCatchUpMs = WATCH_STARTUP_CATCH_UP_MS, watch = watchFolder }: { startupCatchUpMs?: number; watch?: typeof watchFolder } = {},
 ): WorkspaceWatcher {
   let router: WatchRouter | null = null
   let disposed = false
@@ -238,7 +239,7 @@ export function createWorkspaceWatcher(
     const nextRouter = createWatchRouter(workspace, onChanged, debounceMs, history, sharingIdentityChanged)
     let next: FolderWatch
     try {
-      next = watchFolder(workspace.root, { recursive: true, anchor: workspace.root }, (_event, filename) => {
+      next = watch(workspace.root, { recursive: true, anchor: workspace.root }, (_event, filename) => {
         if (!disposed && filename) nextRouter.take(String(filename))
       })
     } catch (error) { nextRouter.dispose(); throw error }
@@ -288,7 +289,7 @@ export function createWorkspaceWatcher(
       void changed().then((different) => { if (different) router?.take(path) })
     }
     void catchUp()
-  }, WATCH_STARTUP_CATCH_UP_MS)
+  }, startupCatchUpMs)
   catchUpTimer.unref()
 
   return {
