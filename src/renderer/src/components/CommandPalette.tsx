@@ -278,6 +278,14 @@ export function buildCommandPaletteSections({
   return out
 }
 
+function isPaletteTabStop(control: HTMLElement): boolean {
+  return control.tabIndex >= 0
+    && !control.matches(':disabled')
+    && !control.closest('[inert]')
+    && control.getClientRects().length > 0
+    && getComputedStyle(control).visibility === 'visible'
+}
+
 /**
  * ONE sheet, two modes (Task 13, mockup `#palette`). ⇧⌘K raises files mode (quick-open — fuzzy file
  * search, Enter opens a tab, directory dimmed); ⇧⌘P raises commands mode (the command list, recents
@@ -319,6 +327,7 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
+  const lastFocusedRef = useRef<HTMLElement | null>(null)
 
   // Keyboard-first: the sheet owns the keyboard the instant it opens.
   useEffect(() => {
@@ -343,6 +352,16 @@ export function CommandPalette({
     // flatItems is read only to place the highlight after a view change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, mode, view, folioSheetStatus])
+
+  // A prop update can remove or disable the focused result without changing the query or view.
+  // Chromium may drop focus to body without emitting a blur event when the element is removed.
+  useLayoutEffect(() => {
+    const focused = lastFocusedRef.current
+    if (!focused || focused === inputRef.current) return
+    const active = document.activeElement
+    if ((active === focused || active === document.body)
+      && (!dialogRef.current?.contains(focused) || !isPaletteTabStop(focused))) inputRef.current?.focus()
+  }, [flatItems, folioSheetStatus, onRetryFolioIndex])
 
   function openGroup(group: TaskGroup): void {
     setQuery('')
@@ -424,20 +443,13 @@ export function CommandPalette({
     if (e.key !== 'Tab') return
     const dialog = dialogRef.current
     if (!dialog) return
-    const focusables = dialog.querySelectorAll<HTMLElement>('input, button')
-    if (focusables.length === 0) return
-    const first = focusables[0]
-    const last = focusables[focusables.length - 1]
-    const activeEl = document.activeElement
-    if (e.shiftKey) {
-      if (activeEl === first || !dialog.contains(activeEl)) {
-        e.preventDefault()
-        last.focus()
-      }
-    } else if (activeEl === last || !dialog.contains(activeEl)) {
-      e.preventDefault()
-      first.focus()
-    }
+    const stops = [...dialog.querySelectorAll<HTMLElement>('input, button')].filter(isPaletteTabStop)
+    if (stops.length === 0) return
+    const index = stops.findIndex((control) => control === document.activeElement)
+    const next = index === -1 ? (e.shiftKey ? stops.length - 1 : 0)
+      : (index + (e.shiftKey ? -1 : 1) + stops.length) % stops.length
+    e.preventDefault()
+    stops[next].focus()
   }
 
   const folioEmptyMessage = folioIndexStatus === 'ready'
@@ -452,6 +464,7 @@ export function CommandPalette({
       aria-modal="true"
       aria-label={mode === 'files' ? 'Quick open' : mode === 'folios' ? 'Open a Folio' : 'Command palette'}
       onKeyDown={onDialogKeyDown}
+      onFocusCapture={(event) => { lastFocusedRef.current = event.target }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}

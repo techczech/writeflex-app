@@ -11,7 +11,7 @@ import { VersionStore } from '../../src/main/versions'
 import { Workspace } from '../../src/main/workspace'
 import { prepareVersionMove, readMovedVersions, followVersionMap, undoVersionMap } from '../../src/main/version-moves'
 import { versionTextReader } from '../../src/main/cli/history-store'
-import { readVersionContent, restoreVersionContent } from '../../src/main/version-content'
+import { historyRestoreCheckpoints, readVersionContent, restoreVersionContent } from '../../src/main/version-content'
 import { missingBuild, testRequiring } from '../helpers/built-output'
 import { findBackupGit, helperEntry } from '../helpers/backup-helper-runtime'
 
@@ -87,8 +87,15 @@ test('217 synthetic journal records: chained physical moves preserve all names, 
   for (let i = 0; i < 213; i++) expect((await readVersionContent(versions, reader, { id: `v_synthetic_${i}`, path: 'c.md' }))?.content).toBe(`Synthetic named text ${i}\n`)
   writeFileSync(join(copy, 'c.md'), 'Current copy\n')
   const snapshots = await SnapshotStore.open({ dir: join(copy, '.bridle') })
-  const restored = await restoreVersionContent(versions, { ...reader, checkpointFile: async path => { await snapshots.snapshotFile(join(copy, path), { sessionId: 'copy', capability: 'restore' }) } }, ws, { id: 'v_synthetic_0', path: 'c.md', basis: { kind: 'disk', text: 'Current copy\n' } })
-  expect(restored?.written).toBe('Synthetic named text 0\n')
+  const checkpoints = historyRestoreCheckpoints({
+    readSnapshotContent: (id) => snapshots.readSnapshotContent(id),
+    snapshotForPreserve: async (path) => {
+      const entry = await snapshots.snapshotFile(join(copy, path), { sessionId: 'copy', capability: 'restore' })
+      return entry.kind === 'snapshot' ? entry : null
+    },
+  })
+  const restored = await restoreVersionContent(versions, { ...reader, ...checkpoints }, ws, { id: 'v_synthetic_0', path: 'c.md', basis: { kind: 'disk', text: 'Current copy\n' } })
+  expect(restored).toMatchObject({ status: 'restored', written: 'Synthetic named text 0\n' })
   expect(readFileSync(join(copy, 'c.md'), 'utf8')).toBe('Synthetic named text 0\n')
   const second = complete(await readHistoryProjection(copy, p => p.endsWith('.md')))
   expect(second.files).toEqual(projected.files)

@@ -104,7 +104,7 @@ export const FOLIO_READERS: ReadonlySet<PropertyKey> = new Set<PropertyKey>([
  *  Also `constructor` (a Workspace made from it is a bare one) and `assertWritable`, the gate every Workspace writer
  *  but three asks first: refusing it is what stops a Workspace method taken from the class and run on the view. */
 export const FOLIO_BLOCKED: ReadonlySet<PropertyKey> = new Set<PropertyKey>([
-  'saveFileOverRead', 'saveEditorText', 'saveImage', 'saveNamedImage', 'duplicateFile', 'moveToTrash',
+  'saveFileOverRead', 'saveEditorText', 'saveImage', 'prepareAreaImage', 'saveNamedImage', 'duplicateFile', 'moveToTrash',
   'createFolder', 'renameFolder', 'renameFile', 'receiptForOwnRoute', 'writeAppStoreFile',
   'constructor', 'assertWritable',
 ])

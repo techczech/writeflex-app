@@ -145,6 +145,13 @@ test('the combined Files listing retains metadata, order, and empty folders', as
   await symlink(join(root, 'other'), join(root, 'book/borrowed'))
   await symlink(join(root, 'other/o.md'), join(root, 'book/05-linked.md'))
   expect(await ws.listFilesAndFolders()).toEqual({ files: await ws.listFiles(), folders: await ws.listFolders() })
+  expect(await ws.listFilesAndFolders('book')).toEqual({
+    files: await ws.listFilesIn('book'),
+    folders: ['book/empty', 'book/part', 'book/part/deep'],
+  })
+  for (const folder of ['Book', 'missing', 'book/.hidden', 'book/borrowed', 'book/borrowed/deep']) {
+    expect(await ws.listFilesAndFolders(folder)).toEqual({ files: [], folders: [] })
+  }
 })
 
 test('listFilesIn lists nothing for a folder that is a symlink to a folder inside the root', async () => {

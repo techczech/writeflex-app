@@ -1,5 +1,5 @@
 import { useMenuCommandChecks } from '../commands/use-menu-command-state'
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import { BackControl } from './BackControl'
 import { ArrowRight, Sparkles, Check, Clock3, Columns3, Eye, FilePlus2, Flame, Folder, ListOrdered, ListPlus, ListTree, MoreHorizontal } from 'lucide-react'
 import type { BoardStepResult, DrawerScrap, Offcut, QueryRow } from '../../../preload'
@@ -29,11 +29,12 @@ export type BoardProps = {
   /** List the sources of the selected card's piece (palette command "List this piece's sources"). */
   onListSources?: (path: string, dir: string) => void
   /** Move a piece to a status through the app's flushed status route (setPieceStatusFlushed, D-STA-1): its
-   *  unsaved text is written first and the editor takes main's text. Rejects with the reason when refused. */
+   *  unsaved text is written first and the editor takes main's text. The write sends a Collection invalidation.
+   *  Rejects with the reason when refused. */
   setPieceStatus: (dir: string, path: string, status: string) => Promise<void>
   seenStatuses: Set<string>
   onFolderPieceSelected: (selection: { dir: string; folderPath: string; mode: 'one' } | null) => void
-  onQueryContext: (context: QueryInsertionContext) => void
+  onQueryContext: (context: QueryInsertionContext | null) => void
   onInsertQuery: (context: QueryInsertionContext) => void
   onOpenCollection?: () => void
   onOpenPlan: () => void
@@ -45,18 +46,30 @@ function includesFilter(row: QueryRow, filter: string): boolean {
 }
 
 /** The Board page is a renderer-only projection of collection.query('', …), never a second engine. */
-export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece, onNewPiece, onStatus, onListSources, setPieceStatus, seenStatuses, onFolderPieceSelected, onQueryContext, onInsertQuery, onOpenPlan, onOpenCollection }: BoardProps): JSX.Element {
+export function Board(props: BoardProps): JSX.Element {
+  // Both hosts can retarget this component. A new directory has its own selection, drag, and Undo.
+  return <BoardProjection key={props.dir} {...props} />
+}
+
+type BoardLoad = { status: 'loading' | 'ready' | 'failed'; rows: QueryRow[] }
+
+function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPiece, onNewPiece, onStatus, onListSources, setPieceStatus, seenStatuses, onFolderPieceSelected, onQueryContext, onInsertQuery, onOpenPlan, onOpenCollection }: BoardProps): JSX.Element {
   const [isFolio, setIsFolio] = useState(false)
   const [savedOrder, setSavedOrder] = useState(() => columnOrder(dir))
   const [selectedColumn, setSelectedColumn] = useState<string | null>(null)
   const [columnMenu, setColumnMenu] = useState<string | null>(null)
   const [dragColumn, setDragColumn] = useState<string | null>(null)
-  const [rows, setRows] = useState<QueryRow[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(false)
+  const [load, setLoad] = useState<BoardLoad>({ status: 'loading', rows: [] })
+  const { status: loadStatus, rows } = load
+  const initialLoading = loadStatus === 'loading' && rows.length === 0
+  const live = useRef(false)
+  const queryRead = useRef(0)
+  const collectionRefresh = useRef<Promise<void>>()
+  const declarationRead = useRef(0)
   // One selection across the Board: a piece by its path, an offcut by its offcutKey, a source by its sourceKey.
   const [selected, setSelected] = useState<string | null>(null)
-  const selectedPath = selected !== null && !isOffcutKey(selected) && !isSourceKey(selected) ? selected : null
+  const selectedPath = selected !== null && !isOffcutKey(selected) && !isSourceKey(selected)
+    && rows.some((row) => row.path === selected) ? selected : null
   const setSelectedPath = setSelected
   const [dragPath, setDragPath] = useState<string | null>(null)
   const [dragOffcut, setDragOffcut] = useState<Offcut | null>(null)
@@ -81,50 +94,64 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
   const rootRef = useRef<HTMLDivElement | null>(null)
   const colsRef = useRef<HTMLDivElement | null>(null)
   useDragAutoScroll(colsRef, dragColumn !== null || dragPath !== null || dragOffcut !== null || dragSource !== null)
-  for (const row of rows) {
-    const status = row.status?.trim()
-    if (status) seenStatuses.add(status)
-  }
-
   const reload = useCallback(async () => {
+    if (!live.current) return
+    const request = ++queryRead.current
+    const isCurrent = () => live.current && request === queryRead.current
+    setLoad((current) => current.status === 'loading' ? current : { ...current, status: 'loading' })
     try {
       const result = await window.writeflex.collection.query(dir, '')
-      if (!result.ok) throw new Error(result.error.humanReadable)
-      setRows(result.rows)
-      setError(false)
+      if (!isCurrent()) return
+      if (!result.ok) {
+        setLoad({ status: 'failed', rows: [] })
+        return
+      }
+      for (const row of result.rows) {
+        const status = row.status?.trim()
+        if (status) seenStatuses.add(status)
+      }
+      setLoad({ status: 'ready', rows: result.rows })
     } catch {
-      setError(true)
-    } finally {
-      setLoading(false)
+      if (isCurrent()) setLoad({ status: 'failed', rows: [] })
     }
-  }, [dir])
+  }, [dir, seenStatuses])
+
+  useLayoutEffect(() => {
+    live.current = true
+    rootRef.current?.focus()
+    return () => {
+      live.current = false
+      queryRead.current += 1
+      declarationRead.current += 1
+    }
+  }, [])
 
   useEffect(() => {
-    setLoading(true)
-    void reload()
-    return window.writeflex.collection.onChanged(() => { void reload() })
-  }, [reload])
+    const refresh = () => {
+      collectionRefresh.current = reload()
+      const request = ++declarationRead.current
+      const publish = (isFolio: boolean) => {
+        if (live.current && request === declarationRead.current) setIsFolio(isFolio)
+      }
+      void window.writeflex.readFolioDeclaration(dir).then(
+        (folio) => publish(folio.isFolio),
+        () => publish(false),
+      )
+    }
+    refresh()
+    return window.writeflex.collection.onChanged(refresh)
+  }, [dir, reload])
 
-  useEffect(() => {
-    requestAnimationFrame(() => rootRef.current?.focus())
-  }, [dir, loading])
-
-  useEffect(() => {
-    setSavedOrder(columnOrder(dir))
-    setSelectedColumn(null)
-    setColumnMenu(null)
-    setIsFolio(false)
-    let cancelled = false
-    const readFolio = () => { void window.writeflex.readFolioDeclaration(dir).then((folio) => { if (!cancelled) setIsFolio(folio.isFolio) }).catch(() => { if (!cancelled) setIsFolio(false) }) }
-    readFolio()
-    const dispose = window.writeflex.collection.onChanged(readFolio)
-    setShowOffcuts(!offcutsHidden(dir))
-    setSourcesShown(!sourcesCollapsed(dir))
-    setCarrying(null)
-    setNaming(null)
-    setActivity(null)
-    return () => { cancelled = true; dispose() }
-  }, [dir])
+  // A completed Board action may return to its keyboard surface, unless the writer moved focus.
+  const rememberActionFocus = useCallback(() => {
+    const origin = document.activeElement
+    return () => {
+      if (!live.current) return
+      const active = document.activeElement
+      const originUnavailable = !origin?.isConnected || origin.matches(':disabled')
+      if (active === origin || (active === document.body && originUnavailable)) rootRef.current?.focus()
+    }
+  }, [])
 
   const columns = useMemo(() => orderColumns(groupBoardRows(rows, seenStatuses), savedOrder).map((column) => ({
     ...column,
@@ -156,17 +183,19 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
     ...(filter.trim() ? { notice: 'Current filter not included.' } : {}),
   }), [dir, filter])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const selected = selectedPath ? rows.find((row) => row.path === selectedPath) : null
     const status = selected?.status?.trim() || columns.find((column) => column.rows.length > 0)?.status
-    if (status) onQueryContext(queryContextFor(status))
+    onQueryContext(status ? queryContextFor(status) : null)
   }, [columns, onQueryContext, queryContextFor, rows, selectedPath])
+
+  useLayoutEffect(() => () => onQueryContext(null), [onQueryContext])
 
   useEffect(() => {
     if (selected && !navColumns.some((keys) => keys.includes(selected))) setSelected(null)
   }, [navColumns, selected])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const row = selectedPath ? rows.find((piece) => piece.path === selectedPath) : undefined
     onFolderPieceSelected(row?.folderPath ? { dir, folderPath: row.folderPath, mode: 'one' } : null)
   }, [dir, onFolderPieceSelected, rows, selectedPath])
@@ -175,20 +204,22 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
     if (moving) return
     const row = rows.find((piece) => piece.path === path)
     if (!row || row.status?.trim().toLocaleLowerCase() === status.toLocaleLowerCase()) return
+    const restoreFocus = rememberActionFocus()
     setMoving(true)
     setSelectedPath(path)
     try {
       await setPieceStatus(dir, path, status)
-      await reload()
+      // The status write already started a projection read through the Collection invalidation.
+      await collectionRefresh.current
     } catch (error: unknown) {
-      onStatus(humanReadableError(error, 'Could not move that Piece to the new stage.'))
+      if (live.current) onStatus(humanReadableError(error, 'Could not move that Piece to the new stage.'))
     } finally {
       setMoving(false)
       setDragPath(null)
       setOverStatus(null)
-      requestAnimationFrame(() => rootRef.current?.focus())
+      restoreFocus()
     }
-  }, [dir, moving, onStatus, reload, rows, setPieceStatus])
+  }, [dir, moving, onStatus, rememberActionFocus, rows, setPieceStatus])
 
   const moveStage = useCallback((direction: 1 | -1) => {
     if (!selectedPath) return
@@ -239,7 +270,7 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
   }, [])
 
   const afterStep = useCallback(async (result: BoardStepResult) => {
-    if (result.ok) {
+    if (result.ok && live.current) {
       setActivity({ text: result.step.activity, stepId: result.step.id, ...(result.step.kind === 'source' ? { tone: 'source' as const } : {}) })
       await reload()
     }
@@ -248,22 +279,26 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
 
   const makeIdea = useCallback(async () => {
     if (!naming || stepBusy) return
+    const restoreFocus = rememberActionFocus()
     setStepBusy(true)
     try {
       const result = await afterStep(await window.writeflex.boardMaterial.promoteOffcut({
         dir, scrapsPath: naming.offcut.scrapsPath, scrapId: naming.offcut.id, name: naming.name,
       }))
-      if (result.ok) closeNaming()
-      else setNaming((current) => current && { ...current, error: result.message })
+      if (result.ok) {
+        restoreFocus()
+        setNaming(null)
+      } else setNaming((current) => current && { ...current, error: result.message })
     } catch (error: unknown) {
       setNaming((current) => current && { ...current, error: humanReadableError(error, 'Could not make the idea.') })
     } finally {
       setStepBusy(false)
     }
-  }, [afterStep, closeNaming, dir, naming, stepBusy])
+  }, [afterStep, dir, naming, rememberActionFocus, stepBusy])
 
   const appendScrap = useCallback(async (piece: string, scrap: DrawerScrap) => {
     if (stepBusy) return
+    const restoreFocus = rememberActionFocus()
     setStepBusy(true)
     try {
       const result = await afterStep(await window.writeflex.boardMaterial.appendScrap({ piece, scrapId: scrap.id }))
@@ -272,9 +307,9 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
       setActivity({ text: humanReadableError(error, 'Could not add the scrap to the piece.'), stepId: null, refused: true })
     } finally {
       setStepBusy(false)
-      requestAnimationFrame(() => rootRef.current?.focus())
+      restoreFocus()
     }
-  }, [afterStep, stepBusy])
+  }, [afterStep, rememberActionFocus, stepBusy])
 
   // Attach a source to a piece (frame 4): one line in its sources: list, one undoable step. A source
   // the list already names is refused by main, and the activity row says so.
@@ -283,6 +318,7 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
     setDragSource(null)
     setOverCard(null)
     if (stepBusy) return
+    const restoreFocus = rememberActionFocus()
     setStepBusy(true)
     setSelected(piece)
     try {
@@ -292,15 +328,17 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
       setActivity({ text: humanReadableError(error, 'Could not attach the source.'), stepId: null, refused: true })
     } finally {
       setStepBusy(false)
-      requestAnimationFrame(() => rootRef.current?.focus())
+      restoreFocus()
     }
-  }, [afterStep, dir, stepBusy])
+  }, [afterStep, dir, rememberActionFocus, stepBusy])
 
   const undoStep = useCallback(async (id: string | null = activity?.stepId ?? null) => {
     if (!id || stepBusy) return
+    const restoreFocus = rememberActionFocus()
     setStepBusy(true)
     try {
       const result = await window.writeflex.boardMaterial.undo(id)
+      if (!live.current) return
       if (result.ok) {
         setActivity(null)
         onStatus(result.paths.length === 1 ? 'Undone: the file is as it was.' : 'Undone: both files are as they were.')
@@ -310,9 +348,9 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
       setActivity({ text: humanReadableError(error, 'Could not undo that step.'), stepId: null, refused: true })
     } finally {
       setStepBusy(false)
-      requestAnimationFrame(() => rootRef.current?.focus())
+      restoreFocus()
     }
-  }, [activity, onStatus, reload, stepBusy])
+  }, [activity, onStatus, reload, rememberActionFocus, stepBusy])
 
   const toggleOffcuts = useCallback(() => {
     setShowOffcuts((shown) => {
@@ -376,7 +414,9 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
     }
   }
   useEffect(() => {
-    const listener = (event: Event) => commandRef.current((event as CustomEvent<BoardCommandName>).detail)
+    const listener = (event: Event) => {
+      if (live.current) commandRef.current((event as CustomEvent<BoardCommandName>).detail)
+    }
     window.addEventListener(BOARD_COMMAND_EVENT, listener)
     return () => window.removeEventListener(BOARD_COMMAND_EVENT, listener)
   }, [])
@@ -463,43 +503,45 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
     event.dataTransfer.setData('text/plain', path)
   }
 
-  if (loading) return <div className="board-wrap board-loading" aria-label={`Loading ${label}`} />
-
   return (
-    <div className="board-wrap" ref={rootRef} tabIndex={0} onKeyDown={onKeyDown} aria-label={`${label} — ${name}`}>
-      <div className="board-head">
-        {onBack && <BackControl onBack={onBack} />}
-        <h1>{name}</h1>
-        <span className="bh-count">{shownRows.length} {shownRows.length === 1 ? 'piece' : 'pieces'} · {columns.length} stages{showOffcuts ? ` · ${offcuts.length} ${offcuts.length === 1 ? 'offcut' : 'offcuts'}` : ''} · {sources.length} {sources.length === 1 ? 'source' : 'sources'} · {shownRows.length} shown</span>
-        <div className="board-view-menu">
-          <button type="button" className="btn" aria-haspopup="menu" aria-expanded={viewMenuOpen} onClick={() => setViewMenuOpen((open) => !open)}><Eye aria-hidden="true" /> View</button>
-          {viewMenuOpen && (
-            <div className="board-view-pop" role="menu" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setViewMenuOpen(false); rootRef.current?.focus() } }}>
-              <button type="button" role="menuitemcheckbox" aria-checked={showOffcuts} autoFocus onClick={toggleOffcuts}>
-                <span className="bvp-check">{showOffcuts && <Check aria-hidden="true" />}</span> Offcuts column
-              </button>
-              <button type="button" role="menuitemcheckbox" aria-checked={sourcesShown} onClick={toggleSources}>
-                <span className="bvp-check">{sourcesShown && <Check aria-hidden="true" />}</span> Sources rail
-              </button>
-            </div>
-          )}
+    <div className={`board-wrap${initialLoading ? ' board-loading' : ''}`} ref={rootRef} tabIndex={0} onKeyDown={onKeyDown} aria-label={`${label} — ${name}`}>
+      {!initialLoading && (<>
+        <div className="board-head">
+          {onBack && <BackControl onBack={onBack} />}
+          <h1>{name}</h1>
+          {loadStatus !== 'failed' && <span className="bh-count">{shownRows.length} {shownRows.length === 1 ? 'piece' : 'pieces'} · {columns.length} stages{showOffcuts ? ` · ${offcuts.length} ${offcuts.length === 1 ? 'offcut' : 'offcuts'}` : ''} · {sources.length} {sources.length === 1 ? 'source' : 'sources'} · {shownRows.length} shown</span>}
+          <div className="board-view-menu">
+            <button type="button" className="btn" aria-haspopup="menu" aria-expanded={viewMenuOpen} onClick={() => setViewMenuOpen((open) => !open)}><Eye aria-hidden="true" /> View</button>
+            {viewMenuOpen && (
+              <div className="board-view-pop" role="menu" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setViewMenuOpen(false); rootRef.current?.focus() } }}>
+                <button type="button" role="menuitemcheckbox" aria-checked={showOffcuts} autoFocus onClick={toggleOffcuts}>
+                  <span className="bvp-check">{showOffcuts && <Check aria-hidden="true" />}</span> Offcuts column
+                </button>
+                <button type="button" role="menuitemcheckbox" aria-checked={sourcesShown} onClick={toggleSources}>
+                  <span className="bvp-check">{sourcesShown && <Check aria-hidden="true" />}</span> Sources rail
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="seg-view" aria-label="Collection projection">
+            <button type="button" aria-pressed="false" onClick={onOpenCollection}><Folder aria-hidden="true" /> {isFolio ? 'Folio' : 'List'}</button>
+            <button type="button" aria-pressed="true"><Columns3 aria-hidden="true" /> {label}</button>
+            {isFolio && <button type="button" aria-pressed="false" onClick={onOpenPlan}><ListOrdered aria-hidden="true" /> Folio outline</button>}
+            <button type="button" disabled title="Outline comes in a later wave"><ListTree aria-hidden="true" /> Outline</button>
+          </div>
         </div>
-        <div className="seg-view" aria-label="Collection projection">
-          <button type="button" aria-pressed="false" onClick={onOpenCollection}><Folder aria-hidden="true" /> {isFolio ? 'Folio' : 'List'}</button>
-          <button type="button" aria-pressed="true"><Columns3 aria-hidden="true" /> {label}</button>
-          {isFolio && <button type="button" aria-pressed="false" onClick={onOpenPlan}><ListOrdered aria-hidden="true" /> Folio outline</button>}
-          <button type="button" disabled title="Outline comes in a later wave"><ListTree aria-hidden="true" /> Outline</button>
+        <div className="board-projnote">
+          one query · <span className="pj">rail</span><span className="pj on">{label.toLowerCase()}</span><span className="pj">in-doc query</span>
         </div>
-      </div>
-      <div className="board-projnote">
-        one query · <span className="pj">rail</span><span className="pj on">{label.toLowerCase()}</span><span className="pj">in-doc query</span>
-      </div>
+      </>)}
 
-      {error ? (
+      {initialLoading ? (
+        <p className="board-projnote" role="status">Loading {label}…</p>
+      ) : loadStatus === 'failed' ? (
         <div className="board-empty" role="alert">
           <h2>{label === 'Board' ? 'The Board could not load' : `${label} could not load`}</h2>
           <p>The collection query did not complete. Your files have not been changed.</p>
-          <button className="btn" type="button" onClick={() => void reload()}>Try again</button>
+          <button className="btn" type="button" onClick={() => { rootRef.current?.focus(); void reload() }}>Try again</button>
         </div>
       ) : rows.length === 0 ? (
         <div className="board-empty">
@@ -681,9 +723,9 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
         />
         </div>
       )}
-      {carrying && <SourceCarryHint source={carrying} />}
+      {rows.length > 0 && carrying && <SourceCarryHint source={carrying} />}
       {activity && !carrying && <BoardActivity activity={activity} onUndo={(id) => void undoStep(id)} />}
-      {!error && rows.length > 0 && (
+      {rows.length > 0 && (
         <div className="board-foot">
           <span className="kb"><kbd>←</kbd><kbd>→</kbd> column</span>
           <span className="kb"><kbd>↑</kbd><kbd>↓</kbd> select card</span>
@@ -693,6 +735,7 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
           {showOffcuts && offcuts.length > 0 && <span className="kb"><kbd>⌥→</kbd> offcut to idea</span>}
           {sourcesShown && sources.length > 0 && <span className="kb"><kbd>⌥←</kbd> attach source</span>}
           {moving && <span className="board-moving" role="status"><Check aria-hidden="true" /> Applying status…</span>}
+          {loadStatus === 'loading' && <span className="board-moving" role="status">Refreshing {label}…</span>}
         </div>
       )}
     </div>

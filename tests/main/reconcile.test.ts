@@ -103,8 +103,11 @@ test('a buffer under an unanswered changed-on-disk notice is written only by the
   expect(mayWriteUnderDiskNotice(conflict, conflict)).toBe(true) // Keep mine, for this notice
   // A notice raised since (a later outside change) is not the one that was answered.
   expect(mayWriteUnderDiskNotice({ kind: 'changed', dirty: true, diskText: 'Outside.\n' }, conflict)).toBe(false)
-  // The disk could not be read under unsaved text: the same rule.
-  expect(mayWriteUnderDiskNotice({ kind: 'removed', dirty: true, diskText: null })).toBe(false)
+  // An unavailable read never gives an answer authority to write.
+  const unavailable: ExternalDiskNotice = { kind: 'unavailable', dirty: true, diskText: null }
+  expect(mayWriteUnderDiskNotice(unavailable)).toBe(false)
+  expect(mayWriteUnderDiskNotice(unavailable, unavailable)).toBe(false)
+  expect(saveBasisFor('Seen.\n', unavailable, unavailable)).toEqual({ kind: 'disk', text: 'Seen.\n' })
   // A file removed under a buffer with nothing unsaved: no automatic write recreates it either (item 4);
   // Keep mine on that very notice does.
   const removed: ExternalDiskNotice = { kind: 'removed', dirty: false, diskText: null }

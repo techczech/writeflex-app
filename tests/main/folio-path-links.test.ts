@@ -26,6 +26,7 @@ import { readFolioPlan } from '../../src/main/plan'
 import { registerPlanIpcHandlers, type PlanIpcHandler } from '../../src/main/plan-ipc'
 import { buildWikilinkCandidateIndex, collectionLinks, resolveWikilinkTargetFromIndex, type Candidate } from '../../src/main/wikilinks'
 import { Workspace } from '../../src/main/workspace'
+import { wikilinkRanges } from '../../src/renderer/src/editor/wikilinks'
 import { STALE_UNDO_MESSAGE } from '../../src/shared/folio-running-order'
 
 let root: string
@@ -234,6 +235,17 @@ test('a link with a slash and no ./ resolves exactly as before path links (Sol r
   expect(page?.parts.map((part) => part.path)).toEqual([`${DIR}/original.md`])
   const editor = (await collectionLinks(ws, DIR)).filter((link) => link.from === INDEX)
   expect(editor.map((link) => link.to)).toEqual([`${DIR}/original.md`])
+})
+
+test('the editor opens each of two case-distinct path links at the file main resolved it to', () => {
+  // A case-sensitive workspace: A.md and a.md are two files (built as candidates; the test disk may fold case).
+  const index = buildWikilinkCandidateIndex([piece('book/A.md', 'Upper'), piece('book/a.md', 'Lower')])
+  const doc = '- [[./A]]\n- [[./a]]\n'
+  const resolutions = ['./A', './a'].map((target) => ({ target, display: target, ...resolveWikilinkTargetFromIndex(INDEX, target, index) }))
+  expect(resolutions.map((item) => item.to)).toEqual(['book/A.md', 'book/a.md'])
+  expect(wikilinkRanges(doc, resolutions).map((link) => link.path)).toEqual(['book/A.md', 'book/a.md'])
+  // Name links stay case-insensitive, as before.
+  expect(wikilinkRanges('[[upper]]', [{ target: 'Upper', display: 'Upper', to: 'book/A.md' }]).map((link) => link.path)).toEqual(['book/A.md'])
 })
 
 test('editor and page resolve the same ./ link to the same file, listed or not', async () => {

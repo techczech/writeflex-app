@@ -54,6 +54,8 @@ export type StreamOptions = {
   requestTimeoutMs?: number
   /** Wait before the next attempt after a failure. Default 2 s doubling to 30 s. */
   retryMs?: (attempt: number) => number
+  /** Schedule a retry and return its cancellation function. */
+  scheduleRetry?: (run: () => void, ms: number) => () => void
   /** Rebase: whether the document at `path` still holds exactly these durable bytes. */
   verifyDurable?: (path: string, blob: BlobOids) => Promise<boolean>
 }
@@ -80,6 +82,11 @@ const WITHDRAW = new Set(['bad-request', 'out-of-scope', 'unknown-method'])
 const STOP = new Set(['retired', 'conflict', 'out-of-order', 'ack-ahead'])
 
 const defaultRetry = (attempt: number): number => Math.min(2_000 * 2 ** attempt, 30_000)
+const scheduleRetry = (run: () => void, ms: number): (() => void) => {
+  const timer = setTimeout(run, ms)
+  timer.unref?.()
+  return () => clearTimeout(timer)
+}
 
 export const docKey = (doc: DocRef, path: string): string => `${doc.owner}/${doc.ownerEpoch}/${doc.docEpoch}/${path}`
 export const findDoc = (o: Outbox, doc: DocRef, path: string): DocEntry | undefined => o.docs.find((d) => d.path === path && sameDocRef(d.doc, doc))
@@ -138,7 +145,7 @@ export class ReceiptStream {
   #again = false
   #attempt = 0
   #retryAt = 0
-  #timer: ReturnType<typeof setTimeout> | null = null
+  #cancelRetry: (() => void) | null = null
   /** The one connection attempt and openStream negotiation in flight, shared by the pump and status. */
   #opening: Promise<boolean> | null = null
   /** Raised by close and stop: an attempt begun before then never publishes its connection. */
@@ -151,7 +158,7 @@ export class ReceiptStream {
 
   constructor(options: StreamOptions) {
     this.vault = options.vault
-    this.#o = { now: Date.now, requestTimeoutMs: 5_000, retryMs: defaultRetry, ...options }
+    this.#o = { now: Date.now, requestTimeoutMs: 5_000, retryMs: defaultRetry, scheduleRetry, ...options }
     if (this.#o.store.value.stopped) this.#state = 'stopped'
     this.#ready = this.#normaliseEarlierProcess().catch(() => undefined)
   }
@@ -386,20 +393,23 @@ export class ReceiptStream {
   close(): void {
     this.#closed = true
     this.#lifetime += 1
-    if (this.#timer) clearTimeout(this.#timer)
-    this.#timer = null
+    this.#cancelRetry?.()
+    this.#cancelRetry = null
     try { this.#conn?.close() } catch { /* already closed */ }
     this.#conn = null
     for (const waiter of [...this.#starts.values()]) if (waiter.state === 'waiting') { waiter.state = 'refused'; waiter.resolve(false) }
   }
 
   #schedule(): void {
-    if (this.#closed || this.#timer) return
+    if (this.#closed || this.#cancelRetry) return
     const delay = this.#o.retryMs(this.#attempt)
     this.#attempt = Math.min(this.#attempt + 1, 16)
     this.#retryAt = this.#o.now() + delay
-    this.#timer = setTimeout(() => { this.#timer = null; this.#retryAt = 0; this.wake() }, delay)
-    this.#timer.unref?.()
+    this.#cancelRetry = this.#o.scheduleRetry(() => {
+      this.#cancelRetry = null
+      this.#retryAt = 0
+      this.wake()
+    }, delay)
   }
 
   #dropConnection(): void {
@@ -446,7 +456,8 @@ export class ReceiptStream {
   async #open(): Promise<boolean> {
     const lifetime = this.#lifetime
     const current = () => !this.#closed && this.#lifetime === lifetime && this.#state !== 'stopped'
-    this.#state = 'connecting'
+    // Starting a retry is no evidence that the helper can accept receipts.
+    if (this.#state !== 'unavailable') this.#state = 'connecting'
     let conn: ReceiptsPort
     try {
       conn = await this.#o.connect()

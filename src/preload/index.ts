@@ -24,8 +24,10 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { createAuthTransport } from '@bridle/electron/preload'
 import type { AuthTransport } from '@bridle/electron'
 import { invokeTurnBackAfterNotifications, multiplexIpcChannel } from './subscriptions'
+import { createCollectionQueryBridge } from './collection-queries'
 import type { ArchivePassageResponse, ArchiveSearchRequest, ArchiveSearchResponse } from '../shared/scout'
 import type { PreserveResult } from '../shared/preserve-receipt'
+import type { VersionRestoreResult } from '../main/version-content'
 import type { OpenLinkResult } from '../main/scout-ipc'
 import type { CaptureRequest, CaptureResponse } from '../shared/research-capture'
 import type { WidgetReadResult } from '../main/widget-ipc'
@@ -37,6 +39,7 @@ import type { PickAnswer } from '../main/standard-widgets/outside-files'
 import type { SourceFileListing } from '../main/standard-widgets/source-files'
 import type { BuildOutcome } from '../main/standard-widgets/build'
 import type { FolioPlace } from '../shared/folio-place'
+import type { EditorReadResult } from '../shared/editor-read'
 import type { SaveBasis } from '../shared/save-basis'
 import type { CollectionChanged } from '../shared/listing-patch'
 import type { FolioAgentInstructionsAction, FolioAgentInstructionsStatus } from '../shared/folio-agent-files'
@@ -898,7 +901,7 @@ export type WriteFlexApi = {
   toggleFavourite: (path: string) => Promise<string[]>
   readFile: (path: string) => Promise<FileReadResult>
   /** Establishes the editable buffer's disk baseline and registers it for startup watch catch-up. */
-  readEditorFile: (path: string) => Promise<FileReadResult>
+  readEditorFile: (path: string, root: string) => Promise<EditorReadResult>
   /** A widget's HTML for the embed line `rawPath` in the workspace document `documentPath`, resolved and
    *  read in main (inside the workspace only); a refusal names why. Run it only through widget-frame. */
   readWidget: (documentPath: string, rawPath: string) => Promise<WidgetReadResult>
@@ -976,6 +979,8 @@ export type WriteFlexApi = {
   duplicateFile: (path: string) => Promise<FileReadResult>
   pickImage: () => Promise<{ path: string } | null>
   saveImage: (bytes: ArrayBuffer | Uint8Array, ext: string) => Promise<{ path: string }>
+  prepareAreaImage: (bytes: Uint8Array, root: string) => Promise<{ path: string; receipt: string }>
+  finishAreaImage: (receipt: string, inserted: boolean) => Promise<void>
   trashFile: (path: string) => Promise<{ path: string }>
   revealFile: (path: string) => Promise<void>
   openDocumentLocation: (path: string, location: 'default-app' | 'containing-folder') => Promise<void>
@@ -1038,7 +1043,7 @@ export type WriteFlexApi = {
   /** Restore a Version into the live document through main-owned writes and tier-2 checkpoints. */
   /** Restore a version as the open document. `basis`: the version of the file the buffer is based on
    *  (flushed first); main replaces only that version and otherwise answers `disk-changed`. */
-  restoreVersion: (input: VersionContentRequest & { basis: SaveBasis }) => Promise<FileSaveWritten | FileSaveDiskChanged | null>
+  restoreVersion: (input: VersionContentRequest & { basis: SaveBasis }) => Promise<VersionRestoreResult | FileSaveDiskChanged | null>
   /** Collections (Task 23): read a folder as a browsable table of its pieces under an Index-Note cover.
    *  `dir` is workspace-relative ('' = the workspace root). Read-only. */
   listCollection: (dir: string, options?: { includeSearchText?: boolean }) => Promise<Collection>
@@ -1597,23 +1602,7 @@ const subscribeExampleChanged = multiplexIpcChannel<{ change: 'removed' | 'resto
 const subscribeGuideShow = multiplexIpcChannel<null>(ipcRenderer, 'guide:show')
 const subscribeSettingChanged = multiplexIpcChannel<{ key: string; value: SettingValue | null }>(ipcRenderer, 'wf-settings:changed')
 const subscribeVaultChanged = multiplexIpcChannel<VaultChangedEvent>(ipcRenderer, 'vault:changed')
-const subscribeCollectionQueryChanged = multiplexIpcChannel<CollectionQueryInvalidation>(ipcRenderer, 'collection:query-changed')
-let collectionQueryCount = 0
-const collectionQueriesInFlight = new Map<string, Promise<QueryResult>>()
-
-function queryCollection(dir: string, source: string): Promise<QueryResult> {
-  const key = JSON.stringify([dir, source])
-  const existing = collectionQueriesInFlight.get(key)
-  if (existing) return existing
-  collectionQueryCount += 1
-  const pending = ipcRenderer.invoke('collection:query', { dir, source }) as Promise<QueryResult>
-  collectionQueriesInFlight.set(key, pending)
-  const clear = (): void => {
-    if (collectionQueriesInFlight.get(key) === pending) collectionQueriesInFlight.delete(key)
-  }
-  void pending.then(clear, clear)
-  return pending
-}
+const collectionQueries = createCollectionQueryBridge(ipcRenderer)
 
 function isWorkspaceRelativePath(value: unknown): value is string {
   if (typeof value !== 'string' || value.trim() === '' || value.startsWith('/') || value.includes('\\')) return false
@@ -1789,8 +1778,8 @@ const api: WriteFlexApi = {
   e2eFreshSidebars: process.env.WRITEFLEX_E2E === '1' && process.env.WRITEFLEX_E2E_FRESH_SIDEBARS === '1',
   e2eEarlyKeys: process.env.WRITEFLEX_E2E === '1' ? process.env.WRITEFLEX_E2E_EARLY_KEYS ?? '' : '',
   e2eWriteHooks: e2eWriteHooksFromProcess(process.argv, process.env),
-  e2eCollectionQueryCount: () => collectionQueryCount,
-  resetE2eCollectionQueryCount: () => { collectionQueryCount = 0 },
+  e2eCollectionQueryCount: collectionQueries.count,
+  resetE2eCollectionQueryCount: collectionQueries.resetCount,
   clipboardText: () => ipcRenderer.sendSync('clipboard:read-text') ?? '',
   widgetDocumentUrl: (html) => ipcRenderer.sendSync('widget:document-url', html),
   releaseWidgetDocumentUrl: (url) => ipcRenderer.send('widget:release-document-url', url),
@@ -1846,7 +1835,7 @@ const api: WriteFlexApi = {
   listFavourites: () => ipcRenderer.invoke('workspace:favourites:list'),
   toggleFavourite: (path) => ipcRenderer.invoke('workspace:favourites:toggle', path),
   readFile: (path) => ipcRenderer.invoke('file:read', path),
-  readEditorFile: (path) => ipcRenderer.invoke('file:read', path, 'editor'),
+  readEditorFile: (path, root) => ipcRenderer.invoke('file:read-editor', path, root),
   readWidget: (documentPath, rawPath) => ipcRenderer.invoke('widget:read', { documentPath, rawPath }),
   listWidgetChoices: (documentPath) => ipcRenderer.invoke('widget:list-choices', { documentPath }),
   resolveWidgetDrop: (documentPath, file) => {
@@ -1890,6 +1879,8 @@ const api: WriteFlexApi = {
   duplicateFile: (path) => ipcRenderer.invoke('file:duplicate', { path }),
   pickImage: () => ipcRenderer.invoke('assets:pick-image'),
   saveImage: (bytes, ext) => ipcRenderer.invoke('assets:save-image', { bytes, ext }),
+  prepareAreaImage: (bytes, root) => ipcRenderer.invoke('assets:prepare-area-image', bytes, root),
+  finishAreaImage: (receipt, inserted) => ipcRenderer.invoke('assets:finish-area-image', receipt, inserted),
   trashFile: (path) => ipcRenderer.invoke('file:trash', { path }),
   revealFile: (path) => ipcRenderer.invoke('file:reveal', { path }),
   openDocumentLocation: (path, location) => ipcRenderer.invoke('file:open-location', { path, location }),
@@ -1965,7 +1956,7 @@ const api: WriteFlexApi = {
     endBatch: () => ipcRenderer.invoke('collection:end-batch'),
     status: (dir) => ipcRenderer.invoke('collection:status', { dir }),
     pattern: (dir) => ipcRenderer.invoke('collection:pattern', { dir }),
-    query: queryCollection,
+    query: collectionQueries.query,
     unresolvedFolderPieces: (dir) => ipcRenderer.invoke('collection:unresolved-folder-pieces', { dir }),
     addTags: (dir, path, tags) => ipcRenderer.invoke('collection:add-tags', { dir, path, tags }),
     setStatus: (dir, path, status) => ipcRenderer.invoke('collection:set-status', { dir, path, status }),
@@ -1975,7 +1966,7 @@ const api: WriteFlexApi = {
     focusPiece: (windowId, path) => ipcRenderer.invoke('collection:focus-piece', { windowId, path }),
     previewStub: (input) => ipcRenderer.invoke('collection:stub-preview', input),
     createStub: (input) => ipcRenderer.invoke('collection:stub-create', input),
-    onChanged: subscribeCollectionQueryChanged,
+    onChanged: collectionQueries.onChanged,
     digest: (dir) => ipcRenderer.invoke('agent:digest', { dir }),
   },
   agentNotes: {

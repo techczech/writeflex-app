@@ -5,9 +5,12 @@ import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { createReaderResources } from '../../src/main/reading-room-resources'
+import { waitForWatch } from '../helpers/watch-test-target.mjs'
 const A=resolve(import.meta.dir,'../..'),hash=(s:Uint8Array|string)=>createHash('sha256').update(s).digest('hex')
 const vite=await import('vite')
-const wait=async(check:()=>boolean,bound=5000)=>{const start=performance.now();while(!check()&&performance.now()-start<bound)await new Promise(r=>setTimeout(r,10));return check()}
+// This three-build test reached 7.0 s on the contended Studio. Give each real
+// build 12 s to report END, with a separate deadline for the whole test.
+const waitForBuild = (check: () => boolean, phase: string) => waitForWatch(check, phase, 12000)
 test('normal main dev watcher rebuilds a host dependency into a fresh immutable served map and retains ordinary main/editor/preload wiring',async()=>{
  const root=mkdtempSync(join(tmpdir(), 'wf-reader-watch-')),identity=statSync(root),project=root+'/p',events:any[]=[],errors:any[]=[]
  let watcher:any,closed=false
@@ -34,7 +37,7 @@ test('normal main dev watcher rebuilds a host dependency into a fresh immutable 
   // Keep the real Rollup watcher while avoiding the runner's unreliable FSEvents delivery.
   watcher=await vite.build({configFile:false,root:project,logLevel:'warn',plugins:plugin?[plugin,{name:'vite:electron-watcher',closeBundle}]:[],build:{outDir:project+'/out/main',emptyOutDir:false,watch:{chokidar:{usePolling:true}},lib:{entry:project+'/src/main/watch-entry.ts',formats:['es'],fileName:()=> 'watch-entry.mjs'},rollupOptions:{external:['node:path']}}})
   watcher.on('event',(e:any)=>{if(e.code==='END')events.push(e);if(e.code==='ERROR')errors.push(e.error)})
-  expect(await wait(()=>events.length>=1)).toBe(true);expect(errors).toEqual([])
+  await waitForBuild(()=>events.length>=1,'the initial host build');expect(errors).toEqual([])
   const getDirectory=async(n:number)=>(await import(project+'/out/main/watch-entry.mjs?round='+n)).readerHostDirectory(project+'/out/main/watch-entry.mjs')
   const firstDirectory=await getDirectory(0),vendor=dirname(dirname(realpathSync(A+'/node_modules/@readflex/reader-embed/vendor/reader/reader.html')))
   const before=createReaderResources(vendor,firstDirectory),bundleKey=[...before.assets.keys()].find(k=>k.startsWith('assets/')&&k.endsWith('.js'))!,beforeBytes=before.read(bundleKey)
@@ -46,9 +49,9 @@ test('normal main dev watcher rebuilds a host dependency into a fresh immutable 
   const marker='Reader view state prototype refused.'
   expect(original).toContain(marker)
   writeFileSync(dependency,original.replaceAll(marker,'Reader view state refreshed prototype refused.'))
-  const refreshed=await wait(()=>events.length>=2)
-  console.log(JSON.stringify({oldSource:!plugin,firstDirectory,hostDependencyEditObserved:refreshed,events:events.length,errors:errors.map(String),oldServedHash:hash(beforeBytes)}))
-  expect(refreshed).toBe(true);expect(errors).toEqual([])
+  await waitForBuild(()=>events.length>=2,'the refreshed host build')
+  console.log(JSON.stringify({oldSource:!plugin,firstDirectory,hostDependencyEditObserved:true,events:events.length,errors:errors.map(String),oldServedHash:hash(beforeBytes)}))
+  expect(errors).toEqual([])
   const nextDirectory=await getDirectory(1),after=createReaderResources(vendor,nextDirectory)
   expect(nextDirectory).not.toBe(firstDirectory);expect(after.mapHash).not.toBe(before.mapHash)
   expect(before.read(bundleKey)).toEqual(beforeBytes)
@@ -58,7 +61,7 @@ test('normal main dev watcher rebuilds a host dependency into a fresh immutable 
   expect(after.assets.has('index.html')).toBe(false);expect(()=>after.read('index.html')).toThrow()
   for(const [key,item]of after.assets)expect(hash(after.read(key))).toBe(item.sha256)
   const main=project+'/src/main/watch-entry.ts';writeFileSync(main,readFileSync(main,'utf8').replace("ordinaryMain='before'","ordinaryMain='after'"))
-  expect(await wait(()=>events.length>=3)).toBe(true)
+  await waitForBuild(()=>events.length>=3,'the refreshed main build');expect(errors).toEqual([])
   expect((await import(project+'/out/main/watch-entry.mjs?round=2')).ordinaryMain).toBe('after')
   const config=readFileSync(A+'/electron.vite.config.ts','utf8')
   const entryConfig=process.env.WRITEFLEX_REPAIR_EVIDENCE?readFileSync(process.env.WRITEFLEX_REPAIR_EVIDENCE+'/source-entry/electron.vite.config.ts','utf8'):config
@@ -79,4 +82,4 @@ test('normal main dev watcher rebuilds a host dependency into a fresh immutable 
   const current=statSync(root);if(current.ino!==identity.ino||current.dev!==identity.dev)throw Error('Owned watch root changed')
   rmSync(root,{recursive:true})
  }
-},20000)
+},30000)

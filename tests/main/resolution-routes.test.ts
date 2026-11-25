@@ -100,7 +100,7 @@ function window_(start: { disk: string; buffer: string | null; baseline: string;
     heldText: (path) => registry.textOf(path),
     hold: (path) => registry.hold(path),
     diskChanged: (_path, diskText, buffer) => { w.banners.push({ diskText, buffer }) },
-    changedOnDisk: async (path, options) => { w.refusals.push(await owner.refusedOnDisk(path, async () => w.disk, options)) },
+    changedOnDisk: async (path, options) => { w.refusals.push(await owner.refusedOnDisk(path, async () => ({ kind: 'read', content: w.disk }), options)) },
     editorPresent: () => w.mounted,
     api: {
       saveFile: async (_path: string, content: string, basis: SaveBasis) => { w.calls.push('saveFile'); w.bases.push(basis); return w.saveFile(content, basis) },
@@ -844,7 +844,7 @@ describe('a refused accept asks the writer by itself, whatever the watcher deliv
   it('the file gone by the time the owner reads it: removed', async () => {
     const w = window_({ disk: DRAFT, buffer: DRAFT, baseline: DRAFT })
     await acceptThroughOwner({ ...acceptPorts(w), changedOnDisk: async (path, options) => {
-      w.refusals.push(await w.owner.refusedOnDisk(path, async () => { throw new Error('ENOENT') }, options))
+      w.refusals.push(await w.owner.refusedOnDisk(path, async () => ({ kind: 'missing' }), options))
     } }, P, ID, refused(w))
     expect(w.refusals).toEqual([{ kind: 'removed', dirty: false }])
     expect(w.owner.isSaved(P)).toBe(false)

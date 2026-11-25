@@ -868,6 +868,9 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
     const target = event.target instanceof HTMLElement ? event.target : null
     // The Board shown in Cards has its own keys; the room's act on its own lists and chords.
     if (target?.closest('.fr-boardhost')) return
+    // Files buttons use native Enter activation, including the file-list retry.
+    if (target?.closest('.fr-files button') && event.key === 'Enter'
+      && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) return
     // Selection keys leave a key pressed on a sidebar control (the binder's and the inspector's portals bubble through here) alone.
     const mine = !roomKeysIgnored(target)
     // ⌘↵ (Open Folio, at its first part) and ⇧⌘↵ (Open at…) belong to the Open Folio button; ⇧↵ opens the selected part's text.

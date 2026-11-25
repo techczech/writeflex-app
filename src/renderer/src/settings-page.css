@@ -7,6 +7,10 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
   font: 600 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--ink); user-select: none;
 }
 .bsw-root.wf-settings { flex: 1; height: auto; min-height: 0; }
+.wf-settings-loading { padding: 12px 14px; font: 13px var(--ui); color: var(--ink-2); }
+.wf-settings-problem { font: 500 13px var(--ui); color: var(--danger); background: var(--danger-soft); border-color: var(--line); }
+.wf-settings-problem .bsw-btn { color: var(--ink); background: var(--bg-elev); border-color: var(--line); }
+.wf-settings-problem .bsw-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* WriteFlex's terracotta, from the main window's palette */
 .bsw-root.wf-settings {
   --bsw-accent: #b0563a; --bsw-accent-dark: #8f4430; --bsw-accent-tint: #f1ddd5;

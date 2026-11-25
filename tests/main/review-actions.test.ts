@@ -6,6 +6,8 @@ import type { Change, FileReadResult } from '../../src/preload'
 import { acceptThroughOwner, replayAcceptRedo } from '../../src/renderer/src/app/resolution-routes'
 import { createDocumentOwner } from '../../src/renderer/src/app/document-owner'
 import { createUnsavedRegistry } from '../../src/renderer/src/app/unsaved-registry'
+import { createDeclineConfirmation, type DeclineContext } from '../../src/renderer/src/app/decline-confirmation'
+import { buildMarginModel } from '../../src/renderer/src/app/margin-model'
 
 test('a resolved file is reconciled before the final inline-change refresh', async () => {
   const reviewActions = await import('../../src/renderer/src/app/review-actions') as typeof import('../../src/renderer/src/app/review-actions') & {
@@ -200,9 +202,16 @@ test('redo of a reject, then Apply from the review pane: main receives them in t
 // picked Accept / Decline reach the ledger through acceptMany / rejectMany: one call per target, in document order,
 // for the targets only, then one reload and one toast. The same per-change route as a single Accept or Decline, so
 // readers' pages get the same outcomes. ─────────────────────────────────────────────────────────────────────────
-function bulkHarness(refuse: ReadonlySet<string> = new Set()) {
+function bulkHarness(
+  refuse: ReadonlySet<string> = new Set(),
+  statuses: Record<string, Change['status']> = {},
+  refuseReject: ReadonlySet<string> = new Set(),
+) {
   const calls: string[] = []
-  const at = (id: string, n: number): Change => ({ id, path: 'draft.md', provenance: 'agent', status: 'pending', oldText: `old ${n}`, newText: `new ${n}` }) as unknown as Change
+  const at = (id: string, n: number): Change => ({
+    id, path: 'draft.md', ts: n, provenance: 'agent', editClass: 'content', category: 'wording',
+    summary: id, status: statuses[id] ?? 'pending', oldText: `old ${n}`, newText: `new ${n}`, isCorrection: false,
+  })
   // Document order: p1 … p5, as the dock lists them.
   const dock = [at('p1', 1), at('p2', 2), at('p3', 3), at('p4', 4), at('p5', 5)]
   let actions: ReviewActions | undefined
@@ -211,6 +220,7 @@ function bulkHarness(refuse: ReadonlySet<string> = new Set()) {
       // As main after ticket 14: an Accept that cannot be placed is refused and the item stays waiting.
       resolveChange: async (id, action) => {
         calls.push(`${action}:${id}`)
+        if (action === 'reject' && refuseReject.has(id)) return { applied: false, message: 'Decline refused' }
         return action === 'accept' && refuse.has(id) ? { applied: false, message: `The words around this change are no longer in draft.md as they were (${id})` } : { applied: true }
       },
       setChangeStatus: async (id, status) => { calls.push(`status:${id}:${status}`) },
@@ -229,7 +239,7 @@ function bulkHarness(refuse: ReadonlySet<string> = new Set()) {
     acceptThroughOwner: async (_path, _id, resolve) => ({ status: 'acted', result: await resolve(), recorded: false }),
     inDocumentQueue: (_path, run) => run(),
     focusComposer: (text) => { calls.push(`composer:${text}`) },
-    setChangesOpen: () => undefined,
+    setChangesOpen: (open) => { calls.push(`changes-open:${open}`) },
     selectChange: () => undefined,
     settleChange: () => undefined,
     onAcceptRefused: (id, reason) => { calls.push(`refused:${id}:${reason}`) },
@@ -239,7 +249,7 @@ function bulkHarness(refuse: ReadonlySet<string> = new Set()) {
     return null
   }
   renderToString(createElement(Harness))
-  return { calls, actions: actions! }
+  return { calls, actions: actions!, dock }
 }
 
 // ---- ticket 06 (from 14): batch Accept counts only what was applied and names the refused; Reopen ----
@@ -300,6 +310,95 @@ test('nothing to act on writes nothing', async () => {
   await actions.acceptMany([])
   await actions.rejectMany([])
   expect(calls).toEqual([])
+})
+
+test('whole-run Decline only writes the reviewed IDs passed by confirmation', async () => {
+  const { calls, actions } = bulkHarness(new Set(), { p2: 'accepted', p4: 'rejected', p5: 'held' })
+  // The question covered p1 and p2. By confirmation p2 has settled, and p3 is waiting but was never asked about.
+  await actions.discardRun(['p1'])
+  expect(calls.filter((call) => call.startsWith('reject:'))).toEqual(['reject:p1'])
+  expect(calls.slice(-2)).toEqual(['changes-open:false', 'flash:Run discarded'])
+})
+
+const collectionReview: DeclineContext = { workspace: '/writing', piece: 'draft.md', collection: '' }
+const noPicks = new Set<string>()
+
+test('a whole-run question can decline only its surviving IDs and can be resolved once', async () => {
+  const confirmation = createDeclineConfirmation()
+  const before = bulkHarness(new Set(), { p4: 'held', p5: 'rejected' })
+  const request = confirmation.request({
+    context: collectionReview, changes: before.dock.filter((change) => change.id !== 'p3'),
+    shown: undefined, picked: noPicks, filter: undefined,
+  })!
+  expect(request.ids).toEqual(['p1', 'p2'])
+  expect(request.question.title).toBe('Decline 2 edits?')
+  expect(before.calls).toEqual([])
+
+  const after = bulkHarness(new Set(), { p2: 'accepted', p4: 'held', p5: 'rejected' })
+  const resolved = confirmation.resolve(request, collectionReview, after.dock, after.actions)
+  expect(confirmation.resolve(request, collectionReview, after.dock, after.actions)).toBeNull()
+  await resolved
+  expect(after.calls.filter((call) => call.startsWith('reject:'))).toEqual(['reject:p1'])
+  expect(after.calls.slice(-2)).toEqual(['changes-open:false', 'flash:Run discarded'])
+})
+
+test.each([
+  ['piece', { ...collectionReview, piece: 'another.md' }],
+  ['Collection', { ...collectionReview, collection: 'another' }],
+  ['workspace', { ...collectionReview, workspace: '/another' }],
+] as const)('a change of %s retires the question even when returning to it', (_name, next) => {
+  const confirmation = createDeclineConfirmation()
+  const { calls, dock, actions } = bulkHarness()
+  const input = { context: collectionReview, changes: dock, shown: undefined, picked: noPicks, filter: undefined }
+  const first = confirmation.request(input)!
+  expect(confirmation.retire(next)).toBe(first)
+  expect(confirmation.resolve(first, collectionReview, dock, actions)).toBeNull()
+
+  const second = confirmation.request(input)!
+  expect(confirmation.resolve(second, next, dock, actions)).toBeNull()
+  expect(confirmation.resolve(second, collectionReview, dock, actions)).toBeNull()
+  expect(calls).toEqual([])
+})
+
+test('Cancel and replacing a question revoke the earlier confirmation', () => {
+  const confirmation = createDeclineConfirmation()
+  const { calls, dock, actions } = bulkHarness()
+  const input = { context: collectionReview, changes: dock, shown: undefined, picked: noPicks, filter: undefined }
+  const first = confirmation.request(input)!
+  const next = confirmation.request(input)!
+  expect(confirmation.cancel(first)).toBe(false)
+  expect(confirmation.resolve(first, collectionReview, dock, actions)).toBeNull()
+  expect(confirmation.cancel(next)).toBe(true)
+  expect(confirmation.resolve(next, collectionReview, dock, actions)).toBeNull()
+  expect(calls).toEqual([])
+})
+
+test('whole-run Decline excludes an edit put on Hold and stops at the first refusal', async () => {
+  const confirmation = createDeclineConfirmation()
+  const before = bulkHarness()
+  const request = confirmation.request({
+    context: collectionReview, changes: before.dock, shown: undefined, picked: noPicks, filter: undefined,
+  })!
+  const after = bulkHarness(new Set(), { p2: 'held' }, new Set(['p3']))
+  await confirmation.resolve(request, collectionReview, after.dock, after.actions)
+  expect(after.calls.filter((call) => call.startsWith('reject:'))).toEqual(['reject:p1', 'reject:p3'])
+  expect(after.calls.at(-1)).toBe('flash:Decline refused')
+  expect(after.calls).not.toContain('changes-open:false')
+})
+
+test('filtered Decline keeps reviewed held and pending edits in document order and continues after a refusal', async () => {
+  const confirmation = createDeclineConfirmation()
+  const context = { ...collectionReview, collection: null }
+  const before = bulkHarness(new Set(), { p2: 'held', p5: 'held' })
+  const shown = buildMarginModel({ changes: before.dock, document: 'old 4; old 2; old 1; old 3; old 5', view: 'margin' })
+  const picked = new Set(['p4', 'p2', 'p1'])
+  const request = confirmation.request({ context, changes: before.dock, shown, picked, filter: undefined })!
+  expect(request.question.count).toBe(3)
+  const after = bulkHarness(new Set(), { p1: 'accepted', p2: 'held' }, new Set(['p2']))
+  await confirmation.resolve(request, context, after.dock, after.actions)
+  expect(after.calls.filter((call) => call.startsWith('reject:'))).toEqual(['reject:p2', 'reject:p4'])
+  expect(after.calls.at(-1)).toBe('flash:Declined 1 change. 1 could not be declined.')
+  expect(after.calls).not.toContain('changes-open:false')
 })
 
 test('Send back keeps today’s message: one note to the agent composer, and no ledger call', () => {

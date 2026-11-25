@@ -397,10 +397,11 @@ async function recognisedFolderPieces(
   directOnly = false,
   includeMany = false,
   listedMarkdown?: Awaited<ReturnType<Workspace['listFiles']>>,
+  foldersInListing?: readonly string[],
 ): Promise<FolderPiece[]> {
   const markdown = listedMarkdown ?? await ws.listFiles()
   const files = new Set(markdown.map((file) => file.path))
-  const listedFolders = await listedFolderPaths(ws, markdown)
+  const listedFolders = foldersInListing ?? await listedFolderPaths(ws, markdown)
   const folders = listedFolders
     .filter((folder) => directOnly ? directChildFolder(folder, dir) : isUnderDir(folder, dir))
     .sort((left, right) => left.split('/').length - right.split('/').length || left.localeCompare(right))
@@ -712,9 +713,16 @@ export function firstParagraphAfterH1(text: string): string | null {
  * The resolved cover file and every Index-Note-named file are excluded from the rows (they are chrome,
  * not pieces). Bare files (no frontmatter) appear with null columns and `bare: true`.
  */
-export async function listCollection(ws: Workspace, dir: string, vault: CollectionVaultView | null = null, options: { includeSearchText?: boolean } = {}): Promise<Collection> {
+export async function listCollection(
+  ws: Workspace,
+  dir: string,
+  vault: CollectionVaultView | null = null,
+  options: { includeSearchText?: boolean; listing?: Awaited<ReturnType<Workspace['listFilesAndFolders']>> } = {},
+): Promise<Collection> {
   const name = displayName(ws, dir)
-  const markdown = await ws.listFiles()
+  // The IPC caller already has the scoped listing. Other workspace views retain their own listing authority.
+  const markdown = options.listing?.files ?? await ws.listFiles()
+  const folders = options.listing?.folders ?? await listedFolderPaths(ws, markdown)
   const children = markdown.filter((f) => f.directory === dir)
   const byPath = new Map(markdown.map((f) => [f.path, f]))
 
@@ -732,7 +740,8 @@ export async function listCollection(ws: Workspace, dir: string, vault: Collecti
 
   const rows: CollectionRow[] = []
   const folioParts = await folioPartPaths(ws, children.map((file) => file.path))
-  const reader = await factsReader(ws, children, markdown)
+  // Only a complete listing can evict entries elsewhere in the workspace from the search cache.
+  const reader = await factsReader(ws, children, options.listing && dir !== '' ? undefined : markdown)
   for (const file of children) {
     if (file.path === coverPath || INDEX_NOTE.test(file.name) || file.name === `_${name}.md`) continue
     if (isFolioAgentInstructionsFile(ws, file.path)) continue // a Folio's agent instructions are never a piece
@@ -759,7 +768,7 @@ export async function listCollection(ws: Workspace, dir: string, vault: Collecti
       },
     })
   }
-  for (const folderPiece of await recognisedFolderPieces(ws, dir, true, true, markdown)) {
+  for (const folderPiece of await recognisedFolderPieces(ws, dir, true, true, markdown, folders)) {
     const file = byPath.get(folderPiece.mainDocumentPath)
     if (!file) continue
     const piece = await pieceFromFile(ws, file, folderPiece.folderPath, false, reader)
@@ -784,7 +793,6 @@ export async function listCollection(ws: Workspace, dir: string, vault: Collecti
     })
   }
   const pieceFolders = new Set(rows.flatMap((row) => (row.folderPath ? [row.folderPath] : [])))
-  const folders = await listedFolderPaths(ws, markdown)
   const subfolders = collectionSubfolders(dir, folders, markdown.filter((file) => !isFolioAgentInstructionsFile(ws, file.path)), pieceFolders, vault)
   return { name, cover, rows, subfolders }
 }

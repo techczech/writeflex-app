@@ -150,8 +150,8 @@ describe('the app takes the signals (rules 3 and 6)', () => {
 
 describe('interleavings (Fable ruling after Sol round 3)', () => {
   const PIECE = '# York\n\nThe York talk.\n'
-  async function app(files: Record<string, string> = { 'a.md': PIECE }) {
-    const w = await publishWorld({ files, ports: { retryMs: [3_600_000] } })
+  async function app(files: Record<string, string> = { 'a.md': PIECE }, debounceMs = 5) {
+    const w = await publishWorld({ files, ports: { debounceMs, retryMs: [3_600_000] } })
     const ids: string[] = []
     for (const path of Object.keys(files)) {
       const made = await w.publisher.make(w.root, path, { name: 'Marta', comments: true })
@@ -284,7 +284,8 @@ describe('interleavings (Fable ruling after Sol round 3)', () => {
   })
 
   test('at start, a gen 2 with no gen 1 is held through the first take and the look, then removed and reported', async () => {
-    const { w, ids: [shareId], record, act } = await app()
+    // This ordering check can queue publishing immediately instead of waiting on the debounce.
+    const { w, ids: [shareId], record, act } = await app(undefined, 0)
     renameSync(join(w.root, 'a.md'), join(w.root, 'b.md'))
     await leave({ root: w.root, shareId, from: 'a.md', generation: 0, move: { from: 'a.md', to: 'b.md' } })
     await leave({ root: w.root, shareId, from: 'c.md', generation: 2, move: { from: 'c.md', to: 'd.md' } })
@@ -295,12 +296,15 @@ describe('interleavings (Fable ruling after Sol round 3)', () => {
         steps.push(`look (waiting: ${(await signalsIn()).map((signal) => signal.generation).join()})`)
         await w.publisher.resume()
       })
-    } finally { signals.dispose() }
+    } finally {
+      signals.dispose()
+      await w.publisher.idle()
+    }
     expect(steps).toEqual(['look (waiting: 2)', 'held-dropped 2'])
-    await w.publisher.idle()
     expect(record()).toMatchObject({ path: 'b.md', generation: 1, lost: null, ended: null })
     expect(await signalFiles()).toEqual([])
-  })
+  // The real signal I/O and publisher path took 9.7 s on the contended Studio (25 Nov).
+  }, 20000)
 
   test('restored and turned on: a new generation, so a signal made before the restore is stale', async () => {
     const { w, ids: [shareId], record, take, reports } = await app()

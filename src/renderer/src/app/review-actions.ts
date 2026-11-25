@@ -83,7 +83,7 @@ export type ReviewActions = {
   /** Resolves when every id is resolved (one at a time, in document order), the list reloaded and the toast shown. */
   acceptMany: (ids: string[]) => Promise<void>
   rejectMany: (ids: string[]) => Promise<void>
-  discardRun: () => void
+  discardRun: (ids: readonly string[]) => Promise<void>
   sendRunBack: (note: string) => void
   reviseChange: (id?: string) => void
   /** Reopen a mistakenly rejected change to pending (the mis-click must not be a one-way door). `message`
@@ -299,16 +299,13 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
   const acceptMany = useCallback((ids: string[]) => resolveMany(ids, 'accept'), [resolveMany])
   const rejectMany = useCallback((ids: string[]) => resolveMany(ids, 'reject'), [resolveMany])
 
-  const discardRun = useCallback(() => {
-    void (async () => {
-      const pending = dockChanges.filter((change) => change.status === 'pending')
-      for (const change of pending) {
-        if (!(await rejectChange(change.id))) return
-      }
-      setChangesOpen(false)
-      flash(pending.length > 0 ? 'Run discarded' : 'No pending changes to discard')
-    })()
-  }, [dockChanges, rejectChange, setChangesOpen, flash])
+  const discardRun = useCallback(async (ids: readonly string[]): Promise<void> => {
+    for (const id of ids) {
+      if (!(await rejectChange(id))) return
+    }
+    setChangesOpen(false)
+    flash(ids.length > 0 ? 'Run discarded' : 'No pending changes to discard')
+  }, [rejectChange, setChangesOpen, flash])
 
   const sendRunBack = useCallback(
     (note: string) => {

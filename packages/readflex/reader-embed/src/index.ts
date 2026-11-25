@@ -260,6 +260,7 @@ interface ReaderPdfApplication {
   pdfViewer?: {
     currentScale?: number;
     currentPageNumber?: number;
+    update?(): void;
   };
 }
 
@@ -343,6 +344,9 @@ function toHostChord(event: ReaderKeyEvent): ReaderHostChord | null {
 }
 
 interface ZoteroReaderView {
+  _onChangeViewState?: { flush(): void };
+  _options?: { onChangeViewState?: { flush(): void } };
+  _updateViewState?(): void;
   initializedPromise?: Promise<void>;
   _setState?(
     state: ReaderViewState,
@@ -359,6 +363,11 @@ interface ZoteroReader {
   _lastViewPrimary?: boolean;
   _lastView?: ZoteroReaderView;
   _primaryView?: ZoteroReaderView;
+  _annotationManager?: {
+    _savingInProgress?: boolean;
+    _skipAnnotationSavingDebounce?: boolean;
+    _triggerSaving(): Promise<void>;
+  };
   _state?: {
     primaryViewSelectionPopup?: {
       annotation?: Omit<RawReaderAnnotation, "id">;
@@ -681,12 +690,14 @@ export class ReaderEmbed {
         dataTransfer,
         items,
         fromText,
-      ) =>
+      ) => {
+        this.#rememberAreaTransferImage(items);
         callbacks?.onSetDataTransferAnnotations?.(
           dataTransfer,
           items,
           fromText,
-        ),
+        );
+      },
       onTextSelectionAnnotationModeChange: () => {},
       onToggleContextPane: () => {},
       onToggleSidebar: (open) =>
@@ -805,6 +816,42 @@ export class ReaderEmbed {
   annotationForKey(key: string): ReaderAnnotation | null {
     const annotation = this.#knownAnnotations.get(key);
     return annotation ? structuredClone(annotation) : null;
+  }
+
+  /** Capture the latest vendor position before waiting on asynchronous annotation callbacks. */
+  capturePendingViewState(captureVisiblePosition: boolean): ReaderViewState | null {
+    const reader = this.#requireReader();
+    const view = reader._primaryView;
+    if (view && this.#kind === "pdf") {
+      // An immediate page turn may still be waiting for PDF.js's scroll animation frame.
+      if (captureVisiblePosition) readerViewWindow(view)?.PDFViewerApplication?.pdfViewer?.update?.();
+      view._onChangeViewState?.flush();
+    } else if (view) {
+      if (captureVisiblePosition) view._updateViewState?.();
+      view._options?.onChangeViewState?.flush();
+    }
+
+    return this.saveViewState();
+  }
+
+  async flushPendingAnnotations(): Promise<void> {
+    const manager = this.#requireReader()._annotationManager;
+    if (manager) {
+      const previous = manager._skipAnnotationSavingDebounce;
+      manager._skipAnnotationSavingDebounce = true;
+      try {
+        do {
+          // The vendor exposes a busy flag for a write already underway. The host bounds close.
+          while (manager._savingInProgress) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          await manager._triggerSaving();
+        } while (manager._savingInProgress);
+      } finally {
+        manager._skipAnnotationSavingDebounce = previous;
+      }
+    }
+    await this.#pendingEvents;
   }
 
   saveViewState(): ReaderViewState | null {
@@ -1049,6 +1096,29 @@ export class ReaderEmbed {
     await Promise.all(
       [...listeners].map((listener) => listener(payload)),
     );
+  }
+
+  #rememberAreaTransferImage(items: unknown[]): void {
+    if (items.length !== 1 || !items[0] || typeof items[0] !== "object") {
+      return;
+    }
+    const { id, type, image, position } = items[0] as Partial<RawReaderAnnotation>;
+    if (
+      type !== "image" || typeof id !== "string"
+      || typeof image !== "string" || !image.startsWith("data:image/png;base64,")
+    ) {
+      return;
+    }
+    const annotation = this.#knownAnnotations.get(id);
+    if (
+      annotation?.type !== "image" || annotation.image
+      || JSON.stringify(stableValue(position)) !== JSON.stringify(stableValue(parsePosition(annotation.position)))
+    ) {
+      return;
+    }
+    // Zotero can render the PNG before delivering its debounced save. The host's drag handler
+    // needs it now, but the transfer must never change the known mark's identity or emit an edit.
+    this.#knownAnnotations.set(id, { ...annotation, image });
   }
 
   async #saveAnnotations(

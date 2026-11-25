@@ -41,6 +41,7 @@
  * Pure: no React, no IPC. Everything goes through the ports.
  */
 import { EditorBaselines, isTextChange } from '../../../shared/line-endings'
+import type { EditorReadResult } from '../../../shared/editor-read'
 import type { SaveBasis } from '../../../shared/save-basis'
 import { externalContentReconcileAction, type ExternalDiskNotice } from '../editor/reconcile'
 import type { SaveIdentity, SaveOutcome, SaveReceiptPort } from './save-receipts'
@@ -154,7 +155,7 @@ export type OutsideOutcome =
   | { kind: 'adopted' }
   | { kind: 'replaced'; diskText: string }
   | { kind: 'conflict'; diskText: string }
-  | { kind: 'removed'; dirty: boolean }
+  | { kind: 'removed' | 'unavailable'; dirty: boolean }
 
 /** What main returned for a write it made to the document (accept, redo, goal, restore, clear): `written`,
  *  the receipt of that call's own write (absent: the call wrote nothing), and `content`, the file read back
@@ -422,6 +423,14 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
     } finally {
       release()
     }
+  }
+
+  const failedOutsideRead = (path: string, kind: 'missing' | 'unavailable'): OutsideOutcome => {
+    const buffer = ports.buffer(path)
+    const baseline = baselines.get(path)
+    const unsaved = (buffer != null && baseline !== undefined && isTextChange(baseline, buffer))
+      || ports.registry.textOf(path) !== undefined || !owner.unchangedSinceSave(path)
+    return { kind: kind === 'missing' ? 'removed' : 'unavailable', dirty: unsaved }
   }
 
   const owner = {
@@ -748,9 +757,22 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
       ports.registry.typed(path, text)
       setDot(path, true)
     },
-    /** The writer's confirmed discard of a buffer (a removed file's tab: "discard the text?" answered yes). */
-    discardConfirmed(path: string): void {
-      owner.drop(path)
+    /** Prepare a discard for this removed-file notice, document instance and edit generation.
+     *  The returned approval checks and forgets synchronously, even if its card waited in the queue. */
+    prepareRemovedDiscard(path: string, notice: ExternalDiskNotice, isCurrentTab: () => boolean): (() => boolean) | undefined {
+      const rec = records.get(path)
+      if (!rec || notice.kind !== 'removed' || ports.notice(path) !== notice || !isCurrentTab() || !idleNow(path) || rec.inflight !== 0) return
+      const gen = rec.gen
+      // Silent replacements and text held only by the registry need protection as well as typing.
+      const buffer = ports.buffer(path)
+      const heldText = ports.registry.textOf(path)
+      if (buffer == null && heldText === undefined) return
+      return () => {
+        if (!isCurrentTab() || records.get(path) !== rec || rec.gen !== gen || ports.notice(path) !== notice
+          || !idleNow(path) || rec.inflight !== 0 || ports.buffer(path) !== buffer || ports.registry.textOf(path) !== heldText) return false
+        owner.drop(path)
+        return true
+      }
     },
     /** Every trace of the path in the owner and the editor: the owner's own ops, and a tab the app pruned
      *  once its file left the tree (review S8), when nothing in it is unsaved. */
@@ -814,8 +836,8 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
       setDot(path, differs)
       return 'kept'
     },
-    /** A removed file's tab activated with the text it holds. True when that text is unsaved. */
-    activatedRemoved(path: string, buffer: string): boolean {
+    /** A tab activated with held text while its disk copy cannot be read. */
+    activatedHeld(path: string, buffer: string): boolean {
       const rec = record(path)
       const baseline = baselines.get(path)
       const unsaved = baseline === undefined || isTextChange(baseline, buffer) || ports.registry.textOf(path) !== undefined || rec.gen !== rec.savedGen
@@ -837,22 +859,16 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
      * made when it runs, so the version applied is the one on disk then. A buffer is replaced only when
      * it is saved (gen, in flight, unknown); otherwise the writer is asked (reconcile.ts rules).
      */
-    applyOutside(path: string, read: () => Promise<string>, options: { now?: boolean } = {}): Promise<OutsideOutcome> {
+    applyOutside(path: string, read: () => Promise<EditorReadResult>, options: { now?: boolean } = {}): Promise<OutsideOutcome> {
+      const rec = records.get(path)
       const op = async (): Promise<OutsideOutcome> => {
-        if (!records.has(path) && baselines.get(path) === undefined) return { kind: 'skipped' }
-        let disk: string
-        try {
-          disk = await read()
-        } catch {
-          const buffer = ports.buffer(path)
-          const baseline = baselines.get(path)
-          const unsaved = (buffer != null && baseline !== undefined && isTextChange(baseline, buffer))
-            || ports.registry.textOf(path) !== undefined || !owner.unchangedSinceSave(path)
-          return { kind: 'removed', dirty: unsaved }
-        }
+        if (!rec || records.get(path) !== rec) return { kind: 'skipped' }
+        const result = await read()
+        if (records.get(path) !== rec || result.kind === 'stale') return { kind: 'skipped' }
         const buffer = ports.buffer(path)
-        if (buffer == null) return { kind: 'skipped' } // activation's own read will seed a tab not yet live
-        const rec = record(path)
+        if (buffer == null) return { kind: 'skipped' } // activation seeds a tab not yet live
+        if (result.kind !== 'read') return failedOutsideRead(path, result.kind)
+        const disk = result.content
         const action = externalContentReconcileAction({
           buffer,
           baseline: baselines.get(path),
@@ -892,25 +908,20 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
      * the writer chooses. The disk back on the buffer's version: nothing to ask (`none`). Queued, or `now`
      * from inside a route holding the path. Final review round 2, finding 2.
      */
-    refusedOnDisk(path: string, read: () => Promise<string>, options: { now?: boolean } = {}): Promise<OutsideOutcome> {
+    refusedOnDisk(path: string, read: () => Promise<EditorReadResult>, options: { now?: boolean } = {}): Promise<OutsideOutcome> {
+      const rec = records.get(path)
       const op = async (): Promise<OutsideOutcome> => {
-        if (!records.has(path) && baselines.get(path) === undefined) return { kind: 'skipped' }
-        let disk: string
-        try {
-          disk = await read()
-        } catch {
-          const buffer = ports.buffer(path)
-          if (buffer == null) return { kind: 'skipped' }
-          const baseline = baselines.get(path)
-          const unsaved = (baseline !== undefined && isTextChange(baseline, buffer))
-            || ports.registry.textOf(path) !== undefined || !owner.unchangedSinceSave(path)
-          record(path).diskUnknown = true
-          return { kind: 'removed', dirty: unsaved }
+        if (!rec || records.get(path) !== rec) return { kind: 'skipped' }
+        const result = await read()
+        if (records.get(path) !== rec || result.kind === 'stale' || ports.buffer(path) == null) return { kind: 'skipped' }
+        if (result.kind !== 'read') {
+          const outcome = failedOutsideRead(path, result.kind)
+          if (result.kind === 'missing') rec.diskUnknown = true
+          return outcome
         }
-        if (ports.buffer(path) == null) return { kind: 'skipped' }
-        if (disk === baselines.diskText(path)) return { kind: 'none' }
-        record(path).diskUnknown = true
-        return { kind: 'conflict', diskText: disk }
+        if (result.content === baselines.diskText(path)) return { kind: 'none' }
+        rec.diskUnknown = true
+        return { kind: 'conflict', diskText: result.content }
       }
       return options.now ? op() : enqueue(path, op)
     },
@@ -918,12 +929,14 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
      *  text there when Reload was pressed is given up: typing after the press (the generation moved by the
      *  time the read answers) is kept, nothing is replaced, and the notice stands (`typed`). The check and
      *  the replacement are in one turn. Final review round 1, finding 3. */
-    reload(path: string, read: () => Promise<string>): Promise<{ ok: true; diskText: string } | { ok: false; reason: 'unreadable' | 'typed' }> {
-      const pressedAt = record(path).gen
+    reload(path: string, read: () => Promise<EditorReadResult>): Promise<{ ok: true; diskText: string } | { ok: false; reason: 'missing' | 'unavailable' | 'stale' | 'typed' }> {
+      const rec = record(path)
+      const pressedAt = rec.gen
       return enqueue(path, async () => {
-        let disk: string
-        try { disk = await read() } catch { return { ok: false as const, reason: 'unreadable' as const } }
-        const rec = record(path)
+        const result = await read()
+        if (records.get(path) !== rec || result.kind === 'stale') return { ok: false as const, reason: 'stale' as const }
+        if (result.kind !== 'read') return { ok: false as const, reason: result.kind }
+        const disk = result.content
         if (rec.gen !== pressedAt) return { ok: false as const, reason: 'typed' as const }
         baselines.set(path, disk)
         ports.replaceBuffer(path, disk, true)

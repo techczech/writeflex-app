@@ -688,10 +688,21 @@ export class Workspace {
     return this.#walk(this.root)
   }
 
-  /** The Files tree's Markdown and folders, in the same order, from one walk. */
-  async listFilesAndFolders(): Promise<{ files: MarkdownFile[]; folders: string[] }> {
+  /** The Files tree's Markdown and folders, in the same order, from one walk. A scoped
+   *  walk starts at a visible, listed folder and returns workspace-relative paths. */
+  async listFilesAndFolders(dir = ''): Promise<{ files: MarkdownFile[]; folders: string[] }> {
     const files: MarkdownFile[] = []
     const folders: string[] = []
+    let base = this.root
+    if (dir !== '') {
+      if (!this.isVisiblePath(dir + '/file.md')) return { files, folders }
+      for (const segment of dir.split('/')) {
+        // Match the listing's actual spelling, and never descend through a link.
+        const entry = (await readdir(base, { withFileTypes: true })).find((entry) => entry.name === segment)
+        if (!entry?.isDirectory()) return { files, folders }
+        base = join(base, entry.name)
+      }
+    }
 
     const walk = async (directory: string): Promise<void> => {
       const entries = await readdir(directory, { withFileTypes: true })
@@ -716,7 +727,7 @@ export class Workspace {
       if (pending.length) await settle()
     }
 
-    await walk(this.root)
+    await walk(base)
     return { files: files.sort((a, b) => a.path.localeCompare(b.path)), folders: folders.sort((a, b) => a.localeCompare(b)) }
   }
 
@@ -988,6 +999,39 @@ export class Workspace {
       if (options.documentOnly) await this.#writeDocument(this.relative(absolute), bytes, 'create')
       else await this.#writeAtomic(absolute, bytes)
       return { path: this.relative(absolute) }
+    })
+  }
+
+  /** A drop owns only the new file it created, even if the window changes Collections. */
+  async prepareAreaImage(bytes: Uint8Array): Promise<{ path: string; discard: () => Promise<void> }> {
+    this.assertWritable()
+    return this.exclusiveAll(async () => {
+      this.assertWritable()
+      const path = pastedImagePath('png', new Date(), (candidate) => existsSync(this.absolute(candidate)))
+      const folder = join(realpathSync.native(this.root), 'assets')
+      await mkdir(dirname(this.absolute(path)), { recursive: true })
+      const { dev, ino } = lstatSync(folder)
+      const pinned: FolderIdentity = { real: folder, dev, ino }
+      let written!: FileIdentity
+      await this.#writeDocument(path, bytes, 'create', undefined, (target) => {
+        this.assertWritable()
+        if (!target) throw new Error('Could not identify the new Area image.')
+        written = target.staged
+      }, false, pinned)
+
+      return { path, discard: () => this.exclusiveAll(async () => {
+        this.assertWritable()
+        this.#assertInPinnedFolder(path, this.absolute(path), pinned)
+        const absolute = join(folder, basename(path))
+        const current = lstatSync(absolute, { bigint: true, throwIfNoEntry: false })
+        if (!current) return
+        if (!current.isFile() || current.nlink !== 1n || current.dev !== written.dev
+          || current.ino !== written.ino || current.size !== written.size || current.mtimeNs !== written.mtimeNs) {
+          throw new Error(`${path} changed after the Area drop wrote it.`)
+        }
+        unlinkSync(absolute)
+        this.recordOwnWrite(path, 'absent')
+      }) }
     })
   }
 

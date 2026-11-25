@@ -28,7 +28,7 @@
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { MAX_REPLICA_BYTES, sha256Hex, versionOfReplica, type ReplicaCause, type ReplicaVersions } from './replica-versions'
 import type { Version } from '../engine'
 
@@ -118,34 +118,34 @@ export class LocalRecovery {
   list(): Recovered[] {
     let names: string[]
     try { names = readdirSync(this.dir) } catch { return [] }
-    const out: Recovered[] = []
-    for (const name of names) {
-      if (name.startsWith('.') || !(name.endsWith('.save') || name.endsWith('.before'))) continue
-      try {
-        const info = lstatSync(join(this.dir, name))
-        if (!info.isFile() || info.size > MAX_REPLICA_BYTES + HEADER_LIMIT) continue
-        const mtimeMs = info.mtimeMs
-        const raw = readFileSync(join(this.dir, name))
-        const end = raw.indexOf(0x0a)
-        if (end < 0 || end > HEADER_LIMIT) continue
-        const header = JSON.parse(raw.subarray(0, end).toString('utf8')) as Record<string, unknown>
-        if (header.type !== 'writeflex-replica-recovery' || header.format !== 1 || header.root !== this.root || typeof header.path !== 'string') continue
-        const bytes = raw.subarray(end + 1)
-        const parents = Array.isArray(header.parents) ? (header.parents as unknown[]).filter((p): p is string => typeof p === 'string' && /^[0-9a-f]{64}$/.test(p)).slice(0, 8) : []
-        if (header.kind === 'save' && name.endsWith('.save')) {
-          const run = typeof header.run === 'string' && /^[0-9a-f]{24}$/.test(header.run) ? header.run : undefined
-          const entry: Entry = { kind: 'save', path: header.path, parents, first: Number(header.first) || 0, ...(run ? { run } : {}) }
-          if (LocalRecovery.nameFor(entry, bytes) !== name) continue
-          out.push({ ...entry, name, bytes, mtimeMs })
-        } else if (header.kind === 'before' && name.endsWith('.before') && KEPT_CAUSES.has(String(header.cause))) {
-          // A content-addressed name must name these bytes: a torn or foreign file is not recovery.
-          const entry: Entry = { kind: 'before', path: header.path, cause: header.cause as BeforeCause | CommandCause, ...(parents.length ? { parents } : {}) }
-          if (LocalRecovery.nameFor(entry, bytes) !== name) continue
-          out.push({ ...entry, name, bytes, mtimeMs })
-        }
-      } catch { /* unreadable: left for the next look */ }
-    }
-    return out
+    return names.flatMap((name) => this.read(name) ?? [])
+  }
+
+  /** Read one local recovery file with the same validation used by the Versions list. */
+  read(name: string): Recovered | null {
+    if (basename(name) !== name || name.startsWith('.') || !(name.endsWith('.save') || name.endsWith('.before'))) return null
+    const file = join(this.dir, name)
+    try {
+      const info = lstatSync(file)
+      if (!info.isFile() || info.size > MAX_REPLICA_BYTES + HEADER_LIMIT) return null
+      const raw = readFileSync(file)
+      const end = raw.indexOf(0x0a)
+      if (end < 0 || end > HEADER_LIMIT) return null
+      const header = JSON.parse(raw.subarray(0, end).toString('utf8')) as Record<string, unknown>
+      if (header.type !== 'writeflex-replica-recovery' || header.format !== 1 || header.root !== this.root || typeof header.path !== 'string') return null
+      const bytes = raw.subarray(end + 1)
+      const parents = Array.isArray(header.parents) ? (header.parents as unknown[]).filter((p): p is string => typeof p === 'string' && /^[0-9a-f]{64}$/.test(p)).slice(0, 8) : []
+      let entry: Entry
+      if (header.kind === 'save' && name.endsWith('.save')) {
+        const run = typeof header.run === 'string' && /^[0-9a-f]{24}$/.test(header.run) ? header.run : undefined
+        entry = { kind: 'save', path: header.path, parents, first: Number(header.first) || 0, ...(run ? { run } : {}) }
+      } else if (header.kind === 'before' && name.endsWith('.before') && KEPT_CAUSES.has(String(header.cause))) {
+        entry = { kind: 'before', path: header.path, cause: header.cause as BeforeCause | CommandCause, ...(parents.length ? { parents } : {}) }
+      } else return null
+      // A content-addressed name must name these bytes: a torn or foreign file is not recovery.
+      if (LocalRecovery.nameFor(entry, bytes) !== name) return null
+      return { ...entry, name, bytes, mtimeMs: info.mtimeMs }
+    } catch { return null }
   }
 }
 
@@ -193,15 +193,27 @@ export class ReplicaSaveCycles {
     this.#kept.add(`${path}\0${sha}`)
   }
 
-  /**
-   * Keep `text`, about to be replaced, as a version of `path`: locally and durably now (throws when that
-   * fails), and in the replica store asynchronously (the returned promise; it never rejects).
-   */
-  keepBefore(path: string, text: string | Uint8Array, cause: BeforeCause): Promise<void> {
+  /** The restore awaits the local write, then verifies its bytes before starting publication. */
+  keepBefore(path: string, text: string | Uint8Array, cause: 'before-restore'): Promise<{ name: string; publish: () => Promise<void> }>
+  /** Editor saves and Merge write local recovery synchronously, then return the publication promise. */
+  keepBefore(path: string, text: string | Uint8Array, cause: Exclude<BeforeCause, 'before-restore'>): Promise<void>
+  keepBefore(path: string, text: string | Uint8Array, cause: BeforeCause): Promise<void | { name: string; publish: () => Promise<void> }> {
     const bytes = typeof text === 'string' ? Buffer.from(text, 'utf8') : Buffer.from(text)
     const sha = sha256Hex(bytes)
+    const write = () => this.recovery.write({ kind: 'before', path, cause }, bytes)
+    const publish = (name: string) => this.#publishBefore(path, bytes, cause, sha, name)
+    if (cause === 'before-restore') {
+      // Always write a fresh local copy. A previous publication may now be a cloud placeholder.
+      return Promise.resolve().then(() => {
+        const name = write()
+        return { name, publish: () => publish(name) }
+      })
+    }
     if (this.#kept.has(`${path}\0${sha}`)) return Promise.resolve()
-    const name = this.recovery.write({ kind: 'before', path, cause }, bytes)
+    return publish(write())
+  }
+
+  #publishBefore(path: string, bytes: Buffer, cause: BeforeCause, sha: string, name: string): Promise<void> {
     return this.#track((async () => {
       try {
         await this.store.capture({ path, bytes, cause, dedupe: 'path-hash' })

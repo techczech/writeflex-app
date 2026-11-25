@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 import { ArrowDownUp, ChevronDown, Layers, Search, X } from 'lucide-react'
 import type { CollectionFilters, CollectionGroup } from './collection-view-state'
-export function CollectionFilterBar({ filters, onChange, facets, group, onGroup, sort, onSort }: { filters: CollectionFilters; onChange: (value: CollectionFilters) => void; facets: { statuses: string[]; purposes: string[]; tags: string[] }; group: CollectionGroup; onGroup: (value: CollectionGroup) => void; sort: string; onSort: (value: string) => void }): JSX.Element {
+export function CollectionFilterBar({ filters, onChange, facets, group, onGroup, sort, onSort }: { filters: CollectionFilters; onChange: (value: CollectionFilters) => void; facets: { statuses: string[]; purposes: string[]; tags: string[] } | null; group: CollectionGroup; onGroup: (value: CollectionGroup) => void; sort: string; onSort: (value: string) => void }): JSX.Element {
   const bar = useRef<HTMLDivElement>(null)
   const set = <K extends keyof CollectionFilters>(key: K, value: CollectionFilters[K]) => onChange({ ...filters, [key]: value })
   return <div className="cv-filters" ref={bar}>
@@ -10,8 +10,8 @@ export function CollectionFilterBar({ filters, onChange, facets, group, onGroup,
     {(['statuses', 'purposes', 'tags'] as const).map((key, index) => {
       const label = ['Status', 'Purpose', 'Tags'][index], control = ['status', 'purpose', 'tags'][index]
       return <details className={`cv-facet${filters[key].length ? ' on' : ''}`} key={key} data-collection-control={control}><summary>{label}{filters[key].length ? `: ${filters[key].join(', ')}` : ''}<ChevronDown className="icon sm" /></summary><div className="cv-facet-options" aria-label={`${label} filters`}>
-        {facets[key].map(value => <label key={value}><input type="checkbox" checked={filters[key].includes(value)} onChange={() => set(key, filters[key].includes(value) ? filters[key].filter(x => x !== value) : [...filters[key], value])} />{value}</label>)}
-        {!facets[key].length && <span>No tags in this collection.</span>}
+        {facets?.[key].map(value => <label key={value}><input type="checkbox" checked={filters[key].includes(value)} onChange={() => set(key, filters[key].includes(value) ? filters[key].filter(x => x !== value) : [...filters[key], value])} />{value}</label>)}
+        {facets && !facets[key].length && <span>No tags in this collection.</span>}
         <button onClick={() => set(key, [])}>Clear {label.toLowerCase()}</button>
       </div></details>
     })}

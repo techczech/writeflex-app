@@ -143,7 +143,7 @@ export function areaCaptureMarkdown(path: string, transfer: ReadingRoomAreaTrans
 export type ReadingRoomAreaDropResult = 'failed' | 'inserted' | 'inserted-without-provenance' | 'stale'
 
 export type ReadingRoomAreaDropDestination = {
-  saveImage: (bytes: Uint8Array) => Promise<{ path: string }>
+  saveImage: (bytes: Uint8Array) => Promise<{ path: string; finish: (inserted: boolean) => Promise<void> }>
   isCurrent: () => boolean
   insert: (markdown: string) => boolean
   recordQuotation: (transfer: ReadingRoomAreaTransfer) => void | Promise<void>
@@ -155,38 +155,49 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * The irreversible ordering for a drop: asset first, one editor transaction second, provenance last.
- * Quotation provenance may fail independently, but it can never describe content that was not inserted.
+ * Prepare the image, try one editor transaction, then settle the image and record the quotation.
+ * A refusal discards the new image. A provenance failure keeps the already inserted image.
  */
 export async function commitReadingRoomAreaDrop(
   transfer: ReadingRoomAreaTransfer,
   destination: ReadingRoomAreaDropDestination,
 ): Promise<ReadingRoomAreaDropResult> {
-  let saved: { path: string }
+  let saved: Awaited<ReturnType<ReadingRoomAreaDropDestination['saveImage']>>
   try {
     saved = await destination.saveImage(decodeReadingRoomAreaPng(transfer.image))
   } catch (error) {
     destination.onStatus(`Could not insert the Area capture: ${errorMessage(error)}`)
     return 'failed'
   }
-  if (!destination.isCurrent()) {
-    destination.onStatus('Area capture saved, but the destination draft changed before insertion.')
-    return 'stale'
-  }
+  let refusal: { result: 'stale' | 'failed'; message: string } | undefined
   try {
-    if (!destination.insert(areaCaptureMarkdown(saved.path, transfer))) {
-      destination.onStatus('Could not insert the Area capture into the destination draft.')
-      return 'failed'
+    if (!destination.isCurrent()) {
+      refusal = { result: 'stale', message: 'The destination draft changed before the Area could be inserted.' }
+    } else if (!destination.insert(areaCaptureMarkdown(saved.path, transfer))) {
+      refusal = { result: 'failed', message: 'Could not insert the Area capture into the destination draft.' }
     }
   } catch (error) {
-    destination.onStatus(`Could not insert the Area capture: ${errorMessage(error)}`)
-    return 'failed'
+    refusal = { result: 'failed', message: `Could not insert the Area capture: ${errorMessage(error)}` }
   }
+  if (refusal) {
+    try {
+      await saved.finish(false)
+      destination.onStatus(refusal.message)
+    } catch (error) {
+      destination.onStatus(`${refusal.message} Could not discard the Area image: ${errorMessage(error)}`)
+    }
+    return refusal.result
+  }
+  const settleImage = saved.finish(true).catch((error: unknown) => {
+    destination.onStatus(`Area inserted, but its image receipt could not be settled: ${errorMessage(error)}`)
+  })
   try {
     await destination.recordQuotation(transfer)
     return 'inserted'
   } catch (error) {
     destination.onStatus(`Area inserted, but its quotation record could not be saved: ${errorMessage(error)}`)
     return 'inserted-without-provenance'
+  } finally {
+    await settleImage
   }
 }

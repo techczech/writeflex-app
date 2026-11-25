@@ -603,24 +603,26 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
   writerModeRef.current = writerMode
   onWriterReviewChangedRef.current = onWriterReviewChanged
 
-  /** Debounced (500ms) cursor+scroll save, keyed to whichever path was active when activity fired
-   *  (captured as an argument, not re-read at fire time) so a fast file switch mid-debounce can
-   *  never misattribute a save to the newly active file. */
-  const scheduleCursorSave = useCallback((path: string, head: number, scrollTop: number) => {
+  const saveActiveCursor = useCallback((path: string, view: EditorView, head = view.state.selection.main.head) => {
+    if (cursorSaveTimerRef.current) clearTimeout(cursorSaveTimerRef.current)
+    cursorSaveTimerRef.current = null
+    const root = workspaceRootRef.current
+    if (root) saveCursor(localStorage, root, path, {
+      head,
+      scrollTop: view.scrollDOM.scrollTop,
+    })
+  }, [])
+
+  // Read scrollTop once at debounce time, after CodeMirror has measured the update. Reading it
+  // inside the update listener forces layout. A path change saves the outgoing position itself.
+  const scheduleCursorSave = useCallback((path: string, head: number) => {
     if (cursorSaveTimerRef.current) clearTimeout(cursorSaveTimerRef.current)
     cursorSaveTimerRef.current = setTimeout(() => {
-      const root = workspaceRootRef.current
-      if (!root) return
-      // Prefer the live scrollTop at fire time over the value captured at schedule time: CM6's async
-      // measure pass keeps adjusting the scroll position after the triggering event as line heights
-      // settle, and those scroll-only adjustments never re-fire the update listener. Only safe while
-      // `path` is still the active file — otherwise fall back to the captured value rather than
-      // reading another file's scroll position.
+      cursorSaveTimerRef.current = null
       const view = viewRef.current
-      const liveScrollTop = view && activePathRef.current === path ? view.scrollDOM.scrollTop : scrollTop
-      saveCursor(localStorage, root, path, { head, scrollTop: liveScrollTop })
+      if (view && activePathRef.current === path) saveActiveCursor(path, view, head)
     }, CURSOR_SAVE_DEBOUNCE_MS)
-  }, [])
+  }, [saveActiveCursor])
 
   const reportReadAloudPositionVisibility = useCallback((view: EditorView): void => {
     const position = readAloudPositionRef.current
@@ -842,6 +844,11 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
                 const insertionView = view
                 const insertionState = view.state
                 const insertionPath = activePathRef.current
+                const insertionWorkspace = workspaceRootRef.current
+                if (!insertionWorkspace || !insertionPath || insertionState.readOnly) {
+                  onStatusRef.current('Could not insert the Area capture into the destination draft.')
+                  return true
+                }
                 const quotationReceipt = (onReadingRoomAreaPreparedRef.current
                   ? onReadingRoomAreaPreparedRef.current(area)
                   : Promise.reject(new Error('Area quotation recording is unavailable.')))
@@ -853,18 +860,18 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
                   ?? view.state.selection.main.head
                 let insertedDraftText: string | null = null
                 void commitReadingRoomAreaDrop(area, {
-                  saveImage: (bytes) => window.writeflex.saveImage(bytes, 'png'),
+                  saveImage: async (bytes) => {
+                    const { path, receipt } = await window.writeflex.prepareAreaImage(bytes, insertionWorkspace)
+                    return { path, finish: (inserted) => window.writeflex.finishAreaImage(receipt, inserted) }
+                  },
                   isCurrent: () => viewRef.current === insertionView
-                    && insertionView.state === insertionState
-                    && insertionPath !== null
-                    && activePathRef.current === insertionPath,
+                    && insertionView.state.doc === insertionState.doc
+                    && !insertionView.state.readOnly
+                    && activePathRef.current === insertionPath
+                    && workspaceRootRef.current === insertionWorkspace,
                   insert: (markdown) => {
-                    if (
-                      viewRef.current !== insertionView
-                      || insertionView.state !== insertionState
-                      || activePathRef.current !== insertionPath
-                    ) return false
-                    const doc = insertionView.state.doc.toString()
+                    const state = insertionView.state
+                    const doc = state.doc.toString()
                     const position = frontmatterSafeInsertPosition(
                       doc,
                       Math.min(rawPosition, insertionView.state.doc.length),
@@ -872,13 +879,25 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
                     const prefix = position === 0 || doc.slice(0, position).endsWith('\n\n') ? '' : '\n\n'
                     const suffix = position >= doc.length || doc.slice(position).startsWith('\n\n') ? '' : '\n\n'
                     const inserted = `${prefix}${markdown}${suffix}`
-                    insertionView.dispatch({
-                      changes: { from: position, insert: inserted },
+                    const changes = state.changes({ from: position, insert: inserted })
+                    const expected = changes.apply(state.doc)
+                    const transaction = state.update({
+                      changes,
                       selection: { anchor: position + inserted.length },
                       scrollIntoView: true,
+                      userEvent: 'input.drop',
                     })
-                    insertedDraftText = insertionView.state.doc.toString()
-                    insertionView.focus()
+                    // A transaction filter can refuse the change without throwing.
+                    if (!transaction.newDoc.eq(expected)) return false
+                    try {
+                      insertionView.dispatch(transaction)
+                    } catch (error) {
+                      // A view error after the document changed must not remove the image it now links.
+                      if (!insertionView.state.doc.eq(expected)) throw error
+                    }
+                    if (!insertionView.state.doc.eq(expected)) return false
+                    insertedDraftText = expected.toString()
+                    try { insertionView.focus() } catch { /* The insertion is already committed. */ }
                     return true
                   },
                   recordQuotation: async () => {
@@ -1166,7 +1185,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
         const view = viewRef.current
         const path = activePathRef.current
         if (!view || !path) return
-        scheduleCursorSave(path, view.state.selection.main.head, view.scrollDOM.scrollTop)
+        scheduleCursorSave(path, view.state.selection.main.head)
       }),
     [scheduleCursorSave],
   )
@@ -1345,13 +1364,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
           statesRef.current.set(outgoing, view.state)
           // Save the outgoing file's cursor synchronously (not the debounce) so a fast switch never
           // loses its final position, and cancel any debounced save it may have queued.
-          if (cursorSaveTimerRef.current) clearTimeout(cursorSaveTimerRef.current)
-          if (root) {
-            saveCursor(localStorage, root, outgoing, {
-              head: view.state.selection.main.head,
-              scrollTop: view.scrollDOM.scrollTop,
-            })
-          }
+          saveActiveCursor(outgoing, view)
         }
         activePathRef.current = path
         const cached = statesRef.current.get(path)
@@ -1386,22 +1399,9 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
             scrollRestoreFrameRef.current = null
             if (activePathRef.current !== path) return // a newer switch already won
             view.scrollDOM.scrollTop = saved.scrollTop
-            // The restore dispatch above (and App's follow-up setContent for this same load) fired
-            // the update bus synchronously, scheduling a debounced save that captured the PREVIOUS
-            // scrollTop. Cancel it and persist the values actually applied so a user who pauses
-            // >500ms right after switching keeps the correct position.
-            if (cursorSaveTimerRef.current) clearTimeout(cursorSaveTimerRef.current)
-            const liveRoot = workspaceRootRef.current
-            if (liveRoot) {
-              saveCursor(localStorage, liveRoot, path, {
-                head: view.state.selection.main.head,
-                scrollTop: view.scrollDOM.scrollTop,
-              })
-            }
+            saveActiveCursor(path, view)
           })
         }
-        // Keyboard-first: opening a document means writing in it next.
-        view.focus()
       },
       setContent: (path, disk, opts) => {
         const view = viewRef.current
@@ -1539,7 +1539,10 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       forget: (path) => {
         statesRef.current.delete(path)
         detachedRef.current.delete(path)
-        if (activePathRef.current === path) activePathRef.current = null
+        if (activePathRef.current === path) {
+          if (cursorSaveTimerRef.current && viewRef.current) saveActiveCursor(path, viewRef.current)
+          activePathRef.current = null
+        }
       },
       setReadOnly: (paths, readOnly) => {
         for (const path of paths) {
@@ -1554,7 +1557,10 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
       },
       renamePath: (oldPath, newPath) => {
         if (detachedRef.current.delete(oldPath)) detachedRef.current.add(newPath)
-        if (activePathRef.current === oldPath) activePathRef.current = newPath
+        if (activePathRef.current === oldPath) {
+          if (cursorSaveTimerRef.current && viewRef.current) saveActiveCursor(oldPath, viewRef.current)
+          activePathRef.current = newPath
+        }
         const cached = statesRef.current.get(oldPath)
         if (cached) {
           statesRef.current.set(newPath, cached)
@@ -1702,7 +1708,7 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
         return true
       },
     }),
-    [buildState, scrollReadAloudPositionIntoView],
+    [buildState, saveActiveCursor, scrollReadAloudPositionIntoView],
   )
 
   const classes = [
