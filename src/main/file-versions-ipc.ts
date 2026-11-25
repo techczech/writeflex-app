@@ -2,7 +2,8 @@
  * The file-versions panel's IPC doors (Folio versions ticket 19): list, compare, save a version, restore, save as a copy. Each names a file by its
  * Collection-relative path and nothing else about where it is: the path is judged again in main (file-versions.ts `checkedFilePath`), the Collection is
  * the one the window held when the call began (the binding's `live` and `confirmOwner`), and every refusal is answered as `{ ok: false, code, message }`
- * with a sentence for the writer, never as a thrown error the window has to interpret. `list` and `compare` write nothing.
+ * with a sentence for the writer. A restore whose working file committed returns `ok: true`, with `restored: null` when history could not be recorded.
+ * `list` and `compare` write nothing.
  */
 import { CollectionClosed } from './folio-version-import'
 import { defaultFileVersionReads } from './file-version-sources'

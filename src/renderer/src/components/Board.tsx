@@ -232,9 +232,10 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
     setNaming({ offcut, name: offcut.suggestedName, error: null })
   }, [])
 
-  const cancelNaming = useCallback(() => {
+  const closeNaming = useCallback(() => {
     setNaming(null)
-    requestAnimationFrame(() => rootRef.current?.focus())
+    // Return focus before React removes the input so the next key still reaches the Board.
+    rootRef.current?.focus()
   }, [])
 
   const afterStep = useCallback(async (result: BoardStepResult) => {
@@ -252,16 +253,14 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
       const result = await afterStep(await window.writeflex.boardMaterial.promoteOffcut({
         dir, scrapsPath: naming.offcut.scrapsPath, scrapId: naming.offcut.id, name: naming.name,
       }))
-      if (result.ok) {
-        setNaming(null)
-        requestAnimationFrame(() => rootRef.current?.focus())
-      } else setNaming((current) => current && { ...current, error: result.message })
+      if (result.ok) closeNaming()
+      else setNaming((current) => current && { ...current, error: result.message })
     } catch (error: unknown) {
       setNaming((current) => current && { ...current, error: humanReadableError(error, 'Could not make the idea.') })
     } finally {
       setStepBusy(false)
     }
-  }, [afterStep, dir, naming, stepBusy])
+  }, [afterStep, closeNaming, dir, naming, stepBusy])
 
   const appendScrap = useCallback(async (piece: string, scrap: DrawerScrap) => {
     if (stepBusy) return
@@ -595,7 +594,7 @@ export function Board({ onBack, label = 'Board', dir, name, filter, onOpenPiece,
                       error={naming.error}
                       onChange={(name) => setNaming((current) => current && { ...current, name, error: null })}
                       onSubmit={() => void makeIdea()}
-                      onCancel={cancelNaming}
+                      onCancel={closeNaming}
                     />
                   )}
                   {isOver && dragOffcut && isIdea && !naming && (

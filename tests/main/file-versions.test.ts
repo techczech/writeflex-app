@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,6 +23,7 @@ import { requestedFolioVersionSave } from '../../src/main/requested-folio-versio
 import { snapshotBytesOfSavedText, snapshotVersionOfSavedText } from '../../src/main/saved-text-version'
 import { readSnapshotBytesWithin } from '../../src/main/file-version-sources'
 import { checkedFilePath, compareFileVersions, FileVersionRefused, listFileVersions, restoreFileVersion, saveFileVersion, saveFileVersionAsCopy, type FileVersionStores } from '../../src/main/file-versions'
+import { registerFileVersionsIpc, type FileVersionsIpcRegistrar } from '../../src/main/file-versions-ipc'
 import { requestedFileVersion } from '../../src/main/requested-file-version'
 import { VersionStore } from '../../src/main/versions'
 import { Workspace } from '../../src/main/workspace'
@@ -312,7 +313,7 @@ test('a version a Folio save took is named by that Folio version; restoring it i
   expect(versionTitle(first)).toBe('Saved with “First full draft”')
   expect(versionTitle(listing.versions[0]!)).toBe('Outliers removed')
   const done = await restoreFileVersion(stores(), { path: CSV, versionId: first.id, expectVersionSha256: first.sha256!, expectWorkingSha256: listing.workingSha256 })
-  expect(done.restored.name).toBe('Restored v1')
+  expect(done.restored?.name).toBe('Restored v1')
   expect(restoredName(first)).toBe('Restored v1')
   expect(restoredName(listing.versions[0]!)).toBe('Restored: Outliers removed')
 })
@@ -329,7 +330,69 @@ test('a restore keeps a working copy no version holds: it is saved first as "Bef
   expect(after.versions.map((r) => r.name)).toEqual(['Restored: Pilot run', 'Before restoring v1', 'Pilot run'])
   // The replaced text is a version, byte for byte.
   expect(after.versions[1]!.sha256).toBe(sha(CSV_3))
-  expect(done.restored.number).toBe(3)
+  expect(done.restored?.number).toBe(3)
+})
+
+test('restore IPC reports a committed file when the restoration entry cannot be recorded', async () => {
+  await buildFolio()
+  const original = await saveFileVersion(stores(), { path: CSV, name: 'Pilot run' })
+  await writeFile(join(root, CSV), CSV_3)
+
+  const append = versions.append.bind(versions)
+  const journal = join(root, '.writeflex/versions.jsonl')
+  const heldJournal = join(root, '.writeflex/versions-held.jsonl')
+  let hashAtAppend: string | undefined
+  versions.append = async (input) => {
+    if (input.name !== 'Restored: Pilot run') return append(input)
+    hashAtAppend = sha(await readFile(join(root, CSV)))
+    // Fail the real journal append after the safety record has landed.
+    await rename(journal, heldJournal)
+    await mkdir(journal)
+    try {
+      return await append(input)
+    } finally {
+      await rename(journal, join(root, '.writeflex/versions-obstruction'))
+      await rename(heldJournal, journal)
+    }
+  }
+
+  const written: string[] = []
+  let versionsChanged = 0
+  const handlers = new Map<string, Parameters<FileVersionsIpcRegistrar['handle']>[1]>()
+  registerFileVersionsIpc({ handle: (channel, handler) => { handlers.set(channel, handler) } }, {
+    context: async () => ({
+      workspace: ws, versions, confirmOwner: owner,
+      binding: {
+        workspace: ws, versions, live: () => true, author: async () => author,
+        agent: async () => ({ workspace: ws, snapshotVersionBytes: snapshotBytes }),
+        onSaved: () => { versionsChanged += 1 },
+        onFileWritten: (path) => { written.push(path) },
+      },
+    }),
+  })
+  const input = { path: CSV, versionId: original.version.id, expectVersionSha256: sha(CSV_1) }
+  const restore = handlers.get('file-versions:restore')!
+  const event = { sender: { id: 1 } }
+
+  const refused = await restore(event, { ...input, expectWorkingSha256: sha(CSV_2) })
+  expect(refused).toMatchObject({ ok: false, code: 'changed' })
+  expect(sha(await readFile(join(root, CSV)))).toBe(sha(CSV_3))
+  expect((await versionLines())).toHaveLength(1)
+  expect(written).toEqual([])
+  expect(versionsChanged).toBe(0)
+
+  const result = await restore(event, { ...input, expectWorkingSha256: sha(CSV_3) })
+  expect(hashAtAppend).toBe(sha(CSV_1))
+  expect(sha(await readFile(join(root, CSV)))).toBe(sha(CSV_1))
+  const [safety, saved] = await versions.list({ path: CSV })
+  expect(safety?.name).toBe('Before restoring v1')
+  expect(saved?.id).toBe(original.version.id)
+  expect(await readSnapshotBytesWithin(root, safety!.snapshotId!, 1024)).toEqual(Buffer.from(CSV_3))
+  expect(await readSnapshotBytesWithin(root, saved!.snapshotId!, 1024)).toEqual(Buffer.from(CSV_1))
+  expect(await versionLines()).toHaveLength(2)
+  expect(result).toEqual({ ok: true, path: CSV, restored: null, safety: { id: safety!.id, name: safety!.name } })
+  expect(written).toEqual([CSV])
+  expect(versionsChanged).toBe(1)
 })
 
 test('a restore is bound to what the writer saw: a different working copy, or a different saved copy, writes nothing', async () => {

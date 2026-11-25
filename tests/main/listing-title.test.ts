@@ -96,9 +96,9 @@ test('the block layer has the dialect\'s blocks and no inline nodes', () => {
   expect(blocks.filter((node) => block.test(node))).toEqual(nodes(parseMarkdown(source)).filter((node) => block.test(node)))
 })
 
-const corpus = process.env.WRITEFLEX_TITLE_CORPUS
+const corpus = process.env.WRITEFLEX_TITLE_CORPUS ?? join(import.meta.dir, '../../resources/example-collection')
 
-test.skipIf(!corpus)('equivalence over WRITEFLEX_TITLE_CORPUS: every .md file gets documentTitle\'s answer', () => {
+test('title equivalence over the example Collection or WRITEFLEX_TITLE_CORPUS', () => {
   const files: string[] = []
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -107,7 +107,7 @@ test.skipIf(!corpus)('equivalence over WRITEFLEX_TITLE_CORPUS: every .md file ge
       else if (entry.name.endsWith('.md')) files.push(path)
     }
   }
-  walk(corpus as string)
+  walk(corpus)
   const mismatches: string[] = []
   let cheap = 0
   let full = 0

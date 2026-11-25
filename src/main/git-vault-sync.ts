@@ -1,4 +1,6 @@
 /** Main-process two-way Git sync. No timers, renderer, commands or quit hook live here. */
+import { selectSyncFiles, selectedWorktreeDiff, largeTreePaths, type SyncSelection } from './git-vault-sync-selection'
+import { checkLargeFileContents } from './git-vault-sync-large-check'
 import { renameStopMessage, syncGitRenameVerdict, type RenameProbe } from './git-vault-sync-rename-probe'
 import { createHash, randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -23,7 +25,7 @@ export function createGitSyncScanner() {
   return createGitleaksScanner({ searchDirs: ['/opt/homebrew/bin', '/usr/local/bin'], timeoutMs: 20_000 })
 }
 
-type Context = { vault: string; root: string; prefix: string; branch: string; remote: string; host: string; repository: string; localPath?: string; gitDir: string; index: string; git: SyncGit; machineId: string }
+type Context = { vault: string; root: string; prefix: string; branch: string; remote: string; host: string; repository: string; localPath?: string; gitDir: string; index: string; git: SyncGit; machineId: string; selection?: SyncSelection }
 const queues = new Map<string, Promise<unknown>>()
 const containsRoot = (a: string, b: string) => a === b || b.startsWith(a.endsWith(sep) ? a : a + sep)
 const relatedRoots = (a: string, b: string) => containsRoot(a,b) || containsRoot(b,a)
@@ -38,7 +40,7 @@ async function serial<T>(root: string, work: () => Promise<T>): Promise<T> {
   queues.set(root, next)
   try { return await next } finally { if (queues.get(root) === next) queues.delete(root) }
 }
-const digest = (value: string) => createHash('sha256').update(value).digest('hex')
+const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex')
 const inVault = (c: Context, path: string) => path.startsWith(c.prefix) && !excludedSyncPath(path) && internalKind(path) !== 'local'
 const isDocument = (c: Context, path: string) => path.startsWith(c.prefix) && !excludedSyncPath(path) && internalKind(path) === null
 const localPath = (c: Context, path: string) => path.slice(c.prefix.length)
@@ -75,6 +77,7 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
       if (typeof value !== 'string') return empty
       const r = JSON.parse(value) as GitSyncRecord
       if (!r || !Array.isArray(r.pairs) || !Array.isArray(r.incoming)) return empty
+      delete (r as GitSyncRecord & {heldPolicy?:unknown}).heldPolicy
       r.pairs = r.pairs.filter(p => p && typeof p.id === 'string' && safePath(p.local) && safePath(p.other) && Number.isFinite(p.at))
       r.incoming = r.incoming.filter(d => d && safePath(d.path) && ['new', 'changed', 'removed'].includes(d.kind))
       if (!Array.isArray(r.warnings)) r.warnings = []
@@ -87,9 +90,9 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
   const save = (vault: string, r: GitSyncRecord) => options.settings.set(key(vault, 'record'), JSON.stringify(r), 'Git vault sync state', { log: false })
   function result(vault: string, r = record(vault), pending: GitSyncDocument[] = [], c?: Context, internalPending: string[] = []): GitVaultSyncResult {
     const on = enabled(vault)
-    return { state: !on ? 'off' : r.reason ? 'stopped' : r.pairs.length ? 'needs-you' : (pending.length || internalPending.length) ? 'waiting-to-send' : r.incoming.length ? 'incoming' : 'up-to-date',
-      enabled: on, computerName, pending, incoming: r.incoming, pairs: r.pairs, warnings: r.warnings ?? [], internalPending,
-      ...(on && r.reason ? { reason: r.reason } : {}), ...(r.lastSentAt !== undefined ? { lastSentAt: r.lastSentAt } : {}),
+    return { state: !on ? 'off' : r.reason ? 'stopped' : r.pairs.length ? 'needs-you' : (pending.length || internalPending.length) ? 'waiting-to-send' : c?.selection?.candidates.some(p => inVault(c,p.path)) ? 'held' : r.incoming.length ? 'incoming' : 'up-to-date',
+      enabled: on, computerName, held: c ? c.selection?.candidates.filter(p => inVault(c,p.path)).map(p => ({path:localPath(c,p.path),cause:p.cause,state:'needs-checking' as const})) ?? [] : [], pending, incoming: r.incoming, pairs: r.pairs, warnings: r.warnings ?? [], internalPending,
+      ...(on && r.reason ? { reason: r.reason, ...(['held-file-in-history','large-file-changed-elsewhere'].includes(r.reason.code)&&r.retryBlock?{retryBlock:r.retryBlock}:{}) } : {}), ...(r.lastSentAt !== undefined ? { lastSentAt: r.lastSentAt } : {}),
       ...(r.lastReceived ? { lastReceived: r.lastReceived } : {}), ...(r.checkedAt !== undefined ? { checkedAt: r.checkedAt } : {}),
       ...(c ? { location: { host: c.host, repository: c.repository, branch: c.branch, localPath: c.localPath } } : {}) }
   }
@@ -121,19 +124,28 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
     if (sparse.out.toString().trim() === 'true' || drivers.out.length) refuse('unsupported', 'Sparse checkouts and custom merge drivers need syncing outside WriteFlex.')
     return c
   }
+  // One selection per preparation phase. Network waits and installation boundaries refresh it;
+  // Explicit proofs are revalidated against current file, index and HEAD identities.
+  async function selection(c: Context, revisions?: string[]): Promise<SyncSelection> {
+    if (revisions || !c.selection) {
+      c.selection = await selectSyncFiles(c.git,c.root,revisions)
+    }
+    return c.selection
+  }
   async function changes(c: Context, from: string, to?: string): Promise<GitSyncDocument[]> {
-    const args = ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-status', '-z', from, ...(to ? [to] : []), '--']
-    const fields = nul(await c.git.ok(args)), docs: GitSyncDocument[] = []
+    const args = ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-status', '-z', from, ...(to ? [to, '--'] : [])]
+    const fields = nul(to ? await c.git.ok(args) : await selectedWorktreeDiff(c.git, c.root, args, await selection(c))), docs: GitSyncDocument[] = []
     for (let i = 0; i < fields.length; i += 2) if (isDocument(c, fields[i + 1])) docs.push({ path: localPath(c, fields[i + 1]), kind: fields[i] === 'A' ? 'new' : fields[i] === 'D' ? 'removed' : 'changed' })
     return docs
   }
   async function dirty(c: Context): Promise<Set<string>> {
-    const paths = [...nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--name-only', '--no-renames', '-z', 'HEAD', '--'])), ...nul(await c.git.ok(['ls-files', '--others', '--exclude-standard', '--full-name', '-z']))]
+    const paths = [...nul(await selectedWorktreeDiff(c.git, c.root, ['diff', '--no-ext-diff', '--no-textconv', '--name-only', '--no-renames', '-z', 'HEAD'], await selection(c))), ...nul(await c.git.ok(['ls-files', '--others', '--exclude-standard', '--full-name', '-z']))]
     for (const path of paths) if (!safePath(path)) refuse('unsupported', 'A repository path cannot safely be synced.')
-    return new Set(paths)
+    return new Set(paths.filter(p => !c.selection?.large.has(p)))
   }
   async function pending(c: Context, r: GitSyncRecord): Promise<GitSyncDocument[]> {
     const map = new Map<string, GitSyncDocument>()
+    const selected = await selection(c)
     let remoteTip = r.remoteTip
     if (!remoteTip) {
       const tracking = await c.git.run(['rev-parse', '--verify', `refs/remotes/${c.remote}/${c.branch}`])
@@ -143,14 +155,17 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
     if (remoteTip) for (const d of await changes(c, remoteTip, 'HEAD')) map.set(d.path, d)
     for (const d of await changes(c, 'HEAD')) map.set(d.path, d)
     for (const path of nul(await c.git.ok(['ls-files', '--others', '--exclude-standard', '--full-name', '-z']))) if (isDocument(c, path)) map.set(localPath(c, path), { path: localPath(c, path), kind: 'new' })
-    return [...map.values()]
+    for (const doc of map.values()) { const large=selected.large.get(c.prefix+doc.path); if(large&&!selected.candidates.some(p=>p.path===large.path))selected.candidates.push({...large,state:'needs-checking'}) }
+    return [...map.values()].filter(d => !selected.large.has(c.prefix+d.path))
   }
   async function internalPending(c: Context, r: GitSyncRecord): Promise<string[]> {
+    const selected = await selection(c)
     const paths = await dirty(c)
     if (r.remoteTip) for (const path of nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--name-only', '--no-renames', '-z', r.remoteTip, 'HEAD']))) paths.add(path)
     const tree = await entries(c.git, 'HEAD'), forked = new Set(forkedJournals(tree)), pending: string[] = []
     for(const path of forked) paths.add(path)
     for (const path of paths) if (path.startsWith(c.prefix) && sharedInternal(path)) {
+      if (selected.large.has(path)) continue
       if (forked.has(path)) {
         const views = new Map<string, FileImage>(); await observeFiles(c.root, [path], views)
         const bytes = views.get(path)?.bytes
@@ -193,11 +208,11 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
     const env = { GIT_INDEX_FILE: join(scratch, 'vault-index') }
     await c.git.ok(['read-tree', head], env)
     const staged = new Set(nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--cached', '--name-only', '--no-renames', '-z', head, '--'])))
-    for (const path of nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--name-only', '--no-renames', '-z', '--']))) {
+    for (const path of nul(await selectedWorktreeDiff(c.git, c.root, ['diff', '--no-ext-diff', '--no-textconv', '--name-only', '--no-renames', '-z'], await selection(c)))) {
       if (isDocument(c, path) && staged.has(path)) refuse('local-changes', 'This document has separate staged and unstaged versions. Finish that Git change before syncing.', localPath(c, path))
     }
     const headTree=await entries(c.git,head), privatePaths=new Set(forkedJournals(headTree))
-    const selected = [...paths].filter(path => inVault(c, path) && !privatePaths.has(path))
+    const selected = [...paths].filter(path => inVault(c, path) && !privatePaths.has(path) && !c.selection?.large.has(path))
     if (selected.length) {
       await checkConversions(c.git, selected)
       await c.git.ok(['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], env,
@@ -206,7 +221,7 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
     let tree = await c.git.text(['write-tree'], env)
     const candidate = await entries(c.git, tree)
     if (forkedJournals(candidate).length) {
-      await projectJournalForks({git:c.git, root:c.root, prefix:c.prefix, ours:candidate, theirs:headTree,
+      await projectJournalForks({git:c.git, root:c.root, prefix:c.prefix, ours:new Map([...candidate].filter(([p])=>!c.selection?.large.has(p))), theirs:new Map([...headTree].filter(([p])=>!c.selection?.large.has(p))),
         ownName:computerName, otherName:'another computer', warnings:[],
         set:async (path,entry) => { if(entry) await c.git.ok(['update-index','--add','--cacheinfo',entry.mode,entry.oid,path],env); else await c.git.ok(['update-index','--force-remove','--',path],env) }})
       tree = await c.git.text(['write-tree'], env)
@@ -217,8 +232,10 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
   async function integrate(c: Context, scratch: string, head: string, ours: string, remote: string, unsaved: readonly string[], warnings: GitSyncWarning[], from: string, live: Map<string, Buffer>) {
     const oursTree = await entries(c.git, ours), theirsTree = await entries(c.git, remote)
     const base = await c.git.text(['merge-base', head, remote])
+    const selected = (await selection(c)).large
     const localChanged = new Set(nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', base, ours])))
-    const remoteChanged = new Set(nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', base, remote])))
+    const remoteChanged = new Set(nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', base, remote, '--', '.', ...[...selected.keys()].map(p=>`:(top,exclude,literal)${p}`)])))
+    for (const path of selected.keys()) {localChanged.delete(path);remoteChanged.delete(path)}
     const selfPaths=new Set<string>(), sent=record(c.vault)
     if(sent.sentTip && objectId(sent.sentTip) && sent.sentBase && objectId(sent.sentBase) && (await c.git.run(['merge-base','--is-ancestor',sent.sentTip,remote])).code===0) {
       const previouslySent=await entries(c.git,sent.sentTip)
@@ -230,7 +247,21 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
     let tree: string, conflicts: string[] = []
     if (ours === remote) tree = await c.git.text(['rev-parse', `${ours}^{tree}`])
     else {
-      const merged = await c.git.run(['-c', 'merge.renames=false', 'merge-tree', '--write-tree', '--name-only', '-z', ours, remote])
+      // Strip held entries from disposable merge inputs: merge-tree must never unpack their blobs,
+      // even when incoming and local histories disagree about them. Original ancestry remains intact.
+      let mergeOurs=ours, mergeRemote=remote
+      if (selected.size) {
+        const mask = async (revision:string) => {
+          const env={GIT_INDEX_FILE:join(scratch,'held-merge-index')}
+          await c.git.ok(['read-tree',revision],env)
+          for(const path of selected.keys()) await c.git.ok(['update-index','--force-remove','--',path],env)
+          return c.git.text(['write-tree'],env)
+        }
+        const parent=(await c.git.ok(['commit-tree',await mask(base)],{},Buffer.from('WriteFlex temporary merge base\n'))).toString().trim()
+        const maskedCommit=async(revision:string)=>(await c.git.ok(['commit-tree',await mask(revision),'-p',parent],{},Buffer.from('WriteFlex temporary merge view\n'))).toString().trim()
+        mergeOurs=await maskedCommit(ours);mergeRemote=await maskedCommit(remote)
+      }
+      const merged = await c.git.run(['-c', 'merge.renames=false', 'merge-tree', '--write-tree', '--name-only', '-z', mergeOurs, mergeRemote])
       if (merged.code !== 0 && merged.code !== 1) refuse('operation-failed', 'Git could not prepare the update. No documents were changed.')
       const parts = merged.out.toString().split('\0')
       tree = parts.shift()!
@@ -245,10 +276,12 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
       if (e) { await c.git.ok(['update-index', '--add', '--cacheinfo', e.mode, e.oid, path], env); resolved.set(path, e) }
       else { await c.git.ok(['update-index', '--force-remove', '--', path], env); resolved.delete(path) }
     }
-    await reconcileInternals({ git: c.git, root: c.root, prefix: c.prefix, ours: oursTree, theirs: theirsTree,
-      base: await entries(c.git, base), ownName: computerName, otherName: from, live, oursFirst: ours < remote, conflicts: new Set(conflicts), set, warnings })
+    for (const path of selected.keys()) await set(path,oursTree.get(path))
+    const eligibleTree=(tree:Map<string,TreeEntry>)=>new Map([...tree].filter(([p])=>!selected.has(p)))
+    await reconcileInternals({ git: c.git, root: c.root, prefix: c.prefix, ours: eligibleTree(oursTree), theirs: eligibleTree(theirsTree),
+      base: eligibleTree(await entries(c.git, base)), ownName: computerName, otherName: from, live, oursFirst: ours < remote, conflicts: new Set(conflicts), set, warnings })
     // Rename detection is advisory for pair labels only. Tree merging and all change sets use no-renames.
-    const renames = new Map<string, string>(), renameFields = nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--find-renames', '--name-status', '-z', base, remote]))
+    const renames = new Map<string, string>(), renameFields = nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--find-renames', '--name-status', '-z', base, remote, '--', '.', ...[...selected.keys()].map(p=>`:(top,exclude,literal)${p}`)]))
     for (let i = 0; i < renameFields.length;) {
       const kind = renameFields[i++]
       if (kind.startsWith('R')) { const from = renameFields[i++], to = renameFields[i++]; if (isDocument(c, from) && isDocument(c, to)) renames.set(from, to) }
@@ -290,11 +323,25 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
     if (tree === remoteTreeId && (await c.git.run(['merge-base', '--is-ancestor', ours, remote])).code === 0) tip = remote
     else if (tree === oursTreeId && (await c.git.run(['merge-base', '--is-ancestor', remote, ours])).code === 0) tip = ours
     else tip = await commit(c, tree, ours === remote ? [ours] : [ours, remote])
-    return { tip, tree, pairs, incoming: await changes(c, ours, tree) }
+    return { tip, tree, pairs, incoming: (await changes(c, ours, tree)).filter(d=>!selected.has(c.prefix+d.path)) }
   }
   async function preparedIndex(c: Context, scratch: string, original: Buffer, head: string, tip: string, deferred = new Set<string>()) {
     const path = join(scratch, 'final-index'), env = { GIT_INDEX_FILE: path }
     await writeFile(path, original)
+    const newestHeld=[...(await selection(c)).large.values()].filter(p=>p.indexMtime).sort((a,b)=>b.indexMtime!-a.indexMtime!)[0]
+    if(newestHeld){
+      // Git's index writer hashes racily clean entries, even outside --index-info's paths.
+      // Let the disposable copy genuinely become newer than the held entry's cached second.
+      // No entry fields or flags are changed, and no real index lock is held while waiting.
+      const delay=(newestHeld.indexMtime!+1)*1000-(await lstat(path)).mtimeMs+20
+      if(delay>0){
+        const document=newestHeld.path.startsWith(c.prefix)?localPath(c,newestHeld.path):newestHeld.path
+        if(delay>3000)refuse('local-changes','Git recorded a large file ahead of this Mac’s clock. Check the clock and try again.',document)
+        await new Promise(resolve=>setTimeout(resolve,Math.ceil(delay)))
+        await writeFile(path,original)
+        if(Math.floor((await lstat(path)).mtimeMs/1000)<=newestHeld.indexMtime!)refuse('local-changes','The clock changed while Git was preparing a large file. Try again.',document)
+      }
+    }
     const old = await entries(c.git, head), next = await entries(c.git, tip), lines: string[] = []
     for (const p of new Set([...old.keys(), ...next.keys()])) {
       if (deferred.has(p) || (p.startsWith(c.prefix) && (internalKind(p) === 'local' || excludedSyncPath(p)))) continue
@@ -316,6 +363,22 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
       if (touched.some(path => !path.startsWith(c.prefix) && outgoing.has(path))) refuse('outside-vault-commits', 'This repository has commits of your own outside this vault that have not been pushed. Push them with Git, then sync can continue.')
     }
   }
+  async function ensureSelection(c: Context, previous: SyncSelection) {
+    const next = await selection(c, ['HEAD'])
+    // New large work discovered after preparation must wait for a fresh attempt, before staging or applying it.
+    const path=[...next.large.keys()].find(p=>!previous.large.has(p))
+    if (path) refuse('local-changes', 'A large file changed while sync was preparing. Its bytes were kept; try again.', path.startsWith(c.prefix)?localPath(c,path):path)
+  }
+  async function checkHeldHistory(c: Context, tip: string, remote: string) {
+    for (const revision of (await c.git.text(['rev-list', tip, '--not', remote])).split('\n').filter(Boolean)) {
+      const parents = (await c.git.text(['rev-list','--parents','-n','1',revision])).split(' ').slice(1)
+      const touched = nul(await c.git.ok(['diff-tree','--root','-r','-m','--no-renames','--name-only','--no-commit-id','-z',revision]))
+      const large=await largeTreePaths(c.git,[revision,...parents],touched),tree=await entries(c.git,revision),parentTrees=await Promise.all(parents.map(p=>entries(c.git,p)))
+      const same=(a?:TreeEntry,b?:TreeEntry)=>a?.oid===b?.oid&&a?.mode===b?.mode
+      const path=touched.find(p=>large.has(p)&&parentTrees.every(parent=>!same(tree.get(p),parent.get(p))))
+      if(path)refuse('held-file-in-history',`${localPath(c,path)} is in an unsent commit. Nothing is being sent. Send that commit with Git${large.get(path)==='lfs'?' and Git LFS':''}, then try again.`,localPath(c,path))
+    }
+  }
   async function attempt(c: Context, send: boolean, call: GitSyncCall): Promise<GitSyncRecord & { received?: GitSyncDocument[] }> {
     let held: Awaited<ReturnType<typeof acquireIndex>> | undefined
     let scratch: string | undefined
@@ -323,6 +386,7 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
     try {
       // Pin the preparation snapshot; revalidate again after the short installation lock.
       const current = await context(c.vault)
+      await selection(c)
       if (current.gitDir !== c.gitDir || current.branch !== c.branch || current.remote !== c.remote || current.host !== c.host || current.repository !== c.repository) refuse('repository-changed', 'The repository changed while sync was waiting.')
       const st = await lstat(c.index)
       if (!st.isFile() || st.isSymbolicLink()) refuse('unsupported', 'The repository index is not an ordinary file.')
@@ -337,16 +401,27 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
         await c.git.network(['fetch', '--no-tags', '--no-recurse-submodules', c.remote, `refs/heads/${c.branch}`])
         const remote = await c.git.text(['rev-parse', '--verify', 'FETCH_HEAD^{commit}'])
         if (!objectId(remote)) refuse('operation-failed', 'Git returned an unreadable remote revision.')
+        const selected = await selection(c, ['HEAD', remote])
+        const incomingPaths = nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', head, remote, '--']))
+        const remoteTree=await entries(c.git,remote)
+        const changedLarge=[...selected.large.keys()].find(path=>oldTree.get(path)?.oid!==remoteTree.get(path)?.oid||oldTree.get(path)?.mode!==remoteTree.get(path)?.mode)
+        try {
+          if(changedLarge){const path=changedLarge.startsWith(c.prefix)?localPath(c,changedLarge):changedLarge;refuse('large-file-changed-elsewhere',`${path} is a large file that was changed in the other copy. WriteFlex does not move large files. Update this folder with Git and Git LFS, then sync carries on by itself.`,path)}
+          if(send)await checkHeldHistory(c,head,remote)
+        }catch(error){
+          if(error instanceof GitSyncFailure&&['held-file-in-history','large-file-changed-elsewhere'].includes(error.reason.code))await save(c.vault,{...record(c.vault),retryBlock:{head,index:digest(originalIndex),remote}})
+          throw error
+        }
         const receivedFrom = await incomingComputer(c.git, head, remote)
         const from = call.clashFrom ?? receivedFrom ?? 'another computer'
-        if (send) await checkOwnOutsideCommits(c, head, remote)
+        if(send)await checkOwnOutsideCommits(c,head,remote)
         await checkObserved(c.root, observed, c.prefix)
         paths = await dirty(c)
-        const affected = [...forkedJournals(oldTree), ...paths, ...nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--name-only', '--no-renames', '-z', head, remote]))].filter(path => inVault(c, path))
+        const affected = [...forkedJournals(oldTree), ...paths, ...nul(await c.git.ok(['diff', '--no-ext-diff', '--no-textconv', '--name-only', '--no-renames', '-z', head, remote]))].filter(path => inVault(c, path) && !selected.large.has(path))
         if (ours && affected.some(path => isDocument(c, path) && paths.has(path) && !observed.has(path))) refuse('local-changes', 'New writing was saved while sync was retrying. Its latest version was kept; try again.')
         await observeFiles(c.root, affected, observed)
         let blocked: GitSyncReason | undefined
-        const receiveDeferred = new Set<string>()
+        const receiveDeferred = new Set<string>(selected.large.keys())
         try { ours = await localTip(c, scratch, head, paths) }
         catch (error) {
           if (send || !(error instanceof GitSyncFailure) || !['secret-found', 'scanner-unavailable'].includes(error.reason.code)) throw error
@@ -363,17 +438,18 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
         await checkObserved(c.root, observed, c.prefix)
         const merged = await integrate(c, scratch, head, ours, remote, blocked ? [] : call.unsavedPaths ?? [], warnings, from, new Map([...observed].flatMap(([p,image]) => image ? [[p,image.bytes] as const] : [])))
         const newTree = await entries(c.git, merged.tip)
-        const planned = await planFiles(c.git, c.root, c.prefix, oldTree, newTree, paths, observed)
+        const planned = await planFiles(c.git, c.root, c.prefix, new Map([...oldTree].filter(([p])=>!selected.large.has(p))), new Map([...newTree].filter(([p])=>!selected.large.has(p))), paths, observed)
         const privateJournals = new Set(forkedJournals(newTree).filter(path => path.startsWith(c.prefix) && (observed.get(path) ?? planned.find(p=>p.path===path)?.before)))
         for (const path of privateJournals) receiveDeferred.delete(path)
         const plan: FileChange[] = planned.filter(change => !receiveDeferred.has(change.path) && !privateJournals.has(change.path))
-        for(const [packedPath,e] of newTree) if(packedPath.startsWith(c.prefix)&&packedPath.endsWith('.jsonl.sync-pack.json')) {
+        for(const [packedPath,e] of newTree) if(!selected.large.has(packedPath)&&packedPath.startsWith(c.prefix)&&packedPath.endsWith('.jsonl.sync-pack.json')) {
           for(const packed of packedHistoryBlobs(packedPath,await c.git.ok(['cat-file','blob',e.oid]))) if(!oldTree.has(packed.path)&&!newTree.has(packed.path)&&!plan.some(p=>p.path===packed.path)) {
             const before=await image(join(c.root,packed.path))
             if(before?.bytes.equals(packed.bytes))plan.push({path:packed.path,before,after:null})
           }
         }
         if (blocked) for (const path of receiveDeferred) {
+          if (selected.large.has(path)) continue
           const incoming = newTree.get(path), previous = oldTree.get(path)
           if (!isDocument(c, path) || !incoming || incoming.oid === previous?.oid) continue
           const ext = extname(path), stem = path.slice(0, ext ? -ext.length : undefined), date = new Date(now()).toISOString().slice(0, 10)
@@ -401,6 +477,7 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
             await scan(c, parents[parents.length - 1], revision)
           }
           await options.checkpoint?.('before-push')
+          await ensureSelection(c, selected)
           await checkObserved(c.root, observed, c.prefix)
           const pushed = await c.git.network(['push', '--no-recurse-submodules', c.remote, `${merged.tip}:refs/heads/${c.branch}`])
           if (pushed.rejected) { if (retry + 1 === tries) refuse('push-rejected', 'The other copy kept changing. Your writing is safe here; try again shortly.'); continue }
@@ -411,6 +488,7 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
             pairs: [...new Map([...sent.pairs, ...merged.pairs].map(pair => [pair.id, pair])).values()] })
         }
         await options.checkpoint?.('before-apply')
+        await ensureSelection(c, selected)
         if (!enabled(c.vault)) return record(c.vault)
         await checkObserved(c.root, new Map([...observed].filter(([path]) => plan.some(change => change.path === path))), c.prefix)
         held = await acquireIndex(c, timing)
@@ -448,7 +526,7 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
         // 'Sync now', or a periodic check) must not replace an arrival the writer has not seen with 'Up to date'.
         // The kept list keeps its own source and time; `received` is what this operation itself brought in.
         const kept = !send && !merged.incoming.length && r.incoming.length > 0
-        return { ...r, warnings, reason: blocked, remoteTip: send ? merged.tip : remote, checkedAt: now(), incoming: send ? [] : kept ? r.incoming : merged.incoming, received: merged.incoming,
+        return { ...r, warnings, reason: blocked, retryBlock:undefined, remoteTip: send ? merged.tip : remote, checkedAt: now(), incoming: send ? [] : kept ? r.incoming : merged.incoming, received: merged.incoming,
           pairs: [...new Map([...r.pairs, ...merged.pairs].map(pair => [pair.id, pair])).values()], ...(send ? { lastSentAt: now() } : {}),
           ...(plan.length && receivedFrom && !kept ? { lastReceived: { at: now(), from } } : {}) }
       }
@@ -456,7 +534,7 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
     } catch (error) { save(c.vault, { ...record(c.vault), warnings }); throw error }
     finally { try { await held?.close() } finally { if (scratch) await rm(scratch, { recursive: true, force: true }) } }
   }
-  async function perform(vaultPath: string, operation: 'status' | 'send' | 'fetch', call: GitSyncCall = {}): Promise<GitVaultSyncResult> {
+  async function perform(vaultPath: string, operation: 'status' | 'send' | 'fetch' | 'check-large-files', call: GitSyncCall = {}): Promise<GitVaultSyncResult> {
     const vault = await canonical(vaultPath)
     if (!enabled(vault)) return result(vault)
     let c: Context | undefined
@@ -468,13 +546,20 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
         try {
           const gitStop = await gitRenameStop()
           if (gitStop) { const r = record(vault); r.reason = gitStop; save(vault, r); return result(vault, r, await pending(c!, r).catch(() => []), c) }
+          const initialSelection = await selection(c!, ['HEAD'])
           if (record(vault).reason?.code === 'git-renames') { const r = record(vault); delete r.reason; save(vault, r) }
           if(!started.has(vault)||await lstat(c!.index+'.writeflex-transaction.json').catch(()=>null)){await cleanSyncTemps(vault);started.add(vault)}
           const provenanceNotices=(record(vault).warnings??[]).filter(w=>w.message.includes('computer could not be confirmed'))
-          const uncertain=await protectLiveJournals(c!,forkedJournals(await entries(c!.git,'HEAD')).filter(p=>p.startsWith(c!.prefix)),options)
+          const uncertain=await protectLiveJournals(c!,forkedJournals(await entries(c!.git,'HEAD')).filter(p=>p.startsWith(c!.prefix)&&!initialSelection.large.has(p)),options)
           if(uncertain.length){const r=record(vault);for(const path of uncertain)warn(provenanceNotices,{code:'history-kept',path:localPath(c!,path),message:'Version history is kept but not shown in the list on this Mac because its computer could not be confirmed.'});for(const notice of provenanceNotices)warn(r.warnings??=[],notice);await save(vault,r)}
           await recoverTransaction(c!, timing, options, async pairs=>{if(pairs.length){const r=record(vault);await save(vault,{...r,pairs:[...new Map([...r.pairs,...pairs].map(p=>[p.id,p])).values()]})}})
-          if (operation !== 'status') {
+          const selected = await selection(c!, ['HEAD'])
+          if (record(vault).reason?.code === 'large-file-needs-checking') { const r = record(vault); delete r.reason; save(vault, r) }
+          let largeChecks: import('./git-vault-sync-types').GitSyncLargeCheck[] | undefined
+          if (operation === 'check-large-files') {
+            largeChecks = await checkLargeFileContents(c!, selected)
+            delete c!.selection; await selection(c!, ['HEAD'])
+          } else if (operation !== 'status') {
             // What this operation itself integrated, for editor refresh. Never stored: an operation that stops before
             // integrating reports nothing, so no earlier arrival is replayed.
             const keep = (run: GitSyncRecord & { received?: GitSyncDocument[] }) => { received = run.received ?? []; delete run.received; return run }
@@ -488,8 +573,10 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
             }
           }
           if(provenanceNotices.length){const r=record(vault);for(const notice of provenanceNotices)warn(r.warnings??=[],notice);await save(vault,r)}
-          return { ...result(vault, record(vault), await pending(c!, record(vault)), c, await internalPending(c!, record(vault))), received }
+          delete c!.selection
+          return { ...result(vault, record(vault), await pending(c!, record(vault)), c, await internalPending(c!, record(vault))), received, ...(largeChecks ? {largeChecks,held:c!.selection!.candidates.filter(p=>inVault(c!,p.path)).map(p=>({path:localPath(c!,p.path),cause:p.cause,state:largeChecks!.find(check=>check.path===localPath(c!,p.path))?.state==='changed'?'changed' as const:'needs-checking' as const}))} : {}) }
         } catch (error) {
+          delete c!.selection
           const r = record(vault)
           r.reason = error instanceof GitSyncFailure ? error.reason : { code: 'operation-failed', message: 'Sync could not finish. Your local writing was kept.' }
           save(vault, r)
@@ -507,6 +594,7 @@ export function createGitVaultSync(options: GitVaultSyncOptions) {
     const c=await context(vault);await serial(c.root,async()=>{const paths=forkedJournals(await entries(c.git,'HEAD')).filter(p=>p.startsWith(c.prefix));await releaseLiveJournals(c,paths,options);if(paths.length){const r=record(vault);r.warnings=[...(r.warnings??[]).filter(w=>!(w.code==='history-kept'&&w.path===localPath(c,paths[0])&&w.message.includes('while sync is off'))),{code:'history-kept',path:localPath(c,paths[0]),message:'Restore points made on this Mac during the fork are kept but not listed while sync is off.'}];await save(vault,r)}})
   }
   return {
+    checkLargeFiles: (vault: string) => perform(vault, 'check-large-files'),
     status: (vault: string) => perform(vault, 'status'),
     send: (vault: string, call: GitSyncCall = {}) => perform(vault, 'send', call),
     fetchAndIntegrate: (vault: string, call: GitSyncCall = {}) => perform(vault, 'fetch', call),

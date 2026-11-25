@@ -71,8 +71,12 @@ export function requestedFileVersion(binding: FileVersionBinding): RequestedFile
     },
     restore: async (input, confirmOwner) => {
       const done = await restoreFileVersion(await prepared(confirmOwner), input)
-      binding.onSaved?.()
-      if (typeof input.path === 'string') binding.onFileWritten?.(input.path)
+      // Both outcomes committed a file. A window may have switched Collections while the history write was pending.
+      if (binding.live()) {
+        binding.onSaved?.()
+        const path = done.restored === null ? done.path : input.path
+        if (typeof path === 'string') binding.onFileWritten?.(path)
+      }
       return done
     },
     copy: async (input, confirmOwner) => {

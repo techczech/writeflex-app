@@ -1,11 +1,11 @@
 import { expect, test } from 'bun:test'
-import { existsSync } from 'node:fs'
-import { chromium } from 'playwright'
 import { testRequiring } from './built-output'
 import { spawn } from 'node:child_process'
 import { text as consumeText } from 'node:stream/consumers'
+import { missingChromium } from './headless-shell'
 
-const missingChromium = existsSync(chromium.executablePath()) ? undefined : 'run bunx playwright install chromium'
+export { missingChromium } from './headless-shell'
+
 export const testWithChromium = testRequiring(missingChromium)
 
 // Isolate the complete Bun/Playwright lifecycle: compiler-only isolation still

@@ -11,13 +11,13 @@ test('stopped, attention, outgoing and incoming precedence retains every lower l
 test('offline waiting stays outgoing until exactly fifteen minutes; every reason has words and a short label', () => {
   const v = view(); v.result.pending.push({ path: 'local.md', kind: 'changed' }); v.result.reason = { code: 'network-unavailable', message: 'not displayed' }; v.failedAt = 1000
   expect(gitState(v, 900999)).toBe(3); expect(gitState(v, 901000)).toBe(4)
-  expect(Object.keys(stopSentences)).toHaveLength(17)
+  expect(Object.keys(stopSentences)).toHaveLength(20)
   for (const code of Object.keys(stopSentences) as Array<keyof typeof stopSentences>) { expect(stopSentences[code]).toMatch(/\.$/); expect(shortReason[code].split(' ').length).toBeLessThanOrEqual(4) }
 })
 
 test('every stopped reason maps to a compact approved phrase', () => {
   expect(Object.keys(shortReason).sort()).toEqual(Object.keys(stopSentences).sort())
-  for (const phrase of Object.values(shortReason)) expect(['offline', 'sign in', 'check a document', 'needs attention']).toContain(phrase)
+  for (const phrase of Object.values(shortReason)) expect(['offline', 'sign in', 'check a document', 'check a large file', 'needs attention']).toContain(phrase)
   expect(shortReason['network-unavailable']).toBe('offline')
   expect(shortReason['auth-refused']).toBe('sign in')
   expect(shortReason['secret-found']).toBe('check a document')

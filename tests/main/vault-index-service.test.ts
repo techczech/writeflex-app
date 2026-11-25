@@ -124,7 +124,7 @@ describe('VaultIndexService', () => {
     expect(warm).toEqual(cold)
     expect(ws.searchIndex.reads).toBe(2600)
     expect(warmMs).toBeLessThan(1000)
-  })
+  }, 60_000) // Allow the 2,600-file fixture and cold scan to finish while retaining the warm limit.
 })
 
 describe('VaultIndexService freshness and passes (ticket 02 fix round)', () => {

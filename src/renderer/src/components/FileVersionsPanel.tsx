@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type Keyboard
 import { createPortal } from 'react-dom'
 import { Copy, FileText, GitCompare, Globe, History, Image as ImageIcon, Pencil, RotateCcw, Save, Table2, TriangleAlert, X } from 'lucide-react'
 import {
-  FILE_KIND_LABEL, FILE_VERSION_CAP_LABEL, WORKING_COPY, restoredName, suggestedCopyName, usedBySentence, versionTitle, workingSentence,
+  FILE_KIND_LABEL, FILE_VERSION_CAP_LABEL, WORKING_COPY, fileRestoreMessage, restoredName, suggestedCopyName, usedBySentence, versionTitle, workingSentence,
   type FileCompare, type FileKind, type FileVersionRow, type FileVersionsListing,
 } from '../../../shared/file-versions'
 import { versionWhen } from '../../../shared/folio-versions-view'
@@ -169,6 +169,7 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
   const [busy, setBusy] = useState(false)
   const [compare, setCompare] = useState<FileCompare | null>(null)
   const [restoring, setRestoring] = useState(false)
+  const [restoreWarning, setRestoreWarning] = useState('')
   const [copying, setCopying] = useState(false)
   const [modalProblem, setModalProblem] = useState('')
   const nameRef = useRef<HTMLInputElement>(null)
@@ -194,7 +195,7 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
     return () => { live = false }
   }, [path, tick])
   // A different file starts again.
-  useEffect(() => { setSelected(null); setNaming(false); setName(''); setSaveProblem(''); setCompare(null); setRestoring(false); setCopying(false); setModalProblem('') }, [path])
+  useEffect(() => { setSelected(null); setNaming(false); setName(''); setSaveProblem(''); setCompare(null); setRestoring(false); setRestoreWarning(''); setCopying(false); setModalProblem('') }, [path])
   // The field takes focus when it opens, and takes it back after a save that was refused (a disabled field gives focus up).
   useEffect(() => { if (naming && !busy) nameRef.current?.focus() }, [naming, busy])
 
@@ -233,12 +234,18 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
     setBusy(true)
     setModalProblem('')
     const answer = await window.writeflex.fileVersions.restore({ path, versionId: chosen.id, expectVersionSha256: chosen.sha256, expectWorkingSha256: listing.workingSha256 })
-      .catch(() => ({ ok: false as const, code: 'unavailable' as const, message: 'The restore could not be made. Nothing was changed.' }))
+      .catch(() => ({ ok: false as const, code: 'unavailable' as const, message: 'WriteFlex could not confirm the restore. Check the working copy and its versions before trying again.' }))
     running.current = false
     setBusy(false)
     if (!answer.ok) { setModalProblem(answer.message); refresh(); return }
     setRestoring(false); setCompare(null); setSelected(null)
-    onStatus?.(`Restored v${chosen.number} as ${file}${answer.safety ? `; the working copy was saved first as “${answer.safety.name}”` : ''}`)
+    const message = fileRestoreMessage(file, chosen.number, answer)
+    if (answer.restored === null) {
+      setRestoreWarning(message)
+    } else {
+      setRestoreWarning('')
+      onStatus?.(message)
+    }
     refresh()
   }, [listing, chosen, path, file, onStatus, refresh])
 
@@ -310,6 +317,7 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
   return (
     <section ref={rootRef} className="fvp" aria-label={`Versions of ${file}`} data-testid="file-versions-panel" data-own-keys="file-versions" data-path={path} onKeyDown={onKeyDown}>
       <h3 className="fvp-head"><KindIcon aria-hidden="true" />{FILE_KIND_LABEL[kind]} · {file}<span className="path" title={path}>{path}</span></h3>
+      {restoreWarning && <p className="fvp-err" role="alert">{restoreWarning}</p>}
       {problem && <p className="fvp-err" role="alert" data-testid="file-versions-problem">{problem}</p>}
       {listing === null && !problem && <p className="fvp-note" role="status">Reading the versions…</p>}
       {listing !== null && working && (

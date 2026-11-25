@@ -106,6 +106,8 @@ export function isPathInFolder(path: string, folder: string): boolean {
 }
 /** Pieces a search returns at most; the rest are counted in `total`. */
 export const SEARCH_RESULT_CAP = 300
+/** Keep file metadata calls bounded even when the Files tree opens a flat vault. */
+const LISTING_STAT_CONCURRENCY = 8
 export type SaveFileOptions = {
   allowExplicitEmpty?: boolean
   /**
@@ -686,14 +688,36 @@ export class Workspace {
     return this.#walk(this.root)
   }
 
-  /**
-   * `listFiles()` and `listFolders()` from ONE walk of the tree (the window's workspace view asks for
-   * both on every refresh): the same entries in the same order, under the same hidden-folder rules.
-   */
+  /** The Files tree's Markdown and folders, in the same order, from one walk. */
   async listFilesAndFolders(): Promise<{ files: MarkdownFile[]; folders: string[] }> {
+    const files: MarkdownFile[] = []
     const folders: string[] = []
-    const files = await this.#walk(this.root, true, folders)
-    return { files, folders: folders.sort((a, b) => a.localeCompare(b)) }
+
+    const walk = async (directory: string): Promise<void> => {
+      const entries = await readdir(directory, { withFileTypes: true })
+      const pending: string[] = []
+      const settle = async (): Promise<void> => {
+        const batch = await Promise.all(pending.splice(0).map((name) => this.#listedMarkdownFile(directory, name)))
+        for (const file of batch) if (file) files.push(file)
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const child = join(directory, entry.name)
+          const path = this.relative(child)
+          if (!this.isVisiblePath(`${path}/file.md`)) continue
+          if (pending.length) await settle()
+          folders.push(path)
+          await walk(child)
+        } else if (entry.isFile() && MARKDOWN_EXTENSION.test(entry.name)) {
+          pending.push(entry.name)
+          if (pending.length === LISTING_STAT_CONCURRENCY) await settle()
+        }
+      }
+      if (pending.length) await settle()
+    }
+
+    await walk(this.root)
+    return { files: files.sort((a, b) => a.path.localeCompare(b.path)), folders: folders.sort((a, b) => a.localeCompare(b)) }
   }
 
   /**
@@ -742,35 +766,36 @@ export class Workspace {
     return out.sort((a, b) => a.localeCompare(b))
   }
 
-  /** `folders`, when given, collects every visible directory the walk enters (what `listFolders` lists, unsorted). */
-  async #walk(base: string, recursive = true, folders?: string[]): Promise<MarkdownFile[]> {
+  async #walk(base: string, recursive = true): Promise<MarkdownFile[]> {
     const entries = await readdir(base, { withFileTypes: true })
     const files: MarkdownFile[] = []
     for (const entry of entries) {
-      const absolute = join(base, entry.name)
       if (entry.isDirectory()) {
+        const absolute = join(base, entry.name)
         if (recursive && this.isVisiblePath(`${this.relative(absolute)}/file.md`)) {
-          folders?.push(this.relative(absolute))
-          files.push(...await this.#walk(absolute, true, folders))
+          files.push(...await this.#walk(absolute))
         }
         continue
       }
       if (!entry.isFile() || !MARKDOWN_EXTENSION.test(entry.name)) continue
-      const info = await stat(absolute).catch(async (error: NodeJS.ErrnoException) => {
-        if (error.code !== 'ENOENT' || error.syscall !== 'stat' || error.path !== absolute) throw error
-        // A listed chapter may move to the Folio bin before stat. A lost workspace still fails.
-        if (!(await stat(this.root)).isDirectory()) throw error
-        return null
-      })
-      if (!info) continue
-      const rel = this.relative(absolute)
-      files.push({
-        path: rel, name: entry.name,
-        directory: dirname(rel) === '.' ? '' : dirname(rel),
-        modifiedAt: info.mtimeMs, size: info.size
-      })
+      const file = await this.#listedMarkdownFile(base, entry.name)
+      if (file) files.push(file)
     }
     return files.sort((a, b) => a.path.localeCompare(b.path))
+  }
+
+  async #listedMarkdownFile(base: string, name: string): Promise<MarkdownFile | null> {
+    const absolute = join(base, name)
+    const info = await stat(absolute).catch(async (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT' || error.syscall !== 'stat' || error.path !== absolute) throw error
+      // A listed chapter may move to the Folio bin before stat. A lost workspace still fails.
+      if (!(await stat(this.root)).isDirectory()) throw error
+      return null
+    })
+    if (!info) return null
+    const rel = this.relative(absolute)
+    const directory = dirname(rel)
+    return { path: rel, name, directory: directory === '.' ? '' : directory, modifiedAt: info.mtimeMs, size: info.size }
   }
 
   /**
@@ -1734,7 +1759,8 @@ export class Workspace {
       return scope ? { matches: [], total: 0, scope } : { matches: [], total: 0 }
     }
     const max = opts?.maxResults ?? SEARCH_RESULT_CAP
-    const files = (await this.listFiles()).filter((candidate) => isPathInSearchScope(candidate.path))
+    const { files: listed } = await this.listFilesAndFolders()
+    const files = listed.filter((candidate) => isPathInSearchScope(candidate.path))
     // Freshness comes from the listing's own stat; only changed or new files touch the disk.
     await this.searchIndex.refresh(files)
     const found: Array<{ path: string; lines: string[]; piece: PieceHit | null; key: RankKey }> = []

@@ -83,6 +83,18 @@ export function buildOperationTable(): Operation[] {
   const table: Operation[] = [...READ_OPERATIONS, ...VERSION_OPERATIONS, ...FOLIO_VERSION_OPERATIONS, ...CREATE_OPERATIONS, ...ORGANISE_OPERATIONS, ...REVIEW_OPERATIONS, ...EXPORT_OPERATIONS]
   table.push(
     {
+      name:'check-large-files',group:'Find and manage files',behaviour:'direct',args:[],
+      summary:'Check large files now, without committing or sending them.',
+      details:'Reads each uncertain large or Git LFS file once. Records local proof only for unchanged committed contents. Changed files stay held back. No file contents, commits or uploads are changed.',
+      // Git metadata has its own lock and compare-before-install boundary; this grants no Collection write route.
+      run:async ctx=>{
+        const {checkLargeFilesAt}=await import('../git-vault-sync-large-check')
+        const {largeCheckSentence}=await import('../../shared/git-sync-view')
+        const checks=await checkLargeFilesAt(ctx.workspace.root)
+        return {data:{checks},text:checks.length?checks.map(largeCheckSentence).join('\n'):'No large files need checking. This check sent nothing.'}
+      },
+    },
+    {
       name: 'help', group: 'Work with the agent', behaviour: 'direct',
       summary: 'List the operations, grouped by task.', args: [],
       run: async () => ({

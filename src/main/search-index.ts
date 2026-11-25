@@ -23,6 +23,7 @@
  *
  * `invalidate(paths)` is the watcher's door: an external change or unlink drops the entry so the
  * next query re-reads it even when a same-size rewrite lands inside the same mtime tick.
+ * It also revokes reads already queued or underway for that path.
  *
  * THE PER-FILE FACTS CACHE (0.24.1). The same entries serve every listing that derives facts from a
  * file — Collection pieces, the agent's Digest, wikilink candidates, the vault index — so a file is
@@ -126,6 +127,8 @@ const fileStem = (path: string): string => (path.split('/').pop() ?? path).repla
 
 export class SearchIndex {
   readonly #entries = new Map<string, SearchIndexEntry>()
+  /** Only the latest scheduled read for a path may update its entry. */
+  readonly #pendingReads = new Map<string, IndexableFile>()
   /** Paths `ensure` brought in: a scoped `refresh` that does not list them leaves them alone. */
   readonly #retained = new Set<string>()
   readonly #cacheFile?: string
@@ -282,6 +285,7 @@ export class SearchIndex {
   invalidate(paths: Iterable<string>): void {
     let removed = false
     for (const path of paths) {
+      this.#pendingReads.delete(path)
       if (this.#cacheFile && !this.#unchecked) this.#invalidatedBeforeLoad.add(path)
       removed = this.#unchecked?.delete(path) || removed
       removed = this.#entries.delete(path) || removed
@@ -292,6 +296,7 @@ export class SearchIndex {
   clear(): void {
     const removed = this.#entries.size > 0 || !this.#unchecked || this.#unchecked.size > 0
     this.#entries.clear()
+    this.#pendingReads.clear()
     this.#retained.clear()
     this.#invalidatedBeforeLoad.clear()
     this.#unchecked = new Map()
@@ -350,16 +355,28 @@ export class SearchIndex {
   /** Read files into the cache with bounded concurrency; a file that cannot be read is dropped. */
   async #read(stale: readonly IndexableFile[]): Promise<void> {
     if (stale.length === 0) return
+    // Give every file a distinct read identity before any worker starts, including
+    // files that will wait for a slot and later reads with the same listing stamp.
+    const queued = stale.map(({ path, modifiedAt, size }) => {
+      const request = { path, modifiedAt, size }
+      this.#pendingReads.set(path, request)
+      return request
+    })
     let next = 0
     const worker = async (): Promise<void> => {
-      while (next < stale.length) {
-        const file = stale[next++]
-        let content: string
+      while (next < queued.length) {
+        const file = queued[next++]
+        if (this.#pendingReads.get(file.path) !== file) continue
+        let content: string | undefined
         try {
           this.reads += 1
           content = await this.read(file.path)
         } catch {
-          // Vanished between the listing and the read: nothing to index this round.
+          // The file may have vanished between listing and reading.
+        }
+        if (this.#pendingReads.get(file.path) !== file) continue
+        this.#pendingReads.delete(file.path)
+        if (content === undefined) {
           this.#entries.delete(file.path)
           continue
         }
@@ -371,6 +388,6 @@ export class SearchIndex {
         })
       }
     }
-    await Promise.all(Array.from({ length: Math.min(this.concurrency, stale.length) }, worker))
+    await Promise.all(Array.from({ length: Math.min(this.concurrency, queued.length) }, worker))
   }
 }

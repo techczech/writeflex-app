@@ -453,7 +453,7 @@ describe('an older sharing service: the pause (ticket 08 review round 3)', () =>
     expect(result.outdated).toEqual([s.shareId])
     expect(legacy.get(s.shareId)?.count).toBe(LEGACY_ANSWERS_AT_MOST + 1)
     for (const record of records) expect((await c.changes.get(record.id))!.readerReplies!.every((r) => r.sent === undefined)).toBe(true)
-  })
+  }, 30_000) // Seed twelve notes at the reply cap through the real ledger.
 
   test('a paused link\'s replies go once more after LEGACY_RETRY_MS; an older answer starts the wait again, an answer with replies ends the pause', async () => {
     const c = await collection()

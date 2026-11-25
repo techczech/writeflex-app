@@ -139,6 +139,14 @@ const seedTree = async (): Promise<void> => {
   }
 }
 
+test('the combined Files listing retains metadata, order, and empty folders', async () => {
+  await seedTree()
+  await mkdir(join(root, 'book/empty'))
+  await symlink(join(root, 'other'), join(root, 'book/borrowed'))
+  await symlink(join(root, 'other/o.md'), join(root, 'book/05-linked.md'))
+  expect(await ws.listFilesAndFolders()).toEqual({ files: await ws.listFiles(), folders: await ws.listFolders() })
+})
+
 test('listFilesIn lists nothing for a folder that is a symlink to a folder inside the root', async () => {
   await seedTree()
   await symlink(join(root, 'book'), join(root, 'linked'))

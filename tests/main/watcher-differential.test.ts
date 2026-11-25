@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import { fileURLToPath } from 'node:url'
+import { testRequiring } from '../helpers/built-output'
 
 // The review's differential check (tests/helpers/watcher-differential.mjs), run in Node, the runtime of
 // Electron's main process. Injected: libuv's event projection replayed through the shared watches, always.
@@ -18,7 +19,9 @@ test('shared folder watches report what plain watches would (injected libuv even
   expect(code, out).toBe(0)
 })
 
-test.skipIf(process.platform !== 'darwin' || process.env.WRITEFLEX_NATIVE_WATCH_TESTS !== '1')(
+const nativePrerequisite = process.platform !== 'darwin' ? 'macOS FSEvents'
+  : process.env.WRITEFLEX_NATIVE_WATCH_TESTS !== '1' ? 'a live FSEvents session with WRITEFLEX_NATIVE_WATCH_TESTS=1' : undefined
+testRequiring(nativePrerequisite)(
   'shared folder watches report the same names as plain watches (native FSEvents)', async () => {
     const { code, out } = await run([])
     // 77: no positive control arrived (fseventsd not delivering): inconclusive, which is a failure here.

@@ -7,6 +7,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
+import { setTimeout as pause } from 'node:timers/promises'
 import { INBOX_DIR, MAX_REPLY_BYTES, OUTBOX_DIR, REQUEST_OPERATIONS, idOfFileName, parseRequest } from '../../src/main/cli/request-format'
 import { runCli } from '../../src/main/cli/run'
 import { unshow } from '../../src/main/cli/terminal-text'
@@ -28,10 +29,11 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   configureScratchpadHolders(() => [])
+  await app.executor.dispose()
   await app.close()
   await fx.dispose()
   await rm(outside, { recursive: true, force: true })
-})
+}, 30_000)
 
 const QUICK = { write: { request: { waitMs: 40, pollMs: 10 } } }
 
@@ -188,25 +190,35 @@ test('with the app not having the Collection open the command line writes it its
 
 // ---- The reply is untrusted: its form, its signature, and how it is printed ----
 
-/** Run a write with nobody answering but `plant`, which is called once with the request's id and puts something in the outbox. */
-async function answeredBy(plant: (id: string, outbox: string) => Promise<void>, argv = ['create', 'x.md', '--content', 'x'], more: Record<string, unknown> = {}): Promise<Awaited<ReturnType<WriteFixture['cli']>>> {
-  await mkdir(join(fx.root, OUTBOX_DIR), { recursive: true })
-  for (const name of await inboxNames(fx)) await rm(join(fx.root, INBOX_DIR, name)) // earlier requests nobody answered
-  let planted = false
-  const watching = setInterval(() => {
-    void inboxNames(fx).then(async (names) => {
+type PlantReply = (id: string, outbox: string, signal: AbortSignal) => Promise<void>
+
+/** Run the command with one responder. Wait for its last IO before the fixture can close. */
+async function runWithReply<T>(run: () => Promise<T>, plant: PlantReply): Promise<T> {
+  const fixture = fx
+  const outbox = join(fixture.root, OUTBOX_DIR)
+  await mkdir(outbox, { recursive: true })
+  for (const name of await inboxNames(fixture)) await rm(join(fixture.root, INBOX_DIR, name)) // earlier requests nobody answered
+  const stop = new AbortController()
+  const watching = (async () => {
+    while (!stop.signal.aborted) {
+      const names = await inboxNames(fixture)
+      if (stop.signal.aborted) return
       const id = names.map(idOfFileName).find((candidate) => candidate !== null)
-      if (!id || planted) return
-      planted = true
-      await plant(id, join(fx.root, OUTBOX_DIR))
-    })
-  }, 5)
+      if (id) { await plant(id, outbox, stop.signal); return }
+      await pause(10)
+    }
+  })()
+  void watching.catch(() => {}) // Propagate the error through the awaited cleanup below.
   try {
-    return await fx.cli(argv, { write: { request: { waitMs: 400, pollMs: 10 }, ...more } })
+    return await run()
   } finally {
-    clearInterval(watching)
+    stop.abort()
+    await watching
   }
 }
+const REPLY_WINDOW_MS = 1000
+const answeredBy = (plant: PlantReply, argv = ['create', 'x.md', '--content', 'x'], more: Record<string, unknown> = {}) =>
+  runWithReply(() => fx.cli(argv, { write: { request: { waitMs: REPLY_WINDOW_MS, pollMs: 10 }, ...more } }), plant)
 /**
  * Put a file in place whole, as the app does: under a temporary name, then renamed. The command line
  * looks at the outbox every few milliseconds; a file written in place can be met half-written, and a
@@ -217,8 +229,8 @@ async function placeWhole(path: string, text: string | Uint8Array): Promise<void
   await writeFile(staged, text)
   await rename(staged, path)
 }
-/** A test that waits out the reply time once per case (about four seconds in all) says so, and does not lean on the runner's default. */
-const MANY_WAITS_MS = 30_000
+/** The negative matrices wait out the reply window for each case and perform real disk IO. */
+const MANY_WAITS_MS = 60_000
 const currentKey = async (): Promise<Buffer> => (await readReplyKey(fx.keys, fx.root))!
 /** A reply as the app writes it, signed with `key` (default: this Collection's current key); `mac` overrides the signature. */
 async function reply(id: string, extra: Record<string, unknown> = {}, key?: Buffer | null): Promise<string> {
@@ -267,11 +279,11 @@ test('a planted reply that is not exactly a reply to this request is not taken: 
     }
     expect(existsSync(join(elsewhere, 'reply.json'))).toBe(true)
     // The same in plain text.
-    for (const name of await inboxNames(fx)) await rm(join(fx.root, INBOX_DIR, name))
     let out = ''
-    const watching = setInterval(() => { void inboxNames(fx).then((names) => Promise.all(names.map((name) => placeWhole(join(fx.root, OUTBOX_DIR, name), '{"MARKER":1}')))) }, 5)
-    const code = await runCli(['--root', fx.root, 'create', 'y.md'], { cwd: tmpdir(), stdout: (t) => { out += t }, stderr: () => {}, write: { keyFolders: [fx.keys], appDataFolders: [fx.appData], request: { waitMs: 400, pollMs: 10 } } })
-    clearInterval(watching)
+    const code = await runWithReply(
+      () => runCli(['--root', fx.root, 'create', 'y.md'], { cwd: tmpdir(), stdout: (t) => { out += t }, stderr: () => {}, write: { keyFolders: [fx.keys], appDataFolders: [fx.appData], request: { waitMs: REPLY_WINDOW_MS, pollMs: 10 } } }),
+      put('{"MARKER":1}'),
+    )
     expect(code).toBe(3)
     expect(out).toContain('WriteFlex\'s reply could not be read')
     expect(out).not.toContain('MARKER')
@@ -311,17 +323,20 @@ test('a well-formed reply is taken only if it is signed with this Collection\'s 
       expect(await outboxNames(fx), what).toEqual([])
     }
     // In plain text the reason says so.
-    for (const name of await inboxNames(fx)) await rm(join(fx.root, INBOX_DIR, name))
     let said = ''
-    const forging = setInterval(() => { void inboxNames(fx).then((names) => Promise.all(names.map(async (name) => placeWhole(join(fx.root, OUTBOX_DIR, name), await reply(idOfFileName(name)!, {}, otherKey))))) }, 5)
-    expect(await runCli(['--root', fx.root, 'create', 'z.md'], { cwd: tmpdir(), stdout: (t) => { said += t }, stderr: () => {}, write: { keyFolders: [fx.keys], appDataFolders: [fx.appData], request: { waitMs: 300, pollMs: 10 } } })).toBe(3)
-    clearInterval(forging)
+    const code = await runWithReply(
+      () => runCli(['--root', fx.root, 'create', 'z.md'], { cwd: tmpdir(), stdout: (t) => { said += t }, stderr: () => {}, write: { keyFolders: [fx.keys], appDataFolders: [fx.appData], request: { waitMs: REPLY_WINDOW_MS, pollMs: 10 } } }),
+      async (id, outbox) => placeWhole(join(outbox, `${id}.json`), await reply(id, {}, otherKey)),
+    )
+    expect(code).toBe(3)
     expect(said).toContain('could not be verified as written by WriteFlex')
     expect(said).not.toContain('MARKER')
     // A forged reply does not shut the app's own out: it is removed and the wait goes on.
-    const both = await answeredBy(async (id, outbox) => {
-      await placeWhole(join(outbox, `${id}.json`), await reply(id, { text: 'MARKER forged' }, otherKey))
-      setTimeout(() => { void reply(id, { text: 'the app\'s own' }).then((text) => placeWhole(join(outbox, `${id}.json`), text)) }, 100)
+    const both = await answeredBy(async (id, outbox, signal) => {
+      const path = join(outbox, `${id}.json`)
+      await placeWhole(path, await reply(id, { text: 'MARKER forged' }, otherKey))
+      while (!signal.aborted && existsSync(path)) await pause(10)
+      if (!signal.aborted) await placeWhole(path, await reply(id, { text: 'the app\'s own' }))
     })
     expect(both.code).toBe(0)
     expect(both.out).not.toContain('MARKER')
@@ -362,19 +377,17 @@ test('a key that is a link, or readable by others, is no key: no request is sent
   } finally {
     await rm(elsewhere, { recursive: true, force: true })
   }
-})
+}, MANY_WAITS_MS)
 
 test('a synced owner.lock naming an app here or on another Mac, with a planted reply, changes nothing: the command writes directly and takes no reply', async () => {
   await app.close()
-  await mkdir(join(fx.root, OUTBOX_DIR), { recursive: true })
-  const planting = setInterval(() => {
-    void inboxNames(fx).then((names) => Promise.all(names.map(async (name) => placeWhole(join(fx.root, OUTBOX_DIR, name), await reply(idOfFileName(name)!, { text: 'MARKER applied' }, Buffer.alloc(32, 7))))))
-  }, 5)
   try {
     for (const host of [hostname(), 'another-mac']) {
       const lock = JSON.stringify({ version: 1, pid: process.pid, kind: 'app', host, startedAt: Date.now(), heartbeatAt: Date.now(), processStartedAt: null, token: `forged-${host}` })
       await fx.write('.writeflex/owner.lock', lock)
-      const result = await fx.cli(['create', 'x.md', '--content', 'x'], { write: { request: { waitMs: 300, pollMs: 10 } } })
+      const result = await answeredBy(async (id, outbox) =>
+        placeWhole(join(outbox, `${id}.json`), await reply(id, { text: 'MARKER applied' }, Buffer.alloc(32, 7))),
+      )
       expect(result.json.error?.message ?? '', host).toBe('')
       expect(result.code, host).toBe(0)
       expect(result.out, host).not.toContain('MARKER')
@@ -385,7 +398,6 @@ test('a synced owner.lock naming an app here or on another Mac, with a planted r
       await rm(join(fx.root, 'x.md'))
     }
   } finally {
-    clearInterval(planting)
     await rm(join(fx.root, '.writeflex', 'owner.lock'), { force: true })
     app = await openAsApp(fx)
   }

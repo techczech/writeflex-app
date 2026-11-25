@@ -39,7 +39,7 @@ import { vaultCountText } from '../vault-sidebar'
 import { SearchField } from './SearchField'
 import { useVaultSidebarPrefs } from '../hooks/useVaultSidebarPrefs'
 import { VaultSwitcherMenu, type SwitcherChoice } from './VaultSwitcherMenu'
-import { useVaultSidebar } from '../hooks/useVaultSidebar'
+import type { VaultSidebarView } from '../hooks/useVaultSidebar'
 import { migrateFavouritesToPins, movePin, pinnedRows } from '../vault-pins'
 import { folioPathText, readFoliosCollapsed, vaultFolios, writeFoliosCollapsed } from '../vault-folios'
 import { PIN_DOCUMENT_EXTENSION, type VaultWriteResult } from '../../../shared/vault'
@@ -68,6 +68,7 @@ export type SidebarFileOps = {
 
 export type SidebarProps = {
   listingReady?: boolean
+  vaultSidebar?: VaultSidebarView
   files: MarkdownFile[]
   /** Checklist notes' "done / total" (checkbox-lists frame 8); a file absent from it has no chip. */
   checklistProgress?: ChecklistProgressMap
@@ -231,6 +232,7 @@ function SidebarView({
   syncMarks,
   folders,
   listingReady = true,
+  vaultSidebar,
   pieceCount,
   folderPiecePaths = new Set(),
   favourites,
@@ -268,7 +270,8 @@ function SidebarView({
     [files, favSet],
   )
 
-  const { vault, index: vaultIndex } = useVaultSidebar(root, listingReady)
+  const vault = vaultSidebar?.vault ?? null
+  const vaultIndex = vaultSidebar?.index ?? null
   const isVault = vault !== null
   const [prefs, choosePrefs] = useVaultSidebarPrefs(root)
   // The vault switcher hangs under the root name; where it opens is read from the name when it opens.
@@ -1486,6 +1489,8 @@ function SidebarView({
 
       <div className="tree-region" ref={treeRef} onKeyDown={onTreeKeyDown}>
       {showPinned && <div className={`tree-pinned${isVault ? ' lv-vault' : ''}`}>{pinnedSection()}</div>}
+      {!hasFilter && vaultSidebar?.status === 'loading' && <div className="filter-empty">Loading Folios…</div>}
+      {!hasFilter && vaultSidebar?.status === 'failed' && <div className="filter-empty">Could not load Folios.</div>}
       {showFolios && <div className="tree-pinned tree-folios lv-vault">{foliosSection()}</div>}
       <div
         className={`tree${hasFilter ? ' file-search-results' : ''}${isVault ? ' lv-vault' : ''}`}

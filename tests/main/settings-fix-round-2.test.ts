@@ -171,53 +171,51 @@ test('m7: unowned CLI verbs pass unknown and future arguments through without pa
   expect(readdirSync(dir)).toEqual([])
 })
 
-test('CLI mutation JSON, text and exit codes match Bridle for unchanged app-layer cases', async () => {
-  for (const json of [false, true]) {
-    const dir = fresh()
-    const nativeDir = fresh()
-    const source = await storeAt(fresh(), { now: () => 1000, newId: () => 'source' })
-    await source.set('appearance.theme', 'dark')
-    const exportPath = join(fresh(), 'export.json')
-    writeFileSync(exportPath, JSON.stringify(source.exportFile({ hostName: 'round-two' })))
-    await source.close()
-    for (const args of [
-      ['rebind', 'edit.bold', 'cmd+ctrl+alt+9'],
-      ['rebind', 'edit.bold', 'cmd+ctrl+alt+9'],
-      ['rebind', 'missing.command', 'X'],
-      ['rebind', 'edit.bold', 'bad+9'],
-      ['reset-shortcut', '--all'],
-      ['reset-shortcut', 'edit.bold'],
-      ['reset-shortcut', '--all'],
-      ['reset', '--all'],
-      ['reset', '--section', 'shortcuts'],
-      ['undo-import', '--last'],
-      ['import', exportPath],
-      ['import', exportPath, '--yes'],
-      ['import', exportPath],
-      ['undo-import', '--last'],
-      ['import', exportPath + '.missing'],
-      ['rebind', 'edit.bold'],
-      ['reset-shortcut', 'edit.bold', '--yes'],
-      ['reset-shortcut', 'edit.bold', '--all'],
-      ['reset', '--all', '--section', 'shortcuts'],
-      ['rebind', 'edit.bold', 'ctrl+alt+cmd+plus', '--json=true'],
-      ['rebind', 'edit.bold', 'cmd+ctrl+alt+9', '--agent='],
-      ['rebind', 'edit.bold', '⌘⌘9'],
-      ['rebind', 'edit.bold', 'cmd+ctrl+alt+8', '--yes'],
-    ]) {
-      const argv = [...args, ...(json ? ['--json'] : [])]
-      const capture = () => {
-        let stdout = '', stderr = '', n = 0
-        return { io: { stdout: (s: string) => { stdout += s }, stderr: (s: string) => { stderr += s }, now: () => 1000, newId: () => `id-${n++}` }, output: () => ({ stdout, stderr }) }
-      }
-      const app = capture(), native = capture()
-      const opts = storeOptions(nativeDir, version)
-      const expected = await runSettingsCli(argv, { ...opts, version }, native.io)
-      expect(await runShortcutMutation(argv, app.io, dir, version)).toBe(expected)
-      expect(app.output()).toEqual(native.output())
+test.each(['text', 'json'])('CLI mutation %s and exit codes match Bridle for unchanged app-layer cases', async (format) => {
+  const dir = fresh()
+  const nativeDir = fresh()
+  const source = await storeAt(fresh(), { now: () => 1000, newId: () => 'source' })
+  await source.set('appearance.theme', 'dark')
+  const exportPath = join(fresh(), 'export.json')
+  writeFileSync(exportPath, JSON.stringify(source.exportFile({ hostName: 'round-two' })))
+  await source.close()
+  for (const args of [
+    ['rebind', 'edit.bold', 'cmd+ctrl+alt+9'],
+    ['rebind', 'edit.bold', 'cmd+ctrl+alt+9'],
+    ['rebind', 'missing.command', 'X'],
+    ['rebind', 'edit.bold', 'bad+9'],
+    ['reset-shortcut', '--all'],
+    ['reset-shortcut', 'edit.bold'],
+    ['reset-shortcut', '--all'],
+    ['reset', '--all'],
+    ['reset', '--section', 'shortcuts'],
+    ['undo-import', '--last'],
+    ['import', exportPath],
+    ['import', exportPath, '--yes'],
+    ['import', exportPath],
+    ['undo-import', '--last'],
+    ['import', exportPath + '.missing'],
+    ['rebind', 'edit.bold'],
+    ['reset-shortcut', 'edit.bold', '--yes'],
+    ['reset-shortcut', 'edit.bold', '--all'],
+    ['reset', '--all', '--section', 'shortcuts'],
+    ['rebind', 'edit.bold', 'ctrl+alt+cmd+plus', '--json=true'],
+    ['rebind', 'edit.bold', 'cmd+ctrl+alt+9', '--agent='],
+    ['rebind', 'edit.bold', '⌘⌘9'],
+    ['rebind', 'edit.bold', 'cmd+ctrl+alt+8', '--yes'],
+  ]) {
+    const argv = [...args, ...(format === 'json' ? ['--json'] : [])]
+    const capture = () => {
+      let stdout = '', stderr = '', n = 0
+      return { io: { stdout: (s: string) => { stdout += s }, stderr: (s: string) => { stderr += s }, now: () => 1000, newId: () => `id-${n++}` }, output: () => ({ stdout, stderr }) }
     }
+    const app = capture(), native = capture()
+    const opts = storeOptions(nativeDir, version)
+    const expected = await runSettingsCli(argv, { ...opts, version }, native.io)
+    expect(await runShortcutMutation(argv, app.io, dir, version)).toBe(expected)
+    expect(app.output()).toEqual(native.output())
   }
-})
+}, 15_000) // Each format runs 23 mutations through both implementations over real settings stores.
 
 
 test('m2: legacy set, model defaults and revert use the awaited writer with no synchronous stub', async () => {

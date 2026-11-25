@@ -1,24 +1,30 @@
-// Run the real fs.watch smoke in Node, the runtime used by Electron main. Bun 1.3.14
-// coalesces the incoming temporary-file event and drops its immediate rename to vault.json.
+// Run the vault watcher over real file changes in Node, the runtime used by Electron main.
+// Opt into the app's FSEvents transport alongside the shared-folder differential on a live Mac.
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setTimeout as settle } from 'node:timers/promises'
 import { watchVaultFile } from '../../src/main/vault-watcher.ts'
+import { waitForWatch, watchTestTarget } from './watch-test-target.mjs'
 
 const root = await mkdtemp(join(tmpdir(), 'wf-native-vault-'))
 let touched = 0
-const watch = watchVaultFile(root, () => { touched += 1 }, { debounceMs: 20 })
+const native = process.env.WRITEFLEX_NATIVE_WATCH_TESTS === '1'
+const watch = watchVaultFile(root, () => { touched += 1 }, {
+  debounceMs: 20,
+  ...(native ? {} : { watch: (folder, listener) => folder === root
+    ? watchTestTarget(folder, '.writeflex', listener, true)
+    : watchTestTarget(folder, 'vault.json', listener) }),
+})
 try {
   await mkdir(join(root, '.writeflex'))
-  await settle(300)
+  await waitForWatch(() => touched > 0, '.writeflex arrival')
   const afterFolder = touched
   await writeFile(join(root, '.writeflex', '.incoming.tmp'), '{"name":"A"}')
   await rename(join(root, '.writeflex', '.incoming.tmp'), join(root, '.writeflex', 'vault.json'))
-  await settle(300)
+  await waitForWatch(() => touched > afterFolder, 'atomic vault.json replacement')
   const afterRename = touched
-  await writeFile(join(root, '.writeflex', 'vault.json'), '{"name":"B"}')
-  await settle(300)
+  await writeFile(join(root, '.writeflex', 'vault.json'), '{"name":"Rewritten"}')
+  await waitForWatch(() => touched > afterRename, 'vault.json rewrite')
   console.log(JSON.stringify({ afterFolder, afterRename, afterRewrite: touched }))
 } finally {
   watch.dispose()

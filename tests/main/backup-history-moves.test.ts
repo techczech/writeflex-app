@@ -4,7 +4,7 @@ import { SnapshotStore } from '@bridle/core'
 import { appendFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { WRITEFLEX_SCOPE, WRITEFLEX_HISTORY } from '../../src/main/backup-helper/enrolment'
 import { historySeams, readHistoryProjection } from '../../src/backup-helper/history-projection'
 import { VersionStore } from '../../src/main/versions'
@@ -13,11 +13,12 @@ import { prepareVersionMove, readMovedVersions, followVersionMap, undoVersionMap
 import { versionTextReader } from '../../src/main/cli/history-store'
 import { readVersionContent, restoreVersionContent } from '../../src/main/version-content'
 import { missingBuild, testRequiring } from '../helpers/built-output'
+import { findBackupGit, helperEntry } from '../helpers/backup-helper-runtime'
 
 const NODE = Bun.which('node')
-const GIT = Bun.which('git') ?? '/Library/Developer/CommandLineTools/usr/bin/git'
+const GIT = findBackupGit()
 const GITLEAKS = Bun.which('gitleaks') ?? '/opt/homebrew/bin/gitleaks'
-const testHelper = testRequiring(missingBuild('out/backup-helper/writeflex-backup-helper.js') ?? (NODE ? undefined : 'Node is missing from PATH'))
+const testHelper = testRequiring(missingBuild('out/backup-helper/writeflex-backup-helper.js') ?? (NODE ? undefined : 'Node is missing from PATH') ?? (GIT ? undefined : 'real Git is missing (Apple stub is unsuitable)'))
 const roots: string[] = []
 afterEach(async () => { delete historySeams.afterFirstRead; while (roots.length) await rm(roots.pop()!, { recursive: true, force: true }) })
 async function fixture(count = 1) {
@@ -61,12 +62,12 @@ async function chainedMoves() {
 testHelper('built backup preview agrees with the source projection after chained physical moves', async () => {
   const f = await chainedMoves()
   const isolated = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: f.root, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', TMPDIR: tmpdir() }
-  expect(spawnSync('/usr/bin/git', ['init', '-q', f.root], { env: isolated }).status).toBe(0)
+  expect(spawnSync(GIT!, ['init', '-q', f.root], { env: isolated }).status).toBe(0)
   const config = join(f.root, 'synthetic-preview.json')
   writeFileSync(config, JSON.stringify({ configVersion: 2, machineId: 'synthetic', tools: { git: GIT, gitleaks: GITLEAKS }, vaults: [{ id: 'v', path: f.root, include: WRITEFLEX_SCOPE.include, exclude: WRITEFLEX_SCOPE.exclude, history: WRITEFLEX_HISTORY }] }))
   const sourceBeforePreview = [readFileSync(join(f.root, '.writeflex/versions.jsonl')), readFileSync(join(f.root, '.bridle/journal.jsonl'))]
-  const previewRun = spawnSync(NODE!, [resolve(import.meta.dir, '../../out/backup-helper/writeflex-backup-helper.js'), 'preview', '--config', config, '--vault', 'v'], { env: isolated, maxBuffer: 4 * 1024 * 1024, timeout: 10000 })
-  expect(previewRun.status).toBe(0)
+  const previewRun = spawnSync(NODE!, [helperEntry, 'preview', '--config', config, '--vault', 'v'], { env: isolated, maxBuffer: 4 * 1024 * 1024, timeout: 10000 })
+  expect(previewRun.status, previewRun.stderr.toString()).toBe(0)
   const preview = JSON.parse(previewRun.stdout.toString())
   expect(preview.refused).toBeNull()
   expect(preview.files).toEqual({ count: 1, items: ['c.md'], omitted: 0 })
@@ -74,7 +75,8 @@ testHelper('built backup preview agrees with the source projection after chained
   expect([readFileSync(join(f.root, '.writeflex/versions.jsonl')), readFileSync(join(f.root, '.bridle/journal.jsonl'))]).toEqual(sourceBeforePreview)
   const projected = complete(await f.read())
   expect(preview.history.bytes).toBe(projected.files.reduce((n, file) => n + file.content.length, 0))
-})
+// Both large-history journeys seed 213 named versions through the real snapshot and version stores.
+}, 30_000)
 
 test('217 synthetic journal records: chained physical moves preserve all names, identities and content in a restored copy and second capture', async () => {
   const f = await chainedMoves()
@@ -91,7 +93,7 @@ test('217 synthetic journal records: chained physical moves preserve all names, 
   const second = complete(await readHistoryProjection(copy, p => p.endsWith('.md')))
   expect(second.files).toEqual(projected.files)
   console.log(JSON.stringify({ records: 217, namedVersions: 213, path: 'c.md', sourceBytesUnchanged: true, restored: true, secondCaptureIdentical: true }))
-})
+}, 30_000)
 for (const state of ['cancelled', 'not-happened', 'happened', 'held-back'] as const) test(`unfinished/cancelled move: ${state}`, async () => {
   const f = await fixture()
   const intent = prepareVersionMove(f.root, 'a.md', 'b.md')

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.29.0-alpha.5] — 2026-11-25
+
+An alpha: early, and it can break.
+
+### Changed
+- Restoring an older version of a file says so when its history entry could not be recorded, and names the safety copy.
+- The Files list and the first search are faster in large vaults, and search no longer shows out-of-date text from a file that has just changed.
+- On a shared page, readers see who can see a proposed edit, and under which name, before Send; a private draft stays private.
+- The Folio Comments tab always shows the Folio you are in, offers Try again, and says "Nothing is waiting" when empty.
+- Open a Folio lets you type while Folios load and offers Try again if loading fails.
+- After you make an idea from a Board offcut, the next shortcut reaches the Board.
+
 ## [0.29.0-alpha.4] — 2026-11-24
 
 An alpha: early, and it can break.

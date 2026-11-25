@@ -4,7 +4,7 @@
  * wait, and dispose stops everything.
  *
  * Seams: `boundedDebounce` with real timers at small values, `watchVaultFile` with a fake native watch
- * over a real temporary folder, and one smoke test over the real native watch.
+ * over a real temporary folder, and one smoke test over real file changes in Node.
  */
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { boundedDebounce, watchVaultFile, type WatchFunction } from '../../src/main/vault-watcher'
+import { testRequiring } from '../helpers/built-output'
 
 const settle = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -96,8 +97,9 @@ test('only vault.json in .writeflex counts; a .writeflex made later is attached;
   expect(touched).toBe(2)
 })
 
-test('over the real native watch: a vault.json renamed into place, and then rewritten, is noticed each time', async () => {
-  const child = Bun.spawn(['node', fileURLToPath(new URL('../helpers/native-vault-watch.mjs', import.meta.url))], {
+const node = Bun.which('node')
+testRequiring(node ? undefined : 'Node is missing from PATH')('a vault.json renamed into place, and then rewritten, is noticed each time', async () => {
+  const child = Bun.spawn([node!, fileURLToPath(new URL('../helpers/native-vault-watch.mjs', import.meta.url))], {
     stdout: 'pipe', stderr: 'pipe',
   })
   const [exitCode, stdout, stderr] = await Promise.all([
@@ -108,7 +110,7 @@ test('over the real native watch: a vault.json renamed into place, and then rewr
   expect(afterFolder).toBeGreaterThan(0)
   expect(afterRename).toBeGreaterThan(afterFolder)
   expect(afterRewrite).toBeGreaterThan(afterRename)
-})
+}, 12_000) // The child has a separate three-second observation bound for each of its three writes.
 
 /** A fake native watch that can also fail: `fail(path)` emits `error` on the live watcher on `path`. */
 function failingWatch(): { watch: WatchFunction; emit: (path: string, filename: string | null) => void; fail: (path: string) => void; opened: string[] } {

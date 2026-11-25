@@ -2,14 +2,18 @@ import type { SecretScanner } from '@app-patterns/vault-sync'
 import type { SettingsStore } from './settings'
 
 export type GitSyncDocument = { path: string; kind: 'new' | 'changed' | 'removed' }
+export type GitSyncHeldFile = { path: string; cause: 'lfs' | 'size'; state: 'needs-checking' | 'changed' }
+export type GitSyncLargeCheck = { path: string; state: 'unchanged' | 'changed' | 'needs-checking' }
 export type GitSyncPair = { id: string; local: string; other: string; from: string; at: number }
-export type GitSyncReasonCode = 'repository-state' | 'repository-changed' | 'unsupported' | 'sibling-changes' | 'local-changes' | 'index-busy' | 'secret-found' | 'scanner-unavailable' | 'auth-refused' | 'network-unavailable' | 'push-rejected' | 'operation-failed' | 'rollback-failed' | 'outside-vault-commits' | 'content-conversion' | 'git-renames' | 'tools-missing'
+export type GitSyncReasonCode = 'repository-state' | 'repository-changed' | 'unsupported' | 'sibling-changes' | 'local-changes' | 'index-busy' | 'secret-found' | 'scanner-unavailable' | 'auth-refused' | 'network-unavailable' | 'push-rejected' | 'operation-failed' | 'rollback-failed' | 'outside-vault-commits' | 'content-conversion' | 'git-renames' | 'tools-missing' | 'large-file-needs-checking' | 'held-file-in-history' | 'large-file-changed-elsewhere'
 export type GitSyncWarning = { code: 'history-kept' | 'machine-local-tracked' | 'internal-content-mismatch' | 'internal-value-selected' | 'internal-ledger-recovery' | 'internal-write-deferred' | 'local-write-preserved'; path: string; message: string; copy?: string }
 export type GitSyncReason = { code: GitSyncReasonCode; message: string; document?: string }
 export type GitVaultSyncResult = {
-  state: 'off' | 'up-to-date' | 'incoming' | 'waiting-to-send' | 'stopped' | 'needs-you'
+  state: 'off' | 'up-to-date' | 'incoming' | 'waiting-to-send' | 'stopped' | 'needs-you' | 'held'
   enabled: boolean
   computerName: string
+  held?: GitSyncHeldFile[]
+  largeChecks?: GitSyncLargeCheck[]
   pending: GitSyncDocument[]
   incoming: GitSyncDocument[]
   /** What this send or receive itself brought in (the shown `incoming` list may be an earlier one). */
@@ -18,12 +22,15 @@ export type GitVaultSyncResult = {
   warnings: GitSyncWarning[]
   internalPending: string[]
   reason?: GitSyncReason
+  retryBlock?: GitSyncRetryBlock
   lastSentAt?: number
   lastReceived?: { at: number; from: string }
   checkedAt?: number
   location?: { host: string; repository: string; branch: string; localPath?: string }
 }
+export type GitSyncRetryBlock = { head:string; index:string; remote:string }
 export type GitSyncRecord = {
+  retryBlock?: GitSyncRetryBlock
   warnings?: GitSyncWarning[]; pairs: GitSyncPair[]; incoming: GitSyncDocument[]; remoteTip?: string; checkedAt?: number
   sentTip?: string; sentBase?: string; lastSentAt?: number; lastReceived?: { at: number; from: string }; reason?: GitSyncReason
   identity?: { root: string; gitDir: string; branch: string }

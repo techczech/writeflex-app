@@ -78,12 +78,13 @@ export type SaveFileVersionResult = { version: { id: string; name: string; ts: n
 
 /** Restore is bound to the two things the writer saw: the saved copy (its hash) and the working copy (its hash, or null for none). */
 export type RestoreFileVersionInput = { path: string; versionId: string; expectVersionSha256: string; expectWorkingSha256: string | null }
+/** Returned once the working file has committed. The safety version, when needed, was recorded before that write. */
 export type RestoreFileVersionResult = {
-  /** The new file version the restore appended. */
-  restored: { id: string; name: string; number: number }
-  /** The version taken first so the working copy that was replaced is kept, when it was not already held by a version. */
   safety: { id: string; name: string } | null
-}
+} & (
+  | { restored: { id: string; name: string; number: number } }
+  | { restored: null; path: string }
+)
 
 export type SaveFileCopyInput = { path: string; versionId: string; expectVersionSha256: string; name: string }
 export type SaveFileCopyResult = { path: string }
@@ -175,6 +176,15 @@ export function workingSentence(working: FileWorking, kind: FileKind): string {
       ? `unsaved · ${noun(working.cellsChanged, 'cell', 'cells')} changed since v${working.since.number}`
       : `unsaved · changed since v${working.since.number}`
   }
+}
+
+/** The outcome shown after a committed restore, with the safety version if one was made. */
+export function fileRestoreMessage(file: string, number: number, result: RestoreFileVersionResult): string {
+  const safety = result.safety ? `. The previous working copy was saved first as “${result.safety.name}”` : ''
+  if (result.restored === null) {
+    return `${file} was restored from v${number}. WriteFlex could not record a new version for the restore${safety}.`
+  }
+  return `Restored v${number} as ${file}${result.safety ? ` after saving the working copy as “${result.safety.name}”` : ''}`
 }
 
 /** The name a Folio save gave the per-file versions it took. */

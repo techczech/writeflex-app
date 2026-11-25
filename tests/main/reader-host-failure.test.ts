@@ -1,6 +1,7 @@
 import { test, expect } from 'bun:test'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { createReaderResources } from '../../src/main/reading-room-resources'
@@ -29,7 +30,7 @@ function installedObserver(project: string, calls: string[]) {
   return { name: 'vite:electron-watcher', closeBundle: callback }
 }
 async function fixture(body: (f: any) => Promise<void>) {
-  const root = mkdtempSync('/private/tmp/'), identity = statSync(root), project = root + '/p'
+  const root = mkdtempSync(join(tmpdir(), 'wf-reader-watch-')), identity = statSync(root), project = root + '/p'
   const calls: string[] = [], errors: any[] = [], ends: any[] = []
   let watcher: any, closed = false, refuseOutput = false
   try {
@@ -43,9 +44,10 @@ async function fixture(body: (f: any) => Promise<void>) {
     mkdirSync(dirname(output), { recursive: true }); writeFileSync(output, 'last usable main')
     writeFileSync(project + '/out/main/user-owned.txt', 'retain user output')
     const start = async () => {
+      // Keep the real Rollup watcher while avoiding the runner's unreliable FSEvents delivery.
       watcher = await build({ configFile: false, root: project, logLevel: 'warn',
         plugins: [readerHostDevelopment(project), { name: 'synthetic-output-refusal', writeBundle() { if (refuseOutput) throw Error('Synthetic completed-stage output hook refusal.') } }, installedObserver(project, calls)],
-        build: { outDir: project + '/out/main', watch: {}, lib: { entry: main, formats: ['es'], fileName: () => 'watch-entry.mjs' }, rollupOptions: { external: ['node:path'] } } })
+        build: { outDir: project + '/out/main', watch: { chokidar: { usePolling: true } }, lib: { entry: main, formats: ['es'], fileName: () => 'watch-entry.mjs' }, rollupOptions: { external: ['node:path'] } } })
       watcher.on('event', (event: any) => { if (event.code === 'ERROR') errors.push(event.error); if (event.code === 'END') ends.push(event) })
     }
     await body({ project, main, dependency, original, mainOriginal, output, calls, errors, ends, start, setOutputFailure(value: boolean) { refuseOutput = value } })

@@ -1,6 +1,7 @@
 import { test, expect } from 'bun:test'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { createReaderResources } from '../../src/main/reading-room-resources'
@@ -8,7 +9,7 @@ const A=resolve(import.meta.dir,'../..'),hash=(s:Uint8Array|string)=>createHash(
 const vite=await import('vite')
 const wait=async(check:()=>boolean,bound=5000)=>{const start=performance.now();while(!check()&&performance.now()-start<bound)await new Promise(r=>setTimeout(r,10));return check()}
 test('normal main dev watcher rebuilds a host dependency into a fresh immutable served map and retains ordinary main/editor/preload wiring',async()=>{
- const root=mkdtempSync('/private/tmp/'),identity=statSync(root),project=root+'/p',events:any[]=[],errors:any[]=[]
+ const root=mkdtempSync(join(tmpdir(), 'wf-reader-watch-')),identity=statSync(root),project=root+'/p',events:any[]=[],errors:any[]=[]
  let watcher:any,closed=false
  try{
   mkdirSync(project);cpSync(A+'/src',project+'/src',{recursive:true});mkdirSync(project+'/node_modules')
@@ -30,7 +31,8 @@ test('normal main dev watcher rebuilds a host dependency into a fresh immutable 
   const start=installed.indexOf('            const closeBundle = () => {'),end=installed.indexOf('            config = mergeConfig',start)
   expect(start).toBeGreaterThan(0)
   const closeBundle=new Function('resolve','watchHook','let firstBundle=true;'+installed.slice(start,end)+'return closeBundle')(()=>{},()=>{})
-  watcher=await vite.build({configFile:false,root:project,logLevel:'warn',plugins:plugin?[plugin,{name:'vite:electron-watcher',closeBundle}]:[],build:{outDir:project+'/out/main',emptyOutDir:false,watch:{},lib:{entry:project+'/src/main/watch-entry.ts',formats:['es'],fileName:()=> 'watch-entry.mjs'},rollupOptions:{external:['node:path']}}})
+  // Keep the real Rollup watcher while avoiding the runner's unreliable FSEvents delivery.
+  watcher=await vite.build({configFile:false,root:project,logLevel:'warn',plugins:plugin?[plugin,{name:'vite:electron-watcher',closeBundle}]:[],build:{outDir:project+'/out/main',emptyOutDir:false,watch:{chokidar:{usePolling:true}},lib:{entry:project+'/src/main/watch-entry.ts',formats:['es'],fileName:()=> 'watch-entry.mjs'},rollupOptions:{external:['node:path']}}})
   watcher.on('event',(e:any)=>{if(e.code==='END')events.push(e);if(e.code==='ERROR')errors.push(e.error)})
   expect(await wait(()=>events.length>=1)).toBe(true);expect(errors).toEqual([])
   const getDirectory=async(n:number)=>(await import(project+'/out/main/watch-entry.mjs?round='+n)).readerHostDirectory(project+'/out/main/watch-entry.mjs')

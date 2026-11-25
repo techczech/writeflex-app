@@ -47,10 +47,10 @@ test('M2 scheduler blocks identical no-progress work until new bytes arrive',asy
  const f=await fixture();try{
   const {SendProgress,pendingFingerprint}=await import('../../src/main/git-sync-progress')
   await f.put(f.a,'.bridle/journal.jsonl','{"ts":1}\n')
-  const paths=['.bridle/journal.jsonl'], guard=new SendProgress(), first=await pendingFingerprint(f.a,paths)
+  const paths=['.bridle/journal.jsonl'], guard=new SendProgress(), first=await pendingFingerprint(f.a,paths,f.gitEnv)
   expect(guard.shouldSend(first)).toBe(true);expect(guard.completed(first,first,true)).toBe(true)
-  expect(guard.shouldSend(await pendingFingerprint(f.a,paths))).toBe(false)
+  expect(guard.shouldSend(await pendingFingerprint(f.a,paths,f.gitEnv))).toBe(false)
   await f.put(f.a,'.bridle/journal.jsonl','{"ts":1}\n{"ts":2}\n')
-  expect(guard.shouldSend(await pendingFingerprint(f.a,paths))).toBe(true)
+  expect(guard.shouldSend(await pendingFingerprint(f.a,paths,f.gitEnv))).toBe(true)
  }finally{await f.close()}
 },120000)

@@ -1,21 +1,39 @@
 import { useEffect, useState } from 'react'
+import type { VaultView } from '../../../shared/vault'
 
-/**
- * Whether this window's root is a vault: `null` until the first read, then true/false. Follows the
- * vault store's `vault:changed` push, so a vault made by the Make-vault sheet (or removed or arriving
- * from another Mac) is reflected without reopening the window.
- */
-export function useVaultPresence(root: string | null | undefined): boolean | null {
-  const [isVault, setIsVault] = useState<boolean | null>(null)
+type VaultPresence =
+  | { status: 'checking' | 'folder' | 'unavailable'; vault: null }
+  | { status: 'vault'; vault: VaultView }
+
+const CHECKING: VaultPresence = { status: 'checking', vault: null }
+
+/** The vault tier of this window's root, including promotions and changes from disk. */
+export function useVaultPresence(root: string | null | undefined): VaultPresence {
+  const [snapshot, setSnapshot] = useState<{ root: string; presence: VaultPresence } | null>(null)
+
   useEffect(() => {
-    if (!root) { setIsVault(null); return }
+    if (!root || !window.writeflex?.vault) {
+      setSnapshot(null)
+      return
+    }
+    const bridge = window.writeflex.vault
     let live = true
-    void window.writeflex.vault.get().then(
-      (vault) => { if (live) setIsVault(vault !== null) },
-      () => { if (live) setIsVault(false) },
+    let changed = false
+    const publish = (vault: VaultView | null): void => {
+      setSnapshot({ root, presence: vault ? { status: 'vault', vault } : { status: 'folder', vault: null } })
+    }
+    setSnapshot({ root, presence: CHECKING })
+    const off = bridge.onChanged(({ vault }) => {
+      if (!live) return
+      changed = true
+      publish(vault)
+    })
+    void bridge.get().then(
+      (vault) => { if (live && !changed) publish(vault) },
+      () => { if (live && !changed) setSnapshot({ root, presence: { status: 'unavailable', vault: null } }) },
     )
-    const off = window.writeflex.vault.onChanged((event) => { if (live) setIsVault(event.vault !== null) })
     return () => { live = false; off() }
   }, [root])
-  return isVault
+
+  return snapshot && snapshot.root === root ? snapshot.presence : CHECKING
 }

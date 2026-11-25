@@ -19,7 +19,7 @@
  *  - A restore is bound to what the writer saw: the saved copy's hash and the working copy's hash (or "no file"). If either differs now, nothing is written.
  *  - Whole or nothing: bytes go to a temporary file beside the file and take its name by rename (a rewrite) or by a hard link (a new file: fails if the name is
  *    taken). Nothing is written in place.
- *  - A restore APPENDS a new file version and deletes nothing. If the working copy is not held by any version, it is saved first ("Before restoring …").
+ *  - A restore saves the working copy first if no version holds it ("Before restoring …"). It reports if the file committed but the new version could not be recorded.
  *  - "Save as a copy" creates one new ordinary file by exclusive create and never overwrites; it keeps the file's type and stays in the file's folder; it
  *    writes no version record.
  *
@@ -381,14 +381,19 @@ export async function restoreFileVersion(stores: FileVersionStores, input: { pat
       await writeDocumentGuarded(stores.workspace, path, saved, working.kind === 'ok' ? 'replace' : 'create', { seams: stores.seams ?? {}, beforeCommit: stillBound(stores), ...(working.kind === 'ok' ? { expect: { fingerprint: working.sha256 } } : {}) })
     } catch (error) { return writeRefusal(path, error) }
 
-    // The new version holds the bytes that were put back (`saved`, checked against their hash above), not a second read of the file.
-    const snapshot = await snapshotJudged(stores, path, saved, wantedVersion)
-    const name = restoredName({ name: entry.version.name, number: entry.number, automatic: folioSaveOf(entry.version) !== undefined })
-    const record = await stores.versions.append({
-      path, name, author: input.author ?? stores.author, note: `Put back from v${entry.number} “${entry.version.name}”.`,
-      snapshotId: snapshot.snapshotId, versionId: snapshot.versionId,
-    })
-    return { restored: { id: record.id, name: record.name, number: held.length + (safety ? 1 : 0) + 1 }, safety }
+    // The guarded write has committed. Report any history failure without rewriting the file again.
+    try {
+      const snapshot = await snapshotJudged(stores, path, saved, wantedVersion)
+      const name = restoredName({ name: entry.version.name, number: entry.number, automatic: folioSaveOf(entry.version) !== undefined })
+      const record = await stores.versions.append({
+        path, name, author: input.author ?? stores.author, note: `Put back from v${entry.number} “${entry.version.name}”.`,
+        snapshotId: snapshot.snapshotId, versionId: snapshot.versionId,
+      })
+      return { restored: { id: record.id, name: record.name, number: held.length + (safety ? 1 : 0) + 1 }, safety }
+    } catch (error) {
+      console.warn('Could not record a restored file version:', error)
+      return { restored: null, path, safety }
+    }
   })
 }
 
