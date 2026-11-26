@@ -278,6 +278,11 @@ export function buildCommandPaletteSections({
   return out
 }
 
+function paletteSelectionKey(item: PaletteItem): string {
+  // A file or folder path can spell a Folio key. The row kind disambiguates the selection.
+  return `${item.kind}:${item.key}`
+}
+
 function isPaletteTabStop(control: HTMLElement): boolean {
   return control.tabIndex >= 0
     && !control.matches(':disabled')
@@ -320,7 +325,8 @@ export function CommandPalette({
   onClose,
 }: CommandPaletteProps): JSX.Element {
   const [query, setQuery] = useState(initialQuery)
-  const [selected, setSelected] = useState(0)
+  // undefined waits for the first result; null clears an intent whose item disappeared.
+  const [selectedKey, setSelectedKey] = useState<string | null>()
   const [view, setView] = useState<PaletteView>(TOP_VIEW)
   /** The row to select once the next list renders (the group row you came back from). */
   const selectKeyRef = useRef<string | null>(null)
@@ -340,18 +346,27 @@ export function CommandPalette({
 
   const flatItems = useMemo(() => sections.flatMap((section) => section.items), [sections])
 
-  const folioSheetStatus = mode === 'folios' ? folioIndexStatus : undefined
-  // When the list re-ranks or Folios finish loading, start the highlight at the top again, unless a
-  // step back names the group row to land on. Before paint, so no frame shows the old highlight.
+  const selectedIndex = flatItems.findIndex((item) => selectedKey === undefined || paletteSelectionKey(item) === selectedKey)
+  const selectedItem = flatItems[selectedIndex]
+  const resolvedKey = selectedItem ? paletteSelectionKey(selectedItem) : undefined
+
+  // Pin the default once it arrives. A removed row stays cleared even if it later returns.
+  useLayoutEffect(() => {
+    if (selectedKey !== null && selectedKey !== resolvedKey) setSelectedKey(resolvedKey ?? null)
+  }, [selectedKey, resolvedKey])
+
+  // A deliberate query or view change starts at the top, or on the group the writer returned from.
   useLayoutEffect(() => {
     const key = selectKeyRef.current
     selectKeyRef.current = null
-    const index = key ? flatItems.findIndex((item) => item.key === key) : -1
-    setSelected(index < 0 ? 0 : index)
+    const defaultRow = flatItems.find((item) => item.key === key) ?? flatItems[0]
+    setSelectedKey(defaultRow ? paletteSelectionKey(defaultRow) : undefined)
     inputRef.current?.focus()
-    // flatItems is read only to place the highlight after a view change.
+    // flatItems is read only to place the highlight after a query or view change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, mode, view, folioSheetStatus])
+  }, [query, mode, view])
+
+  const folioSheetStatus = mode === 'folios' ? folioIndexStatus : undefined
 
   // A prop update can remove or disable the focused result without changing the query or view.
   // Chromium may drop focus to body without emitting a blur event when the element is removed.
@@ -378,7 +393,7 @@ export function CommandPalette({
   // Keep the highlighted row scrolled into view as arrows move it past the sheet's fold.
   useEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
-  }, [selected, sections])
+  }, [selectedItem])
 
   function activate(item: PaletteItem, options: { reveal?: boolean; alternate?: boolean } = {}): void {
     if (item.kind === 'file') options.reveal ? onRevealFile(item.file.path) : onOpenFile(item.file.path)
@@ -397,11 +412,10 @@ export function CommandPalette({
     // While an input method is composing, Enter, Esc and the arrows belong to it, not to the palette.
     if (e.nativeEvent.isComposing) return
     if (mode === 'commands' && e.key !== 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-      const current = flatItems[selected]
-      const action = paletteKeyAction({ view, query, key: e.key, selectedIsGroup: current?.kind === 'group' })
-      if (action === 'open-group' && current?.kind === 'group') {
+      const action = paletteKeyAction({ view, query, key: e.key, selectedIsGroup: selectedItem?.kind === 'group' })
+      if (action === 'open-group' && selectedItem?.kind === 'group') {
         e.preventDefault()
-        openGroup(current.group)
+        openGroup(selectedItem.group)
         return
       }
       if (action === 'back') {
@@ -412,14 +426,15 @@ export function CommandPalette({
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      if (flatItems.length > 0) setSelected((s) => Math.min(s + 1, flatItems.length - 1))
+      const next = flatItems[Math.min(selectedIndex + 1, flatItems.length - 1)]
+      if (next) setSelectedKey(paletteSelectionKey(next))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setSelected((s) => Math.max(s - 1, 0))
+      const previous = flatItems[selectedIndex < 0 ? flatItems.length - 1 : Math.max(selectedIndex - 1, 0)]
+      if (previous) setSelectedKey(paletteSelectionKey(previous))
     } else if (e.key === 'Enter') {
       e.preventDefault()
-      const item = flatItems[selected]
-      if (item) activate(item, {
+      if (selectedItem) activate(selectedItem, {
         reveal: e.metaKey !== e.ctrlKey && !e.altKey && !e.shiftKey,
         alternate: e.altKey,
       })
@@ -455,7 +470,6 @@ export function CommandPalette({
   const folioEmptyMessage = folioIndexStatus === 'ready'
     ? (folios?.length ? 'No Folios match' : 'This vault has no Folios')
     : FOLIO_STATUS_MESSAGE[folioIndexStatus]
-  let flatIndex = -1
   return (
     <div
       ref={dialogRef}
@@ -504,9 +518,7 @@ export function CommandPalette({
             <div key={section.label}>
               <div className={`pal-sec${section.subgroup ? ' pal-subsec' : ''}`}>{section.label}</div>
               {section.items.map((item) => {
-                flatIndex += 1
-                const index = flatIndex
-                const isSelected = index === selected
+                const isSelected = item === selectedItem
                 return (
                   <button
                     key={item.key}
@@ -522,7 +534,7 @@ export function CommandPalette({
                           : undefined
                     }
                     aria-label={item.kind === 'group' ? `${item.group}, ${commandCountText(item.count)}` : undefined}
-                    onMouseMove={() => setSelected(index)}
+                    onMouseMove={() => setSelectedKey(paletteSelectionKey(item))}
                     onClick={() => activate(item)}
                   >
                     {item.kind === 'folio' ? (
@@ -618,7 +630,7 @@ export function CommandPalette({
         {mode === 'folios' && flatItems.length > 0 && <div className="palette-footer">↵ open the Folio</div>}
         {mode === 'files' && flatItems.length > 0 && (
           <div className="palette-footer">
-            {flatItems[selected]?.kind === 'folio' ? '↵ open the Folio' : flatItems[selected]?.kind === 'folder'
+            {selectedItem?.kind === 'folio' ? '↵ open the Folio' : selectedItem?.kind === 'folder'
               ? (onFocusFolder ? '↵ reveal in Files · ⌘↵ focus' : '↵ reveal in Files')
               : '↵ open · ⌘↵ reveal in Files'}
           </div>

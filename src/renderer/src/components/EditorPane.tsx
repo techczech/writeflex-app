@@ -225,7 +225,7 @@ export type EditorHandle = {
   /** Place the caret at the start of `line` (1-based) in the LIVE view and scroll it to the top. The
    *  primitive behind an outline jump: same-file callers invoke it directly, cross-file callers invoke
    *  it once the target file's buffer has been switched in (App's pending-line flush, Task 10). */
-  goToLine(line: number): void
+  goToLine(line: number, offset?: number, focus?: boolean): void
   /** Place a SELECTION over a search hit in the LIVE view and scroll it into view: `line`/`column`
    *  are 1-based, `length` the match char count. Same queue-until-ready contract as goToLine for a
    *  cross-file jump (App flushes it once the target buffer is switched in). */
@@ -1567,17 +1567,18 @@ export const EditorPane = forwardRef<EditorHandle, EditorPaneProps>(function Edi
           statesRef.current.delete(oldPath)
         }
       },
-      goToLine: (line) => {
+      goToLine: (line, offset = 0, focus = true) => {
         const view = viewRef.current
         if (!view) return
         const doc = view.state.doc
-        const target = doc.line(Math.min(Math.max(line, 1), doc.lines)).from
+        const row = doc.line(Math.min(Math.max(line, 1), doc.lines))
+        const target = Math.min(row.from + Math.max(offset, 0), row.to)
         view.dispatch({
           selection: { anchor: target },
           effects: EditorView.scrollIntoView(target, { y: 'start', yMargin: 80 }),
         })
-        // Keyboard-first: land in the editor at the jumped-to line, ready to write.
-        view.focus()
+        // An outline walk can keep the keyboard on its row.
+        if (focus) view.focus()
       },
       goToMatch: (line, column, length) => {
         const view = viewRef.current

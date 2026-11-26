@@ -152,7 +152,7 @@ import { Board } from '../components/Board'
 import { Rail, type QueryInsertionContext } from '../components/Rail'
 import { InsertQueryConfirm } from '../components/InsertQueryConfirm'
 import { folioOpenTarget, readFolioOpenParts } from '../components/FolioOpenButton'
-import { FOLIO_VERSION_COMMAND_EVENT, ROOM_VIEW_EVENT } from '../components/FolioRoom'
+import { FOLIO_VERSION_COMMAND_EVENT, ROOM_VIEW_EVENT, type RoomViewCommand } from '../components/FolioRoom'
 import { runFileVersionsCommand, type FileVersionsAction } from '../plan/file-versions-focus'
 import { OPEN_COMPARE_EVENT, OPEN_EXPORT_EVENT, OPEN_IMPORT_EVENT, OPEN_MARK_SENT_EVENT, OPEN_READ_ONLY_EVENT, requestImportOnNextVersionsTab } from '../components/FolioRoomVersions'
 import { OPEN_VERSION_NUDGE_EVENT, OPEN_VERSION_REQUEST_EVENT, anyVersionRead, setWaitingOpenVersion, useAnyReadingVersion, useAnyVersionRead, type OpenVersionRequest } from '../plan/folio-reading'
@@ -185,6 +185,7 @@ import { VersionsPane } from '../components/VersionsPane'
 import { summariseRun } from '../../../engine'
 import { ComparePane } from '../components/ComparePane'
 import { documentCompareMarks, useDocumentCompare } from './document-compare'
+import { useDocumentVersions } from './document-versions'
 import { SuggestionCallout, type CalloutViewRequest } from '../components/SuggestionCallout'
 import { classifyExternalDrop, type DroppedPath } from '../external-drop'
 import { CheatSheet } from '../components/CheatSheet'
@@ -700,6 +701,18 @@ Object.assign(COMMAND_ICONS, {
 ['app.versions']: GitCommitHorizontal,
 })
 
+type EditorJumpTarget =
+  | { kind: 'line'; line: number; offset?: number; focus?: boolean }
+  | { kind: 'match'; line: number; column: number; length: number }
+
+type EditorJump = {
+  workspace: object | null
+  path: string
+  fromTab: string | null
+  room: string | null
+  target: EditorJumpTarget
+}
+
 export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {}): JSX.Element {
   const [readingRoomOpen, setReadingRoomOpen] = useState(false)
   const readingRoomLifetime = useRef<(() => Promise<void>) | null>(null)
@@ -744,10 +757,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [hideStrikes, setHideStrikes] = useState(false)
   const [hideInserts, setHideInserts] = useState(false)
   const [changes, setChanges] = useState<Change[]>([])
-  const [versions, setVersions] = useState<Version[]>([])
-  const [waitingHistory, setWaitingHistory] = useState<Array<{ from: string; count: number }>>([])
-  const [historyAttachments, setHistoryAttachments] = useState<Array<{ from: string; to: string }>>([])
-  const [historyAttachmentUndo, setHistoryAttachmentUndo] = useState<{ path: string; id: string; files: number } | null>(null)
   const [historicalView, setHistoricalView] = useState<HistoricalView | null>(null)
   // Read after an asynchronous confirm card: the view the card was asked about may have closed meanwhile.
   const historicalViewRef = useRef(historicalView)
@@ -1027,8 +1036,11 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // Outline switching (ticket 13): opening from Files or Search arms it for that file; every other way of
   // opening disarms it. See app/outline-switch.ts.
   const outlineSwitchRef = useRef<OutlineSwitchState>(OUTLINE_SWITCH_IDLE)
+  const pendingEditorJump = useRef<EditorJump | null>(null)
+  const [editorJumpTick, setEditorJumpTick] = useState(0)
   const noteOpenSource = useCallback((path: string, source: OpenSource) => { outlineSwitchRef.current = noteFileOpened(outlineSwitchRef.current, path, source) }, [])
   const open = useCallback((path: string) => {
+    pendingEditorJump.current = null
     retireOpenFolio()
     noteOpenSource(path, 'other')
     setCollectionDir(null)
@@ -1036,6 +1048,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     openTab(path)
   }, [retireOpenFolio, openTab, noteOpenSource])
   const activate = useCallback((path: string) => {
+    pendingEditorJump.current = null
     retireOpenFolio()
     setCollectionDir(null)
     setOpenPlanRequested(false)
@@ -1043,6 +1056,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     activateTab(path)
   }, [retireOpenFolio, activateTab])
   const cycle = useCallback((dir: 1 | -1) => {
+    pendingEditorJump.current = null
     retireOpenFolio()
     setCollectionDir(null)
     setOpenPlanRequested(false)
@@ -1239,16 +1253,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // loadedPath's reactive mirror, for consumers that must re-run when the buffer actually lands
   // (Task 16: the suggestion callout syncs anchors only against the file the view is showing).
   const [loadedFile, setLoadedFile] = useState<string | null>(null)
-  // A folder-scope outline jump into a NOT-yet-loaded file (Task 10). Opening a file is async — the
-  // tab activates, then readFile resolves, then switchTo swaps the buffer in — so the caret can only
-  // be placed once that buffer is live. We stash {path,line} here and flush it in the activation
-  // effect the instant switchTo lands (the T6 queue-until-ready pattern, at the precise ready moment).
-  const pendingLine = useRef<{ path: string; line: number } | null>(null)
-  // The focus-file subscription (declared above jumpToFileLine) reaches the live callback through this.
+  // The file-open subscription reaches the live line-jump callback without moving its startup registration.
   const jumpToFileLineRef = useRef<(file: string, line: number) => void>(() => undefined)
-  // A search jump into a not-yet-loaded file (Task 14): like pendingLine, but carries the match's
-  // column+length so the flush places a SELECTION over the hit, not just the caret on its line.
-  const pendingMatch = useRef<{ path: string; line: number; column: number; length: number } | null>(null)
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set())
   const [saveFailures, setSaveFailures] = useState<Set<string>>(() => new Set())
   const [slowSavePaths, setSlowSavePaths] = useState<Set<string>>(() => new Set())
@@ -1928,6 +1934,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   )
 
   const openBoard = useCallback(() => {
+    pendingEditorJump.current = null
     void (async () => {
       // A Board status write must never race an outgoing autosave and later be overwritten by it.
       const current = activeRef.current
@@ -1961,6 +1968,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   /** Open the Plan. `folioDir` is the Folio's own folder (the line and title-bar button pass it: a
    *  piece in a sub-folder can belong to a different Collection than the Folio it names). */
   const openPlanIn = useCallback((folioDir?: string) => {
+    pendingEditorJump.current = null
     retireOpenFolio()
     void (async () => {
       const current = activeRef.current
@@ -2020,9 +2028,11 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     }
   }, [open, requestOutline, leftTab, leftPaneCollapsed, flash])
   const openFolioAt = useCallback((path: string) => {
+    pendingEditorJump.current = null
     folioOpenNavigation.openAt(folioOpenContext, path, applyFolioOpen.current)
   }, [folioOpenNavigation, folioOpenContext])
   const openFolio = useCallback(() => {
+    pendingEditorJump.current = null
     void folioOpenNavigation.openDefault(folioOpenContext, decision => applyFolioOpen.current(decision))
   }, [folioOpenNavigation, folioOpenContext])
   // Running order from the Outline: the writes go through main by path (see main/folio-running-order.ts).
@@ -2340,30 +2350,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       return []
     }
   }, [active])
-  const reloadVersions = useCallback(async (): Promise<Version[]> => {
-    const path = active
-    if (!path) {
-      setVersions([])
-      return []
-    }
-    try {
-      const [list, attachments, attachmentUndo, waiting] = await Promise.all([
-        window.writeflex.listVersions({ path }),
-        window.writeflex.historyAttachmentSuggestions(path).catch(() => []),
-        window.writeflex.historyAttachmentUndo(path).catch(() => null),
-        window.writeflex.waitingVersionHistory().catch(() => []),
-      ])
-      if (activeRef.current !== path) return []
-      setVersions(list)
-      setWaitingHistory(waiting)
-      setHistoryAttachments(attachments)
-      setHistoryAttachmentUndo(attachmentUndo ? { path, ...attachmentUndo } : null)
-      return list
-    } catch {
-      if (activeRef.current === path) setVersions([])
-      return []
-    }
-  }, [active])
+  const { history: versionHistory, reloadVersions, currentHistory, isHistorySubjectCurrent } = useDocumentVersions(root ?? null, active)
+  const { versions } = versionHistory
+  const hasCurrentVersion = useCallback((version: Version): boolean => {
+    return currentHistory()?.versions.some(row => row.id === version.id && row.path === version.path
+      && row.snapshotId === version.snapshotId && row.versionId === version.versionId) ?? false
+  }, [currentHistory])
   useEffect(() => {
     // Clear synchronously on a switch so the dock never shows the previous file's cards during the async
     // reload; reloadChanges repopulates for the new active (and drops any stale in-flight response).
@@ -2371,14 +2363,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     reviewCursorRef.current?.sync([], '')
     setChanges([])
     setChangesPath(null)
-    setVersions([])
-    setWaitingHistory([])
-    setHistoryAttachments([])
     void reloadChanges()
-    void reloadVersions()
-  }, [reloadChanges, reloadVersions])
+  }, [reloadChanges, root])
   useEffect(() => window.writeflex.onChangesChanged(() => void reloadChanges()), [reloadChanges])
-  useEffect(() => window.writeflex.onVersionsChanged(() => void reloadVersions()), [reloadVersions])
 
   const restageAgentNote = useCallback(async (note: AgentObjectNote): Promise<void> => {
     const sourceDocument = activeRef.current
@@ -2447,7 +2434,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           flash('Open the document before viewing its history.')
           return
         }
+        if (!hasCurrentVersion(version)) return
         const result = await window.writeflex.versionContent({ id: version.id })
+        if (!hasCurrentVersion(version) || loadedPath.current !== version.path) return
         if (!result || result.content === null) {
           flash(`Could not read “${version.name}” from history.`)
           return
@@ -2464,7 +2453,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         flash(`Viewing “${version.name}” read-only`)
       })()
     },
-    [active, flash],
+    [active, flash, hasCurrentVersion],
   )
   // Task 3 branches the exact live session into Reviewing and every older session into read-only recall.
   const viewSession = useCallback((session: SessionSummary): void => {
@@ -2474,6 +2463,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         flash('Open the document before viewing its session history.')
         return
       }
+      const canRecallSession = () => isHistorySubjectCurrent() && loadedPath.current === path
+        && (session.versionStamp === null || currentHistory()?.versions.some(version =>
+          (version.versionId ?? version.snapshotId) === session.versionStamp))
+      if (!canRecallSession()) return
       if (sessionRecallKind(session, currentSessionIdForFile(path)) === 'current') {
         if (historicalView) {
           editorRef.current?.exitHistorical()
@@ -2484,7 +2477,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       }
 
       const ledgerRecords = await window.writeflex.listChanges({ path })
-      if (activeRef.current !== path) return
+      if (!canRecallSession()) return
       const records = ledgerRecords
         .filter((change) =>
           change.provenance === 'writer' &&
@@ -2511,7 +2504,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           snapshotId: session.versionStamp,
           path,
         })
-        if (activeRef.current !== path) return
+        if (!canRecallSession()) return
         if (!result || result.content === null) {
           flash('Could not read this session from history.')
           return
@@ -2533,7 +2526,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       editorRef.current?.enterSessionRecall(path, view.displayContent, view.records)
       flash('Viewing a past session read-only')
     })()
-  }, [active, changeWriterMode, currentSessionIdForFile, flash, historicalView])
+  }, [active, changeWriterMode, currentHistory, currentSessionIdForFile, flash, historicalView, isHistorySubjectCurrent])
   // Restore a version as the open document (Muse M2): like every editor write it replaces only the version
   // the buffer is based on. The buffer is flushed first through the guarded save (a standing notice or a
   // refusal stops the restore, and the writer is told why); the restore then carries that baseline as its
@@ -2602,13 +2595,17 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       : `Restored “${name}”`)
   }, [owner, bufferNow, cancelAutosaveFor, clearExternalDiskNotice, flash, noteDiskChangedUnderBuffer, raiseExternalDiskNotice, agent.noteUserSave, reloadChanges, reloadVersions, root])
   const restoreHistoricalVersion = useCallback(() => {
-    if (historicalView?.kind !== 'version') return
+    if (historicalView?.kind !== 'version' || !hasCurrentVersion(historicalView.version)) return
     void (async () => {
       if (!(await askConfirm({ title: `Restore “${historicalView.version.name}” as the current document?`, detail: 'It replaces the text you have now.', recover: 'Your current text is kept as a version first; restore it from the Versions tab if you change your mind.', confirmLabel: 'Restore' }))) return
       const restore = restoreHistoricalView(historicalView)
       // The card is asynchronous (Sol S1): restore only if this version view and its document are still the ones showing.
       if (rootNow.current !== root || historicalViewRef.current !== historicalView || loadedPath.current !== restore.path) {
         flash(`“${historicalView.version.name}” was not restored: the document changed while the card was open.`)
+        return
+      }
+      if (!hasCurrentVersion(historicalView.version)) {
+        flash('The version is no longer available. Check Versions and try again.')
         return
       }
       // The live buffer (kept aside while the view shows the past) is what the flush writes.
@@ -2620,7 +2617,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         historicalView.version.name,
       )
     })().catch(() => flash(`Could not restore “${historicalView.version.name}”.`))
-  }, [historicalView, flash, restoreVersionOverBuffer, root])
+  }, [historicalView, flash, hasCurrentVersion, restoreVersionOverBuffer, root])
   // Restore straight from a version row — the same flow as the view banner's Restore, without
   // requiring the read-only view first (walk find 2026-07-11: "no restore on old versions").
   const restoreVersionFromRow = useCallback(
@@ -2630,10 +2627,15 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           flash('Open the document before restoring a version.')
           return
         }
+        if (!hasCurrentVersion(version)) return
         if (!(await askConfirm({ title: `Restore “${version.name}” as the current document?`, detail: 'It replaces the text you have now.', recover: 'Your current text is kept as a version first; restore it from the Versions tab if you change your mind.', confirmLabel: 'Restore' }))) return
         // The card is asynchronous (Sol S1): the document must still be the one open.
         if (rootNow.current !== root || loadedPath.current !== version.path) {
           flash(`“${version.name}” was not restored: the document changed while the card was open.`)
+          return
+        }
+        if (!hasCurrentVersion(version)) {
+          flash('The version is no longer available. Check Versions and try again.')
           return
         }
         if (historicalViewRef.current) {
@@ -2647,7 +2649,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         )
       })().catch(() => flash(`Could not restore “${version.name}”.`))
     },
-    [active, flash, restoreVersionOverBuffer, root],
+    [active, flash, hasCurrentVersion, restoreVersionOverBuffer, root],
   )
   useLayoutEffect(() => {
     const editor = editorRef.current
@@ -2677,21 +2679,63 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   }, [documentCompare])
   const swapCompareView = documentCompare.swap
   const getEditableCompareToScrollElement = useCallback(() => editorRef.current?.view()?.scrollDOM ?? null, [])
+  const openHistoryCompare = useCallback((fromId: VersionCompareEndpointId, toId: VersionCompareEndpointId) => {
+    const list = currentHistory()?.versions
+    if (list?.some(row => row.id === fromId) && (toId === 'working' || list.some(row => row.id === toId))) {
+      openCompareView(fromId, toId)
+    }
+  }, [currentHistory, openCompareView])
+  const changeHistoryCompareEndpoint = useCallback((side: 'from' | 'to', id: VersionCompareEndpointId) => {
+    if (id !== 'working' && !currentHistory()?.versions.some(row => row.id === id)) {
+      flash('That version is unavailable. Check Versions and try again.')
+      return
+    }
+    void (side === 'from' ? documentCompare.setFrom(id) : documentCompare.setTo(id))
+  }, [currentHistory, documentCompare, flash])
   const renameVersion = useCallback(
-    (id: string, name: string) => {
+    (id: string, name: string): boolean => {
+      if (!currentHistory()?.versions.some(row => row.id === id)) return false
       void (async () => {
         try {
           await window.writeflex.renameVersion(id, name)
           await reloadVersions()
+          if (!isHistorySubjectCurrent()) return
           void documentCompare.refreshRenamedVersion(root, active, id)
           flash(`Renamed version “${name.trim()}”`)
         } catch (error) {
-          flash(error instanceof Error ? error.message : 'Could not rename that version.')
+          if (isHistorySubjectCurrent()) flash(error instanceof Error ? error.message : 'Could not rename that version.')
         }
       })()
+      return true
     },
-    [active, documentCompare, flash, reloadVersions, root],
+    [active, currentHistory, documentCompare, flash, isHistorySubjectCurrent, reloadVersions, root],
   )
+  const attachHistory = useCallback((input: { from: string; to: string }) => {
+    const history = currentHistory()
+    if (!history || input.to !== active) return
+    const suggested = history.attachments.some(row => row.from === input.from && row.to === input.to)
+    const waiting = history.waiting.some(row => row.from === input.from)
+    if (!suggested && !waiting) return
+    void (async () => {
+      try {
+        await window.writeflex.attachVersionHistory(input)
+        await reloadVersions()
+      } catch (error) {
+        if (isHistorySubjectCurrent()) flash(error instanceof Error ? error.message : 'Could not reattach history.')
+      }
+    })()
+  }, [active, currentHistory, flash, isHistorySubjectCurrent, reloadVersions])
+  const undoHistoryAttachment = useCallback((id: string) => {
+    if (currentHistory()?.attachmentUndo?.id !== id) return
+    void (async () => {
+      try {
+        await window.writeflex.undoHistoryAttachment(id)
+        await reloadVersions()
+      } catch (error) {
+        if (isHistorySubjectCurrent()) flash(error instanceof Error ? error.message : 'Could not undo history attachment.')
+      }
+    })()
+  }, [currentHistory, flash, isHistorySubjectCurrent, reloadVersions])
   const toggleHideStrikes = useCallback(() => setHideStrikes((v) => !v), [])
   const toggleHideInserts = useCallback(() => setHideInserts((v) => !v), [])
   const selectChange = useCallback((id: string) => { reviewCursorRef.current?.select(id) }, [])
@@ -3092,6 +3136,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // Index Note lands a file on disk; the main-process push refreshes the tree exactly as an agent
   // write does. New piece then refreshes first (so the file is in `files`) and opens it in a tab.
   const openCollection = useCallback((dir: string) => {
+    pendingEditorJump.current = null
     retireOpenFolio()
     void (async () => {
       const current = activeRef.current
@@ -3321,15 +3366,38 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     [],
   )
 
-  const [treeFocusRequest, setTreeFocusRequest] = useState<SidebarTreeFocusRequest>({ tick: 0, target: null })
+  const [treeFocusRequest, setTreeFocusRequest] = useState<(SidebarTreeFocusRequest & { root: string }) | null>(null)
   const [openTabsFocusTick, setOpenTabsFocusTick] = useState(0)
-  const revealFilesTab = useCallback(() => openLeftTab('files'), [openLeftTab])
-  const openFilesTab = useCallback(() => {
+  const revealFilesTab = useCallback(() => {
+    openLeftTab('files')
+    setTreeFocusRequest(null)
+  }, [openLeftTab])
+  const requestFilesFocus = useCallback((target: SidebarFocusedRow | null, focus: boolean) => {
     revealFilesTab()
-    // Open commands ACTIVATE (CH-1): land the keyboard on the tree's active row, so F2/⌘K/M/⌘⌫
-    // (ADR-0017) work immediately — clicking a file hands focus to the editor, ⇧⌘E hands it back.
-    setTreeFocusRequest((request) => ({ tick: request.tick + 1, target: null }))
-  }, [revealFilesTab])
+    if (typeof root === 'string') setTreeFocusRequest({ root, target, focus, origin: document.activeElement })
+  }, [revealFilesTab, root])
+  const openFilesTab = useCallback(() => requestFilesFocus(null, true), [requestFilesFocus])
+  const finishFilesFocus = useCallback((request: SidebarTreeFocusRequest) => {
+    setTreeFocusRequest(current => current === request ? null : current)
+  }, [])
+  const filesFocusIsCurrent = treeFocusRequest !== null && treeFocusRequest.root === root
+    && leftTab === 'files' && !leftPaneCollapsed && (!treeFocusRequest.focus || overlayActive === null)
+  useLayoutEffect(() => {
+    if (!treeFocusRequest) return
+    const retire = () => finishFilesFocus(treeFocusRequest)
+    if (!filesFocusIsCurrent) {
+      retire()
+      return
+    }
+    if (!treeFocusRequest.focus) return
+    // A later focus or pointer gesture ends the keyboard handoff even while the listing is held.
+    document.addEventListener('focusin', retire, true)
+    document.addEventListener('pointerdown', retire, true)
+    return () => {
+      document.removeEventListener('focusin', retire, true)
+      document.removeEventListener('pointerdown', retire, true)
+    }
+  }, [treeFocusRequest, filesFocusIsCurrent, finishFilesFocus])
   // ⌘2, the toolbar's Tabs button and the strip's "+N" all open the same popover (ticket 14).
   const [tabsListOpen, setTabsListOpen] = useState(false)
   const openOpenTabs = useCallback(() => {
@@ -3364,18 +3432,15 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.search-panel .search-field input')?.focus())
   }, [openLeftTab])
   const focusSidebarFilter = useCallback(() => {
-    // Reveal the Files pane WITHOUT the tree-row focus tick — otherwise its deferred rAF (Sidebar's
-    // focusRow) fires after, and steals, the filter input's focus. The filter is the target here.
+    // The filter takes over the Files pane's keyboard handoff.
     revealFilesTab()
     setSidebarFilterFocusTick((tick) => tick + 1)
   }, [revealFilesTab])
   const revealTreeRow = useCallback((target: SidebarFocusedRow, focus = true) => {
-    revealFilesTab()
-    // A reveal outside the focused folder would land on a row the narrowed tree does not hold:
-    // widen to the whole archive first so "Reveal in Files" is never a dead action.
+    // A reveal outside the focused folder needs the whole tree.
     if (folderFocus && !isInFocus(target.key, folderFocus.path)) setFolderFocus(null)
-    setTreeFocusRequest((request) => ({ tick: request.tick + 1, target, focus }))
-  }, [revealFilesTab, folderFocus, setFolderFocus])
+    requestFilesFocus(target, focus)
+  }, [requestFilesFocus, folderFocus, setFolderFocus])
   /** Focus a folder from the palette or Quick Open, and show the narrowed tree. */
   const focusFolder = useCallback((path: string) => {
     setFolderFocus(path)
@@ -4997,11 +5062,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     openLeftTab('search')
   }, [openLeftTab])
   const closeSearch = useCallback(() => {
+    focusEditor()
     openFilesTab()
-    const view = editorRef.current?.view()
-    if (view) view.focus()
-    else shellRef.current?.focus()
-  }, [openFilesTab])
+  }, [focusEditor, openFilesTab])
   // The archive search (WF-4B, ⌃⌘F) is the Archive scope of the right sidebar's Research tab (house rule R6): the chord
   // opens the sidebar on Research with that scope and puts the keyboard in the search field. An insert or Esc gives the
   // keyboard back to the draft and leaves the tab where it is. The ref lets the window chord handler hand the search its
@@ -5099,6 +5162,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if (!current) return
     const target = folderBrowsePath(files, current, direction)
     if (!target || target === current) return
+    pendingEditorJump.current = null
     retireOpenFolio()
     // The owner writes the buffer until it is saved, detaches it in the turn of the last check, and forgets
     // it only if nothing moved since (document-owner.ts; Muse M1, round 2): typing during the flush is
@@ -6313,30 +6377,48 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       return
     }
     void activateDocument(active)
-    return () => {
-      // A jump waiting for an abandoned activation must not land on a later visit to this tab.
-      if (pendingLine.current?.path === active) pendingLine.current = null
-      if (pendingMatch.current?.path === active) pendingMatch.current = null
-    }
   }, [active, activateDocument])
+
+  const previousEditorCommit = useRef<{ active: string | null; loaded: string | null } | null>(null)
+  const alternateReader = historicalActive || compareActive || readingVersionNow !== null || sharingPageOpen || sharesListOpen
   useLayoutEffect(() => {
+    const previous = previousEditorCommit.current
+    previousEditorCommit.current = { active, loaded: loadedFile }
+    const activationChanged = previous?.active !== active || previous?.loaded !== loadedFile
     const created = pendingWidgetCreate.current
-    if (created && created.documentPath !== active) pendingWidgetCreate.current = null
+    if (activationChanged && created && created.documentPath !== active) pendingWidgetCreate.current = null
+
     const editor = editorRef.current
     const view = editor?.view()
+    const roomTextVisible = collectionDir !== null && roomTextPath === active
+      && view?.dom.closest('.editor-wrap[data-room-text]') != null
+    const visible = !alternateReader && (collectionDir === null || roomTextVisible)
+    let jump = pendingEditorJump.current
+    if (jump) {
+      const workspace = documentWorkspaceRef.current
+      // Focus-file can arrive while the first workspace is binding. Once bound, its lifetime owns the jump.
+      jump.workspace ??= workspace
+      const waitingForTab = jump.room === null
+        ? activeTab === null && jump.fromTab === null
+        : activeTab === jump.fromTab && previous?.active !== jump.path
+      if (jump.workspace !== workspace || alternateReader || collectionDir !== jump.room
+        || (active !== jump.path && !waitingForTab)) {
+        pendingEditorJump.current = jump = null
+      }
+    }
     if (!editor || !view || !active || loadedFile !== active || editor.path() !== active) return
 
-    // Until this commit the editor can still be hidden under .no-doc. Focus and publish the DOM
-    // selection only once the incoming buffer is visible.
-    if (pendingLine.current?.path === active) {
-      editor.goToLine(pendingLine.current.line)
-      pendingLine.current = null
+    // The buffer and its destination surface must both have committed. Retire before dispatch:
+    // the selection update can schedule another render.
+    let landed = false
+    if (jump?.path === active && jump.workspace !== null && visible) {
+      landed = true
+      pendingEditorJump.current = null
+      const { target } = jump
+      if (target.kind === 'match') editor.goToMatch(target.line, target.column, target.length)
+      else editor.goToLine(target.line, target.offset, target.focus)
     }
-    if (pendingMatch.current?.path === active) {
-      const { line, column, length } = pendingMatch.current
-      editor.goToMatch(line, column, length)
-      pendingMatch.current = null
-    }
+    if (!activationChanged) return
     if (created?.documentPath === active) {
       pendingWidgetCreate.current = null
       // Bind widget Undo to the history the writer receives after Create.
@@ -6346,8 +6428,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         setLastWidgetStep((current) => current?.undoId === created.undoId ? { ...current, historyDepth } : current)
       }
     }
-    view.focus()
-  }, [active, loadedFile])
+    if ((visible || compareToEditable) && !landed) view.focus()
+  }, [active, activeTab, loadedFile, root, collectionDir, roomTextPath, alternateReader, compareToEditable, editorJumpTick])
 
   useEffect(() => {
     const dismiss = (event: KeyboardEvent): void => {
@@ -6732,16 +6814,17 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       }
       if (!compareActive && (e.key === 'c' || e.key === 'C')) {
         e.preventDefault()
-        if (versions.length === 0) {
-          flash('Name a version before comparing.')
+        const list = currentHistory()?.versions
+        if (!list?.length) {
+          flash(versionHistory.status === 'unavailable' ? 'Versions are unavailable. Retry from the Versions rail.' : 'Name a version before comparing.')
           return
         }
-        openCompareView(versions.length >= 2 ? versions[1].id : versions[0].id, versions.length >= 2 ? versions[0].id : 'working')
+        openCompareView(list.length >= 2 ? list[1].id : list[0].id, list.length >= 2 ? list[0].id : 'working')
       }
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [closeCompareView, compareActive, flash, openCompareView, overlayOpenRef, swapCompareView, versions, sharingPageOpen, openSharingPage, closeSharingPage, sharesListOpen, closeSharesList])
+  }, [closeCompareView, compareActive, currentHistory, flash, openCompareView, overlayOpenRef, swapCompareView, versionHistory.status, sharingPageOpen, openSharingPage, closeSharingPage, sharesListOpen, closeSharesList])
 
   // ⌘3 (Open Versions — never closes on repeat; only ⌘] collapses the right pane) and ⌥⌘[/⌥⌘]
   // (browse the active file's folder — a replacement gesture, the tab strip never grows) are
@@ -6965,6 +7048,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // The editor drops the closed file's cached buffer state and its dirty bookkeeping with it.
   const closeTab = useCallback(
     async (path: string) => {
+      if (pendingEditorJump.current?.path === path) pendingEditorJump.current = null
       retireOpenFolio()
       if (isBoardTabId(path)) {
         boardSeenStatusesRef.current.clear()
@@ -7041,7 +7125,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   }, [])
   const requestCreate = useCallback(
     (kind: 'file' | 'folder') => {
-      openFilesTab()
+      revealFilesTab()
       // One ruling for the target folder (sidebar-tree.ts): the focused row, else the open file's
       // folder, else the root — and never outside a focused folder.
       const directory = createTargetDirectory({
@@ -7051,7 +7135,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       })
       setCreateRequest((prev) => ({ tick: (prev?.tick ?? 0) + 1, kind, directory }))
     },
-    [openFilesTab, folderFocus],
+    [revealFilesTab, folderFocus],
   )
   useEffect(
     () =>
@@ -7567,36 +7651,28 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // ⌥⌘P (Pin to strip / Unpin from strip, ADR-0026) is dispatched by the T6 chord table; Option-click and the
   // context menu share the durable state; pins cap at four and carry no close control.
 
-  // A folder-scope outline jump (Task 10): land the caret on `line` of `file`. If that file is already
-  // the loaded active buffer, jump in-editor now; otherwise queue the line and open the file — the
-  // activation effect flushes the queued line once switchTo makes the buffer live (cross-file jump).
-  const jumpToFileLine = useCallback(
-    (file: string, line: number) => {
-      if (active === file && loadedPath.current === file) {
-        editorRef.current?.goToLine(line)
-      } else {
-        pendingLine.current = { path: file, line }
-        open(file)
+  const requestEditorJump = useCallback((path: string, target: EditorJumpTarget, room: string | null = null) => {
+    if (alternateReader || anyVersionRead()) return
+    if (room === null) open(path)
+    const jump: EditorJump = { workspace: documentWorkspaceRef.current, path, fromTab: activeTab, room, target }
+    pendingEditorJump.current = jump
+    setEditorJumpTick(tick => tick + 1)
+    if (room !== null) {
+      const owner = {
+        current: () => pendingEditorJump.current === jump,
+        cancel: () => { if (pendingEditorJump.current === jump) pendingEditorJump.current = null },
       }
-    },
-    [active, open],
-  )
+      window.dispatchEvent(new CustomEvent<RoomViewCommand>(ROOM_VIEW_EVENT, { detail: { path, owner } }))
+    }
+  }, [activeTab, alternateReader, open])
+  const jumpToFileLine = useCallback((file: string, line: number) => {
+    requestEditorJump(file, { kind: 'line', line })
+  }, [requestEditorJump])
   jumpToFileLineRef.current = jumpToFileLine
 
-  // Land a search hit: open its tab, place the caret, and SELECT the match. Same-file hits select now;
-  // a cross-file hit queues {path,…offsets} and opens the file — the activation effect flushes it once
-  // switchTo makes the buffer live (the pendingLine pattern, extended with the match offsets).
-  const jumpToMatch = useCallback(
-    (match: SearchMatch) => {
-      if (active === match.path && loadedPath.current === match.path) {
-        editorRef.current?.goToMatch(match.line, match.column, match.length)
-      } else {
-        pendingMatch.current = { path: match.path, line: match.line, column: match.column, length: match.length }
-        open(match.path)
-      }
-    },
-    [active, open],
-  )
+  const jumpToMatch = useCallback((match: SearchMatch) => {
+    requestEditorJump(match.path, { kind: 'match', line: match.line, column: match.column, length: match.length })
+  }, [requestEditorJump])
 
   // --- Margin suggestion callouts (Task 16) ---
   // The panel's `view` link: open the staged file and, once its buffer is live, centre the
@@ -8286,12 +8362,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         snapshot={snapshot}
         // The buffer the editor really shows: after a failed read `active` is the target but the old buffer stays on screen.
         activePath={loadedFile ?? active}
-        onJumpToFile={(file, line, isPart) => {
-          if (workspaceDir !== undefined && isPart === true) {
-            window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: { path: file } }))
-            if (active === file && loadedPath.current === file) editorRef.current?.goToLine(line)
-            else { pendingLine.current = { path: file, line }; openTab(file) }
-          } else jumpToFileLine(file, line)
+        onJumpToFile={(file, line, isPart, options) => {
+          const keepFocus = options?.keepFocus && collectionDir === null && active === file && loadedFile === file
+          requestEditorJump(file, { kind: 'line', line, offset: options?.offset ?? 0, focus: !keepFocus }, isPart ? workspaceDir ?? null : null)
         }}
         savedTick={savedTick}
         focusTick={outlineFocusTick}
@@ -8488,7 +8561,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                     menuTargetRequest={menuTargetRequest}
                     onMenuTargetHandled={menuTargetHandled}
                     createRequest={createRequest}
-                    focusTreeRequest={treeFocusRequest}
+                    focusTreeRequest={filesFocusIsCurrent ? treeFocusRequest : null}
+                    onFocusTreeHandled={finishFilesFocus}
                     focusPath={folderFocus?.path ?? null}
                     onFocusFolder={sidebarHandlers.onFocusFolder}
                     onHelpWithReport={sidebarHandlers.onHelpWithReport}
@@ -8682,7 +8756,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 Return to current
               </button>
               {historicalView.kind === 'version' && (
-                <button className="cbtn primary" type="button" onClick={restoreHistoricalVersion}>
+                <button className="cbtn primary" type="button" disabled={!hasCurrentVersion(historicalView.version)} onClick={restoreHistoricalVersion}>
                   <RotateCcw className="icon" aria-hidden="true" />
                   Restore this version
                 </button>
@@ -9112,8 +9186,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
               error={compareView.error}
               fromId={compareView.selection.fromId}
               toId={compareView.selection.toId}
-              onFromChange={documentCompare.setFrom}
-              onToChange={documentCompare.setTo}
+              onFromChange={(id) => changeHistoryCompareEndpoint('from', id)}
+              onToChange={(id) => changeHistoryCompareEndpoint('to', id)}
               onSwap={swapCompareView}
               onBack={closeCompareView}
               getEditableToScrollElement={getEditableCompareToScrollElement}
@@ -9245,31 +9319,23 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                       onCompareFile={(path, fileVersionId) => { pendingFileCompare.current = { path, fromId: fileVersionId }; open(path) }}
                     />
                     <VersionsPane
+                      key={JSON.stringify([root, active])}
                       activePath={active}
+                      historyStatus={versionHistory.status}
+                      onRetry={reloadVersions}
                       versions={versions}
-                      waitingHistory={waitingHistory}
-                      attachments={historyAttachments}
-                      attachmentUndo={historyAttachmentUndo?.path === active ? historyAttachmentUndo : null}
-                      onAttachHistory={(input) => { void (async () => {
-                        try {
-                          await window.writeflex.attachVersionHistory(input)
-                          await reloadVersions()
-                        } catch (error) { flash(error instanceof Error ? error.message : 'Could not reattach history.') }
-                      })() }}
-                      onUndoAttachment={() => { void (async () => {
-                        if (!historyAttachmentUndo) return
-                        try {
-                          await window.writeflex.undoHistoryAttachment(historyAttachmentUndo.id)
-                          await reloadVersions()
-                        } catch (error) { flash(error instanceof Error ? error.message : 'Could not undo history attachment.') }
-                      })() }}
+                      waitingHistory={versionHistory.waiting}
+                      attachments={versionHistory.attachments}
+                      attachmentUndo={versionHistory.attachmentUndo}
+                      onAttachHistory={attachHistory}
+                      onUndoAttachment={undoHistoryAttachment}
                       allChanges={changesPath === active ? changes : []}
                       pendingCount={summariseRun(dockChanges).total}
                       historicalVersionId={historicalView?.kind === 'version' ? historicalView.version.id : null}
                       onViewSession={viewSession}
                       onViewVersion={viewVersion}
                       onRestoreVersion={restoreVersionFromRow}
-                      onOpenCompare={openCompareView}
+                      onOpenCompare={openHistoryCompare}
                       onRenameVersion={renameVersion}
                       onReturnToCurrent={exitHistoricalView}
                       onSaveVersion={requestNameVersion}

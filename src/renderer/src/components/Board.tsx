@@ -51,7 +51,9 @@ export function Board(props: BoardProps): JSX.Element {
   return <BoardProjection key={props.dir} {...props} />
 }
 
-type BoardLoad = { status: 'loading' | 'ready' | 'failed'; rows: QueryRow[] }
+type BoardProjectionRead = { request: number; rows: QueryRow[] }
+type BoardLoad = { accepted: BoardProjectionRead | null; pending: boolean; failed: boolean }
+const noRows: QueryRow[] = []
 
 function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPiece, onNewPiece, onStatus, onListSources, setPieceStatus, seenStatuses, onFolderPieceSelected, onQueryContext, onInsertQuery, onOpenPlan, onOpenCollection }: BoardProps): JSX.Element {
   const [isFolio, setIsFolio] = useState(false)
@@ -59,11 +61,14 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
   const [selectedColumn, setSelectedColumn] = useState<string | null>(null)
   const [columnMenu, setColumnMenu] = useState<string | null>(null)
   const [dragColumn, setDragColumn] = useState<string | null>(null)
-  const [load, setLoad] = useState<BoardLoad>({ status: 'loading', rows: [] })
-  const { status: loadStatus, rows } = load
-  const initialLoading = loadStatus === 'loading' && rows.length === 0
+  const [load, setLoad] = useState<BoardLoad>({ accepted: null, pending: true, failed: false })
+  const { accepted, pending, failed } = load
+  const rows = accepted?.rows ?? noRows
+  const initialLoading = !accepted && !failed
   const live = useRef(false)
   const queryRead = useRef(0)
+  const failedRead = useRef(0)
+  const refreshFocus = useRef<{ request: number; origin: Element } | null>(null)
   const collectionRefresh = useRef<Promise<void>>()
   const declarationRead = useRef(0)
   // One selection across the Board: a piece by its path, an offcut by its offcutKey, a source by its sourceKey.
@@ -98,21 +103,35 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     if (!live.current) return
     const request = ++queryRead.current
     const isCurrent = () => live.current && request === queryRead.current
-    setLoad((current) => current.status === 'loading' ? current : { ...current, status: 'loading' })
+    setLoad((current) => current.pending ? current : { ...current, pending: true })
+    const fail = () => {
+      if (!isCurrent()) return
+      failedRead.current = request
+      setLoad((current) => ({ ...current, pending: false, failed: true }))
+      setCarrying(null)
+      setDragColumn(null)
+      setDragPath(null)
+      setDragOffcut(null)
+      setDragSource(null)
+      setOverCard(null)
+      setOverStatus(null)
+    }
     try {
       const result = await window.writeflex.collection.query(dir, '')
       if (!isCurrent()) return
       if (!result.ok) {
-        setLoad({ status: 'failed', rows: [] })
+        fail()
         return
       }
       for (const row of result.rows) {
         const status = row.status?.trim()
         if (status) seenStatuses.add(status)
       }
-      setLoad({ status: 'ready', rows: result.rows })
+      const origin = document.activeElement
+      refreshFocus.current = origin && rootRef.current?.contains(origin) ? { request, origin } : null
+      setLoad({ accepted: { request, rows: result.rows }, pending: false, failed: false })
     } catch {
-      if (isCurrent()) setLoad({ status: 'failed', rows: [] })
+      fail()
     }
   }, [dir, seenStatuses])
 
@@ -141,6 +160,23 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     refresh()
     return window.writeflex.collection.onChanged(refresh)
   }, [dir, reload])
+
+  // Revoke writes as soon as the current read fails, and grant them only to committed rows.
+  const hasCurrentProjection = useCallback(() =>
+    live.current && accepted !== null && accepted.request > failedRead.current, [accepted])
+  const requireCurrentProjection = useCallback(() => {
+    if (hasCurrentProjection()) return true
+    if (live.current) onStatus('Try again to refresh before using this action.')
+    return false
+  }, [hasCurrentProjection, onStatus])
+
+  useLayoutEffect(() => {
+    const focus = refreshFocus.current
+    if (focus && focus.request === accepted?.request) {
+      refreshFocus.current = null
+      if (!focus.origin.isConnected && document.activeElement === document.body) rootRef.current?.focus()
+    }
+  }, [accepted])
 
   // A completed Board action may return to its keyboard surface, unless the writer moved focus.
   const rememberActionFocus = useCallback(() => {
@@ -186,8 +222,8 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
   useLayoutEffect(() => {
     const selected = selectedPath ? rows.find((row) => row.path === selectedPath) : null
     const status = selected?.status?.trim() || columns.find((column) => column.rows.length > 0)?.status
-    onQueryContext(status ? queryContextFor(status) : null)
-  }, [columns, onQueryContext, queryContextFor, rows, selectedPath])
+    onQueryContext(status && hasCurrentProjection() ? queryContextFor(status) : null)
+  }, [columns, failed, hasCurrentProjection, onQueryContext, queryContextFor, rows, selectedPath])
 
   useLayoutEffect(() => () => onQueryContext(null), [onQueryContext])
 
@@ -195,13 +231,17 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     if (selected && !navColumns.some((keys) => keys.includes(selected))) setSelected(null)
   }, [navColumns, selected])
 
+  useEffect(() => {
+    if (drawerPath && !rows.some((row) => row.path === drawerPath && row.drawer)) setDrawerPath(null)
+  }, [drawerPath, rows])
+
   useLayoutEffect(() => {
     const row = selectedPath ? rows.find((piece) => piece.path === selectedPath) : undefined
-    onFolderPieceSelected(row?.folderPath ? { dir, folderPath: row.folderPath, mode: 'one' } : null)
-  }, [dir, onFolderPieceSelected, rows, selectedPath])
+    onFolderPieceSelected(row?.folderPath && hasCurrentProjection() ? { dir, folderPath: row.folderPath, mode: 'one' } : null)
+  }, [dir, failed, hasCurrentProjection, onFolderPieceSelected, rows, selectedPath])
 
   const moveToStatus = useCallback(async (path: string, status: string) => {
-    if (moving) return
+    if (moving || !requireCurrentProjection()) return
     const row = rows.find((piece) => piece.path === path)
     if (!row || row.status?.trim().toLocaleLowerCase() === status.toLocaleLowerCase()) return
     const restoreFocus = rememberActionFocus()
@@ -219,7 +259,7 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
       setOverStatus(null)
       restoreFocus()
     }
-  }, [dir, moving, onStatus, rememberActionFocus, rows, setPieceStatus])
+  }, [dir, moving, onStatus, rememberActionFocus, requireCurrentProjection, rows, setPieceStatus])
 
   const moveStage = useCallback((direction: 1 | -1) => {
     if (!selectedPath) return
@@ -259,9 +299,10 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
   }, [navColumns, selected])
 
   const startNaming = useCallback((offcut: Offcut) => {
+    if (!requireCurrentProjection()) return
     setSelected(offcutKey(offcut))
     setNaming({ offcut, name: offcut.suggestedName, error: null })
-  }, [])
+  }, [requireCurrentProjection])
 
   const closeNaming = useCallback(() => {
     setNaming(null)
@@ -278,12 +319,17 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
   }, [reload])
 
   const makeIdea = useCallback(async () => {
-    if (!naming || stepBusy) return
+    if (!naming || stepBusy || !requireCurrentProjection()) return
+    const offcut = boardOffcuts(rows).find((item) => offcutKey(item) === offcutKey(naming.offcut))
+    if (!offcut) {
+      setNaming({ ...naming, error: 'This offcut is no longer on the Board.' })
+      return
+    }
     const restoreFocus = rememberActionFocus()
     setStepBusy(true)
     try {
       const result = await afterStep(await window.writeflex.boardMaterial.promoteOffcut({
-        dir, scrapsPath: naming.offcut.scrapsPath, scrapId: naming.offcut.id, name: naming.name,
+        dir, scrapsPath: offcut.scrapsPath, scrapId: offcut.id, name: naming.name,
       }))
       if (result.ok) {
         restoreFocus()
@@ -294,10 +340,10 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     } finally {
       setStepBusy(false)
     }
-  }, [afterStep, dir, naming, rememberActionFocus, stepBusy])
+  }, [afterStep, dir, naming, rememberActionFocus, requireCurrentProjection, rows, stepBusy])
 
   const appendScrap = useCallback(async (piece: string, scrap: DrawerScrap) => {
-    if (stepBusy) return
+    if (stepBusy || !requireCurrentProjection()) return
     const restoreFocus = rememberActionFocus()
     setStepBusy(true)
     try {
@@ -309,7 +355,7 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
       setStepBusy(false)
       restoreFocus()
     }
-  }, [afterStep, rememberActionFocus, stepBusy])
+  }, [afterStep, rememberActionFocus, requireCurrentProjection, stepBusy])
 
   // Attach a source to a piece (frame 4): one line in its sources: list, one undoable step. A source
   // the list already names is refused by main, and the activity row says so.
@@ -317,7 +363,11 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     setCarrying(null)
     setDragSource(null)
     setOverCard(null)
-    if (stepBusy) return
+    if (stepBusy || !requireCurrentProjection()) return
+    if (!rows.some((row) => row.material === 'research' && row.path === source.path)) {
+      onStatus('This source is no longer on the Board.')
+      return
+    }
     const restoreFocus = rememberActionFocus()
     setStepBusy(true)
     setSelected(piece)
@@ -330,10 +380,10 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
       setStepBusy(false)
       restoreFocus()
     }
-  }, [afterStep, dir, rememberActionFocus, stepBusy])
+  }, [afterStep, dir, onStatus, rememberActionFocus, requireCurrentProjection, rows, stepBusy])
 
   const undoStep = useCallback(async (id: string | null = activity?.stepId ?? null) => {
-    if (!id || stepBusy) return
+    if (!id || stepBusy || !requireCurrentProjection()) return
     const restoreFocus = rememberActionFocus()
     setStepBusy(true)
     try {
@@ -350,7 +400,7 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
       setStepBusy(false)
       restoreFocus()
     }
-  }, [activity, onStatus, reload, rememberActionFocus, stepBusy])
+  }, [activity, onStatus, reload, rememberActionFocus, requireCurrentProjection, stepBusy])
 
   const toggleOffcuts = useCallback(() => {
     setShowOffcuts((shown) => {
@@ -370,6 +420,7 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
   }, [dir])
 
   const reorderColumn = (from: string, to: string): void => {
+    if (!requireCurrentProjection()) return
     const order = columns.map((column) => column.status)
     const source = order.indexOf(from), target = order.indexOf(to)
     if (source < 0 || target < 0 || source === target) return
@@ -398,7 +449,9 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     else if (command === 'toggle-sources') toggleSources()
     else if (command === 'attach-source') {
       if (carrying && selectedPath) void attachSource(selectedPath, carrying)
-      else if (selectedSource) setCarrying(selectedSource)
+      else if (selectedSource) {
+        if (requireCurrentProjection()) setCarrying(selectedSource)
+      }
       else onStatus(sourcesShown ? 'Select a source in the Sources rail first.' : 'Show the Sources rail and select a source first.')
     }
     else if (command === 'list-sources') {
@@ -444,7 +497,7 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     }
     if (selectedSource && event.altKey && event.key === 'ArrowLeft') {
       event.preventDefault()
-      setCarrying(selectedSource)
+      if (requireCurrentProjection()) setCarrying(selectedSource)
       return
     }
     if (selectedSource && event.key === 'Enter') {
@@ -503,13 +556,26 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     event.dataTransfer.setData('text/plain', path)
   }
 
+  const retryButton = (
+    <button className="btn" type="button" aria-disabled={pending} onClick={() => {
+      if (pending) return
+      rootRef.current?.focus()
+      void reload()
+    }}>Try again</button>
+  )
+
   return (
-    <div className={`board-wrap${initialLoading ? ' board-loading' : ''}`} ref={rootRef} tabIndex={0} onKeyDown={onKeyDown} aria-label={`${label} — ${name}`}>
+    <div className={`board-wrap${initialLoading ? ' board-loading' : ''}`} ref={rootRef} tabIndex={0} onKeyDown={onKeyDown}
+      aria-label={`${label} — ${name}`} onDragStartCapture={(event) => {
+        if (requireCurrentProjection()) return
+        event.preventDefault()
+        event.stopPropagation()
+      }}>
       {!initialLoading && (<>
         <div className="board-head">
           {onBack && <BackControl onBack={onBack} />}
           <h1>{name}</h1>
-          {loadStatus !== 'failed' && <span className="bh-count">{shownRows.length} {shownRows.length === 1 ? 'piece' : 'pieces'} · {columns.length} stages{showOffcuts ? ` · ${offcuts.length} ${offcuts.length === 1 ? 'offcut' : 'offcuts'}` : ''} · {sources.length} {sources.length === 1 ? 'source' : 'sources'} · {shownRows.length} shown</span>}
+          {accepted && <span className="bh-count">{shownRows.length} {shownRows.length === 1 ? 'piece' : 'pieces'} · {columns.length} stages{showOffcuts ? ` · ${offcuts.length} ${offcuts.length === 1 ? 'offcut' : 'offcuts'}` : ''} · {sources.length} {sources.length === 1 ? 'source' : 'sources'} · {shownRows.length} shown</span>}
           <div className="board-view-menu">
             <button type="button" className="btn" aria-haspopup="menu" aria-expanded={viewMenuOpen} onClick={() => setViewMenuOpen((open) => !open)}><Eye aria-hidden="true" /> View</button>
             {viewMenuOpen && (
@@ -533,15 +599,22 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
         <div className="board-projnote">
           one query · <span className="pj">rail</span><span className="pj on">{label.toLowerCase()}</span><span className="pj">in-doc query</span>
         </div>
+        {accepted && failed && (
+          <div className="board-activity refused">
+            <span role="alert">Could not refresh {label}. Showing the last result.</span>
+            {retryButton}
+          </div>
+        )}
+        {pending && (accepted || failed) && <p className="board-projnote" role="status">Refreshing {label}…</p>}
       </>)}
 
       {initialLoading ? (
         <p className="board-projnote" role="status">Loading {label}…</p>
-      ) : loadStatus === 'failed' ? (
+      ) : !accepted ? (
         <div className="board-empty" role="alert">
           <h2>{label === 'Board' ? 'The Board could not load' : `${label} could not load`}</h2>
           <p>The collection query did not complete. Your files have not been changed.</p>
-          <button className="btn" type="button" onClick={() => { rootRef.current?.focus(); void reload() }}>Try again</button>
+          {retryButton}
         </div>
       ) : rows.length === 0 ? (
         <div className="board-empty">
@@ -614,8 +687,9 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
                     className="bcol-insert-query"
                     aria-label={`Insert ${column.status} as query`}
                     title="Insert as query"
-                    onFocus={() => onQueryContext(queryContextFor(column.status))}
-                    onClick={() => onInsertQuery(queryContextFor(column.status))}
+                    aria-disabled={failed}
+                    onFocus={() => { if (hasCurrentProjection()) onQueryContext(queryContextFor(column.status)) }}
+                    onClick={() => { if (requireCurrentProjection()) onInsertQuery(queryContextFor(column.status)) }}
                   ><ListPlus aria-hidden="true" /></button>
                   <span className="c-count">{column.rows.length}</span>
                   <div className="board-column-menu">
@@ -665,7 +739,7 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
                         data-path={row.path}
                         onClick={() => {
                           setSelectedPath(row.path)
-                          onQueryContext(queryContextFor(row.status?.trim() || UNSORTED_STATUS))
+                          if (hasCurrentProjection()) onQueryContext(queryContextFor(row.status?.trim() || UNSORTED_STATUS))
                           rootRef.current?.focus()
                         }}
                         onDoubleClick={() => onOpenPiece(row.path)}
@@ -735,7 +809,6 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
           {showOffcuts && offcuts.length > 0 && <span className="kb"><kbd>⌥→</kbd> offcut to idea</span>}
           {sourcesShown && sources.length > 0 && <span className="kb"><kbd>⌥←</kbd> attach source</span>}
           {moving && <span className="board-moving" role="status"><Check aria-hidden="true" /> Applying status…</span>}
-          {loadStatus === 'loading' && <span className="board-moving" role="status">Refreshing {label}…</span>}
         </div>
       )}
     </div>

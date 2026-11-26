@@ -1,6 +1,7 @@
-import { Fragment, useCallback, useMemo, useState } from 'react'
+import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeftRight, CircleCheck, Clock3, Pencil, RotateCcw, Save } from 'lucide-react'
 import type { Change, Version, VersionCompareEndpointId } from '../../../preload'
+import type { DocumentVersionsStatus } from '../app/document-versions'
 import {
   sessionsByVersionStamp,
   sessionsForDocument,
@@ -46,7 +47,9 @@ export type VersionsPaneProps = {
   attachments?: Array<{ from: string; to: string }>
   attachmentUndo?: { id: string; files: number } | null
   onAttachHistory?: (input: { from: string; to: string }) => void
-  onUndoAttachment?: () => void
+  onUndoAttachment?: (id: string) => void
+  historyStatus: DocumentVersionsStatus
+  onRetry: () => void
   versions: Version[]
   /** The full Change history — per-version change counts are derived from its version stamps. */
   allChanges: Change[]
@@ -58,7 +61,8 @@ export type VersionsPaneProps = {
   /** Restore this version as the current document (same flow as the view banner's Restore). */
   onRestoreVersion: (version: Version) => void
   onOpenCompare: (fromId: VersionCompareEndpointId, toId: VersionCompareEndpointId) => void
-  onRenameVersion: (id: string, name: string) => void
+  /** Return true once this rename was accepted for the current document. */
+  onRenameVersion: (id: string, name: string) => boolean
   onReturnToCurrent: () => void
   onSaveVersion: () => void
   /** In a Folio the one Save version button asks "whole Folio or this part?" first, so its label ends in …. */
@@ -68,9 +72,11 @@ export type VersionsPaneProps = {
 function SessionRow({
   session,
   onViewSession,
+  disabled = false,
 }: {
   session: SessionSummary
   onViewSession: (session: SessionSummary) => void
+  disabled?: boolean
 }): JSX.Element {
   const settled = session.state === 'settled'
   const StateIcon = settled ? CircleCheck : Clock3
@@ -78,12 +84,13 @@ function SessionRow({
   return (
     <div
       className={`session-row ${session.state}`}
-      onClick={() => onViewSession(session)}
+      onClick={() => { if (!disabled) onViewSession(session) }}
       onKeyDown={(event) => {
-        if (event.key === 'Enter' && event.target === event.currentTarget) onViewSession(session)
+        if (!disabled && event.key === 'Enter' && event.target === event.currentTarget) onViewSession(session)
       }}
       tabIndex={0}
       role="button"
+      aria-disabled={disabled || undefined}
       title={`View ${settled ? 'settled' : 'pending'} session`}
     >
       <span className="spine-sub-node" aria-hidden="true" />
@@ -102,6 +109,8 @@ function SessionRow({
  */
 export function VersionsPane({
   activePath, waitingHistory = [], attachments = [], attachmentUndo, onAttachHistory, onUndoAttachment,
+  historyStatus,
+  onRetry,
   versions,
   allChanges,
   pendingCount,
@@ -117,6 +126,19 @@ export function VersionsPane({
 }: VersionsPaneProps): JSX.Element {
   const [renamingVersionId, setRenamingVersionId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const canUseVersions = historyStatus === 'ready'
+  const spineRef = useRef<HTMLElement>(null)
+  const workingRef = useRef<HTMLButtonElement>(null)
+  const focusBeforeRemoval = useRef<Element | null>(null)
+
+  // Ref detach runs before a row is removed and the browser drops its focus.
+  const rememberFocusOnDetach = useCallback((node: HTMLElement | null) => {
+    if (node) return
+    const focused = document.activeElement
+    if (focused?.closest('.version-row, .version-retry') && spineRef.current?.contains(focused)) {
+      focusBeforeRemoval.current = focused
+    }
+  }, [])
 
   const sessionBuckets = useMemo(
     () => sessionsByVersionStamp(sessionsForDocument(allChanges)),
@@ -134,11 +156,11 @@ export function VersionsPane({
   }, [allChanges])
 
   const openCompare = useCallback(() => {
-    if (versions.length === 0) return
+    if (!canUseVersions || versions.length === 0) return
     const from = versions.length >= 2 ? versions[1].id : versions[0].id
     const to = versions.length >= 2 ? versions[0].id : 'working'
     onOpenCompare(from, to)
-  }, [onOpenCompare, versions])
+  }, [canUseVersions, onOpenCompare, versions])
 
   const beginRenameVersion = useCallback((version: Version) => {
     setRenamingVersionId(version.id)
@@ -149,36 +171,51 @@ export function VersionsPane({
     setRenameValue('')
   }, [])
   const submitRenameVersion = useCallback(() => {
-    if (!renamingVersionId) return
+    if (!canUseVersions || !renamingVersionId) return
     const name = renameValue.trim()
-    if (!name) return
-    onRenameVersion(renamingVersionId, name)
-    setRenamingVersionId(null)
-    setRenameValue('')
-  }, [onRenameVersion, renameValue, renamingVersionId])
+    if (name && onRenameVersion(renamingVersionId, name)) cancelRenameVersion()
+  }, [canUseVersions, cancelRenameVersion, onRenameVersion, renameValue, renamingVersionId])
+
+  useLayoutEffect(() => {
+    const previous = focusBeforeRemoval.current
+    focusBeforeRemoval.current = null
+    const working = workingRef.current
+    if (canUseVersions && previous && !previous.isConnected && document.activeElement === document.body
+        && working?.getClientRects().length) working.focus()
+    if (canUseVersions && renamingVersionId && !versions.some(version => version.id === renamingVersionId)) {
+      cancelRenameVersion()
+    }
+  }, [canUseVersions, cancelRenameVersion, renamingVersionId, versions])
 
   return (
-    <section className="version-spine" aria-label="Versions">
+    <section className="version-spine" aria-label="Versions" ref={spineRef}>
       <div className="spine-title">
         <span>Versions</span>
-        <button type="button" onClick={openCompare} title="Compare versions" disabled={versions.length === 0}>
+        <button type="button" onClick={openCompare} title="Compare versions" disabled={!canUseVersions || versions.length === 0}>
           <ArrowLeftRight className="icon" aria-hidden="true" />
         </button>
       </div>
+      {historyStatus === 'loading' && <div className="version-empty" role="status">Loading versions…</div>}
+      {historyStatus === 'unavailable' && (
+        <div className="version-empty">
+          <p role="status">Versions are unavailable.</p>
+          <button className="version-retry" ref={rememberFocusOnDetach} type="button" onClick={onRetry}>Retry versions</button>
+        </div>
+      )}
       {waitingHistory.map(row => (
         <div key={row.from} className="version-empty">
           History waiting to be reattached ({row.count} version{row.count === 1 ? '' : 's'}, from {row.from})
-          {activePath && <button type="button" onClick={() => onAttachHistory?.({ from: row.from, to: activePath })}>Attach here</button>}
+          {activePath && <button type="button" disabled={!canUseVersions} onClick={() => onAttachHistory?.({ from: row.from, to: activePath })}>Attach here</button>}
         </div>
       ))}
       {attachments.map(row => (
         <div key={row.from} className="version-empty">
           <p>This file matches the first saved version of {row.from}.</p>
-          <button type="button" onClick={() => onAttachHistory?.(row)}>Reattach history from {row.from}</button>
+          <button type="button" disabled={!canUseVersions} onClick={() => onAttachHistory?.(row)}>Reattach history from {row.from}</button>
         </div>
       ))}
-      {attachmentUndo && <button type="button" onClick={onUndoAttachment}>Undo history attachment{attachmentUndo.files > 1 ? ` (${attachmentUndo.files} files)` : ''}</button>}
-      <button type="button" className="working-version" onClick={onReturnToCurrent}>
+      {attachmentUndo && <button type="button" disabled={!canUseVersions} onClick={() => onUndoAttachment?.(attachmentUndo.id)}>Undo history attachment{attachmentUndo.files > 1 ? ` (${attachmentUndo.files} files)` : ''}</button>}
+      <button type="button" className="working-version" ref={workingRef} onClick={onReturnToCurrent}>
         <span className="spine-node current" aria-hidden="true" />
         <span className="vcopy">
           <b>Working</b>
@@ -198,12 +235,14 @@ export function VersionsPane({
             <Fragment key={version.id}>
               <div
                 className={`version-row${historicalVersionId === version.id ? ' selected' : ''}`}
-                onClick={() => onViewVersion(version)}
+                ref={rememberFocusOnDetach}
+                onClick={() => { if (canUseVersions) onViewVersion(version) }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && e.target === e.currentTarget) onViewVersion(version)
+                  if (canUseVersions && e.key === 'Enter' && e.target === e.currentTarget) onViewVersion(version)
                 }}
                 tabIndex={0}
                 role="button"
+                aria-disabled={!canUseVersions && !renaming ? true : undefined}
                 title={renaming ? `Renaming ${version.name}` : `View ${version.name} read-only`}
               >
                 <span className="spine-node" aria-hidden="true" />
@@ -238,9 +277,10 @@ export function VersionsPane({
                 <button
                   type="button"
                   className="version-rename"
+                  aria-disabled={!canUseVersions || undefined}
                   onClick={(e) => {
                     e.stopPropagation()
-                    beginRenameVersion(version)
+                    if (canUseVersions) beginRenameVersion(version)
                   }}
                   title={`Rename ${version.name}`}
                   aria-label={`Rename ${version.name}`}
@@ -250,9 +290,10 @@ export function VersionsPane({
                 <button
                   type="button"
                   className="version-restore-btn version-restore"
+                  aria-disabled={!canUseVersions || undefined}
                   onClick={(e) => {
                     e.stopPropagation()
-                    onRestoreVersion(version)
+                    if (canUseVersions) onRestoreVersion(version)
                   }}
                   title={`Restore ${version.name} as the current document`}
                   aria-label={`Restore ${version.name}`}
@@ -261,14 +302,14 @@ export function VersionsPane({
                 </button>
               </div>
               {sessions.map((session) => (
-                <SessionRow key={session.sessionId} session={session} onViewSession={onViewSession} />
+                <SessionRow key={session.sessionId} session={session} onViewSession={onViewSession} disabled={!canUseVersions} />
               ))}
             </Fragment>
           )
         })
-      ) : (
+      ) : canUseVersions ? (
         <div className="version-empty">No saved versions yet.</div>
-      )}
+      ) : null}
       <button className="btn primary save-version-wide" type="button" onClick={onSaveVersion}>
         <Save className="icon" aria-hidden="true" />
         {saveAsksScope ? 'Save version…' : 'Save version'} <kbd>⇧⌘S</kbd>

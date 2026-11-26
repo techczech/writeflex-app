@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Sparkles, Eye, FileDown, FileText, GitCompare, Globe, History, Image as ImageIcon, Pencil, RotateCcw, Send, Table2, Upload, type LucideIcon } from 'lucide-react'
 import { COMPARE_WORKING } from '../../../shared/folio-version-compare'
 import { FolioVersionCompare, type CompareChoice, type TakeHost } from './FolioVersionCompare'
@@ -53,6 +53,11 @@ function rowIcon(row: FolioVersionRow): LucideIcon {
 /** How long a burst of collection or file changes is gathered before the backup's left-out list is read again. */
 const SCOPE_REREAD_MS = 250
 
+type Timeline = { accepted: FolioVersionsListing | null; pending: boolean; failed: boolean }
+const INITIAL_TIMELINE: Timeline = { accepted: null, pending: true, failed: false }
+const NO_VERSIONS: readonly FolioVersionRow[] = []
+const HISTORY_UNAVAILABLE = 'The versions of this Folio could not be read.'
+
 type Loaded<T> = { state: 'loading' } | { state: 'unreadable' } | { state: 'ready'; value: T }
 
 /**
@@ -61,7 +66,11 @@ type Loaded<T> = { state: 'loading' } | { state: 'unreadable' } | { state: 'read
  */
 export type VersionsMemory = { chosen: string | null; rows: number; main: number; /** The comparison open in the tab (ticket 08), so Back from a read-only version and a tab change find it again. */ compare?: CompareChoice | null }
 
+export type VersionsEntry = { dir: string; origin: Element | null }
+
 export type FolioRoomVersionsProps = {
+  /** A one-shot focus handoff from an explicit entry into this Folio's Versions tab. */
+  entry?: { current: VersionsEntry | null }
   /** Where the tab keeps its choice and scroll for the room (ticket 07). Absent: the tab starts from the newest version each time. */
   memory?: { current: VersionsMemory }
   /** The Folio's folder. */
@@ -74,10 +83,17 @@ export type FolioRoomVersionsProps = {
   take?: TakeHost
 }
 
-export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }: FolioRoomVersionsProps): JSX.Element {
-  const [listing, setListing] = useState<Loaded<FolioVersionsListing>>({ state: 'loading' })
+export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take, entry }: FolioRoomVersionsProps): JSX.Element {
+  const [timeline, setTimeline] = useState(INITIAL_TIMELINE)
+  const currentTimeline = useRef(timeline)
+  const readRequest = useRef(0)
   const [chosen, setChosenState] = useState<string | null>(memory?.current.chosen ?? null)
-  const setChosen = useCallback((id: string | null): void => { if (memory) memory.current.chosen = id; setChosenState(id) }, [memory])
+  const chosenRef = useRef(chosen)
+  const setChosen = useCallback((id: string | null): void => {
+    chosenRef.current = id
+    if (memory) memory.current.chosen = id
+    setChosenState(id)
+  }, [memory])
   const [focused, setFocused] = useState<string | null>(null)
   // Ticket 08: the comparison open in the main column, if any. The tab owns it; the room's memory only carries it across a read-only visit.
   // Ticket 14: Import (steps 1 and 2) takes the main column while it is open. It writes nothing until "Bring changes into the Folio".
@@ -91,16 +107,43 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
   // Ticket 15: the incoming revisions and how many of their staged suggestions are decided. They change with the ledger, not only with the history.
   const [revisions, setRevisions] = useState<RevisionStatus[]>([])
   const [ledgerTick, setLedgerTick] = useState(0)
-  // The backup's left-out list depends on where the parts are now, so it is read again after a collection or file change too
-  // (a part binned or restored in the Binder, a file moved), coalesced: a burst of changes is one read.
-  const [scopeTick, setScopeTick] = useState(0)
   const cues = useFolioCues(dir)
   const listRef = useRef<HTMLDivElement>(null)
   const mainRef = useRef<HTMLDivElement>(null)
   const saveRef = useRef<HTMLButtonElement>(null)
+  const retryRef = useRef<HTMLButtonElement>(null)
+  const returningFocus = useRef(false)
 
-  // The timeline, again whenever the history changes (a save, the agent's save, a restore).
-  useEffect(() => window.writeflex.onVersionsChanged(() => setTick((value) => value + 1)), [])
+  const readHistory = useCallback(async (): Promise<void> => {
+    const request = ++readRequest.current
+    const chosenAtRead = chosenRef.current
+    const publish = (next: Timeline): void => {
+      currentTimeline.current = next
+      setTimeline(next)
+    }
+    if (!currentTimeline.current.pending) publish({ ...currentTimeline.current, pending: true })
+    const answer = await window.writeflex.folioVersions.list(dir).catch(() => null)
+    if (readRequest.current !== request) return
+    const previous = currentTimeline.current.accepted
+    // Main canonicalises the folder spelling. The request and this keyed tab own the answer.
+    if (!answer) {
+      publish({ accepted: previous, pending: false, failed: true })
+      return
+    }
+
+    const active = document.activeElement
+    const activeRow = active instanceof HTMLElement && listRef.current?.contains(active) ? active.dataset.versionId : undefined
+    returningFocus.current = active === retryRef.current || (activeRow !== undefined && !answer.versions.some(row => row.id === activeRow))
+    const selected = chosenRef.current
+    // An Import completion can select an id while an older history read is in flight.
+    if (selected !== null && (selected === chosenAtRead || previous?.versions.some(row => row.id === selected))
+      && !answer.versions.some(row => row.id === selected)) {
+      setChosen(answer.versions[0]?.id ?? null)
+    }
+    publish({ accepted: answer, pending: false, failed: false })
+  }, [dir, setChosen])
+
+  useLayoutEffect(() => () => { readRequest.current += 1 }, [])
   useEffect(() => window.writeflex.onChangesChanged(() => setLedgerTick((value) => value + 1)), [])
   useEffect(() => {
     let live = true
@@ -111,22 +154,28 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
     let timer: ReturnType<typeof setTimeout> | null = null
     const soon = (): void => {
       if (timer !== null) clearTimeout(timer)
-      timer = setTimeout(() => { timer = null; setScopeTick((value) => value + 1) }, SCOPE_REREAD_MS)
+      timer = setTimeout(() => { timer = null; void readHistory() }, SCOPE_REREAD_MS)
     }
+    const offVersions = window.writeflex.onVersionsChanged(() => {
+      void readHistory()
+      setTick((value) => value + 1)
+    })
+    // The backup's left-out list depends on where the parts are now. Coalesce file and Collection events.
     const offCollection = window.writeflex.onCollectionChanged(soon)
     const offFiles = window.writeflex.onFileChangedOnDisk(soon)
-    return () => { offCollection(); offFiles(); if (timer !== null) clearTimeout(timer) }
-  }, [])
-  useEffect(() => {
-    let live = true
-    void window.writeflex.folioVersions.list(dir).then((value) => { if (live) setListing(value ? { state: 'ready', value } : { state: 'unreadable' }) }, () => { if (live) setListing({ state: 'unreadable' }) })
-    return () => { live = false }
-  }, [dir, tick, scopeTick])
+    void readHistory()
+    return () => { offVersions(); offCollection(); offFiles(); if (timer !== null) clearTimeout(timer) }
+  }, [readHistory])
 
-  const versions = listing.state === 'ready' ? listing.value.versions : []
+  const { accepted, failed, pending } = timeline
+  const versions = accepted?.versions ?? NO_VERSIONS
   const ids = versions.map((version) => version.id)
   const shown = shownVersionId(ids, chosen)
   const shownRow = versions.find((version) => version.id === shown) ?? null
+  const actionRow = useCallback((id: string): FolioVersionRow | undefined => {
+    const current = currentTimeline.current
+    return current.failed ? undefined : current.accepted?.versions.find(row => row.id === id)
+  }, [])
 
   useEffect(() => {
     if (shown === null) { setContents({ state: 'loading' }); return }
@@ -138,33 +187,39 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
 
   // Open Folio Version Read-only (palette, menu): the version the tab shows.
   const openReadOnly = actions?.['open-read-only']
-  const shownRowRef = useRef<FolioVersionRow | null>(null)
-  shownRowRef.current = shownRow
+  const shownRef = useRef(shown)
+  shownRef.current = shown
+  const shownForAction = useCallback(() => {
+    const id = shownRef.current
+    return id === null ? undefined : actionRow(id)
+  }, [actionRow])
   const openReadOnlyRef = useRef(openReadOnly)
   openReadOnlyRef.current = openReadOnly
   useEffect(() => {
     const onCommand = (event: Event): void => {
       const detail = (event as CustomEvent<{ handled: boolean }>).detail
-      if (!shownRowRef.current || !openReadOnlyRef.current) return
+      const row = shownForAction()
+      if (!row || !openReadOnlyRef.current) return
       detail.handled = true
-      openReadOnlyRef.current(shownRowRef.current)
+      openReadOnlyRef.current(row)
     }
     window.addEventListener(OPEN_READ_ONLY_EVENT, onCommand)
     return () => window.removeEventListener(OPEN_READ_ONLY_EVENT, onCommand)
-  }, [])
+  }, [shownForAction])
   // Compare Folio Versions… (palette, menu): the version the tab shows, against the working draft.
   const compareRef = useRef<(row: FolioVersionRow) => void>(() => undefined)
   compareRef.current = (row) => setComparing({ from: row.id, to: COMPARE_WORKING })
   useEffect(() => {
     const onCommand = (event: Event): void => {
       const detail = (event as CustomEvent<{ handled: boolean }>).detail
-      if (!shownRowRef.current) return
+      const row = shownForAction()
+      if (!row) return
       detail.handled = true
-      compareRef.current(shownRowRef.current)
+      compareRef.current(row)
     }
     window.addEventListener(OPEN_COMPARE_EVENT, onCommand)
     return () => window.removeEventListener(OPEN_COMPARE_EVENT, onCommand)
-  }, [])
+  }, [shownForAction])
   // Export This Folio Version… and Mark Version as Sent… (palette, menu): the version the tab shows.
   const exportRef = useRef(actions?.export)
   exportRef.current = actions?.export
@@ -173,27 +228,32 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
   useEffect(() => {
     const on = (target: { current: ((row: FolioVersionRow) => void) | undefined }) => (event: Event): void => {
       const detail = (event as CustomEvent<{ handled: boolean }>).detail
-      if (!shownRowRef.current || !target.current) return
+      const row = shownForAction()
+      if (!row || !target.current) return
       detail.handled = true
-      target.current(shownRowRef.current)
+      target.current(row)
     }
     const onExport = on(exportRef)
     const onMark = on(markSentRef)
     window.addEventListener(OPEN_EXPORT_EVENT, onExport)
     window.addEventListener(OPEN_MARK_SENT_EVENT, onMark)
     return () => { window.removeEventListener(OPEN_EXPORT_EVENT, onExport); window.removeEventListener(OPEN_MARK_SENT_EVENT, onMark) }
-  }, [])
+  }, [shownForAction])
   // Import Revision from Word… (palette, menu): opens Import in this tab.
+  const openImport = useCallback((): void => {
+    if (currentTimeline.current.failed) return
+    setComparing(null)
+    setDeciding(null)
+    setImporting(true)
+  }, [setComparing])
   useEffect(() => {
     const onCommand = (event: Event): void => {
       ;(event as CustomEvent<{ handled: boolean }>).detail.handled = true
-      setComparing(null)
-      setDeciding(null)
-      setImporting(true)
+      openImport()
     }
     window.addEventListener(OPEN_IMPORT_EVENT, onCommand)
     return () => window.removeEventListener(OPEN_IMPORT_EVENT, onCommand)
-  }, [setComparing])
+  }, [openImport])
   const closeImport = useCallback((): void => {
     setImporting(false)
     requestAnimationFrame(() => listRef.current?.closest('.fv')?.querySelector<HTMLElement>('[data-testid="versions-import"]')?.focus())
@@ -217,24 +277,42 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
     })
   }, [contents.state, memory])
 
-  // Reaching the tab by its chord puts the keyboard in the list (or on Save Folio version… when there is no list yet).
-  const landed = useRef(false)
-  useEffect(() => {
-    if (landed.current || listing.state === 'loading') return
-    landed.current = true
-    // A tab restored at launch must not take the keyboard from a field the writer is typing in.
-    if (document.activeElement?.closest('input, textarea, select, [contenteditable="true"], .cm-editor')) return
-    const target = listRef.current?.querySelector<HTMLElement>('[role="option"][tabindex="0"]') ?? saveRef.current
-    target?.focus()
-  }, [listing.state])
+  const workflowOpen = deciding !== null || importing || comparing !== null
+  useLayoutEffect(() => {
+    if (accepted === null && !failed) return
+    const active = document.activeElement
+    const bodyHasFocus = active === document.body || active === document.documentElement
+    const target = listRef.current?.querySelector<HTMLElement>('[role="option"][tabindex="0"]') ?? saveRef.current ?? retryRef.current
+    const returning = returningFocus.current
+    returningFocus.current = false
+    const intent = entry?.current
+    if (intent?.dir === dir && entry) {
+      entry.current = null
+      // Import and Compare have their own keyboard destinations once their contents arrive.
+      if ((!workflowOpen || accepted === null) && (active === intent.origin || bodyHasFocus)) target?.focus()
+    } else if (returning && bodyHasFocus) {
+      target?.focus({ preventScroll: true })
+    }
+  }, [accepted, dir, entry, failed, workflowOpen])
 
   const focusRow = useCallback((id: string) => {
     setFocused(id)
     listRef.current?.querySelector<HTMLElement>(`[data-version-id="${CSS.escape(id)}"]`)?.focus()
   }, [])
 
-  if (listing.state === 'loading') return <div className="fv" data-testid="room-versions" aria-busy="true" />
-  if (listing.state === 'unreadable') return <div className="fv" data-testid="room-versions"><div className="fr-empty"><b>The versions of this Folio could not be read.</b>Close and reopen the folder, then try again.</div></div>
+  const retryNotice = failed && (
+    <div className="fv-notice">
+      <b role="status">{HISTORY_UNAVAILABLE}</b>{' '}
+      <button ref={retryRef} type="button" className="fv-btn" aria-disabled={pending || undefined}
+        onClick={() => { if (!currentTimeline.current.pending) void readHistory() }}>
+        Retry versions
+      </button>
+    </div>
+  )
+
+  if (accepted === null) {
+    return <div className="fv" data-testid="room-versions" aria-busy={!failed || undefined}>{retryNotice}</div>
+  }
 
   const saveButton = (primary: boolean): JSX.Element => (
     <button ref={saveRef} type="button" className={`fv-btn${primary ? ' pri' : ''}`} data-testid="versions-save" aria-disabled={onSaveVersion ? undefined : true} title={onSaveVersion ? undefined : SAVE_SHEET_REASON} onClick={() => onSaveVersion?.()}>
@@ -242,37 +320,54 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
     </button>
   )
 
-  if (versions.length === 0) {
+  if (versions.length === 0 && !workflowOpen) {
     return (
-      <div className="fv fv-none" data-testid="room-versions" data-state="empty">
-        <div className="fv-empty" data-testid="versions-empty">
-          <History aria-hidden="true" className="fv-empty-icon" />
-          <h3>No Folio versions yet</h3>
-          <p>A Folio version freezes the text of every part, in order, with the tables and widgets the text inserts. Research, data you do not insert, offcuts and the archive stay out.</p>
-          {saveButton(true)}
+      <div className="fv-shell">
+        {retryNotice}
+        <div className="fv fv-none" data-testid="room-versions" data-state="empty">
+          <div className="fv-empty" data-testid="versions-empty">
+            <History aria-hidden="true" className="fv-empty-icon" />
+            <h3>No Folio versions yet</h3>
+            <p>A Folio version freezes the text of every part, in order, with the tables and widgets the text inserts. Research, data you do not insert, offcuts and the archive stay out.</p>
+            {saveButton(true)}
+          </div>
         </div>
       </div>
     )
   }
 
-  const reasons = leftOutReasons(listing.value)
-  const unavailable = listing.value.backup.state === 'unavailable'
+  const reasons = leftOutReasons(accepted)
+  const backupUnavailable = accepted.backup.state === 'unavailable'
   const outIds = new Set(reasons.map((reason) => reason.id))
   const tabbable = focused !== null && ids.includes(focused) ? focused : shown
 
   // Ticket 15: a revision with suggestions still waiting (or matches only the writer can confirm) says so above everything, and who brought it in.
-  const waiting = revisions.find((revision) => !revision.withdrawn && (revision.decided < revision.staged || (revision.structure !== undefined && revision.structure.decided < revision.structure.total) || revision.needsYou > 0))
+  const waiting = revisions.find((revision) => ids.includes(revision.id) && !revision.withdrawn && (revision.decided < revision.staged || (revision.structure !== undefined && revision.structure.decided < revision.structure.total) || revision.needsYou > 0))
   const revisionOf = (id: string): RevisionStatus | undefined => revisions.find((revision) => revision.id === id)
   // Ticket 16: "Review the revision" opens the decide step (the part's margin is one click on from there, "Open in Text").
-  const review = (revision: RevisionStatus): void => { setComparing(null); setImporting(false); setChosen(revision.id); setDeciding(revision.id) }
+  const review = (revision: RevisionStatus): void => {
+    const row = actionRow(revision.id)
+    if (!row || row.withdrawn) return
+    setComparing(null); setImporting(false); setChosen(row.id); setDeciding(row.id)
+  }
+  const selectRow = (id: string, click: boolean): void => {
+    if (!actionRow(id)) return
+    setChosen(id)
+    if (click) {
+      setFocused(id)
+      if (deciding !== null && deciding !== id) setDeciding(null)
+    }
+    if (comparing) setComparing({ ...comparing, from: id })
+  }
   return (
     <div className="fv-shell">
-    {waiting && deciding === null && <RevisionBanner revision={waiting} onReview={() => review(waiting)} />}
+    {retryNotice}
+    {waiting && deciding === null && <RevisionBanner revision={waiting} onReview={() => review(waiting)} reviewUnavailable={failed} />}
     <div className={`fv${deciding !== null ? ' fv-folded' : ''}`} data-testid="room-versions" data-state="list" data-deciding={deciding ?? undefined}>
       <div className="fv-list" data-testid="versions-timeline">
         <div className="fv-listhead">
           {saveButton(true)}
-          <button type="button" className="fv-btn" aria-pressed={importing} data-testid="versions-import" onClick={() => { setComparing(null); setDeciding(null); setImporting(true) }}><FileDown aria-hidden="true" />Import revision…</button>
+          <button type="button" className="fv-btn" aria-pressed={importing} data-testid="versions-import" aria-disabled={failed || undefined} onClick={openImport}><FileDown aria-hidden="true" />Import revision…</button>
         </div>
         {cues.state === 'ready' && (
           // The working draft: not a version (it cannot be chosen or opened), so it is outside the listbox. It says what the Folio holds now that the last version does not.
@@ -288,7 +383,7 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
           if (event.metaKey || event.ctrlKey || event.altKey) return
           if (event.key === 'Enter' || event.key === ' ') {
             const id = (event.target as HTMLElement).closest<HTMLElement>('[data-version-id]')?.dataset.versionId
-            if (id) { event.preventDefault(); setChosen(id); if (comparing) setComparing({ ...comparing, from: id }) }
+            if (id) { event.preventDefault(); selectRow(id, false) }
             return
           }
           const from = (event.target as HTMLElement).closest<HTMLElement>('[data-version-id]')?.dataset.versionId ?? null
@@ -298,8 +393,8 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
           {versions.map((version) => {
             const Icon = rowIcon(version)
             return (
-              <div key={version.id} role="option" aria-selected={version.id === shown} tabIndex={version.id === tabbable ? 0 : -1} data-version-id={version.id} data-testid="version-row" title={deciding !== null ? version.name : undefined} className={`fv-row${version.id === shown ? ' sel' : ''}`}
-                onClick={() => { setChosen(version.id); setFocused(version.id); if (deciding !== null && deciding !== version.id) setDeciding(null); if (comparing) setComparing({ ...comparing, from: version.id }) }} onDoubleClick={() => openReadOnly?.(version)} onFocus={() => setFocused(version.id)}>
+              <div key={version.id} role="option" aria-selected={version.id === shown} aria-disabled={failed || undefined} tabIndex={version.id === tabbable ? 0 : -1} data-version-id={version.id} data-testid="version-row" title={deciding !== null ? version.name : undefined} className={`fv-row${version.id === shown ? ' sel' : ''}`}
+                onClick={() => selectRow(version.id, true)} onDoubleClick={() => { const row = actionRow(version.id); if (row) openReadOnly?.(row) }} onFocus={() => setFocused(version.id)}>
                 <Icon aria-hidden="true" className="fv-row-icon" />
                 <div className="fv-row-body">
                   <div className="fv-nm"><span className="fv-name">{version.name}</span>
@@ -316,9 +411,9 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
         </div>
       </div>
       <div className="fv-main" ref={mainRef} onScroll={(event) => { if (memory) memory.current.main = event.currentTarget.scrollTop }}>
-        {(reasons.length > 0 || unavailable) && (
+        {(reasons.length > 0 || backupUnavailable) && (
           <div className="fv-notice" role="status" data-testid="versions-left-out">
-            {unavailable
+            {backupUnavailable
               ? <p>{BACKUP_UNKNOWN}</p>
               : <><b>{reasons.length === 1 ? '1 Folio version is' : `${reasons.length} Folio versions are`} not in the backup</b>{reasons.map((reason) => <p key={reason.id} data-version-id={reason.id}>{reason.reason}</p>)}</>}
           </div>
@@ -328,8 +423,12 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
           : importing
           ? <FolioVersionImport dir={dir} onClose={closeImport} onDone={(id) => { setChosen(id); setImporting(false) }} onDecide={(id) => { setChosen(id); setImporting(false); setDeciding(id) }} {...(onSaveVersion ? { onSaveVersion: () => onSaveVersion() } : {})} />
           : comparing
-          ? <FolioVersionCompare dir={dir} versions={versions} choice={comparing} onChoice={setComparing} onClose={closeCompare} {...(take ? { take } : {})} />
-          : shownRow && <VersionContents row={shownRow} contents={contents} actions={{ ...actions, compare: (row) => compareRef.current(row) }} {...(shownRow.incomingFrom !== undefined && !shownRow.withdrawn ? { onDecide: () => setDeciding(shownRow.id) } : {})} />}
+          ? <FolioVersionCompare dir={dir} versions={versions} choice={comparing} choicesUnavailable={failed} onChoice={(next) => {
+            if (currentTimeline.current.failed) return
+            const available = (id: string): boolean => id === COMPARE_WORKING || Boolean(actionRow(id))
+            if ((next.from === comparing.from || available(next.from)) && (next.to === comparing.to || available(next.to))) setComparing(next)
+          }} onClose={closeCompare} {...(take ? { take } : {})} />
+          : shownRow && <VersionContents row={shownRow} contents={contents} actionRow={actionRow} unavailable={failed} actions={{ ...actions, compare: (row) => compareRef.current(row) }} {...(shownRow.incomingFrom !== undefined && !shownRow.withdrawn ? { onDecide: (row: FolioVersionRow) => { if (row.incomingFrom !== undefined && !row.withdrawn) setDeciding(row.id) } } : {})} />}
       </div>
     </div>
     </div>
@@ -340,13 +439,13 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take }:
  * A revision with suggestions still waiting, or matches only the writer can confirm (ticket 15): who brought it in, what is waiting, and that
  * nothing is applied until the writer accepts. "Review the revision" opens the first part with a suggestion waiting, where the margin is.
  */
-export function RevisionBanner({ revision, onReview }: { revision: RevisionStatus; onReview?: () => void }): JSX.Element {
+export function RevisionBanner({ revision, onReview, reviewUnavailable }: { revision: RevisionStatus; onReview?: () => void; reviewUnavailable?: boolean }): JSX.Element {
   const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(revision.ts)
   return (
     <div className="fv-banner" role="status" data-testid="revision-banner" data-revision-id={revision.id} data-by={revision.by ?? ''}>
       {revision.by !== null ? <Sparkles aria-hidden="true" /> : <FileDown aria-hidden="true" />}
       <span><b>{revision.by ?? 'You'}</b> brought in {revision.from}’s revision at {time}: <span data-testid="revision-summary">{revisionSummary(revision)}</span> {NOTHING_APPLIED}</span>
-      {onReview && <button type="button" className="fv-btn pri sm" data-testid="revision-review" onClick={onReview}>Review the revision</button>}
+      {onReview && <button type="button" className="fv-btn pri sm" data-testid="revision-review" aria-disabled={reviewUnavailable || undefined} onClick={onReview}>Review the revision</button>}
     </div>
   )
 }
@@ -362,20 +461,27 @@ function draftAuthor(versions: readonly FolioVersionRow[]): string | null {
   return versions.find((version) => version.incomingFrom === undefined && !version.withdrawn)?.author ?? null
 }
 
-function VersionContents({ row, contents, actions, onDecide }: { row: FolioVersionRow; contents: Loaded<FolioVersionContents>; actions: FolioRoomVersionsProps['actions']; onDecide?: () => void }): JSX.Element {
+function VersionContents({ row, contents, actions, onDecide, unavailable, actionRow }: {
+  row: FolioVersionRow
+  contents: Loaded<FolioVersionContents>
+  actions: FolioRoomVersionsProps['actions']
+  onDecide?: (row: FolioVersionRow) => void
+  unavailable: boolean
+  actionRow: (id: string) => FolioVersionRow | undefined
+}): JSX.Element {
   const held = contents.state === 'ready' && contents.value.id === row.id ? contents.value : null
   return (
     <div className="fv-contents" data-testid="version-contents" data-version-id={row.id}>
       <div className="fv-title"><h2>{row.name}</h2><span className="fv-sub">{versionWhen(row.ts)} · {row.author}{held ? ` · ${wordsText(held.words)}` : ''}</span></div>
       {row.note && <p className="fv-note">{row.note}</p>}
       {row.incomingFrom !== undefined && <p className="fv-note" data-testid="incoming-note">{`${row.incomingFrom}’s revision is kept as it arrived, with the Word file. The text below is yours as it stood when the revision came in; nothing has been applied to it.`}</p>}
-      {onDecide && <div className="fv-actions"><button type="button" className="fv-btn pri" data-testid="version-decide" onClick={onDecide}>Decide what to take…</button></div>}
+      {onDecide && <div className="fv-actions"><button type="button" className="fv-btn pri" data-testid="version-decide" aria-disabled={unavailable || undefined} onClick={() => { const current = actionRow(row.id); if (current) onDecide(current) }}>Decide what to take…</button></div>}
       <div className="fv-actions" role="group" aria-label="This version">
         {VERSION_ACTIONS.map((action) => {
           const Icon = ACTION_ICONS[action.id]
           const run = actions?.[action.id]
           return (
-            <button key={action.id} type="button" className="fv-btn" data-action={action.id} aria-disabled={run ? undefined : true} title={run ? undefined : action.reason} onClick={() => run?.(row)}>
+            <button key={action.id} type="button" className="fv-btn" data-action={action.id} aria-disabled={unavailable || !run || undefined} title={run ? undefined : action.reason} onClick={() => { const current = actionRow(row.id); if (current) run?.(current) }}>
               <Icon aria-hidden="true" />{action.label}
             </button>
           )

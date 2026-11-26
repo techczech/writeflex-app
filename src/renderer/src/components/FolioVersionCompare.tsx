@@ -59,13 +59,14 @@ export type FolioVersionCompareProps = {
   /** The Folio's versions, newest first, for the two pickers. */
   versions: readonly FolioVersionRow[]
   choice: CompareChoice
+  choicesUnavailable?: boolean
   onChoice: (choice: CompareChoice) => void
   /** Back to the version the tab was showing. */
   onClose: () => void
   take?: TakeHost
 }
 
-export function FolioVersionCompare({ dir, versions, choice, onChoice, onClose, take }: FolioVersionCompareProps): JSX.Element {
+export function FolioVersionCompare({ dir, versions, choice, choicesUnavailable, onChoice, onClose, take }: FolioVersionCompareProps): JSX.Element {
   const [load, setLoad] = useState<Loaded<FolioCompareResult>>({ state: 'loading' })
   const [tick, setTick] = useState(0)
   const root = useRef<HTMLDivElement>(null)
@@ -126,12 +127,12 @@ export function FolioVersionCompare({ dir, versions, choice, onChoice, onClose, 
   const pickers = (
     <div className="fvc-pick">
       <label className="fvc-pickone"><span className="fvc-sr">Compare this version</span>
-        <select data-testid="compare-from" value={choice.from} onChange={(event) => onChoice({ ...choice, from: event.target.value })}>
+        <select data-testid="compare-from" value={choice.from} aria-disabled={choicesUnavailable || undefined} onChange={(event) => { if (!choicesUnavailable) onChoice({ ...choice, from: event.target.value }) }}>
           {choiceOptions(versions, choice.from)}
         </select></label>
       <ArrowRight aria-hidden="true" className="fvc-arrow" />
       <label className="fvc-pickone"><span className="fvc-sr">with this version</span>
-        <select data-testid="compare-to" value={choice.to} onChange={(event) => onChoice({ ...choice, to: event.target.value })}>
+        <select data-testid="compare-to" value={choice.to} aria-disabled={choicesUnavailable || undefined} onChange={(event) => { if (!choicesUnavailable) onChoice({ ...choice, to: event.target.value }) }}>
           {choiceOptions(versions, choice.to)}
         </select></label>
       <span className="fvc-push">
