@@ -13,7 +13,6 @@ import {
 } from 'react'
 import { commandRan } from '../commands/command-ran'
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, ChevronDown, MessageSquareDashed, Search, SquareCheck, SquareMinus, SquarePlus } from 'lucide-react'
-import { EditorView } from '@codemirror/view'
 import { EditorSelection } from '@codemirror/state'
 import type { EditorHandle } from './EditorPane'
 import { FileRowMenu, type FileMenuItem } from './file-menu'
@@ -63,7 +62,7 @@ type OutlinePaneProps = {
   /** The path currently in the editor; a change resets this pane's collapse + focus state. */
   activePath: string | null
   /** Folder scope: land the caret on a line of a (possibly other) file — opens it first if needed. */
-  onJumpToFile: (file: string, line: number, isPart?: boolean) => void
+  onJumpToFile: (file: string, line: number, isPart?: boolean, options?: { offset: number; keepFocus?: boolean }) => void
   /** Bumped by App each time a save completes. Folder scope is disk-backed, so it must re-scan when a
    *  save lands a new `//@`/`//`/task on disk — otherwise the view ignores the save the user just made. */
   savedTick: number
@@ -579,9 +578,7 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
     listRef.current?.querySelector<HTMLElement>(`[data-key=${CSS.escape(key)}]`)?.focus()
   }, [])
 
-  // A folder-scope activation delegates to App: same-file jumps land in-editor immediately, cross-file
-  // jumps open the file and flush the caret once its buffer is live (App's pending-line). Keep the
-  // roving tabindex on the activated row so a Tab back into the list returns here.
+  // App hands the jump to the visible editor. Keep the roving tabindex so Tab can return here.
   const jumpFolderRow = useCallback(
     (row: FolderRow) => {
       setFolderFocusKey(row.key)
@@ -623,8 +620,9 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
   )
 
   const jumpTo = useCallback(
-    (entry: Entry, options: { keepFocus?: boolean } = {}) => {
-      const view = editorRef.current?.view()
+    (entry: Entry, options: { keepFocus?: boolean; isPart?: boolean } = {}) => {
+      const editor = editorRef.current
+      const view = editor?.view()
       if (!view) return
       // Keep the roving tabindex on the jumped row so a later Tab back into the list lands here. Resolve
       // a jump's target from its line (its stable identity) so a debounced-stale offset can't misfire.
@@ -632,18 +630,14 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
         entry.type === 'jump'
           ? view.state.doc.line(Math.min(Math.max(entry.line, 1), view.state.doc.lines)).from
           : clampOffset(entry.from, view.state.doc.length)
+      const path = editor?.path()
+      if (!path || path !== activePath) return
       setFocusFrom(entry.from)
-      view.dispatch({
-        selection: { anchor: target },
-        effects: EditorView.scrollIntoView(target, { y: 'start', yMargin: 80 }),
-      })
-      // Keyboard-first: land back in the editor, ready to write at the place you jumped to. The
-      // selection change fires the editor bus, so App's shared snapshot re-derives the cursor-follow
-      // (accent bar) on the next debounced tick — no local recompute needed here. ↵ in the list keeps the
-      // keyboard in the list instead (options.keepFocus): the writer is walking the outline.
-      if (!options.keepFocus) view.focus()
+      const line = view.state.doc.lineAt(target)
+      // Enter can walk the visible document while keeping the keyboard on its outline row.
+      onJumpToFile(path, line.number, options.isPart, { offset: target - line.from, keepFocus: options.keepFocus === true })
     },
-    [editorRef],
+    [activePath, editorRef, onJumpToFile],
   )
 
   const toggleCollapsed = useCallback((from: number) => {
@@ -1079,7 +1073,7 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
             onToggle={setFolioOpen}
             onOpenFile={onOpenFile}
             onJumpToFile={onJumpToFile}
-            onJumpOpen={(from) => jumpTo({ type: 'heading', from, level: 1, text: '' })}
+            onJumpOpen={(from, isPart) => jumpTo({ type: 'heading', from, level: 1, text: '' }, { isPart })}
             listRef={listRef}
             onMovePiece={onMovePiece}
             onAdd={onAddFiles}

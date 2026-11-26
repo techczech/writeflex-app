@@ -112,6 +112,7 @@ export function TabBar({
   const measureRef = useRef<HTMLDivElement | null>(null)
   const pinMenuRef = useRef<HTMLDivElement | null>(null)
   const [stripVisible, setStripVisible] = useState<string[]>(tabs)
+  const lastMeasuredVisible = useRef<string[] | null>(null)
   const [pinMenu, setPinMenu] = useState<{ path: string; x: number; y: number } | null>(null)
   const [sort, setSort] = useState<OpenTabsSort>(initialSort)
   const [sortMenuOpen, setSortMenuOpen] = useState(false)
@@ -119,10 +120,18 @@ export function TabBar({
 
   useLayoutEffect(() => {
     if (orientation !== 'horizontal') return
+    const publishVisible = (paths: string[]): void => {
+      // A pending tab update can replay on every synchronous commit and produce fresh arrays.
+      // Bail out before scheduling either state update, even when React has updates queued.
+      const previous = lastMeasuredVisible.current
+      if (previous && sameTabList(previous, paths)) return
+      lastMeasuredVisible.current = paths
+      setStripVisible(current => sameTabList(current, paths) ? current : paths)
+      onStripVisibleChange?.(paths)
+    }
     // Active and pinned tabs are never folded. A strip containing only those has no width decision.
     if (tabs.every(path => path === active || pinned.includes(path))) {
-      setStripVisible(current => sameTabList(current, tabs) ? current : tabs)
-      onStripVisibleChange?.(tabs)
+      publishVisible(tabs)
       return
     }
     if (!measureRef.current) return
@@ -138,11 +147,7 @@ export function TabBar({
       const newWidth = measureRef.current?.querySelector<HTMLElement>('.newtab')?.getBoundingClientRect().width ?? 30
       const pinDivider = pinned.length > 0 && pinned.length < tabs.length ? 13 : 0
       const fill = tabStripFill({ tabs, active, pinned, recent }, widths, strip.clientWidth - newWidth - pinDivider - 4, moreWidth)
-      // Skip an equal result: React replays a pending lower-priority updater on every urgent render,
-      // which hands this effect fresh `tabs`/`recent` arrays with the same content each time. An
-      // unconditional set here re-renders synchronously and the replay starts again (React error #185).
-      setStripVisible((current) => (sameTabList(current, fill.visible) ? current : fill.visible))
-      onStripVisibleChange?.(fill.visible)
+      publishVisible(fill.visible)
     }
     measure()
     const observer = new ResizeObserver(measure)

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Copy, FileText, GitCompare, Globe, History, Image as ImageIcon, Pencil, RotateCcw, Save, Table2, TriangleAlert, X } from 'lucide-react'
 import {
   FILE_KIND_LABEL, FILE_VERSION_CAP_LABEL, WORKING_COPY, fileRestoreMessage, restoredName, suggestedCopyName, usedBySentence, versionTitle, workingSentence,
-  type FileCompare, type FileKind, type FileVersionRow, type FileVersionsListing,
+  type FileCompare, type FileKind, type FileVersionRow, type FileVersionsListing, type FileWorking,
 } from '../../../shared/file-versions'
 import { versionWhen } from '../../../shared/folio-versions-view'
 import { useModalFocus } from '../hooks/useModalFocus'
@@ -86,31 +86,61 @@ function CompareView({ result, onClose }: { result: FileCompare; onClose: () => 
   )
 }
 
-type ModalProps = { file: string; busy: boolean; problem: string; onClose: () => void }
+type VersionSubject = Readonly<{
+  path: string
+  version: Readonly<Pick<FileVersionRow, 'id' | 'number' | 'name' | 'automatic'> & { sha256: string }>
+}>
+type RestoreSubject = VersionSubject & Readonly<{
+  action: 'restore'
+  workingSha256: string | null
+  workingState: FileWorking['state']
+}>
+type CopySubject = VersionSubject & Readonly<{ action: 'copy' }>
+type Confirmation = { subject: RestoreSubject | CopySubject; staleProblem: string }
 
-function RestoreSheet({ file, version, listing, busy, problem, onClose, onConfirm }: ModalProps & { version: FileVersionRow; listing: FileVersionsListing; onConfirm: () => void }): JSX.Element {
+function confirmationProblem(subject: Confirmation['subject'], listing: FileVersionsListing): string {
+  const row = listing.versions.find((version) => version.id === subject.version.id)
+  if (listing.path !== subject.path || !row || row.sha256 !== subject.version.sha256 || row.number !== subject.version.number) {
+    return 'This version changed or is no longer available. Close this sheet and choose again.'
+  }
+  if (subject.action === 'restore') {
+    if (row.name !== subject.version.name || row.automatic !== subject.version.automatic) {
+      return 'This version changed. Close this sheet and choose again.'
+    }
+    if (listing.workingSha256 !== subject.workingSha256 || listing.working.state !== subject.workingState) {
+      return 'The working copy or its saved status changed. Close this sheet and choose again.'
+    }
+  }
+  return ''
+}
+
+type ModalProps = { busy: boolean; stale: boolean; problem: string; onClose: () => void }
+
+function RestoreSheet({ subject, busy, stale, problem, onClose, onConfirm }: ModalProps & { subject: RestoreSubject; onConfirm: () => void }): JSX.Element {
+  const { path, version, workingState } = subject
+  const file = nameOf(path)
   const backdrop = useRef<HTMLDivElement | null>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
   useModalFocus(backdrop)
   useEscape(onClose, busy)
-  const working = listing.working
-  const keepsFirst = working.state === 'changed'
+  useEffect(() => { if (stale && !busy) cancelRef.current?.focus() }, [stale, busy])
   return createPortal(
     <div ref={backdrop} className="fvs-backdrop" role="presentation" onMouseDown={() => { if (!busy) onClose() }}>
-      <form className="fvs-sheet fvs-file" role="dialog" aria-modal="true" aria-labelledby="fvr-title" data-testid="file-restore-sheet" onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onSubmit={(event: FormEvent) => { event.preventDefault(); if (!busy) onConfirm() }}>
+      <form className="fvs-sheet fvs-file" role="dialog" aria-modal="true" aria-labelledby="fvr-title" data-testid="file-restore-sheet" onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onSubmit={(event: FormEvent) => { event.preventDefault(); if (!busy && !stale) onConfirm() }}>
         <div className="fvs-head"><RotateCcw className="icon" aria-hidden="true" /><h2 id="fvr-title">Restore v{version.number}{version.automatic ? '' : ` “${version.name}”`}?</h2></div>
         <div className="fvs-body">
           <p className="fvs-question">This puts v{version.number} back as {file}. It is added as a new version, “{restoredName(version)}”; v{version.number} and every other version stay.</p>
           <ul className="fvs-file-list">
-            {keepsFirst && <li>The working copy has changes no version holds. WriteFlex saves it first as “Before restoring v{version.number}”, so nothing is lost.</li>}
-            {working.state === 'missing' && <li>There is no file at this name now. It will be created.</li>}
+            {workingState === 'changed' && <li>The working copy has changes no version holds. WriteFlex saves it first as “Before restoring v{version.number}”, so nothing is lost.</li>}
+            {workingState === 'missing' && <li>There is no file at this name now. It will be created.</li>}
             <li>Folio versions keep the copies they used. This changes none of them.</li>
           </ul>
           {problem && <p className="fvs-error" role="alert" data-testid="file-restore-error">{problem}</p>}
         </div>
         <div className="fvs-foot">
           <span className="fvs-foot-hint" />
-          <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="submit" className="btn primary" disabled={busy} data-testid="file-restore-confirm" autoFocus><RotateCcw className="icon" aria-hidden="true" /> {busy ? 'Restoring…' : `Restore v${version.number}`}</button>
+          <button ref={cancelRef} type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="submit" className="btn primary" disabled={busy || stale} data-testid="file-restore-confirm" autoFocus><RotateCcw className="icon" aria-hidden="true" /> {busy ? 'Restoring…' : `Restore v${version.number}`}</button>
         </div>
       </form>
     </div>,
@@ -118,7 +148,9 @@ function RestoreSheet({ file, version, listing, busy, problem, onClose, onConfir
   )
 }
 
-function CopySheet({ file, version, path, busy, problem, onClose, onConfirm }: ModalProps & { version: FileVersionRow; path: string; onConfirm: (name: string) => void }): JSX.Element {
+function CopySheet({ subject, busy, stale, problem, onClose, onConfirm }: ModalProps & { subject: CopySubject; onConfirm: (name: string) => void }): JSX.Element {
+  const { path, version } = subject
+  const file = nameOf(path)
   const backdrop = useRef<HTMLDivElement | null>(null)
   useModalFocus(backdrop)
   useEscape(onClose, busy)
@@ -126,12 +158,12 @@ function CopySheet({ file, version, path, busy, problem, onClose, onConfirm }: M
   const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : 'the Collection folder'
   return createPortal(
     <div ref={backdrop} className="fvs-backdrop" role="presentation" onMouseDown={() => { if (!busy) onClose() }}>
-      <form className="fvs-sheet fvs-file" role="dialog" aria-modal="true" aria-labelledby="fvc-title" data-testid="file-copy-sheet" onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onSubmit={(event: FormEvent) => { event.preventDefault(); if (!busy) onConfirm(name) }}>
+      <form className="fvs-sheet fvs-file" role="dialog" aria-modal="true" aria-labelledby="fvc-title" data-testid="file-copy-sheet" onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onSubmit={(event: FormEvent) => { event.preventDefault(); if (!busy && !stale) onConfirm(name) }}>
         <div className="fvs-head"><Copy className="icon" aria-hidden="true" /><h2 id="fvc-title">Save v{version.number} of {file} as a copy</h2></div>
         <div className="fvs-body">
           <label className="fvs-field">
             <span>Name of the copy</span>
-            <input autoFocus value={name} maxLength={200} disabled={busy} aria-invalid={problem !== ''} data-testid="file-copy-name" onChange={(event) => setName(event.target.value)} onFocus={(event) => event.currentTarget.select()} />
+            <input autoFocus value={name} maxLength={200} disabled={busy} aria-invalid={!stale && problem !== ''} data-testid="file-copy-name" onChange={(event) => setName(event.target.value)} onFocus={(event) => event.currentTarget.select()} />
           </label>
           <p className="fvs-note">Saves one new file in {folder}, the same kind of file as {file}. If a file already has that name, nothing is overwritten and you choose another.</p>
           {problem && <p className="fvs-error" role="alert" data-testid="file-copy-error">{problem}</p>}
@@ -139,7 +171,7 @@ function CopySheet({ file, version, path, busy, problem, onClose, onConfirm }: M
         <div className="fvs-foot">
           <span className="fvs-foot-hint" />
           <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="submit" className="btn primary" disabled={busy || name.trim() === ''} data-testid="file-copy-confirm"><Copy className="icon" aria-hidden="true" /> {busy ? 'Saving…' : 'Save copy'}</button>
+          <button type="submit" className="btn primary" disabled={busy || stale || name.trim() === ''} data-testid="file-copy-confirm"><Copy className="icon" aria-hidden="true" /> {busy ? 'Saving…' : 'Save copy'}</button>
         </div>
       </form>
     </div>,
@@ -168,9 +200,8 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
   const [saveProblem, setSaveProblem] = useState('')
   const [busy, setBusy] = useState(false)
   const [compare, setCompare] = useState<FileCompare | null>(null)
-  const [restoring, setRestoring] = useState(false)
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
   const [restoreWarning, setRestoreWarning] = useState('')
-  const [copying, setCopying] = useState(false)
   const [modalProblem, setModalProblem] = useState('')
   const nameRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -190,12 +221,25 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
     let live = true
     void window.writeflex.fileVersions.list(path).then((answer) => {
       if (!live) return
-      if (answer.ok) { setListing(answer.listing); setProblem('') } else { setListing(null); setProblem(answer.message) }
+      if (answer.ok) {
+        setListing(answer.listing)
+        setProblem('')
+        // A failed read leaves the sheet intact. An accepted incompatible read
+        // retires its authority until the writer deliberately opens a new sheet.
+        setConfirmation((open) => {
+          if (!open || open.staleProblem || open.subject.path !== path) return open
+          const staleProblem = confirmationProblem(open.subject, answer.listing)
+          return staleProblem ? { ...open, staleProblem } : open
+        })
+      } else {
+        setListing(null)
+        setProblem(answer.message)
+      }
     }, () => { if (live) { setListing(null); setProblem('The versions of this file could not be read.') } })
     return () => { live = false }
   }, [path, tick])
   // A different file starts again.
-  useEffect(() => { setSelected(null); setNaming(false); setName(''); setSaveProblem(''); setCompare(null); setRestoring(false); setRestoreWarning(''); setCopying(false); setModalProblem('') }, [path])
+  useEffect(() => { setSelected(null); setNaming(false); setName(''); setSaveProblem(''); setCompare(null); setConfirmation(null); setRestoreWarning(''); setModalProblem('') }, [path])
   // The field takes focus when it opens, and takes it back after a save that was refused (a disabled field gives focus up).
   useEffect(() => { if (naming && !busy) nameRef.current?.focus() }, [naming, busy])
 
@@ -205,6 +249,9 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
   const kind: FileKind = listing?.kind ?? 'file'
   const KindIcon = KIND_ICON[kind]
   const refresh = useCallback(() => setTick((value) => value + 1), [])
+  const open = confirmation?.subject.path === path ? confirmation : null
+  const confirmationMessage = [modalProblem, open?.staleProblem].filter(Boolean).join(' ')
+  const closeConfirmation = (): void => { setConfirmation(null); setModalProblem('') }
 
   const doSave = useCallback(async (): Promise<void> => {
     if (running.current) return
@@ -228,18 +275,19 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
     setProblem(''); setCompare(answer.compare)
   }, [path])
 
-  const doRestore = useCallback(async (): Promise<void> => {
-    if (running.current || !listing || !chosen || chosen.sha256 === null) return
+  const doRestore = async (): Promise<void> => {
+    if (running.current || open?.subject.action !== 'restore' || open.staleProblem) return
+    const { path, version, workingSha256 } = open.subject
     running.current = true
     setBusy(true)
     setModalProblem('')
-    const answer = await window.writeflex.fileVersions.restore({ path, versionId: chosen.id, expectVersionSha256: chosen.sha256, expectWorkingSha256: listing.workingSha256 })
+    const answer = await window.writeflex.fileVersions.restore({ path, versionId: version.id, expectVersionSha256: version.sha256, expectWorkingSha256: workingSha256 })
       .catch(() => ({ ok: false as const, code: 'unavailable' as const, message: 'WriteFlex could not confirm the restore. Check the working copy and its versions before trying again.' }))
     running.current = false
     setBusy(false)
     if (!answer.ok) { setModalProblem(answer.message); refresh(); return }
-    setRestoring(false); setCompare(null); setSelected(null)
-    const message = fileRestoreMessage(file, chosen.number, answer)
+    closeConfirmation(); setCompare(null); setSelected(null)
+    const message = fileRestoreMessage(nameOf(path), version.number, answer)
     if (answer.restored === null) {
       setRestoreWarning(message)
     } else {
@@ -247,22 +295,23 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
       onStatus?.(message)
     }
     refresh()
-  }, [listing, chosen, path, file, onStatus, refresh])
+  }
 
-  const doCopy = useCallback(async (copyName: string): Promise<void> => {
-    if (running.current || !chosen || chosen.sha256 === null) return
+  const doCopy = async (copyName: string): Promise<void> => {
+    if (running.current || open?.subject.action !== 'copy' || open.staleProblem) return
+    const { path, version } = open.subject
     running.current = true
     setBusy(true)
     setModalProblem('')
-    const answer = await window.writeflex.fileVersions.copy({ path, versionId: chosen.id, expectVersionSha256: chosen.sha256, name: copyName })
+    const answer = await window.writeflex.fileVersions.copy({ path, versionId: version.id, expectVersionSha256: version.sha256, name: copyName })
       .catch(() => ({ ok: false as const, code: 'unavailable' as const, message: 'The copy could not be saved. Nothing was written.' }))
     running.current = false
     setBusy(false)
     if (!answer.ok) { setModalProblem(answer.message); return }
-    setCopying(false)
-    onStatus?.(`Saved v${chosen.number} as a copy: ${answer.path}`)
+    closeConfirmation()
+    onStatus?.(`Saved v${version.number} as a copy: ${answer.path}`)
     refresh()
-  }, [chosen, path, onStatus, refresh])
+  }
 
   const canCompare = listing !== null && chosen !== null && listing.workingSha256 !== null && !chosen.isWorking
   const canRestore = listing !== null && chosen !== null && chosen.sha256 !== null && !chosen.isWorking && listing.working.state !== 'too-large' && listing.working.state !== 'unreadable'
@@ -273,9 +322,21 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
   const run = useCallback((action: FileVersionsAction): void => {
     if (action === 'save') setNaming(true)
     else if (action === 'compare') { if (canCompare && chosen) void doCompare(chosen.id); else setProblem(compareReason) }
-    else if (action === 'restore') { if (canRestore) { setModalProblem(''); setRestoring(true) } else setProblem(restoreReason) }
-    else if (action === 'copy') { if (chosen && chosen.sha256 !== null) { setModalProblem(''); setCopying(true) } else setProblem('No version holds a copy of this file yet.') }
-  }, [canCompare, canRestore, chosen, doCompare, compareReason, restoreReason])
+    else if (action === 'restore' || action === 'copy') {
+      if (open || running.current) return
+      if (!listing || listing.path !== path || !chosen || chosen.sha256 === null || (action === 'restore' && !canRestore)) {
+        setProblem(action === 'restore' ? restoreReason : 'No version holds a copy of this file yet.')
+        return
+      }
+      const { id, number, name, automatic, sha256 } = chosen
+      const version = { id, number, name, automatic, sha256 }
+      const subject: Confirmation['subject'] = action === 'restore'
+        ? { action, path, version, workingSha256: listing.workingSha256, workingState: listing.working.state }
+        : { action, path, version }
+      setModalProblem('')
+      setConfirmation({ subject, staleProblem: '' })
+    }
+  }, [canCompare, canRestore, chosen, doCompare, compareReason, restoreReason, listing, open, path])
   const runRef = useRef(run)
   runRef.current = run
   const onRevealRef = useRef(onReveal)
@@ -368,8 +429,8 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
           <p className="fvp-note" data-testid="file-versions-note">The text always shows the current file; a saved Folio version keeps the file as it was. A backup carries a version once a Folio version has used it.</p>
         </>
       )}
-      {restoring && listing && chosen && <RestoreSheet file={file} version={chosen} listing={listing} busy={busy} problem={modalProblem} onClose={() => { setRestoring(false); setModalProblem('') }} onConfirm={() => void doRestore()} />}
-      {copying && chosen && <CopySheet file={file} path={path} version={chosen} busy={busy} problem={modalProblem} onClose={() => { setCopying(false); setModalProblem('') }} onConfirm={(copyName) => void doCopy(copyName)} />}
+      {open?.subject.action === 'restore' && <RestoreSheet subject={open.subject} busy={busy} stale={!!open.staleProblem} problem={confirmationMessage} onClose={closeConfirmation} onConfirm={() => void doRestore()} />}
+      {open?.subject.action === 'copy' && <CopySheet subject={open.subject} busy={busy} stale={!!open.staleProblem} problem={confirmationMessage} onClose={closeConfirmation} onConfirm={(copyName) => void doCopy(copyName)} />}
     </section>
   )
 }

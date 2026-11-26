@@ -1,6 +1,6 @@
 import { SyncMark } from '../sync/SyncStatus'
 import { syncMarkFor, type SyncPresentation } from '../sync/sync-status'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { commandRan } from '../commands/command-ran'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import {
@@ -111,7 +111,8 @@ export type SidebarProps = {
   /** App-driven creation (⌘N / ⌃⌘N): bump tick to start a ghost row of `kind` in `directory`. */
   createRequest: { tick: number; kind: 'file' | 'folder'; directory: string } | null
   /** App-owned request to focus the active/first row, or reveal one exact file/folder row. */
-  focusTreeRequest?: SidebarTreeFocusRequest
+  focusTreeRequest?: SidebarTreeFocusRequest | null
+  onFocusTreeHandled?: (request: SidebarTreeFocusRequest) => void
   /** The window's focused folder (ticket 03): the tree shows only it and its descendants, with the
    *  folder as the top row. Null = the whole archive. */
   focusPath?: string | null
@@ -127,7 +128,7 @@ export type SidebarProps = {
 }
 
 export type SidebarFocusedRow = { key: string; kind: 'file' | 'folder' }
-export type SidebarTreeFocusRequest = { tick: number; target: SidebarFocusedRow | null; focus?: boolean }
+export type SidebarTreeFocusRequest = { target: SidebarFocusedRow | null; focus: boolean; origin: Element | null }
 type RowRef = SidebarFocusedRow
 type Renaming = { key: string; kind: 'file' | 'folder'; isNew: boolean; directory: string }
 type Anchored = { key: string; kind: 'file' | 'folder'; x: number; y: number }
@@ -254,7 +255,8 @@ function SidebarView({
   createRequest,
   menuTargetRequest,
   onMenuTargetHandled,
-  focusTreeRequest = { tick: 0, target: null },
+  focusTreeRequest,
+  onFocusTreeHandled,
   focusPath = null,
   onFocusFolder,
   onHelpWithReport,
@@ -287,7 +289,7 @@ function SidebarView({
     if (refocus) requestAnimationFrame(() => rootNameRef.current?.focus())
   }, [onSwitcherOpenChange])
   const [tip, setTip] = useState<{ text: string; mono: boolean; x: number; y: number } | null>(null)
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(root))
   const [viewOpen, setViewOpen] = useState(false)
   const viewPopRef = useRef<HTMLDivElement | null>(null)
   const [filterQuery, updateFilterQuery] = useState('')
@@ -542,43 +544,66 @@ function SidebarView({
     [onFocusedRowChange, rowElement, rowRef],
   )
 
-  // App navigation lands on the requested row. Exact targets clear narrowing and expand every
-  // ancestor through this existing collapsed-state seam, so quick-open never maintains a second tree.
-  useEffect(() => {
-    if (focusTreeRequest.tick === 0) return
-    const requested = focusTreeRequest.target
-    if (requested) {
-      setFilterQuery('')
-      const slash = requested.key.lastIndexOf('/')
-      let cursor = requested.kind === 'folder' ? requested.key : slash === -1 ? '' : requested.key.slice(0, slash)
-      const ancestors: string[] = []
-      while (cursor) {
-        ancestors.push(cursor)
-        cursor = cursor.includes('/') ? cursor.slice(0, cursor.lastIndexOf('/')) : ''
-      }
-      setCollapsed((previous) => {
-        const next = new Set(previous)
-        for (const path of ancestors) next.delete(path)
-        persistCollapsed(next)
-        return next
-      })
-      setFocusKey(requested.key)
-      onFocusedRowChange(requested)
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        const row = rowElement(requested.key)
-        // A native menu's rename field, picker or confirmation owns focus after the row is revealed.
-        if (focusTreeRequest.focus === false) row?.scrollIntoView({ block: 'nearest' })
-        else row?.focus()
-      }))
+  // An exact reveal can change which rows render. Complete the handoff against the next
+  // committed tree, and keep waiting while the first listing is in flight.
+  useLayoutEffect(() => {
+    const request = focusTreeRequest
+    const region = treeRef.current
+    if (!request || !region?.getClientRects().length) return
+
+    const active = document.activeElement
+    if (request.focus && (renaming || movePick || binAsk || menu
+      || active?.closest('[role="dialog"][aria-modal="true"]')
+      || (active !== request.origin && active !== document.body && active !== document.documentElement))) {
+      onFocusTreeHandled?.(request)
       return
     }
-    const target = (focusKey && visibleRows.some((r) => r.key === focusKey) ? focusKey : null)
-      ?? (activePath && visibleRows.some((r) => r.key === activePath) ? activePath : null)
-      ?? visibleRows[0]?.key
-      ?? null
-    focusRow(target)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusTreeRequest.tick])
+    const requested = request.target
+    if (requested) {
+      const next = new Set(collapsed)
+      let ancestor = requested.key
+      if (requested.kind === 'folder') next.delete(ancestor)
+      while (ancestor.includes('/')) {
+        ancestor = ancestor.slice(0, ancestor.lastIndexOf('/'))
+        next.delete(ancestor)
+      }
+      if (next.size !== collapsed.size) {
+        persistCollapsed(next)
+        setCollapsed(next)
+      }
+      if (filterQuery) setFilterQuery('')
+      if (filterQuery || next.size !== collapsed.size) return
+    }
+
+    if (!listingReady) return
+    const mountedRow = (key: string | null): HTMLElement | null => {
+      const row = key === null ? null : rowElement(key)
+      return row?.getClientRects().length ? row : null
+    }
+    if (!request.focus) {
+      const row = mountedRow(requested?.key ?? null)
+      if (row && requested) {
+        setFocusKey(requested.key)
+        row.scrollIntoView({ block: 'nearest' })
+      }
+    } else {
+      const focusableRow = (key: string | null): HTMLElement | null => {
+        const row = mountedRow(key)
+        return row?.hasAttribute('tabindex') ? row : null
+      }
+      const row = requested
+        ? (rowRef(requested.key)?.kind === requested.kind ? focusableRow(requested.key) : null)
+        : focusableRow(focusKey) ?? focusableRow(activePath)
+          ?? focusableRow(visibleRows.find(row => focusableRow(row.key))?.key ?? null)
+      row?.focus()
+      if (!row || document.activeElement !== row) {
+        setFocusKey(null)
+        onFocusedRowChange(null)
+        rootNameRef.current?.focus()
+      }
+    }
+    onFocusTreeHandled?.(request)
+  })
 
   const shake = useCallback((key: string) => {
     setShakeKey(key)

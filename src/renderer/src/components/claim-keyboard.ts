@@ -6,6 +6,7 @@
  * settings write that opening the Room performs. A panel that does not hold the keyboard silently loses
  * "type to filter", which is its whole interaction — so this watches over a short bounded window and
  * re-claims whenever the keyboard has been taken away, rather than trusting one successful focus().
+ * A modal that takes focus ends the background panel's claim.
  *
  * Returns a teardown function for the effect that called it.
  */
@@ -18,11 +19,6 @@ export function claimKeyboard(
   let timer: number | undefined
   let frame: number | undefined
 
-  const held = (): boolean => {
-    const element = target()
-    return !!element && document.activeElement === element
-  }
-
   // Deliberately does NOT stop at the first success. Raising a panel hides the document view in the same
   // commit, and hiding a subtree that holds focus resets the active element to the body AFTERWARDS — so a
   // claim that succeeded and then stopped loses the keyboard a frame later. Keep watching for the whole
@@ -30,7 +26,13 @@ export function claimKeyboard(
   const claim = (): void => {
     if (cancelled) return
     const element = target()
-    if (element && !held()) {
+    const active = document.activeElement
+    if (element && active !== element) {
+      const modal = active?.closest('[role="dialog"][aria-modal="true"]')
+      if (modal && !modal.contains(element)) {
+        cancelled = true
+        return
+      }
       element.focus()
       element.select()
     }

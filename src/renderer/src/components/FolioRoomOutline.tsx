@@ -123,7 +123,7 @@ export function FolioRoomOutline({ toolsHost = null, titleWidth, onTitleWidth, p
             }
           }} />
       </span><span role="columnheader">Words</span><span role="columnheader">Label</span><span role="columnheader">Status</span><span role="columnheader">Priority</span><span role="columnheader">Sources</span></div>
-      <div className="fr-olrows" role="listbox" aria-label="Parts, in running order" aria-multiselectable="true" ref={listRef} onKeyDown={event => {
+      <div className="fr-olrows" role="listbox" aria-label="Parts, in running order" aria-multiselectable="true" tabIndex={-1} ref={listRef} onKeyDown={event => {
         if ((event.target as HTMLElement).closest('input, textarea, select, button') || event.altKey || event.metaKey || event.ctrlKey) { onKeyDown(event); return }
         const selected = parts.find(part => part.index === shown)
         if (selected?.outline?.sectionPage && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {

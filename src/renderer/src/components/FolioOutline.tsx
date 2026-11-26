@@ -41,7 +41,7 @@ type FolioOutlinePartProps = {
   /** Land the caret on a line of another file (opens it first). */
   onJumpToFile: (path: string, line: number, isPart?: boolean) => void
   /** Move the caret to a heading of the open file. */
-  onJumpOpen: (from: number) => void
+  onJumpOpen: (from: number, isPart: boolean) => void
   listRef: RefObject<HTMLDivElement>
   /** Move a piece before another (null = to the end); `expected` is the running order the drag was made against. */
   onMovePiece: (path: string, beforePath: string | null, expected: string[]) => void
@@ -369,7 +369,7 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
               style={{ paddingLeft: heading.depth !== undefined ? depthIndent(heading.depth) : indentOf(heading.level, base) }}
               onClick={() => {
                 setFocusKey(hKey)
-                if (heading.from !== undefined) onJumpOpen(heading.from)
+                if (heading.from !== undefined) onJumpOpen(heading.from, kind === 'piece')
                 else onJumpToFile(file.path, heading.line ?? 1, kind === 'piece')
               }}
             >

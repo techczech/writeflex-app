@@ -1,7 +1,7 @@
 // Account-wide discovery/backfill behind one seam. Local settings are a cache, not a registry.
 import type { LinkRecord, WorkspaceIdentity } from '../../sharing-service/share-record-protocol.ts'
 import { parseLinkRecord, workspaceIdentity } from '../../sharing-service/share-record-protocol.ts'
-import type { ServiceAccess, ServiceClient } from './sharing-client'
+import type { RemoteShareRecord, ServiceAccess, ServiceClient } from './sharing-client'
 import { readRecords, type ShareRecord } from './sharing-share-record'
 import { sharingWorkspace } from './sharing-workspace'
 import { canonicalSharingRoot, createLocalSharingRoots, sameSharingFolder, type WorkspaceRootsStore } from './sharing-local-roots'
@@ -62,7 +62,11 @@ export function createShareSync(ports: {
     }
     if ((refreshed.get(root) ?? 0) > now() && !ports.records().some((r) => r.root === root && r.registryPending)) return
     for (const record of ports.records().filter((r) => r.root === root && r.registryPending)) await register(record)
-    let answer = await ports.client.listShares(access, workspaces)
+    const list = async () => {
+      const listedFrom = new Map(ports.records().map(record => [record.shareId, record]))
+      return { listedFrom, answer: await ports.client.listShares(access, workspaces) }
+    }
+    let { listedFrom, answer } = await list()
     // Older services keep their existing behaviour until the user updates the service.
     if (answer.kind !== 'ok') return
     const canonical = workspaceIdentity(answer.body.workspace)
@@ -75,9 +79,9 @@ export function createShareSync(ports: {
     for (const record of ports.records().filter((r) => r.root === root && !known.has(r.shareId))) {
       if (await register(record)) backfilled = true
     }
-    if (backfilled) answer = await ports.client.listShares(access, workspaces)
+    if (backfilled) ({ listedFrom, answer } = await list())
     if (answer.kind !== 'ok' || !await stillHere()) return
-    const next = [...ports.records()]
+    const discovered: Array<{ remote: RemoteShareRecord; identity: LinkRecord }> = []
     for (const remote of answer.body.records) {
       const identity = parseLinkRecord({ workspace: remote.workspace, kind: remote.kind, path: remote.path, name: remote.name, madeAt: remote.madeAt, partKeys: remote.partKeys, parts: remote.parts })
       if (!identity || !isShareId(remote.shareId)) continue
@@ -86,19 +90,30 @@ export function createShareSync(ports: {
         if (minted.kind !== 'ok' || minted.body.shareId !== remote.shareId || typeof minted.body.ownerToken !== 'string' || minted.body.ownerToken.length < 16 || !ports.keepToken(remote.shareId, minted.body.ownerToken)) continue
       }
       if (!await stillHere()) return
-      const at = next.findIndex((r) => r.shareId === remote.shareId), old = at >= 0 ? next[at] : null
+      discovered.push({ remote, identity })
+    }
+
+    // A local signal, registration or publish can finish while discovery is awaiting I/O.
+    // Apply the list to the current records and skip any link that changed since dispatch.
+    if (!await stillHere()) return
+    const next = new Map(ports.records().map(record => [record.shareId, record]))
+    let changedWhileListing = false
+    for (const { remote, identity } of discovered) {
+      const old = next.get(remote.shareId)
+      if (old !== listedFrom.get(remote.shareId)) {
+        changedWhileListing = true
+        continue
+      }
       if (old && (old.root !== root || !local.allowed(old))) continue
       const seenPartKeys = old?.seenPartKeys ?? []
       const parsed = readRecords([{ ...old, ...identity, ...(identity.kind === 'folio' ? { seenPartKeys } : {}), ...(old?.registryPending ? { path: old.path, partKeys: old.partKeys, parts: old.parts } : {}), ...(old?.problem?.kind === 'workspace-copy' ? { problem: null } : {}), shareId: remote.shareId, root, workspaceId: canonical.id, comments: remote.revision === 0 && old ? old.comments : remote.comments === true, notes: remote.revision === 0 && old ? old.notes : remote.notes, hasPrivateComments: remote.hasPrivateComments, on: remote.on, revision: remote.revision, publishedAt: remote.publishedAt, publishedSavedAt: remote.savedAt, publishedHash: remote.sourceHash ?? null }])[0]
       if (!parsed) continue
       // An off state observed at the service cancels only publishing, not a local unsaved document.
       if (!parsed.on) { parsed.queuedAt = null; parsed.problem = null; parsed.lost = null }
-      if (at < 0) next.push(parsed)
-      else next[at] = parsed
+      next.set(remote.shareId, parsed)
     }
-    if (!await stillHere()) return
-    ports.replace(next)
-    refreshed.set(root, now() + 60_000)
+    if (ports.replace([...next.values()]) && !changedWhileListing) refreshed.set(root, now() + 60_000)
+    else refreshed.delete(root)
   }
   return {
     register,

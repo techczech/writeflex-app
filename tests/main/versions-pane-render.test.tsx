@@ -39,6 +39,8 @@ test('renders keyboard-focusable session rows beneath their version or Working p
         attachmentUndo={{ id: "multi-file-map", files: 3 }}
         activePath="draft.md"
         waitingHistory={[{ from: 'old.md', count: 2 }, { from: '.draft.md', count: 1 }]}
+        historyStatus="ready"
+        onRetry={() => {}}
         versions={[version]}
         allChanges={[
           change('working_1', {
@@ -63,7 +65,7 @@ test('renders keyboard-focusable session rows beneath their version or Working p
         onViewVersion={() => {}}
         onRestoreVersion={() => {}}
         onOpenCompare={() => {}}
-        onRenameVersion={() => {}}
+        onRenameVersion={() => true}
         onReturnToCurrent={() => {}}
         onSaveVersion={() => {}}
       />,

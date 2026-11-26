@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.29.0-alpha.7] — 2026-11-26
+
+An alpha: early, and it can break.
+
+### Fixed
+- WriteFlex could stop with an endless-update error when you switched tabs while it was busy, for example when opening a part from a Folio's cards.
+
+### Changed
+- Restore and Copy of an older file version act on exactly the version you saw when you opened the sheet.
+- Search and Outline jumps land in the document once it is on screen, and close a Collection that was covering it.
+- When a refresh fails, the Versions panel, the Board and the Folio Versions timeline keep your place, your selection and anything you were typing, and offer Retry.
+- The Files list puts the keyboard on the file you asked for once it appears; a moved or added Folio card gets the keyboard back; the command palette keeps its highlight on the same item as results reorder.
+- A Zotero panel no longer takes the keyboard back from the command palette; a slow check of shared links no longer overwrites a change you just made.
+
 ## [0.29.0-alpha.6] — 2026-11-25
 
 An alpha: early, and it can break.

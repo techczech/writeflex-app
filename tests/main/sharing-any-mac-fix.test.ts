@@ -183,6 +183,42 @@ test('a local move during a conditional rename is never overwritten by its older
   expect(records[0]).toMatchObject({ path: 'moved.md', generation: 1, registryPending: true })
 })
 
+test.each(['in flight', 'while preparing the merge'])('an older registry list preserves a local move made %s', async (when) => {
+  scratch = await mkdtemp(join(tmpdir(), 'wf-sharing-list-race-'))
+  const root = await realpath(scratch)
+  const workspace = (await sharingWorkspace(root))[0]
+  const shareId = 'abcdefghijklmnopqrstuv'
+  const otherId = 'zyxwvutsrqponmlkjihgfe'
+  const addedId = 'a123456789012345678901'
+  const remote = { workspace, kind: 'piece', path: 'paper.md', name: null, madeAt: 1, partKeys: {}, parts: [], shareId, on: true, revision: 1 }
+  let records = readRecords([{ ...remote, root, workspaceId: workspace.id }])
+  const move = () => {
+    // The move was saved and its registry write acknowledged while the old list was outstanding.
+    records = [
+      { ...records[0], path: 'moved.md', generation: 1 },
+      ...readRecords([{ ...remote, shareId: addedId, path: 'added.md', root, workspaceId: workspace.id }]),
+    ]
+  }
+  const client = createServiceClient({ fetch: (async (input: unknown) => {
+    if (String(input).endsWith('/version')) return Response.json({ service: 'writeflex-sharing', build: 15 })
+    if (when === 'in flight') move()
+    return Response.json({ workspace, records: [remote, { ...remote, shareId: otherId, path: 'other.md' }] })
+  }) as typeof fetch })
+  const sync = createShareSync({ access: () => ({ base: 'https://fixture.test', address: 'https://fixture.test', key: 'fixture-admin' }), client,
+    records: () => records, replace: (next) => { records = next; return true },
+    tokenFor: (id) => {
+      if (when === 'while preparing the merge' && id === otherId) move()
+      return 'fixture-owner'
+    },
+    keepToken: () => true })
+  await sync.refresh(root)
+  expect(records.map(({ shareId, path, generation }) => ({ shareId, path, generation }))).toEqual([
+    { shareId, path: 'moved.md', generation: 1 },
+    { shareId: addedId, path: 'added.md', generation: 0 },
+    { shareId: otherId, path: 'other.md', generation: 0 },
+  ])
+})
+
 
 test('symlink and real path are one root and a move keeps identity and links', async () => {
   const w = await syncWorld()
