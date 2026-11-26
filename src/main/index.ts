@@ -1,8 +1,10 @@
+import { installQuitTrace } from './quit-trace'
 import { HISTORY_APPROVAL_BASENAME } from '../backup-helper/history-approvals'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, powerMonitor, protocol, shell } from 'electron'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { existsSync, readFileSync, realpathSync, writeSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { createOutsideChangeFollower } from './sharing-outside-changes'
 import { applyFollowSignal, takeAtStart, watchFollowSignals } from './sharing-follow-signals'
@@ -166,6 +168,12 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     configureMainProcessDiagnostics(join(app.getPath('userData'), 'main-process.log'))
     recordMainProcessDiagnostic('app.ready')
+    // Electron's sandboxed preload cache writes can hold native shutdown while they create this
+    // directory. Prepare the default session's directory alongside startup work, before any window
+    // loads a preload. An unavailable cache is optional and must never prevent startup.
+    const preloadCacheReady = process.platform === 'darwin'
+      ? mkdir(join(app.getPath('sessionData'), 'Code Cache', 'electron-preload'), { recursive: true, mode: 0o700 }).catch(() => {})
+      : Promise.resolve()
     await registerAssetProtocol()
     registerWidgetProtocol(protocol, ipcMain)
     ipcMain.on('clipboard:read-text', event => {
@@ -179,6 +187,7 @@ if (!app.requestSingleInstanceLock()) {
         }
       },
     })
+    await preloadCacheReady
     // The Example collection (ADR-0043) lives at one fixed path under the Documents directory,
     // which comes from this one function. A run with the e2e flag never sees the real one: it gets
     // WRITEFLEX_E2E_DOCUMENTS (unpackaged only) or nothing at all.
@@ -779,6 +788,7 @@ if (!app.requestSingleInstanceLock()) {
       }
     })
   })
+  installQuitTrace()
 }
 
 function readRunningAppMetadata(): unknown {

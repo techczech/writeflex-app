@@ -38,6 +38,7 @@ import { FolioRoomVersions, OPEN_EXPORT_EVENT, OPEN_MARK_SENT_EVENT, type Versio
 import { FolioVersionSheetHost, type VersionSheet } from './FolioVersionExport'
 import { READER_TABS, ReadingSession, type ReaderTab } from './FolioVersionReader'
 import { COMPARE_WORKING } from '../../../shared/folio-version-compare'
+import { folioRoomEscapeGoesBack } from './BackControl'
 import { READ_ONLY_REFUSAL, type FolioVersionRow, type ReadingVersion } from '../../../shared/folio-versions-view'
 import { OPEN_VERSION_NUDGE_EVENT, setReadingVersion, takeWaitingOpenVersion, type OpenVersionRequest } from '../plan/folio-reading'
 import { NewCard, RoomOrderBanner, RoomOrderSource, RoomLeftOut, chordOf, roomMoveChord, usePartDrag, type PartDrag } from './FolioRoomOrder'
@@ -198,6 +199,7 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
   const readingOpen = reading !== null
   const versionsEntry = useRef<VersionsEntry | null>(null)
   const versionsMemory = useRef<VersionsMemory>({ chosen: null, rows: 0, main: 0 })
+  const closeVersionCompare = useRef<(() => void) | null>(null)
   // Ticket 11: the export or mark-as-sent sheet for one version (from the Versions tab, the read-only banner, the palette or the menu).
   const [versionSheet, setVersionSheet] = useState<VersionSheet | null>(null)
   const [toolsHost, setToolsHost] = useState<HTMLElement | null>(null)
@@ -850,14 +852,18 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
   const compareFromReading = useCallback((): void => {
     const held = readingRef.current
     if (!held) return
-    versionsMemory.current = { ...versionsMemory.current, chosen: held.version.id, compare: { from: held.version.id, to: COMPARE_WORKING } }
+    versionsMemory.current = { ...versionsMemory.current, chosen: held.version.id, compare: { from: held.version.id, to: COMPARE_WORKING, openedFrom: held.version.id } }
     setReadingVersion(dir, null)
     setReading(null)
   }, [dir])
-  // Esc leaves a saved version, wherever focus is (the palette and every sheet take their own Esc first and mark it handled).
+  // Compare and the read-only version can take Esc even when focus is outside the room.
   useEffect(() => {
-    if (!readingOpen) return
     const onKey = (event: globalThis.KeyboardEvent): void => {
+      if (closeVersionCompare.current) {
+        if (!versionSheetRef.current && folioRoomEscapeGoesBack(event, true) && roomEscapeRef.current()) event.preventDefault()
+        return
+      }
+      if (!readingOpen) return
       if (event.key !== 'Escape' || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || focusTypes()) return
       if (document.querySelector('.pal, .overlay.open, .cv-sheet, [role="dialog"]')) return
       event.preventDefault()
@@ -1004,8 +1010,8 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
     if (mine && (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'a' && (view === 'cards' || view === 'outline')) {
       event.preventDefault(); partFocus.current = null; multiBasis.current = selectionBasis; setMulti(new Set(cards.map(part => part.index))); return
     }
-    // One Esc order for the room (Sol round 3, S6): Split first, then the selection of several parts (roomEscapeRef).
-    if (mine && event.key === 'Escape' && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && roomEscapeRef.current()) { event.preventDefault(); return }
+    // Compare takes Esc through the window listener, which yields to open menus and sheets.
+    if (mine && !closeVersionCompare.current && event.key === 'Escape' && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && roomEscapeRef.current()) { event.preventDefault(); return }
     // Delete or Backspace on the chosen part(s) in Cards or Outline: removed at once, with Undo (drawing 4A). ⌘⌫ is the
     // Folio command below (plan.removePart).
     if ((event.key === 'Backspace' || event.key === 'Delete') && !event.metaKey && !event.ctrlKey && !event.altKey && (view === 'cards' || view === 'outline') && !startAPlan) {
@@ -1030,10 +1036,10 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
   } })
   useEffect(() => { if (state) onViewChange?.(state.view) }, [state?.view, onViewChange])
   const openParts = useMemo(() => workspaceOpenParts(parts), [parts])
-  // The room's own Esc steps, wherever the focus is (Sol round 2, S6): Split closes first, then a selection of several
-  // parts clears; only when neither is up does the Back button's Esc leave the room (FolioOpenButton).
+  // The room's Esc order is Compare, Split, selection, then Back to the part.
   const roomEscapeRef = useRef<() => boolean>(() => false)
   roomEscapeRef.current = () => {
+    if (closeVersionCompare.current) { closeVersionCompare.current(); return true }
     // Split closed by Esc from outside the cards: the focus goes to the shown card, as from the cards themselves, so the
     // next Esc is the room's (not the app editor's, which the closed text pane leaves behind).
     if (beside) { update({ split: false }); requestAnimationFrame(() => gridRef.current?.querySelector<HTMLElement>('[role="option"][tabindex="0"]')?.focus()); return true }
@@ -1115,7 +1121,7 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
           ) : view === 'evidence' ? (
             <FolioEvidenceView model={model} author={author} busy={busy} gaps={state.evidenceGaps??false} onGaps={evidenceGaps=>update({evidenceGaps})} onSelect={selectPart} onEvidenceDrop={evidenceDrop} onEvidenceOver={evidenceOver} />
           ) : view === 'versions' ? (
-            <div className="fr-versions" data-testid="room-versions-host">{loadedDir.current === dir && <FolioRoomVersions key={dir} dir={dir} memory={versionsMemory} entry={versionsEntry} actions={{ 'open-read-only': openReading, export: (row) => openVersionSheet('export', row), 'mark-sent': (row) => openVersionSheet('mark-sent', row) }} {...(onSaveFolioVersion ? { onSaveVersion: onSaveFolioVersion } : {})} {...(partIsUnsaved ? { take: { isUnsaved: partIsUnsaved, openPart: onOpenFolio ?? onOpenPiece, ...(resolveSuggestion ? { resolveSuggestion } : {}) } } : {})} />}</div>
+            <div className="fr-versions" data-testid="room-versions-host">{loadedDir.current === dir && <FolioRoomVersions key={dir} dir={dir} memory={versionsMemory} entry={versionsEntry} closeVersionCompare={closeVersionCompare} actions={{ 'open-read-only': openReading, export: (row) => openVersionSheet('export', row), 'mark-sent': (row) => openVersionSheet('mark-sent', row) }} {...(onSaveFolioVersion ? { onSaveVersion: onSaveFolioVersion } : {})} {...(partIsUnsaved ? { take: { isUnsaved: partIsUnsaved, openPart: onOpenFolio ?? onOpenPiece, ...(resolveSuggestion ? { resolveSuggestion } : {}) } } : {})} />}</div>
           ) : view === 'files' ? (
             <div className="fr-files" data-testid="room-files">{files?.() ?? <div className="fr-empty"><b>Files</b>The Folio’s folder is listed here.</div>}</div>
           ) : view === 'text' ? (

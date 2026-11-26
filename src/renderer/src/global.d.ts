@@ -19,6 +19,7 @@ declare global {
        *  `hold-accept`: an accept's call to main waits likewise, inside the owner's route (the queue held).
        *  `hold-export`: an export waits likewise once its destination is chosen, before its final check. */
       setSaveBehaviour?(behaviour: 'normal' | 'slow' | 'fail' | 'hold-redo' | 'hold-move' | 'hold-accept' | 'hold-export'): void
+      slowSaveHeld?(): boolean
       releaseSlowSave?(): void
       /** Every save the document owner has sent to main (file:save), in order: path and text. */
       savesSent?(): Array<{ path: string; content: string }>

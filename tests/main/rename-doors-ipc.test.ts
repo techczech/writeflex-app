@@ -10,7 +10,7 @@ const probe = String.raw`
   import { mock } from 'bun:test'
   import { electronMainStandIn, settingsForIpcTest } from './tests/helpers/electron-main-stand-in.ts'
   import { EventEmitter } from 'node:events'
-  import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+  import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
   import { tmpdir } from 'node:os'
   import { join } from 'node:path'
   const root = await mkdtemp(join(tmpdir(), 'writeflex-rename-doors-ipc-'))
@@ -78,11 +78,35 @@ const probe = String.raw`
     for (const path of ['a.md', 'b.md']) await invoke('file:move', { path, newPath: 'dest/' + path, collectionDir: '' })
     await invoke('collection:end-batch')
     const batch = { a: await read('dest/a.md'), b: await read('dest/b.md') }
-    console.log(JSON.stringify({ doors, batch }))
+    const legacyName = 'Talk: part 1?.md'
+    await writeFile(join(root, legacyName), 'Legacy text.\n')
+    const refused = []
+    for (const [channel, input] of [
+      ['file:rename-repair-paths', { path: 'back.md', newName: 'new?.md' }],
+      ['file:rename', { path: 'back.md', newPath: 'new?.md' }],
+      ['file:move', { path: 'back.md', newPath: 'archive/New .md' }],
+      ['folder:rename', { path: 'archive', newName: 'Archive.' }],
+      ['file:create', { name: 'new?.md' }],
+      ['file:create', { name: 'new.md', directory: 'Missing?' }],
+      ['folder:create', { path: 'new ' }],
+    ]) {
+      try { await invoke(channel, input); refused.push(null) }
+      catch (error) { refused.push(error.message) }
+    }
+    const newNames = (await readdir(root)).filter(name => /^(archive|new|missing)/i.test(name))
+    const legacyPlan = await invoke('file:rename-repair-paths', { path: legacyName, newName: legacyName, directory: 'archive' })
+    const legacyMove = await invoke('file:move', { path: legacyName, newPath: legacyPlan.newPath })
+    const legacyRename = await invoke('file:rename', { path: legacyMove.file.path, newPath: 'Talk part 1.md' })
+    const naming = { refused, newNames, moved: legacyMove.file.path, corrected: await read(legacyRename.file.path) }
+    console.log(JSON.stringify({ doors, batch, naming }))
   } finally { await rm(root, { recursive: true, force: true }) }
 `
 
-let pending: Promise<{ doors: Record<string, unknown>; batch: { a: string; b: string } }> | undefined
+let pending: Promise<{
+  doors: Record<string, unknown>
+  batch: { a: string; b: string }
+  naming: { refused: Array<string | null>; newNames: string[]; moved: string; corrected: string }
+}> | undefined
 const run = () => pending ??= (async () => {
   const child = Bun.spawn([process.execPath, '-e', probe], { cwd: new URL('../..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe' })
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
@@ -124,4 +148,16 @@ test('file:rename, file:move (to a folder and to the root) and folder:rename rea
 test('documents moved together in one Collection batch keep their links to each other', async () => {
   const { batch } = await run()
   expect(batch).toEqual({ a: 'See [b](b.md#top).\n', b: '# Top\n\nBack to [a](./a.md).\n' })
+}, 60_000)
+
+test('main refuses unsyncable new names and still moves and corrects an existing one', async () => {
+  const { naming } = await run()
+  const characters = 'A name cannot contain : * ? " < > | — OneDrive and Windows cannot store them.'
+  const ending = 'A name cannot end with a space or a full stop.'
+  expect(naming).toEqual({
+    refused: [characters, characters, ending, ending, characters, characters, ending],
+    newNames: ['archive'],
+    moved: 'archive/Talk: part 1?.md',
+    corrected: 'Legacy text.\n',
+  })
 }, 60_000)

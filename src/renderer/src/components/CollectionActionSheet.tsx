@@ -18,6 +18,7 @@ type Props = {
   folders: readonly string[]
   folioName: string
   busy: boolean
+  blockedReason?: string
   error: string
   onChange: (value: string) => void
   onClose: () => void
@@ -26,7 +27,7 @@ type Props = {
   fallbackFocus?: () => HTMLElement | null
 }
 
-export function CollectionActionSheet({ sheet, value, folders, folioName, busy, error, onChange, onClose, onSubmit, returnFocusTo, fallbackFocus }: Props): JSX.Element {
+export function CollectionActionSheet({ sheet, value, folders, folioName, busy, blockedReason, error, onChange, onClose, onSubmit, returnFocusTo, fallbackFocus }: Props): JSX.Element {
   const dialogRef = useRef<HTMLFormElement>(null)
   useEffect(() => {
     const previous = returnFocusTo ?? document.activeElement
@@ -40,7 +41,7 @@ export function CollectionActionSheet({ sheet, value, folders, folioName, busy, 
   return <div className="cv-sheet-backdrop">
     <form ref={dialogRef} className="cv-sheet" role="dialog" aria-modal="true" aria-label={SHEET_TITLES[sheet]}
       tabIndex={-1}
-      onSubmit={event => { event.preventDefault(); if (!busy && valid) onSubmit() }}
+      onSubmit={event => { event.preventDefault(); if (!busy && !blockedReason && valid) onSubmit() }}
       onKeyDown={event => {
         if (dialogRef.current) collectionSheetKeyDown(event, dialogRef.current, document.activeElement, onClose, busy)
       }}>
@@ -59,7 +60,7 @@ export function CollectionActionSheet({ sheet, value, folders, folioName, busy, 
       {error && <p role="alert">{error}</p>}
       <div>
         <button type="button" disabled={busy} onClick={onClose}>Cancel</button>
-        <button className="primary" type="submit" disabled={busy || !valid}>{busy ? 'Working…' : 'Apply'}</button>
+        <button className="primary" type="submit" disabled={busy || !valid} aria-disabled={blockedReason ? true : undefined} title={blockedReason}>{busy ? 'Working…' : 'Apply'}</button>
       </div>
     </form>
   </div>

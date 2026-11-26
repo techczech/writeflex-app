@@ -10,6 +10,7 @@ import { guardFolioFolderMove } from '../folio-declaration'
 import { lstatSync, statSync } from 'node:fs'
 import { posix } from 'node:path'
 import { MANIFEST_NAME, indexNotePath, readManifest, resolveManifestFilePath } from '../folio'
+import { newPathNameProblem } from '../file-name-rules'
 import { applyRenameRepair, planRenameRepair, type RenameRepairIssue } from '../rename-repair'
 import type { Workspace } from '../workspace'
 import { undoEntry } from './journal'
@@ -116,6 +117,8 @@ export const ORGANISE_OPERATIONS: Operation[] = [
         ? visiblePath(ws, posix.join(visiblePath(ws, typed, { allowRoot: true }), posix.basename(from)), { markdown: true })
         : visiblePath(ws, markdownPath(typed), { markdown: true })
       if (to === from) throw new CliError(`${from} is already there. Nothing was changed.`)
+      const nameProblem = newPathNameProblem(ws, to, { markdown: true, keepNameOf: from })
+      if (nameProblem) throw new CliError(nameProblem)
       const plan = await planRenameRepair(ws, from, to)
       // The whole record is budgeted before anything changes; the intent still counts as it grows.
       access.journal.budget(plannedRecord(ws, [{ from, to, kind: 'file' }], plan.writes.map((write) => write.path), (path) => (path === from ? to : path)))
@@ -150,6 +153,8 @@ export const ORGANISE_OPERATIONS: Operation[] = [
       const typed = visiblePath(ws, String(args.to), { allowRoot: true })
       const to = typed === '' || (isFolder(ws, typed) && typed.toLowerCase() !== from.toLowerCase()) ? visiblePath(ws, posix.join(typed, posix.basename(from))) : typed
       if (to === from) throw new CliError(`${from} is already there. Nothing was changed.`)
+      const nameProblem = newPathNameProblem(ws, to, { keepNameOf: from })
+      if (nameProblem) throw new CliError(nameProblem)
       const before = (await ws.listFiles()).map((file) => file.path)
       const inside = before.filter((path) => path.startsWith(`${from}/`)).sort()
       // The folder's Index Note is named after the folder (folio.ts `indexNotePath`, the app's one

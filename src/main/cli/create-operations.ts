@@ -4,6 +4,7 @@
  * WriteSession. A new file is never journalled (undo does not delete); adding a scrap to an existing
  * scraps file changes that file, so it is.
  */
+import { newPathNameProblem } from '../file-name-rules'
 import { activateFolioDeclaration } from '../folio-declaration'
 import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, posix, relative } from 'node:path'
@@ -40,6 +41,8 @@ export const CREATE_OPERATIONS: Operation[] = [
     run: async (ctx, args) => {
       const access = writeAccess(ctx)
       const path = visiblePath(ctx.workspace, markdownPath(String(args.path)), { markdown: true })
+      const nameProblem = newPathNameProblem(ctx.workspace, path, { markdown: true })
+      if (nameProblem) throw new CliError(nameProblem)
       if (AGENT_NOTE_BASENAME.test(posix.basename(path))) {
         throw new CliError(`${path} is named like an agent note about a document. Use "writeflex note <document>" instead: it files the note under agent-notes/ with its author and source recorded.`)
       }
@@ -62,6 +65,8 @@ export const CREATE_OPERATIONS: Operation[] = [
       const absolute = ctx.workspace.absolute(path)
       const existed = existsSync(absolute)
       if (existed && !statSync(absolute).isDirectory()) throw new CliError(`${path} exists and is not a folder.`)
+      const nameProblem = existed ? null : newPathNameProblem(ctx.workspace, path)
+      if (nameProblem) throw new CliError(nameProblem)
       await writeAccess(ctx).session.folders(path)
       return applied(existed ? `${path} is already there` : `Created folder ${path}`, { path, created: !existed })
     },

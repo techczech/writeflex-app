@@ -38,6 +38,7 @@ import type { MainSaveReceipt } from './backup-helper/receipt-service'
 import { basisAllows, isSaveBasis } from '../shared/save-basis'
 import { e2eWriteHooksAllowed } from '../shared/e2e-write-hooks'
 import { preserveVersion } from './preserve-version'
+import { markdownNameProblem, newPathNameProblem } from './file-name-rules'
 import { assertRelativeWorkspacePath, DiskChangedUnderBuffer, DocumentChangedError, isRescuedEmptyWriteRefusal, NameTaken, type RescuedEmptyWriteRefusal, sanitiseFileName, SaveWithoutBasis, Workspace, type MarkdownFile } from './workspace'
 import { listingEntryOf, type CollectionChanged } from '../shared/listing-patch'
 import { RestoreNotCompletedError } from './restore-failure'
@@ -3109,9 +3110,12 @@ export function registerIpc(
   // are shell.trashItem ONLY (recoverable from Finder); hard delete does not exist in this app.
   ipcMain.handle('file:create', async (event, input: { name: string; directory?: string }) => {
     const state = stateForSender(event.sender.id)
+    const workspace = requireWorkspace(state)
     const name = sanitiseFileName(input.name)
     const path = input.directory ? `${input.directory}/${name}` : name
-    const created = await requireWorkspace(state).createFile(path, '')
+    const nameProblem = markdownNameProblem(input.name) ?? newPathNameProblem(workspace, path, { markdown: true })
+    if (nameProblem) throw new Error(nameProblem)
+    const created = await workspace.createFile(path, '')
     notifyCollectionChanged(state, [created.file.path])
     // Step two of the Guide's first steps: a file of the person's own (never one made in the example).
     if (!(await router.example?.context(state))?.here) await guide.stepDone('file', basename(created.file.path))
@@ -3247,7 +3251,10 @@ export function registerIpc(
   })
   ipcMain.handle('folder:create', async (event, input: { path: string }) => {
     const state = stateForSender(event.sender.id)
-    const created = await requireWorkspace(state).createFolder(input.path)
+    const workspace = requireWorkspace(state)
+    const nameProblem = newPathNameProblem(workspace, input.path)
+    if (nameProblem) throw new Error(nameProblem)
+    const created = await workspace.createFolder(input.path, { refuseExisting: true })
     notifyCollectionChanged(state, [created.path])
     return created
   })

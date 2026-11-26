@@ -1595,15 +1595,19 @@ export class Workspace {
     })
   }
 
-  /** Create a folder (idempotent — an existing folder is a success, matching TalkWeaver). */
-  async createFolder(path: string): Promise<{ path: string }> {
+  /** Ensure a folder exists, or require a new name for the sidebar's New folder action. */
+  async createFolder(path: string, { refuseExisting = false } = {}): Promise<{ path: string }> {
     this.assertWritable()
     const cleaned = path.split('/').map(sanitiseFileName).filter(Boolean).join('/')
     if (!cleaned) throw new Error('Folder name cannot be empty.')
     const absolute = this.absolute(cleaned)
     // No state is known before the folder is made, so none is recorded: the watcher delivers its event (D-WATCH-1).
     this.recordOwnWrite(this.relative(absolute))
-    await mkdir(absolute, { recursive: true })
+    const created = await mkdir(absolute, { recursive: true }).catch((error: NodeJS.ErrnoException) => {
+      if (refuseExisting && error.code === 'EEXIST') throw new NameTaken(this.relative(absolute))
+      throw error
+    })
+    if (refuseExisting && created === undefined) throw new NameTaken(this.relative(absolute))
     return { path: this.relative(absolute) }
   }
 

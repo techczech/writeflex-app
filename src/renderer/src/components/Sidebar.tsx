@@ -42,20 +42,23 @@ import { VaultSwitcherMenu, type SwitcherChoice } from './VaultSwitcherMenu'
 import type { VaultSidebarView } from '../hooks/useVaultSidebar'
 import { migrateFavouritesToPins, movePin, pinnedRows } from '../vault-pins'
 import { folioPathText, readFoliosCollapsed, vaultFolios, writeFoliosCollapsed } from '../vault-folios'
+import { fileNameProblem } from '../../../shared/file-name-rules'
 import { PIN_DOCUMENT_EXTENSION, type VaultWriteResult } from '../../../shared/vault'
 import type { ActionRow } from '../commands/actions-here'
 import { BinPopover, MoveFolderPicker } from './file-menu'
 import { ActionsHere } from './ActionsHere'
 import { placeOfRow } from '../commands/place'
 
-/** App-implemented file operations (ADR-0017). Rename/create/move return false on a REFUSAL
- *  (name collision) so the row can shake and stay in rename; everything else flashes in App. */
+type NameRefusal = { problem: string }
+
+/** App-implemented file operations (ADR-0017). Create and rename can return an inline refusal.
+ *  Successful renames and moves return the landed path from main. */
 export type SidebarFileOps = {
-  createFile: (name: string, directory: string) => Promise<boolean>
-  createFolder: (path: string) => Promise<boolean>
-  renameFile: (path: string, newName: string) => Promise<boolean>
-  renameFolder: (path: string, newName: string) => Promise<boolean>
-  moveFile: (path: string, directory: string | null) => Promise<boolean>
+  createFile: (name: string, directory: string) => Promise<boolean | NameRefusal>
+  createFolder: (path: string) => Promise<boolean | NameRefusal>
+  renameFile: (path: string, newName: string, returnToEditor: boolean) => Promise<string | null | NameRefusal>
+  renameFolder: (path: string, newName: string, returnToEditor: boolean) => Promise<string | null | NameRefusal>
+  moveFile: (path: string, directory: string | null, returnToEditor: boolean) => Promise<string | null>
   /** Returns the copy's path (to land it straight in rename), or null on failure. */
   duplicateFile: (path: string) => Promise<string | null>
   trashFile: (path: string) => Promise<void>
@@ -106,13 +109,15 @@ export type SidebarProps = {
   focusFilterTick: number
   fileOps: SidebarFileOps
   /** Menu and palette commands name their target explicitly; context menus retain their own target. */
-  menuTargetRequest?: { id: string; key: string; kind: 'file' | 'folder' } | null
+  menuTargetRequest?: SidebarMenuTargetRequest | null
   onMenuTargetHandled?: () => void
   /** App-driven creation (⌘N / ⌃⌘N): bump tick to start a ghost row of `kind` in `directory`. */
   createRequest: { tick: number; kind: 'file' | 'folder'; directory: string } | null
   /** App-owned request to focus the active/first row, or reveal one exact file/folder row. */
   focusTreeRequest?: SidebarTreeFocusRequest | null
-  onFocusTreeHandled?: (request: SidebarTreeFocusRequest) => void
+  onFocusTreeHandled?: (request: SidebarTreeFocusRequest) => boolean
+  onFocusFileOperationRow?: (target: SidebarFocusedRow) => void
+  onReturnToEditor?: () => void
   /** The window's focused folder (ticket 03): the tree shows only it and its descendants, with the
    *  folder as the top row. Null = the whole archive. */
   focusPath?: string | null
@@ -130,7 +135,8 @@ export type SidebarProps = {
 export type SidebarFocusedRow = { key: string; kind: 'file' | 'folder' }
 export type SidebarTreeFocusRequest = { target: SidebarFocusedRow | null; focus: boolean; origin: Element | null }
 type RowRef = SidebarFocusedRow
-type Renaming = { key: string; kind: 'file' | 'folder'; isNew: boolean; directory: string }
+export type SidebarMenuTargetRequest = SidebarFocusedRow & { id: string; returnToEditor: boolean }
+type Renaming = SidebarFocusedRow & { isNew: boolean; directory: string; returnToEditor?: boolean }
 type Anchored = { key: string; kind: 'file' | 'folder'; x: number; y: number }
 
 const NEW_KEY = '__new__'
@@ -257,6 +263,8 @@ function SidebarView({
   onMenuTargetHandled,
   focusTreeRequest,
   onFocusTreeHandled,
+  onFocusFileOperationRow,
+  onReturnToEditor,
   focusPath = null,
   onFocusFolder,
   onHelpWithReport,
@@ -304,11 +312,16 @@ function SidebarView({
   // --- Quiet Menu state (ADR-0017) ---
   const [focusKey, setFocusKey] = useState<string | null>(null)
   const [menu, setMenu] = useState<Anchored | null>(null)
-  const [movePick, setMovePick] = useState<Anchored | null>(null)
+  const [movePick, setMovePick] = useState<(Anchored & { returnToEditor: boolean }) | null>(null)
   /** The move in flight, if any; `dismissed` once Escape closed its picker meanwhile. */
   const movingRef = useRef<{ dismissed: boolean } | null>(null)
   const [binAsk, setBinAsk] = useState<Anchored | null>(null)
   const [renaming, setRenaming] = useState<Renaming | null>(null)
+  const renameInFlight = useRef<Renaming | null>(null)
+  const currentRename = useRef(renaming)
+  currentRename.current = renaming
+  const renameEdit = useRef(0)
+  const [renameProblem, setRenameProblem] = useState<{ request: Renaming; text: string; wrap?: boolean } | null>(null)
   const [shakeKey, setShakeKey] = useState<string | null>(null)
   const [dragPath, setDragPath] = useState<string | null>(null)
   const [dropDir, setDropDir] = useState<string | null>(null)
@@ -544,6 +557,7 @@ function SidebarView({
     [onFocusedRowChange, rowElement, rowRef],
   )
 
+  const preparedFocusRequest = useRef<SidebarTreeFocusRequest | null>(null)
   // An exact reveal can change which rows render. Complete the handoff against the next
   // committed tree, and keep waiting while the first listing is in flight.
   useLayoutEffect(() => {
@@ -567,15 +581,20 @@ function SidebarView({
         ancestor = ancestor.slice(0, ancestor.lastIndexOf('/'))
         next.delete(ancestor)
       }
-      if (next.size !== collapsed.size) {
-        persistCollapsed(next)
-        setCollapsed(next)
+      const expand = next.size !== collapsed.size
+      if (filterQuery || expand) {
+        if (preparedFocusRequest.current === request) return
+        preparedFocusRequest.current = request
+        if (expand) {
+          persistCollapsed(next)
+          setCollapsed(next)
+        }
+        if (filterQuery) setFilterQuery('')
+        return
       }
-      if (filterQuery) setFilterQuery('')
-      if (filterQuery || next.size !== collapsed.size) return
     }
 
-    if (!listingReady) return
+    if (!listingReady || onFocusTreeHandled?.(request) === false) return
     const mountedRow = (key: string | null): HTMLElement | null => {
       const row = key === null ? null : rowElement(key)
       return row?.getClientRects().length ? row : null
@@ -602,7 +621,6 @@ function SidebarView({
         rootNameRef.current?.focus()
       }
     }
-    onFocusTreeHandled?.(request)
   })
 
   const shake = useCallback((key: string) => {
@@ -627,7 +645,7 @@ function SidebarView({
     [rowElement],
   )
   const openMovePicker = useCallback(
-    (key: string) => {
+    (key: string, returnToEditor = false) => {
       closeAnchored()
       // No destinations (root file, no folders) → say so instead of an empty, crash-prone picker
       // (Codex second-look finding #6).
@@ -639,7 +657,7 @@ function SidebarView({
         return
       }
       const rect = rowElement(key)?.getBoundingClientRect()
-      setMovePick({ key, kind: 'file', x: rect ? rect.left + 40 : 100, y: rect ? rect.bottom + 4 : 120 })
+      setMovePick({ key, kind: 'file', returnToEditor, x: rect ? rect.left + 40 : 100, y: rect ? rect.bottom + 4 : 120 })
     },
     [closeAnchored, rowElement, allFolders, onStatus],
   )
@@ -653,61 +671,86 @@ function SidebarView({
   )
 
   const startRename = useCallback(
-    (key: string, kind: 'file' | 'folder') => {
+    (key: string, kind: 'file' | 'folder', returnToEditor = false) => {
       closeAnchored()
       const slash = key.lastIndexOf('/')
-      setRenaming({ key, kind, isNew: false, directory: slash === -1 ? '' : key.slice(0, slash) })
+      setRenaming({ key, kind, isNew: false, returnToEditor, directory: slash === -1 ? '' : key.slice(0, slash) })
     },
     [closeAnchored],
   )
 
   const commitRename = useCallback(
-    async (value: string) => {
-      if (!renaming) return
+    async (input: HTMLInputElement) => {
+      if (!renaming || currentRename.current !== renaming || renameInFlight.current === renaming) return
+      const value = input.value
+      const problem = fileNameProblem(value)
+      if (problem) {
+        setRenameProblem({ request: renaming, text: problem, wrap: true })
+        shake(renaming.key)
+        input.select()
+        return
+      }
+      setRenameProblem(null)
       const typed = value.trim()
       if (!typed) {
         setRenaming(null)
         return
       }
-      const { key, kind, isNew, directory } = renaming
-      let ok: boolean
-      if (isNew) {
-        ok = kind === 'file'
-          ? await fileOps.createFile(`${typed}.md`, directory)
-          : await fileOps.createFolder(directory ? `${directory}/${typed}` : typed)
-      } else {
-        ok = kind === 'file' ? await fileOps.renameFile(key, `${typed}.md`) : await fileOps.renameFolder(key, typed)
+      const { key, kind, isNew, directory, returnToEditor = false } = renaming
+      const origin = document.activeElement
+      const edit = renameEdit.current
+      renameInFlight.current = renaming
+      const refuse = (failure: NameRefusal | null) => {
+        renameInFlight.current = null
+        if (renameEdit.current !== edit) return
+        if (failure) setRenameProblem({ request: renaming, text: failure.problem })
+        shake(key)
       }
-      if (!ok) {
-        shake(isNew ? NEW_KEY : key) // refusal: shake and STAY in rename (ADR-0017)
+      const name = kind === 'file' ? `${typed}.md` : typed.replace(/[/\\]/g, '-')
+      if (isNew) {
+        const path = directory ? `${directory}/${name}` : name
+        const created = kind === 'file' ? await fileOps.createFile(name, directory) : await fileOps.createFolder(path)
+        if (currentRename.current !== renaming) return
+        if (created !== true) {
+          refuse(created || null)
+          return
+        }
+        setRenaming(null)
+        if (kind === 'folder') focusRow(path)
+        return
+      }
+      const landed = kind === 'file'
+        ? await fileOps.renameFile(key, name, returnToEditor)
+        : await fileOps.renameFolder(key, name, returnToEditor)
+      if (currentRename.current !== renaming) return
+      if (typeof landed !== 'string') {
+        refuse(landed)
         return
       }
       setRenaming(null)
-      const landed = isNew
-        ? directory
-          ? `${directory}/${typed}${kind === 'file' ? '.md' : ''}`
-          : `${typed}${kind === 'file' ? '.md' : ''}`
-        : directory
-          ? `${directory}/${typed}${kind === 'file' ? '.md' : ''}`
-          : `${typed}${kind === 'file' ? '.md' : ''}`
-      focusRow(landed)
+      if (document.activeElement !== origin && document.activeElement !== document.body) return
+      if (!returnToEditor) onFocusFileOperationRow?.({ key: landed, kind })
+      else if (landed === key) requestAnimationFrame(() => {
+        if (document.activeElement === document.body) onReturnToEditor?.()
+      })
     },
-    [renaming, fileOps, shake, focusRow],
+    [renaming, fileOps, shake, focusRow, onFocusFileOperationRow, onReturnToEditor],
   )
   const cancelRename = useCallback(() => {
+    setRenameProblem(null)
     setRenaming(null)
     if (focusKey) focusRow(focusKey)
   }, [focusKey, focusRow])
 
   const runMenuAction = useCallback(
-    (id: string, target: Pick<Anchored, 'key' | 'kind'> | null = menu) => {
+    (id: string, target: (SidebarFocusedRow & { returnToEditor?: boolean }) | null = menu) => {
       if (!target) return
-      const { key, kind } = target
+      const { key, kind, returnToEditor } = target
       setMenu(null)
       if (kind === 'file') {
         if (id === 'open') onOpen(key)
-        else if (id === 'rename') startRename(key, 'file')
-        else if (id === 'move') openMovePicker(key)
+        else if (id === 'rename') startRename(key, 'file', returnToEditor)
+        else if (id === 'move') openMovePicker(key, returnToEditor)
         else if (id === 'duplicate') void duplicateRow(key)
         else if (id === 'pin') onToggleFavourite(key)
         else if (id === 'reveal') fileOps.revealFile(key)
@@ -720,7 +763,7 @@ function SidebarView({
         else if (id === 'focus') onFocusFolder?.(key)
         else if (id === 'clear-focus') onFocusFolder?.(null)
         else if (id === 'help-report') onHelpWithReport?.(key)
-        else if (id === 'rename') startRename(key, 'folder')
+        else if (id === 'rename') startRename(key, 'folder', returnToEditor)
         else if (id === 'reveal') fileOps.revealFile(key)
         else if (id === 'trash') openBinAsk(key, 'folder')
       }
@@ -732,8 +775,10 @@ function SidebarView({
     [menu, onOpen, startRename, openMovePicker, onToggleFavourite, fileOps, openBinAsk, setFolderCollapsed, onFocusFolder, onHelpWithReport],
   )
 
+  const handledMenuTarget = useRef<SidebarMenuTargetRequest | null>(null)
   useEffect(() => {
-    if (!menuTargetRequest) return
+    if (!menuTargetRequest || handledMenuTarget.current === menuTargetRequest) return
+    handledMenuTarget.current = menuTargetRequest
     const action = ROW_ACTION_OF[menuTargetRequest.id]
     onMenuTargetHandled?.()
     if (action) runMenuAction(action, menuTargetRequest)
@@ -771,7 +816,7 @@ function SidebarView({
   }, [binAsk, fileOps, focusRow, visibleRows])
 
   const moveRowTo = useCallback(
-    async (key: string, dir: string | null) => {
+    async (key: string, dir: string | null, returnToEditor = false) => {
       const slash = key.lastIndexOf('/')
       const currentDir = slash === -1 ? null : key.slice(0, slash)
       if ((dir ?? null) === currentDir) {
@@ -782,22 +827,24 @@ function SidebarView({
       // flash "File not found" over a move that succeeded. A ref, not state: two picks can land in one frame.
       if (movingRef.current) return
       const run = { dismissed: false }
+      const origin = document.activeElement
       movingRef.current = run
       try {
-        const ok = await fileOps.moveFile(key, dir)
+        const landed = await fileOps.moveFile(key, dir, returnToEditor)
         // Settled either way: the picker closes. A falsy result can follow a move main completed (a refresh
         // that threw), so the picker's key may be stale; keeping it open would dead-end the next pick.
         setMovePick((pick) => (pick?.key === key ? null : pick))
         // Escape during the move closed the picker and put focus back; the completed move does not take it.
-        if (!ok || run.dismissed) return
+        if (landed === null || run.dismissed) return
         if (dir) setFolderCollapsed(dir, false)
-        const name = key.split('/').at(-1) ?? key
-        focusRow(dir ? `${dir}/${name}` : name)
+        if (!returnToEditor && (document.activeElement === origin || document.activeElement === document.body)) {
+          onFocusFileOperationRow?.({ key: landed, kind: 'file' })
+        }
       } finally {
         movingRef.current = null
       }
     },
-    [fileOps, setFolderCollapsed, focusRow],
+    [fileOps, setFolderCollapsed, onFocusFileOperationRow],
   )
 
   // --- keyboard (the tree container owns the ring; inputs stop propagation themselves) ---
@@ -908,36 +955,55 @@ function SidebarView({
 
   function renameRow(kind: 'file' | 'folder', depth: number, currentName: string, key: string): JSX.Element {
     const base = kind === 'file' ? currentName.replace(/\.md$/i, '') : currentName
+    const problem = renameProblem?.request === renaming ? renameProblem : null
     return (
-      <div
-        key={`ren:${key}`}
-        data-row={key}
-        className={`trow renaming${shakeKey === key ? ' shake' : ''}`}
-        style={treeRowStyle(depth)}
-      >
-        <span className="gtr" aria-hidden="true" />
-        {kind === 'file' ? <FileText className="icon sm" /> : <Folder className="icon sm" />}
-        <span className="ren-wrap">
-          <input
-            autoFocus
-            defaultValue={base}
-            aria-label={kind === 'file' ? 'File name' : 'Folder name'}
-            spellCheck={false}
-            onFocus={(e) => e.currentTarget.select()}
-            onKeyDown={(e) => {
-              e.stopPropagation()
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                void commitRename(e.currentTarget.value)
-              } else if (e.key === 'Escape') {
-                e.preventDefault()
-                cancelRename()
-              }
-            }}
-            onBlur={(e) => void commitRename(e.currentTarget.value)}
-          />
-          {kind === 'file' && <span className="ren-ext">.md</span>}
-        </span>
+      <div key={`ren:${key}`}>
+        <div
+          data-row={key}
+          className={`trow renaming${shakeKey === key ? ' shake' : ''}`}
+          style={treeRowStyle(depth)}
+        >
+          <span className="gtr" aria-hidden="true" />
+          {kind === 'file' ? <FileText className="icon sm" /> : <Folder className="icon sm" />}
+          <span className="ren-wrap">
+            <input
+              autoFocus
+              defaultValue={base}
+              aria-label={kind === 'file' ? 'File name' : 'Folder name'}
+              spellCheck={false}
+              aria-invalid={problem ? true : undefined}
+              onChange={() => {
+                renameEdit.current += 1
+                if (problem) setRenameProblem(null)
+              }}
+              onFocus={(e) => e.currentTarget.select()}
+              onKeyDown={(e) => {
+                e.stopPropagation()
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void commitRename(e.currentTarget)
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  cancelRename()
+                } else if (problem) {
+                  setRenameProblem(null)
+                }
+              }}
+              onBlur={(e) => void commitRename(e.currentTarget)}
+            />
+            {kind === 'file' && <span className="ren-ext">.md</span>}
+          </span>
+        </div>
+        {problem && (
+          <div
+            className={`trow-problem${problem.wrap ? ' trow-problem--wrap' : ''}`}
+            role="alert"
+            style={{ marginLeft: 10 + depth * TREE_DEPTH_STEP_PX }}
+            title={problem.text}
+          >
+            {problem.text}
+          </div>
+        )}
       </div>
     )
   }
@@ -1617,7 +1683,7 @@ function SidebarView({
           y={movePick.y}
           fileName={moveNode.name}
           options={moveOptions}
-          onPick={(dir) => void moveRowTo(movePick.key, dir)}
+          onPick={(dir) => void moveRowTo(movePick.key, dir, movePick.returnToEditor)}
           onClose={() => {
             if (movingRef.current) movingRef.current.dismissed = true
             setMovePick(null)

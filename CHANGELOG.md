@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.29.0-alpha.8] — 2026-11-26
+
+An alpha: early, and it can break.
+
+### Fixed
+- Data safety: switching away from a document and back while it was still saving could show a false "Changed on disk" notice, where Reload discarded what you had typed during the save, or in rarer cases quietly show older text. WriteFlex no longer treats its own save as an outside change. The bug was in alphas 6 and 7.
+- "Keep mine" and "Retry" on the changed-on-disk notice are readable again.
+- Importing settings no longer turns experimental Git sync on.
+
+### Changed
+- After renaming or moving a file in Files, the keyboard stays on that file instead of typing into the document; a clashing name says so; names OneDrive and Windows cannot store (: * ? " < > |, or a trailing space or full stop) are refused with a reason.
+- Escape in Folio Compare closes only the comparison.
+- A Collection keeps its list when a refresh fails, with Try again; its filter menus close properly, and Escape in its search clears the text.
+- Quitting starts a little sooner.
+
 ## [0.29.0-alpha.7] — 2026-11-26
 
 An alpha: early, and it can break.
