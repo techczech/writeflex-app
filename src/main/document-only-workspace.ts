@@ -139,9 +139,9 @@ export function documentOnlyView(ws: Workspace): DocumentOnlyView {
       judge(path) // the copy lands beside it, in the folder just judged
       return real(() => ws.duplicateFile(path, { documentOnly: true }))
     },
-    async createFolder(path: string) {
+    async createFolder(path: string, options?: Parameters<Workspace['createFolder']>[1]) {
       judge(path, 'folder')
-      return ws.createFolder(path)
+      return ws.createFolder(path, options)
     },
     async renameFolder(path: string, newName: string) {
       judge(path, 'folder')

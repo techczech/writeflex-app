@@ -7,6 +7,8 @@
  * booting the IPC layer.
  */
 import { posix } from 'node:path'
+import { fileNameProblem } from '../shared/file-name-rules'
+import { markdownNameProblem, newPathNameProblem } from './file-name-rules'
 import { assertCollectionMove, collectionMoveFolderPieces } from './collection'
 import { applyFolderRenameRepair, planFolderRenameRepair, type FolderRenameRepairResult } from './folder-rename-repair'
 import type { PathIdentity } from './guarded-document-move'
@@ -77,6 +79,9 @@ export async function previewRename(
   workspace: Workspace,
   input: { path: string; newName: string; directory?: string | null },
 ): Promise<{ newPath: string; repairPaths: string[] }> {
+  const keepsName = input.directory !== undefined && input.newName === posix.basename(input.path)
+  const nameProblem = keepsName ? null : markdownNameProblem(input.newName)
+  if (nameProblem) throw new Error(nameProblem)
   const name = sanitiseFileName(input.newName)
   const requestedPath = input.directory === null ? `./${name}` : input.directory ? `${input.directory}/${name}` : name
   const newPath = workspace.relative(workspace.renameTarget(input.path, requestedPath))
@@ -109,17 +114,20 @@ export async function moveFile(
   collection?: { dir: string; batch?: RenameBatch },
 ): Promise<FileRenameResult> {
   const newPath = destination.to === 'root' ? `./${destination.name}` : destination.path
-  return renameWithRepair(deps, path, newPath, { collection })
+  return renameWithRepair(deps, path, newPath, { collection, keepNameOf: path })
 }
 
 async function renameWithRepair(
   deps: RenameDoorDeps,
   path: string,
   newPath: string,
-  options: { collection?: { dir: string; batch?: RenameBatch }; guardedSource?: () => Promise<PathIdentity> },
+  options: { collection?: { dir: string; batch?: RenameBatch }; guardedSource?: () => Promise<PathIdentity>; keepNameOf?: string },
 ): Promise<FileRenameResult> {
   const { workspace, follow, checkpointer, notify } = deps
-  const { collection, guardedSource } = options
+  const { collection, guardedSource, keepNameOf } = options
+  const requestedPath = newPath.includes('/') ? newPath : `${posix.dirname(path)}/${newPath}`
+  const nameProblem = newPathNameProblem(workspace, requestedPath, { markdown: true, keepNameOf })
+  if (nameProblem) throw new Error(nameProblem)
   let discovered: Promise<ReadonlySet<string>> | undefined
   const folderPieces = (dir: string) => () => {
     discovered ??= collection?.batch?.folderPieces.get(dir) ?? collectionMoveFolderPieces(workspace, dir)
@@ -184,6 +192,8 @@ async function renameWithRepair(
  * repair write.
  */
 export async function renameFolder(deps: RenameDoorDeps, path: string, newName: string): Promise<FolderRenameResult> {
+  const nameProblem = fileNameProblem(newName)
+  if (nameProblem) throw new Error(nameProblem)
   const { workspace, follow, checkpointer, notify } = deps
   type Held = { agent: RenameCheckpointAgent } | { error: unknown } | null
   const attempt = (given: Held | undefined) => workspace.exclusiveAll(async () => {

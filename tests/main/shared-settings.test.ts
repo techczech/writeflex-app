@@ -146,7 +146,9 @@ test('secrets are schema slots: never stored, exported or listed with a value', 
 
 test('a settings file from elsewhere never sets the Diary folder (set on this Mac only)', async () => {
   for (const key of THIS_MAC_ONLY) expect(schema.def(key)?.importable).toBe(false)
-  expect(schema.settings.filter((d) => d.type === 'path').map((d) => d.key)).toEqual([...THIS_MAC_ONLY])
+  expect(schema.settings.filter((d) => d.type === 'path').map((d) => d.key)).toEqual(
+    [...THIS_MAC_ONLY].filter((key) => schema.def(key)?.type === 'path'),
+  )
   const from = fresh()
   const source = new SharedStore({ ...storeOptions(from, '0.27.0'), watch: false, log: () => {} })
   await source.ready
@@ -167,6 +169,27 @@ test('a settings file from elsewhere never sets the Diary folder (set on this Ma
   expect(target.view().settings['backupTool.records']).toBeUndefined()
   expect(target.view().settings['appearance.theme']).toBe('dark')
   await target.close()
+})
+
+test('a settings import leaves the experimental Git sync switch at its local default', async () => {
+  const target = new SharedStore({ ...storeOptions(fresh(), '0.27.0'), watch: false, log: () => {} })
+  try {
+    await target.ready
+    const before = target.view()
+    const preview = target.previewImport({
+      format: 'bridle-settings-export',
+      version: 1,
+      app: 'writeflex',
+      settings: { 'experimental.gitVaultSync': true },
+      keys: {},
+    })
+    expect((await target.applyImport(preview, { file: 'other.json' })).ok).toBe(true)
+    expect(target.view()).toEqual(before)
+    expect(preview.changes).toEqual([])
+    expect(preview.skipped).toEqual([expect.objectContaining({ key: 'experimental.gitVaultSync', reason: NOT_IMPORTABLE })])
+  } finally {
+    await target.close()
+  }
 })
 
 // ---- IPC ----------------------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import { isHiddenWorkspacePath, Workspace, type FileReadResult } from '../worksp
 import type { ScrapStore } from '../scraps'
 import { frontmatterSafeInsertPosition, objectBlock, parseFrontmatterEntries, serialiseFrontmatterEntries, validateObjectMarkup, type FmEntry, type ObjectKind } from '../../shared/object-markup'
 import { FRONTMATTER_FENCE, FRONTMATTER_KEY_VALUE, frontmatterBlock } from '../../shared/markdown/frontmatter'
+import { newPathNameProblem } from '../file-name-rules'
 import { planRenameRepair, type RenameRepairPlan } from '../rename-repair'
 
 export type ProseEditCategory = 'typo' | 'grammar' | 'wording' | 'structure' | 'clarity' | 'tone' | 'other'
@@ -59,6 +60,9 @@ export async function prepareRename(workspace: Workspace, input: RenameFileInput
   if (!sourcePath || !destinationPath) {
     throw new Error(`Cannot rename ${JSON.stringify(input.path)} because its source or destination is outside the open Workspace.`)
   }
+  const requestedPath = input.newPath.includes('/') ? input.newPath : `${posix.dirname(input.path)}/${input.newPath}`
+  const nameProblem = newPathNameProblem(workspace, requestedPath, { markdown: true, keepNameOf: input.path })
+  if (nameProblem) throw new Error(nameProblem)
   const plan = await planRenameRepair(workspace, input.path, workspace.relative(destinationPath))
   const touchedPaths = [...new Set([
     sourcePath,

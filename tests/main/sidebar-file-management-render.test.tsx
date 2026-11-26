@@ -22,9 +22,9 @@ const md = (path: string): MarkdownFile => ({
 const ops: SidebarFileOps = {
   createFile: async () => true,
   createFolder: async () => true,
-  renameFile: async () => true,
-  renameFolder: async () => true,
-  moveFile: async () => true,
+  renameFile: async () => null,
+  renameFolder: async () => null,
+  moveFile: async () => null,
   duplicateFile: async () => null,
   trashFile: async () => {},
   trashFolder: async () => {},

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, ChevronDown, ChevronRight, FileText, Globe, Image as ImageIcon, RotateCcw, Table2, X, type LucideIcon } from 'lucide-react'
 import {
   COMPARE_WORKING, NOTHING_CHANGED, comparingText, nothingChanged, stateChipText,
@@ -8,6 +8,7 @@ import { plural, versionWhen, type FolioVersionRow } from '../../../shared/folio
 import { stagedKeptText, stagedText, takeRefusalText } from '../../../shared/folio-version-take'
 import { SendUnitButton, unitAttributes, useVersionSelectionBubble, type UnitSource } from './FolioVersionSend'
 import { withdrawCopy } from '../scratchpad/version-send'
+import { folioRoomEscapeGoesBack } from './BackControl'
 
 /**
  * Compare two Folio versions, or a version with the working draft (ADR-0052; Folio versions ticket 08). A workspace view in the
@@ -70,6 +71,9 @@ export function FolioVersionCompare({ dir, versions, choice, choicesUnavailable,
   const [load, setLoad] = useState<Loaded<FolioCompareResult>>({ state: 'loading' })
   const [tick, setTick] = useState(0)
   const root = useRef<HTMLDivElement>(null)
+  const fromPicker = useRef<HTMLSelectElement>(null)
+  const currentLoad = useRef(load)
+  const partFocus = useRef<string | null>(null)
   const involvesWorking = choice.from === COMPARE_WORKING || choice.to === COMPARE_WORKING
 
   // A save, the agent's save or a restore changes the history; a file change changes the working draft.
@@ -88,18 +92,40 @@ export function FolioVersionCompare({ dir, versions, choice, choicesUnavailable,
 
   useEffect(() => {
     let live = true
-    setLoad((previous) => (previous.state === 'ready' && previous.value.from.id === choice.from && previous.value.to.id === choice.to ? previous : { state: 'loading' }))
+    const publish = (next: Loaded<FolioCompareResult>): void => {
+      if (!live) return
+      const active = document.activeElement
+      partFocus.current = active && root.current?.contains(active)
+        ? active.closest<HTMLElement>('[data-testid="compare-line"]')?.dataset.key ?? null
+        : null
+      currentLoad.current = next
+      setLoad(next)
+    }
+    const previous = currentLoad.current
+    if (previous.state !== 'loading' && (previous.state !== 'ready' || previous.value.from.id !== choice.from || previous.value.to.id !== choice.to)) {
+      currentLoad.current = { state: 'loading' }
+      setLoad(currentLoad.current)
+    }
     void window.writeflex.folioVersions.compare(dir, choice.from, choice.to).then(
       (value) => {
-        if (!live) return
-        if (value === null) setLoad({ state: 'unreadable' })
-        else if ('refused' in value) setLoad({ state: 'refused', message: value.refused })
-        else setLoad({ state: 'ready', value })
+        if (value === null) publish({ state: 'unreadable' })
+        else if ('refused' in value) publish({ state: 'refused', message: value.refused })
+        else publish({ state: 'ready', value })
       },
-      () => { if (live) setLoad({ state: 'unreadable' }) },
+      () => publish({ state: 'unreadable' }),
     )
     return () => { live = false }
   }, [dir, choice.from, choice.to, tick])
+
+  // Rereading can replace the focused row's button with a plain row, or remove the row entirely.
+  useLayoutEffect(() => {
+    const key = partFocus.current
+    partFocus.current = null
+    const active = document.activeElement
+    if (key === null || (active !== document.body && active !== document.documentElement)) return
+    const row = root.current?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"] [data-compare-line]`)
+    ;(row ?? fromPicker.current)?.focus()
+  }, [load])
 
   // The keyboard lands on the first line once the comparison is drawn, never on the working draft's editor.
   const landed = useRef(false)
@@ -115,8 +141,8 @@ export function FolioVersionCompare({ dir, versions, choice, choicesUnavailable,
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     if (event.metaKey || event.ctrlKey || event.altKey) return
     const target = event.target as HTMLElement
+    if (event.key === 'Escape' && folioRoomEscapeGoesBack(event.nativeEvent, true)) { event.preventDefault(); event.stopPropagation(); onClose(); return }
     if (target.closest('select')) return
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose(); return }
     const line = target.closest<HTMLElement>('[data-compare-line]')
     if (!line || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return
     const all = lines()
@@ -124,15 +150,21 @@ export function FolioVersionCompare({ dir, versions, choice, choicesUnavailable,
     if (next) { event.preventDefault(); next.focus() }
   }
 
+  const choose = (side: keyof CompareChoice, picker: HTMLSelectElement): void => {
+    if (choicesUnavailable) return
+    picker.focus()
+    onChoice({ ...choice, [side]: picker.value })
+  }
+
   const pickers = (
     <div className="fvc-pick">
       <label className="fvc-pickone"><span className="fvc-sr">Compare this version</span>
-        <select data-testid="compare-from" value={choice.from} aria-disabled={choicesUnavailable || undefined} onChange={(event) => { if (!choicesUnavailable) onChoice({ ...choice, from: event.target.value }) }}>
+        <select ref={fromPicker} data-testid="compare-from" value={choice.from} aria-disabled={choicesUnavailable || undefined} onChange={(event) => choose('from', event.currentTarget)}>
           {choiceOptions(versions, choice.from)}
         </select></label>
       <ArrowRight aria-hidden="true" className="fvc-arrow" />
       <label className="fvc-pickone"><span className="fvc-sr">with this version</span>
-        <select data-testid="compare-to" value={choice.to} aria-disabled={choicesUnavailable || undefined} onChange={(event) => { if (!choicesUnavailable) onChoice({ ...choice, to: event.target.value }) }}>
+        <select data-testid="compare-to" value={choice.to} aria-disabled={choicesUnavailable || undefined} onChange={(event) => choose('to', event.currentTarget)}>
           {choiceOptions(versions, choice.to)}
         </select></label>
       <span className="fvc-push">

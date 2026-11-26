@@ -58,19 +58,23 @@ const INITIAL_TIMELINE: Timeline = { accepted: null, pending: true, failed: fals
 const NO_VERSIONS: readonly FolioVersionRow[] = []
 const HISTORY_UNAVAILABLE = 'The versions of this Folio could not be read.'
 
+type OpenComparison = CompareChoice & { openedFrom: string }
+
 type Loaded<T> = { state: 'loading' } | { state: 'unreadable' } | { state: 'ready'; value: T }
 
 /**
  * What the tab keeps while a version is open read-only (ticket 07), so Back to working draft finds the tab as the writer left it: the
  * version that was chosen and how far the list and the contents were scrolled. Owned by the room; the tab only writes and reads it.
  */
-export type VersionsMemory = { chosen: string | null; rows: number; main: number; /** The comparison open in the tab (ticket 08), so Back from a read-only version and a tab change find it again. */ compare?: CompareChoice | null }
+export type VersionsMemory = { chosen: string | null; rows: number; main: number; /** The comparison open in the tab (ticket 08), so Back from a read-only version and a tab change find it again. */ compare?: OpenComparison | null }
 
 export type VersionsEntry = { dir: string; origin: Element | null }
 
 export type FolioRoomVersionsProps = {
   /** A one-shot focus handoff from an explicit entry into this Folio's Versions tab. */
   entry?: { current: VersionsEntry | null }
+  /** Lets the room close the visible comparison before its other Escape steps. */
+  closeVersionCompare?: { current: (() => void) | null }
   /** Where the tab keeps its choice and scroll for the room (ticket 07). Absent: the tab starts from the newest version each time. */
   memory?: { current: VersionsMemory }
   /** The Folio's folder. */
@@ -83,7 +87,7 @@ export type FolioRoomVersionsProps = {
   take?: TakeHost
 }
 
-export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take, entry }: FolioRoomVersionsProps): JSX.Element {
+export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take, entry, closeVersionCompare }: FolioRoomVersionsProps): JSX.Element {
   const [timeline, setTimeline] = useState(INITIAL_TIMELINE)
   const currentTimeline = useRef(timeline)
   const readRequest = useRef(0)
@@ -100,8 +104,8 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take, e
   const [importing, setImporting] = useState<boolean>(() => takeImportRequest())
   // Ticket 16: the incoming revision being decided, if any. It takes the main column and folds the timeline to a rail.
   const [deciding, setDeciding] = useState<string | null>(null)
-  const [comparing, setComparingState] = useState<CompareChoice | null>(memory?.current.compare ?? null)
-  const setComparing = useCallback((next: CompareChoice | null): void => { if (memory) memory.current.compare = next; setComparingState(next) }, [memory])
+  const [comparing, setComparingState] = useState<OpenComparison | null>(memory?.current.compare ?? null)
+  const setComparing = useCallback((next: OpenComparison | null): void => { if (memory) memory.current.compare = next; setComparingState(next) }, [memory])
   const [contents, setContents] = useState<Loaded<FolioVersionContents>>({ state: 'loading' })
   const [tick, setTick] = useState(0)
   // Ticket 15: the incoming revisions and how many of their staged suggestions are decided. They change with the ledger, not only with the history.
@@ -208,7 +212,7 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take, e
   }, [shownForAction])
   // Compare Folio Versions… (palette, menu): the version the tab shows, against the working draft.
   const compareRef = useRef<(row: FolioVersionRow) => void>(() => undefined)
-  compareRef.current = (row) => setComparing({ from: row.id, to: COMPARE_WORKING })
+  compareRef.current = (row) => setComparing({ from: row.id, to: COMPARE_WORKING, openedFrom: row.id })
   useEffect(() => {
     const onCommand = (event: Event): void => {
       const detail = (event as CustomEvent<{ handled: boolean }>).detail
@@ -262,10 +266,19 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take, e
     setDeciding(null)
     requestAnimationFrame(() => listRef.current?.closest('.fv')?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')?.focus())
   }, [])
+  const compareOrigin = comparing?.openedFrom
   const closeCompare = useCallback((): void => {
+    if (compareOrigin === undefined) return
     setComparing(null)
-    requestAnimationFrame(() => mainRef.current?.querySelector<HTMLElement>('[data-action="compare"]')?.focus())
-  }, [setComparing])
+    const origin = listRef.current?.querySelector<HTMLElement>(`[data-version-id="${CSS.escape(compareOrigin)}"]`)
+    const fallback = listRef.current?.querySelector<HTMLElement>('[role="option"][tabindex="0"]') ?? saveRef.current ?? retryRef.current
+    ;(origin ?? fallback)?.focus()
+  }, [compareOrigin, setComparing])
+  useLayoutEffect(() => {
+    if (!closeVersionCompare || compareOrigin === undefined || importing || deciding !== null) return
+    closeVersionCompare.current = closeCompare
+    return () => { closeVersionCompare.current = null }
+  }, [closeVersionCompare, closeCompare, compareOrigin, importing, deciding])
   // Back from a version: the list and the contents are scrolled as they were left.
   const restored = useRef(false)
   useEffect(() => {
@@ -426,7 +439,7 @@ export function FolioRoomVersions({ dir, onSaveVersion, actions, memory, take, e
           ? <FolioVersionCompare dir={dir} versions={versions} choice={comparing} choicesUnavailable={failed} onChoice={(next) => {
             if (currentTimeline.current.failed) return
             const available = (id: string): boolean => id === COMPARE_WORKING || Boolean(actionRow(id))
-            if ((next.from === comparing.from || available(next.from)) && (next.to === comparing.to || available(next.to))) setComparing(next)
+            if ((next.from === comparing.from || available(next.from)) && (next.to === comparing.to || available(next.to))) setComparing({ ...next, openedFrom: comparing.openedFrom })
           }} onClose={closeCompare} {...(take ? { take } : {})} />
           : shownRow && <VersionContents row={shownRow} contents={contents} actionRow={actionRow} unavailable={failed} actions={{ ...actions, compare: (row) => compareRef.current(row) }} {...(shownRow.incomingFrom !== undefined && !shownRow.withdrawn ? { onDecide: (row: FolioVersionRow) => { if (row.incomingFrom !== undefined && !row.withdrawn) setDeciding(row.id) } } : {})} />}
       </div>

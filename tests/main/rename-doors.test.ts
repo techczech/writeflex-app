@@ -573,6 +573,29 @@ test('the rename and move doors keep traversal-like typed names inside the chose
   })
 })
 
+test('agent create and rename refuse unsyncable new names before writing', async () => {
+  const world = await renameDoorWorld()
+  await world.write('keep.md', 'Keep this text.\n')
+  const manifest = buildWriteFlexManifest(world.workspace)
+  const context: CapabilityContext = {
+    trigger: { id: 't', source: 'user', trust: 'interactive' },
+    sessionId: 's', attemptId: 'attempt', idempotencyKey: 'attempt', audit: () => {},
+  }
+  const create = manifest.capabilities.find(capability => capability.name === 'housekeeping.create_file')!
+  const created = await create.execute({ path: 'bad?.md', content: 'New text.\n' }, context)
+  expect(created).toMatchObject({
+    isError: true, text: 'A name cannot contain : * ? " < > | — OneDrive and Windows cannot store them.',
+  })
+  const rename = manifest.capabilities.find(capability => capability.name === 'housekeeping.rename_file')!
+  const input = { path: 'keep.md', newPath: 'keep .md' }
+  const resolvedTouchedPaths = Object.freeze(await rename.touchedPaths!(input))
+  const renamed = await rename.execute(input, { ...context, resolvedTouchedPaths })
+  expect(renamed).toMatchObject({ isError: true, text: 'A name cannot end with a space or a full stop.' })
+  expect(await world.read('keep.md')).toBe('Keep this text.\n')
+  expect(await world.exists('bad?.md')).toBe(false)
+  expect(await world.exists('keep .md')).toBe(false)
+})
+
 test('the move door reports a completed move with a repair warning', async () => {
   const world = await renameDoorWorld()
   await mkdir(join(world.root, 'archive'), { recursive: true })

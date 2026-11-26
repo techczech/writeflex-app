@@ -33,10 +33,12 @@ function escapeBelongsElsewhere(event: KeyboardEvent): boolean {
  * those takes its Esc first and marks it handled. When all of them decline, Esc goes where the room's Back button goes.
  * Text being typed keeps its Esc.
  */
-export function folioRoomEscapeGoesBack(event: KeyboardEvent): boolean {
+export function folioRoomEscapeGoesBack(event: KeyboardEvent, allowSelect = false): boolean {
   if (event.key !== 'Escape' || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.defaultPrevented) return false
   const target = event.target as HTMLElement | null
-  if (target?.closest?.('input, textarea, select, [contenteditable="true"], .cm-editor')) return false
+  if (target?.closest?.('input, textarea, [contenteditable="true"], .cm-editor')) return false
+  // A native select's open popup consumes Esc before it reaches the page.
+  if (!allowSelect && target?.closest?.('select')) return false
   return !document.querySelector('[role="menu"], [role="alertdialog"], [role="dialog"], .overlay, [aria-modal="true"], .pal, .cv-sheet')
 }
 

@@ -9,6 +9,7 @@ import { realpathSync } from 'node:fs'
 import { posix, sep } from 'node:path'
 import { Type } from 'typebox'
 import type { Capability, CapabilityContext } from '@bridle/core'
+import { newPathNameProblem } from '../file-name-rules'
 import { ChangedSinceRead, DocumentChangedError, NotADocumentPathError, normaliseMarkdownPath, SavedButNotReadBack, Workspace, type FileReadResult, type OperationWrite, type SaveFileOptions } from '../workspace'
 import { rollBackOperationWrites, rollbackMessage } from '../operation-rollback'
 import { fingerprintOfRead } from '../guarded-document-read'
@@ -406,6 +407,8 @@ export function buildVerbTable(
           // Agent notes about a document never land beside it under a model-chosen name (2026-09-12).
           const refusal = createFileNoteRefusal(input.path)
           if (refusal) return fail(refusal)
+          const nameProblem = newPathNameProblem(workspace, input.path, { markdown: true })
+          if (nameProblem) return fail(nameProblem)
           const created = await workspace.createFile(input.path, input.content)
           return ok(`Created ${created.file.path}.`, created)
         } catch (error) {

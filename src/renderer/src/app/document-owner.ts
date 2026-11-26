@@ -102,7 +102,18 @@ type DocumentRecord = {
   queue: Promise<unknown>
   /** The gen snapshotted by the hold now standing, if any. */
   heldGen?: number
+  /** Counts the owner's operations on the path, bumped when each starts and when it ends: a queued
+   *  operation (save, Keep mine, reload, watcher read, main route), a write, a hold, a move. A read made
+   *  outside the queue is stale if this moved between the read and its use (review of PR 383). */
+  ops: number
+  /** `ops` when the path was last activated: the default token for an activation that brought none. */
+  activatedOps?: number
+  /** Queued operations running now: an activation inside one (Retry) reads in its turn. */
+  running: number
 }
+
+/** What an activation read outside the queue is checked against when it is applied (`readToken`). */
+export type ActivationReadToken = { docEpoch: number; ops: number }
 
 export type FlushOutcome = { status: 'refused'; path: string } | { status: 'still-unsaved'; path: string }
 export type Snapshot = { path: string; text: string | null; baselineDisk: string | undefined; gen: number }
@@ -211,7 +222,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
   const record = (path: string): DocumentRecord => {
     let rec = records.get(path)
     if (!rec) {
-      rec = { epoch: ++epochs, gen: 0, savedGen: 0, diskUnknown: false, inflight: 0, pending: 0, queue: Promise.resolve() }
+      rec = { epoch: ++epochs, gen: 0, savedGen: 0, diskUnknown: false, inflight: 0, pending: 0, queue: Promise.resolve(), ops: 0, running: 0 }
       records.set(path, rec)
     }
     return rec
@@ -231,7 +242,15 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
     rec.pending += 1
     const scoped = covering(path)
     const before = scoped.length === 0 ? rec.queue : Promise.all([rec.queue, ...scoped])
-    const run = before.then(op, op)
+    const tracked = async (): Promise<T> => {
+      rec.ops += 1
+      rec.running += 1
+      try { return await op() } finally {
+        rec.running -= 1
+        rec.ops += 1
+      }
+    }
+    const run = before.then(tracked, tracked)
     rec.queue = run.then(() => undefined, () => undefined)
     void rec.queue.then(() => { rec.pending -= 1 })
     return run
@@ -293,6 +312,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
     let committed = false
     let confirmed = false
     rec.inflight += 1
+    rec.ops += 1
     try {
       const ok = await writeBuffer({
         notice: ports.notice,
@@ -347,6 +367,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
       return ok
     } finally {
       rec.inflight -= 1
+      rec.ops += 1
       ports.receipts?.saveCompleted({
         path,
         epoch,
@@ -441,6 +462,20 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
     baselineOf: (path: string): string | undefined => baselines.get(path),
     baselineDiskOf: (path: string): string | undefined => baselines.diskText(path),
     isDirty: (path: string): boolean => dirty.has(path),
+    /** Something is queued, running or held on the path now (its queue, a folder scope over it, or a
+     *  registry write or hold): a read made outside the queue may race it. */
+    busyNow: (path: string): boolean => !idleNow(path),
+    /** Taken before an activation's read outside the queue; `activated` and `changedSince` check it. */
+    readToken: (path: string): ActivationReadToken | undefined => {
+      const rec = records.get(path)
+      return rec ? { docEpoch: rec.epoch, ops: rec.ops } : undefined
+    },
+    /** An owner operation on the path started or ended since the token (or the record was replaced). */
+    changedSince: (path: string, token: ActivationReadToken | undefined): boolean => {
+      const rec = records.get(path)
+      if (!token) return rec !== undefined && rec.ops > 0
+      return !rec || rec.epoch !== token.docEpoch || rec.ops !== token.ops
+    },
     dirtyPaths: (): string[] => [...dirty],
     isSaved,
     /** The document's change count and the count its last confirmed write carried (read-only; for tests
@@ -556,9 +591,10 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
         for (const path of held) {
           const rec = snapshot(path)
           rec.pending += 1
+          rec.ops += 1
           // Every path in `held` is idle here (its queue settled), so the hold is the gate itself.
           rec.queue = gate
-          void gate.then(() => { rec.pending -= 1; if (rec.heldGen !== undefined) delete rec.heldGen })
+          void gate.then(() => { rec.pending -= 1; rec.ops += 1; if (rec.heldGen !== undefined) delete rec.heldGen })
         }
         if (options.detach) owner.detach(held)
         const joined: string[] = []
@@ -612,8 +648,9 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
       for (const path of paths) {
         const rec = record(path)
         rec.pending += 1
+        rec.ops += 1
         rec.queue = gate
-        void gate.then(() => { rec.pending -= 1 })
+        void gate.then(() => { rec.pending -= 1; rec.ops += 1 })
       }
       try { return await run() } finally { release() }
     },
@@ -669,7 +706,11 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
       ports.forgetBuffer(from) // the app's traces of `from`; the editor's state is under `to` now
       ports.registry.discard(from)
       setDot(from, false)
-      records.set(to, { epoch: rec.epoch, gen: rec.gen, savedGen: rec.savedGen, diskUnknown: rec.diskUnknown, inflight: 0, pending: 0, queue: Promise.resolve() })
+      records.set(to, {
+        epoch: rec.epoch, gen: rec.gen, savedGen: rec.savedGen, diskUnknown: rec.diskUnknown, inflight: 0, pending: 0, queue: Promise.resolve(),
+        ops: rec.ops + 1, running: 0, ...(rec.activatedOps !== undefined ? { activatedOps: rec.activatedOps } : {}),
+      })
+      rec.ops += 1
       if (disk !== undefined) baselines.set(to, disk)
       if (wasReadOnly) readOnly.add(to)
       if (saved) {
@@ -796,8 +837,17 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
      * A tab activated and its file was read: the baseline is that read. `show` puts the buffer on screen
      * (a cached one, or the read) and returns it. A cached buffer is reconciled with the read as the
      * watcher would; the answer says what the app should raise.
+     *
+     * Navigation reads outside the path's queue (PR 362), so the read may race the owner's own work on the
+     * path (review 2026-11-26; review of PR 383). Outside the queue, a read that differs from the baseline
+     * is not trusted when the owner's own write is in flight, when any owner operation on the path started
+     * or ended since `token` (taken before the read; by default, since the path was last activated), or,
+     * with `recheck`, when anything is queued or held on the path now. An untrusted read changes nothing:
+     * the resident buffer is shown on its current baseline, the answer is 'kept', and `recheck` reconciles
+     * with a fresh read in the queue, after that work. A read made inside the path's queue (Retry, which
+     * brings no `recheck`) is the disk in its turn, and is applied as it is.
      */
-    activated(path: string, disk: string, show: () => string): 'conflict' | 'replaced' | 'kept' {
+    activated(path: string, disk: string, show: () => string, recheck?: () => void, token?: ActivationReadToken): 'conflict' | 'replaced' | 'kept' {
       // A document opened inside the scope of a route holding it now (a folder's rename or trash) joins
       // that hold before it is shown: detached with the route's documents and settled by the route's action
       // with them (2b review P2); its saves wait for the scope's lock as every operation under it does.
@@ -805,6 +855,22 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
       const previousEditor = baselines.get(path)
       const previousDisk = baselines.diskText(path)
       const rec = record(path)
+      // A token from another record of the path (dropped and made again since the read) never matches.
+      const sinceOps = token ? (token.docEpoch === rec.epoch ? token.ops : -1) : rec.activatedOps
+      const inQueueTurn = recheck === undefined && rec.running > 0
+      const untrusted = previousDisk !== undefined && ports.buffer(path) != null && disk !== previousDisk
+        && (rec.inflight > 0 || (!inQueueTurn && (
+          sinceOps === undefined || sinceOps !== rec.ops || (recheck !== undefined && !idleNow(path)))))
+      rec.activatedOps = rec.ops
+      if (untrusted) {
+        const buffer = show()
+        const differs = isTextChange(previousEditor, buffer)
+        if (differs) ports.registry.typed(path, buffer)
+        else ports.registry.matchesDisk(path, buffer)
+        setDot(path, differs)
+        recheck?.()
+        return 'kept'
+      }
       baselines.set(path, disk)
       const buffer = show()
       if (previousDisk === undefined) {
@@ -838,7 +904,9 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
     },
     /** A tab activated with held text while its disk copy cannot be read. */
     activatedHeld(path: string, buffer: string): boolean {
+      for (const scope of scopes) if (path.startsWith(scope.prefix)) scope.join(path)
       const rec = record(path)
+      rec.activatedOps = rec.ops
       const baseline = baselines.get(path)
       const unsaved = baseline === undefined || isTextChange(baseline, buffer) || ports.registry.textOf(path) !== undefined || rec.gen !== rec.savedGen
       if (unsaved) {

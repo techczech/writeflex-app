@@ -23,11 +23,15 @@ import { CollectionMenu } from './CollectionMenu'
 import { CollectionFilterBar } from './CollectionFilterBar'
 import { COLLECTION_BULK_COMMANDS, COLLECTION_PAGE_EVENT, type CollectionPageCommand } from './collection-page-commands'
 import { EMPTY_COLLECTION_FILTERS, filterCollectionRows, prepareCollectionRows, groupCollectionRows, type CollectionGroup } from './collection-view-state'
+import { fileNameProblem } from '../../../shared/file-name-rules'
 import { BOARD_STATUS_ORDER } from '../../../shared/collection-status'
 
 type CollectionListing =
   | { dir: string; status: 'loading' | 'failed' }
-  | { dir: string; status: 'ready' | 'refreshing'; data: Collection }
+  | { dir: string; status: 'refreshing' | 'stale'; data: Collection }
+  | { dir: string; status: 'ready'; data: Collection; request: symbol }
+
+const STALE_LIST_ACTION_TITLE = 'Try again to refresh before using this action.'
 
 type SortKey = DashSortKey
 type SortState = DashSort
@@ -161,8 +165,13 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
   const [listing, setListing] = useState<CollectionListing>({ dir, status: 'loading' })
   const currentListing = listing.dir === dir ? listing : null
   const listReady = currentListing?.status === 'ready'
+  const refreshFailed = currentListing?.status === 'stale'
   const data = currentListing && 'data' in currentListing ? currentListing.data : null
-  const mountedListing = useRef<{ dir: string; latest: number } | null>(null)
+  const mountedListing = useRef<{ dir: string; latest: symbol | null } | null>(null)
+  const canUseListing = useCallback(() =>
+    currentListing?.status === 'ready' && mountedListing.current?.latest === currentListing.request, [currentListing])
+  const listBlockedReason = listReady ? undefined : STALE_LIST_ACTION_TITLE
+  const listActionState = { 'aria-disabled': !listReady, title: listBlockedReason }
   const {
     read: readFolioEligibility, isCurrent: eligibilityIsCurrent, surface, folio, folioParent, isFolio,
     manifestUnreadable, repairNeeded, planError, planCommandError, canMakeFolio, canStartOutline,
@@ -174,24 +183,27 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
   const [sort, setSort] = useState<SortState | null>(null)
 
   useLayoutEffect(() => {
-    mountedListing.current = { dir, latest: 0 }
+    mountedListing.current = { dir, latest: null }
     return () => { mountedListing.current = null }
   }, [dir])
   const loadListing = useCallback(() => {
     const mounted = mountedListing.current
     if (mounted?.dir !== dir) return
-    const request = ++mounted.latest
+    // Revoke writes before React commits the change to the listing.
+    const request = mounted.latest = Symbol()
     const isCurrent = () => mountedListing.current === mounted && mounted.latest === request
-    // Keep the same folder's rows mounted so a refresh cannot blur the writer's focused row.
-    setListing(previous => previous.dir === dir && 'data' in previous
-      ? { ...previous, status: 'refreshing' }
-      : { dir, status: 'loading' })
+    setListing(previous => {
+      if (previous.dir !== dir || !('data' in previous)) return { dir, status: 'loading' }
+      // A retry keeps the notice visible until a read succeeds.
+      return previous.status === 'stale' ? previous : { dir, status: 'refreshing', data: previous.data }
+    })
     void window.writeflex.listCollection(dir, { includeSearchText: true }).then((result) => {
-      if (isCurrent()) setListing({ dir, status: 'ready', data: result })
+      if (isCurrent()) setListing({ dir, status: 'ready', data: result, request })
     }, () => {
       if (!isCurrent()) return
-      setListing({ dir, status: 'failed' })
-      setSheet(null)
+      setListing(previous => previous.dir === dir && 'data' in previous
+        ? { dir, status: 'stale', data: previous.data }
+        : { dir, status: 'failed' })
     })
   }, [dir])
 
@@ -285,8 +297,9 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
   }, [])
 
   const createIndex = useCallback(() => {
+    if (!canUseListing()) return
     void window.writeflex.createCollectionIndex(dir).catch((e: Error) => onStatus(e?.message ?? 'Could not create the Index Note.'))
-  }, [dir, onStatus])
+  }, [canUseListing, dir, onStatus])
 
   const entriesByPath = useMemo(() => new Map(ordered.flatMap(entry => entry.item.row ? [[entry.item.row.path, entry] as const] : [])), [ordered])
   const prepared = useMemo(() => prepareCollectionRows(sortedRows), [sortedRows])
@@ -303,7 +316,9 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
   }, [data, visiblePaths])
   const runPageCommand = useCallback((command: CollectionPageCommand) => {
     if (command === 'menu') { setMenuOpen(value => !value); return }
-    if (busy && (command === 'rename' || command in COLLECTION_BULK_COMMANDS)) return
+    const isWriteSheet = command === 'rename' || command in COLLECTION_BULK_COMMANDS
+    if ((isWriteSheet || command === 'index') && !canUseListing()) return
+    if (isWriteSheet && busy) return
     sheetOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setMenuOpen(false)
     if (command === 'make-folio') {
@@ -314,7 +329,6 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
       return
     }
     if (command === 'index') {
-      if (!listReady) return
       if (data?.cover) onOpenPiece(data.cover.path)
       else createIndex()
       return
@@ -323,8 +337,8 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
     if (command === 'clear-selection') { setSelection(new Set()); return }
     if (command === 'select-all') { setSelection(new Set(hits.map(hit => hit.row.path))); return }
     if (command === 'bulk-folio' && !canAddToFolio) { onStatus('Add pieces from the Folio’s own collection folder.'); return }
-    if (command === 'rename' || command in COLLECTION_BULK_COMMANDS) {
-      if (!data || !listReady) return
+    if (isWriteSheet) {
+      if (!data) return
       if (command.startsWith('bulk-') && selectedPaths.length === 0) { onStatus('Select pieces first.'); return }
       if (command === 'bulk-move' && sortedRows.some(row => row.folderPath && selectedPaths.includes(row.path))) { onStatus('Move folder pieces from Files so all their documents move together.'); return }
       if (command === 'bulk-move') setMoveFolders([])
@@ -338,7 +352,7 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
       if (control?.tagName === 'DETAILS') { (control as HTMLDetailsElement).open = true; control.querySelector<HTMLElement>('input, button')?.focus() }
       else control?.focus()
     })
-  }, [folio, manifestUnreadable, makeFolio, data, listReady, onOpenPiece, createIndex, hits, selectedPaths, sortedRows, onStatus, busy, canAddToFolio, canMakeFolio, repairNeeded, eligibilityIsCurrent])
+  }, [folio, manifestUnreadable, makeFolio, data, canUseListing, onOpenPiece, createIndex, hits, selectedPaths, sortedRows, onStatus, busy, canAddToFolio, canMakeFolio, repairNeeded, eligibilityIsCurrent])
   useEffect(() => {
     const listener = (event: Event) => runPageCommand((event as CustomEvent<CollectionPageCommand>).detail)
     window.addEventListener(COLLECTION_PAGE_EVENT, listener)
@@ -349,12 +363,14 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
     const outside = (event: PointerEvent) => { if (!(event.target as Element).closest('.cv-menu-anchor')) setMenuOpen(false) }
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setMenuOpen(false); pageRef.current?.querySelector<HTMLButtonElement>('.cv-menu-trigger')?.focus() } }
     document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape)
-    pageRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus()
+    pageRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not([aria-disabled="true"])')?.focus()
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape) }
   }, [menuOpen])
   const submitSheet = async () => {
-    if (batchRunning.current || busy || !listReady || !sheet || (sheet !== 'rename' && !selectedPaths.length)) return
+    if (batchRunning.current || busy || !canUseListing() || !sheet || (sheet !== 'rename' && !selectedPaths.length)) return
     if (sheet === 'move' ? !moveFolders.includes(sheetValue) : sheet !== 'folio' && !sheetValue.trim()) return
+    const nameProblem = sheet === 'rename' ? fileNameProblem(sheetValue) : null
+    if (nameProblem) { setSheetError(nameProblem); return }
     setBusy(true); setSheetError(''); batchRunning.current = true; reloadPending.current = false
     try {
       if (sheet === 'rename') await onRename?.(sheetValue.trim())
@@ -368,12 +384,13 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
     } catch (error) { setSheetError(error instanceof Error ? error.message : 'Could not finish. Try again.') }
     finally { batchRunning.current = false; setBusy(false); if (reloadPending.current) { reloadPending.current = false; reload() } }
   }
-  const sheetNode = listReady && data && sheet && <CollectionActionSheet
+  const sheetNode = data && sheet && <CollectionActionSheet
     sheet={sheet}
     value={sheetValue}
     folders={moveFolders}
     folioName={data.name}
     busy={busy}
+    blockedReason={listBlockedReason}
     error={sheetError}
     returnFocusTo={sheetOpener.current}
     fallbackFocus={() => pageRef.current?.querySelector<HTMLElement>('.cv-menu-trigger') ?? null}
@@ -381,7 +398,7 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
     onClose={() => { if (!batchRunning.current) setSheet(null) }}
     onSubmit={() => { void submitSheet() }}
   />
-  const collectionMenu = <CollectionMenu listReady={listReady} canCreateFolio={canMakeFolio} hasCover={Boolean(data?.cover)} folio={isFolio} open={menuOpen} onToggle={() => runPageCommand('menu')} onCommand={runPageCommand} onTurnBack={() => { setMenuOpen(false); onRunCommand?.('folio.turnBack') }} onAssemble={() => { setMenuOpen(false); onHelpWithReport?.(dir) }} onExport={() => { setMenuOpen(false); onExport?.({ dir, folio: isFolio || manifestUnreadable }) }} />
+  const collectionMenu = <CollectionMenu listBlockedReason={listBlockedReason} canCreateFolio={canMakeFolio} hasCover={Boolean(data?.cover)} folio={isFolio} open={menuOpen} onToggle={() => runPageCommand('menu')} onCommand={runPageCommand} onTurnBack={() => { setMenuOpen(false); onRunCommand?.('folio.turnBack') }} onAssemble={() => { setMenuOpen(false); onHelpWithReport?.(dir) }} onExport={() => { setMenuOpen(false); onExport?.({ dir, folio: isFolio || manifestUnreadable }) }} />
   const createButtons = <><button className="ghost primary" onClick={() => onNewPiece(dir)}><FilePlus2 className="icon sm" />New piece<kbd aria-hidden="true">{effectiveSheetChords(registryCommand('sheet.Files.2'), shortcutOverrides).join(' / ')}</kbd></button>{canStartOutline && onStartFolio && <button className="ghost" onClick={startOutline}><BookOpenText className="icon sm" />Start a Folio outline</button>}</>
 
   if (surface === 'loading') {
@@ -441,7 +458,7 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
         ) : (
           <>
             No cover note yet
-            <button className="ghost" disabled={!listReady} onClick={createIndex}>Create index note</button>
+            <button className="ghost" {...listActionState} onClick={createIndex}>Create index note</button>
           </>
         )}
         <span>·</span><span>{sortedRows.length} {sortedRows.length === 1 ? 'piece' : 'pieces'} · {totalWords.toLocaleString('en-GB')} words</span>
@@ -459,6 +476,10 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
       <CollectionFilterBar filters={filters} onChange={setFilters} facets={data ? facets : null} group={group} onGroup={setGroup} sort={`${shownSort.key}:${shownSort.dir}`} onSort={value => { const [key, direction] = value.split(':'); setSort({ key: key as SortKey, dir: direction as 'asc' | 'desc' }) }} />
 
       {data && <>
+      {refreshFailed && <div className="cv-refresh-notice" role="alert">
+        <span>Could not refresh this list. Showing the last result.</span>
+        <button type="button" className="ghost" onClick={loadListing}>Try again</button>
+      </div>}
       <div className="cv-table" role="table" aria-label={`Pieces in ${data.name}`}>
         <div className="cv-tr cv-th" role="row">
           <input type="checkbox" aria-label="Select all matching pieces" checked={hits.length > 0 && selectedPaths.length === hits.length} onChange={() => runPageCommand(selectedPaths.length === hits.length ? 'clear-selection' : 'select-all')} />
@@ -539,7 +560,14 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
       </div>
 
       {activeFilters && <p className="cv-match-count" role="status">{hits.length} of {sortedRows.length} {sortedRows.length === 1 ? 'piece' : 'pieces'} {hits.length === 1 ? 'matches' : 'match'}. {filters.query && 'Text matches show the sentence they were found in.'}<button onClick={() => runPageCommand('clear')}>Clear filters</button></p>}
-      {listReady && selectedPaths.length > 0 && <div className="cv-bulk" role="toolbar" aria-label="Selected pieces"><strong>{selectedPaths.length} selected</strong><button onClick={() => runPageCommand('bulk-status')}>Set status</button><button onClick={() => runPageCommand('bulk-move')}><ArrowRight className="icon sm" />Move to…</button>{canAddToFolio && <button onClick={() => runPageCommand('bulk-folio')}><BookOpenText className="icon sm" />Add to Folio…</button>}<button onClick={() => runPageCommand('bulk-tag')}><Tag className="icon sm" />Tag…</button><button onClick={() => runPageCommand('clear-selection')}>Clear <X className="icon sm" /></button></div>}
+      {selectedPaths.length > 0 && <div className="cv-bulk" role="toolbar" aria-label="Selected pieces">
+        <strong>{selectedPaths.length} selected</strong>
+        <button {...listActionState} onClick={() => runPageCommand('bulk-status')}>Set status</button>
+        <button {...listActionState} onClick={() => runPageCommand('bulk-move')}><ArrowRight className="icon sm" />Move to…</button>
+        {canAddToFolio && <button {...listActionState} onClick={() => runPageCommand('bulk-folio')}><BookOpenText className="icon sm" />Add to Folio…</button>}
+        <button {...listActionState} onClick={() => runPageCommand('bulk-tag')}><Tag className="icon sm" />Tag…</button>
+        <button onClick={() => runPageCommand('clear-selection')}>Clear <X className="icon sm" /></button>
+      </div>}
       <p className="cv-foot">
         {collectionFooterText({ pieces: sortedRows.length, folderPieces, subfolders: subfolders.length, words: totalWords })}
         {bareCount > 0 && firstBare && ` · ${firstBare.name} carries no frontmatter — bare files are welcome here.`}
@@ -550,7 +578,7 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
           <span>Could not list files in {dir || folderName}.</span>
           <button type="button" className="ghost" onClick={loadListing}>Try again</button>
         </div>
-      ) : !listReady && <div className="cv-empty" role="status">Loading files…</div>}
+      ) : !listReady && !refreshFailed && <div className="cv-empty" role="status">Loading files…</div>}
     </div>
     </div>
   )

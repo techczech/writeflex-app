@@ -76,6 +76,29 @@ test('every direct write works against a fixture Collection, reports applied, an
 // While the app owns the Collection a write is not refused: it becomes a request for the app
 // (ticket 05; tests/main/cli-request-route.test.ts).
 
+test('CLI create and move refuse unsyncable new names without changing the collection', async () => {
+  const characters = 'A name cannot contain : * ? " < > | — OneDrive and Windows cannot store them.'
+  const ending = 'A name cannot end with a space or a full stop.'
+  const before = await fx.snapshot()
+  for (const [argv, message] of [
+    [['create', 'talks/new?'], characters],
+    [['create', 'draft /inside.md'], ending],
+    [['create-folder', 'drafts/part '], ending],
+    [['move', 'notes.md', 'drafts/new?'], characters],
+    [['move-folder', 'talks', 'drafts/new.'], ending],
+  ] as const) {
+    const result = await fx.cli([...argv])
+    expect(result.json.error).toMatchObject({ code: 'refused', message })
+    expect(await fx.snapshot()).toEqual(before)
+  }
+  await mkdir(join(fx.root, 'drafts'))
+  await writeFile(join(fx.root, 'Old?.md'), 'Older text.\n')
+  expect((await fx.cli(['move', 'Old?.md', 'drafts'])).code).toBe(0)
+  expect(await fx.read('drafts/Old?.md')).toBe('Older text.\n')
+  expect((await fx.cli(['move', 'drafts/Old?.md', 'drafts/Old.md'])).code).toBe(0)
+  expect(await fx.read('drafts/Old.md')).toBe('Older text.\n')
+})
+
 test('the lock is released on success, on a refusal and on a thrown error', async () => {
   expect((await fx.cli(['create', 'a.md'])).code).toBe(0)
   expect(await lockFree()).toBe(true)

@@ -116,7 +116,7 @@ import { OBJECTS_LESSON } from '../../../shared/example-files'
 import { countUnits, countWords } from '../editor/word-count'
 import { DocumentFind, type FindStatus } from '../components/DocumentFind'
 import { TabBar } from '../components/TabBar'
-import { Sidebar, type SidebarFileOps, type SidebarFocusedRow, type SidebarTreeFocusRequest } from '../components/Sidebar'
+import { Sidebar, type SidebarFileOps, type SidebarFocusedRow, type SidebarMenuTargetRequest, type SidebarTreeFocusRequest } from '../components/Sidebar'
 import SearchPanel from '../components/SearchPanel'
 import { ResearchPane, type ResearchScope } from '../components/ResearchPane'
 import { archiveLinkInsert, archiveQuoteInsert, insertedRange } from '../editor/archive-insert'
@@ -1039,15 +1039,19 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const pendingEditorJump = useRef<EditorJump | null>(null)
   const [editorJumpTick, setEditorJumpTick] = useState(0)
   const noteOpenSource = useCallback((path: string, source: OpenSource) => { outlineSwitchRef.current = noteFileOpened(outlineSwitchRef.current, path, source) }, [])
-  const open = useCallback((path: string) => {
+  // Reopening a relocated document from Files updates its buffer without taking the keyboard.
+  const filesActivation = useRef<{ root: string; path: string } | null>(null)
+  const open = useCallback((path: string, focusText = true) => {
+    filesActivation.current = !focusText && typeof root === 'string' ? { root, path } : null
     pendingEditorJump.current = null
     retireOpenFolio()
     noteOpenSource(path, 'other')
     setCollectionDir(null)
     setOpenPlanRequested(false)
     openTab(path)
-  }, [retireOpenFolio, openTab, noteOpenSource])
+  }, [retireOpenFolio, openTab, noteOpenSource, root])
   const activate = useCallback((path: string) => {
+    filesActivation.current = null
     pendingEditorJump.current = null
     retireOpenFolio()
     setCollectionDir(null)
@@ -1056,6 +1060,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     activateTab(path)
   }, [retireOpenFolio, activateTab])
   const cycle = useCallback((dir: 1 | -1) => {
+    filesActivation.current = null
     pendingEditorJump.current = null
     retireOpenFolio()
     setCollectionDir(null)
@@ -1188,6 +1193,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if (window.writeflex.e2eWriteHooks) {
       api.setSaveBehaviour = (behaviour) => { e2eSaveBehaviourRef.current = behaviour }
       api.savesSent = () => [...e2eSavesSentRef.current]
+      api.slowSaveHeld = () => e2eSlowSaveReleaseRef.current !== null
       api.releaseSlowSave = () => {
         e2eSlowSaveReleaseRef.current?.()
         e2eSlowSaveReleaseRef.current = null
@@ -3366,24 +3372,32 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     [],
   )
 
-  const [treeFocusRequest, setTreeFocusRequest] = useState<(SidebarTreeFocusRequest & { root: string }) | null>(null)
+  type FilesFocusRequest = SidebarTreeFocusRequest & { root: string }
+  const [treeFocusRequest, setTreeFocusRequest] = useState<FilesFocusRequest | null>(null)
+  const pendingFilesFocus = useRef<FilesFocusRequest | null>(null)
   const [openTabsFocusTick, setOpenTabsFocusTick] = useState(0)
+  const finishFilesFocus = useCallback((request: SidebarTreeFocusRequest): boolean => {
+    if (pendingFilesFocus.current !== request) return false
+    pendingFilesFocus.current = null
+    setTreeFocusRequest(null)
+    return true
+  }, [])
   const revealFilesTab = useCallback(() => {
     openLeftTab('files')
-    setTreeFocusRequest(null)
-  }, [openLeftTab])
+    if (pendingFilesFocus.current) finishFilesFocus(pendingFilesFocus.current)
+  }, [openLeftTab, finishFilesFocus])
   const requestFilesFocus = useCallback((target: SidebarFocusedRow | null, focus: boolean) => {
-    revealFilesTab()
-    if (typeof root === 'string') setTreeFocusRequest({ root, target, focus, origin: document.activeElement })
-  }, [revealFilesTab, root])
+    openLeftTab('files')
+    if (typeof root !== 'string') return
+    const request = { root, target, focus, origin: document.activeElement }
+    pendingFilesFocus.current = request
+    setTreeFocusRequest(request)
+  }, [openLeftTab, root])
   const openFilesTab = useCallback(() => requestFilesFocus(null, true), [requestFilesFocus])
-  const finishFilesFocus = useCallback((request: SidebarTreeFocusRequest) => {
-    setTreeFocusRequest(current => current === request ? null : current)
-  }, [])
   const filesFocusIsCurrent = treeFocusRequest !== null && treeFocusRequest.root === root
     && leftTab === 'files' && !leftPaneCollapsed && (!treeFocusRequest.focus || overlayActive === null)
   useLayoutEffect(() => {
-    if (!treeFocusRequest) return
+    if (!treeFocusRequest || pendingFilesFocus.current !== treeFocusRequest) return
     const retire = () => finishFilesFocus(treeFocusRequest)
     if (!filesFocusIsCurrent) {
       retire()
@@ -4175,8 +4189,14 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // ⇧⌘K or ⇧⌘P pressed while the first workspace load is still in flight (root undefined) waits for it,
   // as the Board's early open does in useTabs; the newest press wins, and none opens on the start screen.
   const pendingPalette = useRef<PaletteMode | null>(null)
+  const paletteFilesRow = useRef<SidebarFocusedRow | null>(null)
   const openPalette = useCallback(
     (mode: PaletteMode) => {
+      if (mode === 'commands') {
+        const row = document.activeElement?.closest<HTMLElement>('.sidebar .tree .trow[data-row]:not(.renaming)')
+        const key = row?.dataset.row
+        paletteFilesRow.current = row && key ? { key, kind: row.classList.contains('folder') ? 'folder' : 'file' } : null
+      }
       if (typeof root === 'string') openOverlay(mode)
       else if (root === undefined) pendingPalette.current = mode
     },
@@ -5498,12 +5518,20 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   ), [root, active, loadedFile, boardActive, collectionDir, roomTextPath, files])
   const activeFileUnavailable = !activeFilePath ? 'Open a document first'
     : versionRead ? 'Go back to the working draft first' : undefined
-  const runActiveFileCommand = useRef<(id: ActiveFileCommand, path: string) => void>(() => {})
+  const runActiveFileCommand = useRef<(id: ActiveFileCommand, path: string, filesTarget?: SidebarFocusedRow) => void>(() => {})
   const paletteCommandList = useMemo<AppCommand[]>(() => {
-    const fileRows = Object.keys(ACTIVE_FILE_COMMANDS).filter(isActiveFileCommand).map(id => ({
-      id, disabled: activeFileUnavailable !== undefined, disabledReason: activeFileUnavailable,
-      run: () => { if (activeFilePath) runActiveFileCommand.current(id, activeFilePath) },
-    }))
+    const filesRow = overlayActive === 'commands' ? paletteFilesRow.current : null
+    const fileRows = Object.keys(ACTIVE_FILE_COMMANDS).filter(isActiveFileCommand).map(id => {
+      const target = id === 'file.rename' || (id === 'file.move' && filesRow?.kind === 'file') ? filesRow : null
+      const disabledReason = target ? undefined : activeFileUnavailable
+      return {
+        id, disabled: disabledReason !== undefined, disabledReason,
+        run: () => {
+          if (target) runActiveFileCommand.current(id, target.key, target)
+          else if (activeFilePath) runActiveFileCommand.current(id, activeFilePath)
+        },
+      }
+    })
     const editorState = editorRef.current?.view()?.state
     const editorRows: AppCommand[] = commandRegistry.filter((command) => command.surfaces.includes('palette') && command.run && (!command.when || (editorState && command.when(editorState)))).map((pc) => ({
       id: pc.id,
@@ -6074,14 +6102,14 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const runPaletteCommand = useCallback(
     (command: AppCommand) => {
       recordRecent(command.id)
-      // Close through the focus-restoring path so app-level commands (Toggle Outline, Pin Favourite,
-      // a flash row) leave the keyboard on the editor; editor commands re-focus the view themselves.
-      closePalette()
+      const row = paletteFilesRow.current
+      if (row && (command.id === 'file.rename' || (command.id === 'file.move' && row.kind === 'file'))) closeOverlay()
+      else closePalette()
       command.run()
     },
-    [recordRecent, closePalette],
+    [recordRecent, closeOverlay, closePalette],
   )
-  const [menuTargetRequest, setMenuTargetRequest] = useState<{ id: string; key: string; kind: 'file' | 'folder' } | null>(null)
+  const [menuTargetRequest, setMenuTargetRequest] = useState<SidebarMenuTargetRequest | null>(null)
   const menuTargetHandled = useCallback(() => setMenuTargetRequest(null), [])
   const liveMenuChecks = useLiveMenuChecks()
   // Menu-only rows handle the remaining contextual commands. Sidebar menus still supply their own target.
@@ -6096,7 +6124,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       const targetPlace: Place = kind === 'file' ? 'file' : folderFocus?.path === folder ? 'focused-folder' : 'folder'
       // Root creation/report actions exist, but row rename/bin/reveal and narrowing focus exclude the workspace root.
       enabled = enabled && offeredAt(command.places, targetPlace) && (kind === 'file' ? files.some(file => file.path === active) : (folder === '' ? !['folder.rename', 'folder.trash', 'folder.reveal', 'folder.focus'].includes(id) : folders.includes(folder)))
-      run = () => { if (!active) return; revealTreeRow({ key: kind === 'file' ? active : folder, kind }, false); setMenuTargetRequest({ id, key: kind === 'file' ? active : folder, kind }) }
+      run = () => { if (!active) return; revealTreeRow({ key: kind === 'file' ? active : folder, kind }, false); setMenuTargetRequest({ id, key: kind === 'file' ? active : folder, kind, returnToEditor: true }) }
     } else if (id.startsWith('skill.run.')) {
       const name = id.slice('skill.run.'.length)
       enabled = documentOpen && paletteSkills.some(skill => skill.name === name)
@@ -6318,8 +6346,14 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     const isCurrent = () => activation !== null && activationRef.current === activation
       && workspace !== null && documentWorkspaceRef.current === workspace && activeRef.current === path
       && (!expected || externalDiskNoticesRef.current.get(path) === expected)
+    // Outside the queue the read may race the owner's own save or a folder rename of the path. The owner
+    // then keeps the cached buffer on its baseline and the disk is reconciled again in the queue, after
+    // that work, as the watcher's change would be (review 2026-11-26).
+    const recheck = expected ? undefined : () => { void reconcileExternalDiskChanges([path]) }
     const readAndShow = async () => {
       if (!isCurrent()) return
+      const busyAtRead = !expected && owner.busyNow(path)
+      const token = expected ? undefined : owner.readToken(path)
       const read = await readEditorDocument(path)
       if (!isCurrent() || read.kind === 'stale') return
       const standing = externalDiskNoticesRef.current.get(path)
@@ -6341,7 +6375,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         const dirty = owner.activatedHeld(path, editorRef.current?.currentDoc() ?? held)
         loadedPath.current = path
         setLoadedFile(path)
-        raiseForOutside(path, { kind: read.kind === 'missing' ? 'removed' : 'unavailable', dirty })
+        // A save or a folder rename of the path was under way: the file may have been between names.
+        // Ask the queue once that work is done instead of saying it was removed.
+        if (recheck && (busyAtRead || owner.busyNow(path) || owner.changedSince(path, token))) recheck()
+        else raiseForOutside(path, { kind: read.kind === 'missing' ? 'removed' : 'unavailable', dirty })
         return
       }
 
@@ -6352,7 +6389,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       const action = owner.activated(path, content, () => {
         editorRef.current?.switchTo(path, content, mode)
         return editorRef.current?.currentDoc() ?? content
-      })
+      }, recheck, token)
       setLastEditablePath(path)
       loadedPath.current = path
       setLoadedFile(path)
@@ -6369,7 +6406,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     // Navigation can show a cached draft during its save, or open a file that will join a folder
     // rename in progress. The owner still orders writes and watcher reconciliation for that path.
     return expected ? owner.inQueue(path, readAndShow) : readAndShow()
-  }, [owner, readEditorDocument, unsaved, modeForFile, raiseForOutside, clearExternalDiskNotice, flash, session.observe])
+  }, [owner, readEditorDocument, unsaved, modeForFile, raiseForOutside, reconcileExternalDiskChanges, clearExternalDiskNotice, flash, session.observe])
   useEffect(() => {
     if (!active) {
       loadedPath.current = null
@@ -6419,17 +6456,26 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       else editor.goToLine(target.line, target.offset, target.focus)
     }
     if (!activationChanged) return
-    if (created?.documentPath === active) {
-      pendingWidgetCreate.current = null
-      // Bind widget Undo to the history the writer receives after Create.
-      if (lastWidgetStepRef.current?.undoId === created.undoId && view.state.doc.toString() === created.documentText) {
-        view.dispatch({ annotations: isolateHistory.of('full') })
-        const historyDepth = undoDepth(view.state)
-        setLastWidgetStep((current) => current?.undoId === created.undoId ? { ...current, historyDepth } : current)
-      }
-    }
-    if ((visible || compareToEditable) && !landed) view.focus()
+    const fileActivation = filesActivation.current
+    const keepFilesFocus = fileActivation?.root === root && fileActivation?.path === active
+    if (keepFilesFocus) filesActivation.current = null
+    if ((visible || compareToEditable) && !landed && !keepFilesFocus) view.focus()
   }, [active, activeTab, loadedFile, root, collectionDir, roomTextPath, alternateReader, compareToEditable, editorJumpTick])
+  // Bind widget Undo to the history the writer receives after Create, once the created text is on screen.
+  // The activation may show the cached buffer first and take Create's bytes from the queued reconcile a
+  // moment later (review of PR 383), so this waits for the text rather than for the first loaded commit.
+  useLayoutEffect(() => {
+    const created = pendingWidgetCreate.current
+    const editor = editorRef.current
+    const view = editor?.view()
+    if (!created || !editor || !view || created.documentPath !== active || loadedFile !== active || editor.path() !== active) return
+    if (view.state.doc.toString() !== created.documentText) return
+    pendingWidgetCreate.current = null
+    if (lastWidgetStepRef.current?.undoId !== created.undoId) return
+    view.dispatch({ annotations: isolateHistory.of('full') })
+    const historyDepth = undoDepth(view.state)
+    setLastWidgetStep((current) => current?.undoId === created.undoId ? { ...current, historyDepth } : current)
+  }, [active, loadedFile, savedTick])
 
   useEffect(() => {
     const dismiss = (event: KeyboardEvent): void => {
@@ -7146,8 +7192,14 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     [requestCreate, collectionDir, newPiece],
   )
 
-  /** True when the IPC error is a name-collision REFUSAL (rename/create must shake-and-stay). */
   const isCollision = (error: unknown): boolean => error instanceof Error && error.message.includes('already exists')
+  const nameRefusal = (error: unknown, kind: 'file' | 'folder', name: string, fallback: string) => {
+    const text = humanReadableError(error, fallback)
+    const nameTaken = text.startsWith('File already exists: ')
+      || (text.startsWith('A folder named “') && text.endsWith('” already exists here.'))
+      || text.endsWith(' already exists, so nothing was written there.')
+    return { problem: nameTaken ? `A ${kind} called ${name} is already here.` : text }
+  }
   /** Drop every renderer trace of a path so a late auto-save can never resurrect it (the write path
    *  reads the buffer at run time; after forget() there is no buffer, so the save is a no-op). */
   const forgetAppTraces = useCallback((path: string) => {
@@ -7407,9 +7459,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           flash(`Created ${created.file.name}`)
           return true
         } catch (error) {
-          if (isCollision(error)) return false
-          flash(humanReadableError(error, 'Could not create the file.'))
-          return true
+          return nameRefusal(error, 'file', name, 'Could not create the file.')
         }
       },
       createFolder: async (path) => {
@@ -7419,15 +7469,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           flash(`Created folder ${path.split('/').at(-1) ?? path}`)
           return true
         } catch (error) {
-          if (isCollision(error)) return false
-          flash(humanReadableError(error, 'Could not create the folder.'))
-          return true
+          return nameRefusal(error, 'folder', path.split('/').at(-1) ?? path, 'Could not create the folder.')
         }
       },
-      renameFile: async (path, newName) => {
+      renameFile: async (path, newName, returnToEditor) => {
         // The existing name confirmed: nothing to do (2b round 2, finding 1). The owner's `moved` is a no-op
         // for a destination that is its source too, for a name main normalises back to it.
-        if (newName === path.split('/').at(-1)) return true
+        if (newName === path.split('/').at(-1)) return path
         const wasOpen = tabs.includes(path)
         try {
           const flushed = await withRenameScopeSaved(path, () => window.writeflex.planFileRename(path, newName), async (plan) => {
@@ -7438,22 +7486,20 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             await takeRepairWrites(renamed.repair, (p) => plan.repairPaths.includes(p))
             return renamed
           })
-          if (!flushed) return true // flashed; close the rename input, file untouched
+          if (!flushed) return null
           const moved = flushed.result
-          if (moved === null) return true // the planned destination is the source: nothing moved
+          if (moved === null) return path // the planned destination is the source: nothing moved
           await refresh()
-          if (wasOpen) open(moved.file.path)
+          if (wasOpen) open(moved.file.path, returnToEditor)
           flash(formatRenameRepairMessage(`Renamed to ${moved.file.name}`, moved.repair))
-          return true
+          return moved.file.path
         } catch (error) {
-          if (isCollision(error)) return false
-          flash(humanReadableError(error, 'Could not rename the file.'))
-          return true
+          return nameRefusal(error, 'file', newName, 'Could not rename the file.')
         }
       },
-      renameFolder: async (path, newName) => {
+      renameFolder: async (path, newName, returnToEditor) => {
         // The existing name confirmed: nothing to do (2b round 2, finding 1).
-        if (newName === path.split('/').at(-1)) return true
+        if (newName === path.split('/').at(-1)) return path
         // The folder's documents are every path under it the app knows of, asked for again at the owner's
         // final check, and the owner locks the folder's scope in that turn: no operation on a path under it
         // (an accept of a document not open, a save) starts until main has renamed the folder, and one in
@@ -7473,21 +7519,19 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             await takeRepairWrites(renamed.repair, (p) => snapshots.has(p))
             return { renamed, moved: wereOpen }
           }, prefix)
-          if (!flushed) return true
+          if (!flushed) return null
           const { renamed, moved: openUnder } = flushed.result
           const wasActive = active && active.startsWith(`${path}/`) ? active : null
           await refresh()
-          for (const t of openUnder) open(`${renamed.path}${t.slice(path.length)}`)
-          if (wasActive) open(`${renamed.path}${wasActive.slice(path.length)}`)
+          for (const t of openUnder) open(`${renamed.path}${t.slice(path.length)}`, returnToEditor)
+          if (wasActive) open(`${renamed.path}${wasActive.slice(path.length)}`, returnToEditor)
           flash(formatFolderRenameRepairMessage(`Renamed folder to ${renamed.path.split('/').at(-1) ?? renamed.path}`, renamed.repair))
-          return true
+          return renamed.path
         } catch (error) {
-          if (isCollision(error)) return false
-          flash(humanReadableError(error, 'Could not rename the folder.'))
-          return true
+          return nameRefusal(error, 'folder', newName, 'Could not rename the folder.')
         }
       },
-      moveFile: async (path, directory) => {
+      moveFile: async (path, directory, returnToEditor) => {
         const wasOpen = tabs.includes(path)
         try {
           const name = path.split('/').at(-1) ?? path
@@ -7498,18 +7542,18 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
             await takeRepairWrites(movedTo.repair, (p) => plan.repairPaths.includes(p))
             return movedTo
           })
-          if (!flushed) return false
+          if (!flushed) return null
           const moved = flushed.result
           await refresh()
-          if (wasOpen) open(moved.file.path)
+          if (wasOpen) open(moved.file.path, returnToEditor)
           flash(formatRenameRepairMessage(`Moved to ${directory ?? 'vault root'}`, moved.repair))
-          return true
+          return moved.file.path
         } catch (error) {
           flash(humanReadableError(error, 'Could not move the file.'))
           // Main may have moved the file before this threw (its result failed validation, or the refresh
           // above threw): the tree is read again so it stops listing the old path (rename-repair follow-ups).
           void refresh().catch(() => {})
-          return false
+          return null
         }
       },
       duplicateFile: async (path) => {
@@ -7596,7 +7640,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     }),
     [tabs, active, root, refresh, open, flash, owner, cancelAutosaveFor, forgetAppTraces, withPathsSaved, withRenameScopeSaved, afterMainMoved, takeRepairWrites, e2eHoldMove, openExportSheet, documentsUnder, copyFilePath],
   )
-  runActiveFileCommand.current = (id, path) => {
+  runActiveFileCommand.current = (id, path, filesTarget) => {
+    if (filesTarget) {
+      revealTreeRow(filesTarget, false)
+      setMenuTargetRequest({ ...filesTarget, id, returnToEditor: false })
+      return
+    }
     if (activeFileUnavailable || activeFilePath !== path) return
     switch (id) {
       case 'file.reveal': sidebarFileOps.revealFile(path); break
@@ -7611,7 +7660,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         break
       default:
         revealTreeRow({ key: path, kind: 'file' }, false)
-        setMenuTargetRequest({ id, key: path, kind: 'file' })
+        setMenuTargetRequest({ id, key: path, kind: 'file', returnToEditor: true })
     }
   }
   // The memoised Files tree (R6) gets every callback under a fixed identity, so typing (an editor
@@ -7626,6 +7675,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     onStatus: flash,
     onOpenSettings: (initialSection?: string) => openSettings(initialSection),
     onFocusedRowChange: noteSidebarFocusedRow,
+    onFocusFileOperationRow: (target: SidebarFocusedRow) => {
+      if (leftTab === 'files' && !leftPaneCollapsed && !overlayOpenRef.current) revealTreeRow(target)
+    },
     onRequestCreate: requestCreate,
     onFocusFolder: setFolderFocus,
     onHelpWithReport: helpWithReport,
@@ -8563,6 +8615,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                     createRequest={createRequest}
                     focusTreeRequest={filesFocusIsCurrent ? treeFocusRequest : null}
                     onFocusTreeHandled={finishFilesFocus}
+                    onFocusFileOperationRow={sidebarHandlers.onFocusFileOperationRow}
+                    onReturnToEditor={focusEditor}
                     focusPath={folderFocus?.path ?? null}
                     onFocusFolder={sidebarHandlers.onFocusFolder}
                     onHelpWithReport={sidebarHandlers.onHelpWithReport}
