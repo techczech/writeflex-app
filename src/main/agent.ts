@@ -2122,24 +2122,24 @@ export class WorkspaceAgent {
    * events (⌘S, close), never on a timer; auto-save (tier 1) writes disk without ever calling this.
    * Content-addressed, so re-checkpointing an unchanged file is a near-noop.
    */
-  async checkpointFile(relPath: string): Promise<void> {
+  async checkpointFile(relPath: string): Promise<boolean> {
     // A snapshot copies the file into the app's history store. Only a document is ever copied there;
     // judged in the tick the snapshot starts. A save of anything else simply has no checkpoint.
-    if (this.pathRefusal(relPath)) return
+    if (this.pathRefusal(relPath)) return false
     // Nor is anything copied there while this app does not hold the Collection (the save it follows
     // was refused, and says so).
-    if (collectionWritesPaused(this.workspace.root)) return
-    await this.snapshots.snapshotFile(this.workspace.absolute(relPath), {
+    if (collectionWritesPaused(this.workspace.root)) return false
+    const entry = await this.snapshots.snapshotFile(this.workspace.absolute(relPath), {
       sessionId: this.sessionId(),
       capability: 'user.checkpoint'
     })
+    return entry.kind === 'snapshot' && entry.hash !== ABSENT_HASH
   }
 
   /**
    * A checkpoint that says what it kept (preserve-version.ts): the snapshot entry's id and hash, or null
-   * when none was made (the path is not a document, or the Collection's writes are paused). Unlike
-   * checkpointFile, a skipped snapshot is never silent: the caller is preserving a version before it
-   * replaces it, and must know.
+   * when none was made (the path is not a document, or the Collection's writes are paused). The id and
+   * hash let the caller verify the version before replacing it.
    */
   async snapshotForPreserve(relPath: string): Promise<{ id: string; hash: string } | null> {
     if (this.pathRefusal(relPath)) return null

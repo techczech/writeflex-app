@@ -17,6 +17,13 @@ export type ReviewLedgerPort = {
   setChangeStatus: (id: string, status: 'pending' | 'accepted' | 'rejected' | 'held') => Promise<unknown>
 }
 
+export type AppliedFileScope = {
+  isCurrent: () => boolean
+  owns: (path: string) => boolean
+  /** Read from the document's queue, or from the turn the caller already holds for this path. */
+  reconcile: (path: string, options?: { now?: boolean }) => void | Promise<void>
+}
+
 export type ReviewActionDeps = {
   ledger: ReviewLedgerPort
   /** The active file's Change list (dock-gated) and the full list the handlers search. */
@@ -35,7 +42,7 @@ export type ReviewActionDeps = {
   refreshInlineChangesAfterReconcile: () => Promise<void>
   flash: (message: string) => void
   handleAgentWorkspaceChange: () => void
-  reconcileAppliedFile: (file: FileReadResult) => void | Promise<void>
+  captureAppliedFileScope: (path?: string) => AppliedFileScope
   /** An accept of a change in `path`, as a route of the document owner (App.tsx, parcel 2a): the buffer is
    *  written until saved, `resolve` runs holding the document's queue, and the result reaches the buffer
    *  (the receipt as the baseline when the editor took it as an undoable edit, else a reconcile).
@@ -94,12 +101,12 @@ export type ReviewActions = {
 
 /** Keep the last inline projection on the post-reconcile document, regardless of IPC push order. */
 export async function reconcileResolvedFile(
-  file: FileReadResult,
-  reconcileAppliedFile: (file: FileReadResult) => void | Promise<void>,
+  path: string,
+  scope: AppliedFileScope,
   refreshInlineChangesAfterReconcile: () => Promise<void>,
 ): Promise<void> {
-  await reconcileAppliedFile(file)
-  await refreshInlineChangesAfterReconcile()
+  await scope.reconcile(path)
+  if (scope.isCurrent()) await refreshInlineChangesAfterReconcile()
 }
 
 /**
@@ -123,7 +130,7 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
     refreshInlineChangesAfterReconcile,
     flash,
     handleAgentWorkspaceChange,
-    reconcileAppliedFile,
+    captureAppliedFileScope,
     acceptThroughOwner,
     inDocumentQueue,
     focusComposer,
@@ -179,6 +186,7 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
       // round 2). Without this the baseline stays at the pre-accept text, and undoing the accept reads
       // as "equals the disk" while the disk holds the accepted text. With no Change on record here there
       // is no document to hold: main is asked directly.
+      const scope = change ? undefined : captureAppliedFileScope()
       let res: Awaited<ReturnType<ReviewLedgerPort['resolveChange']>>
       let recorded = false
       if (change) {
@@ -190,7 +198,9 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
         res = accepted.result
         recorded = accepted.recorded
       } else {
+        if (!scope?.isCurrent()) return false
         res = await ledger.resolveChange(id, 'accept')
+        if (!scope.isCurrent()) return res.applied
       }
       if (!res.applied) {
         const reason = res.message ?? 'This suggestion is no longer live — ask the agent to redo the edit.'
@@ -200,14 +210,15 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
       }
       handleAgentWorkspaceChange()
       if (recorded) await refreshInlineChangesAfterReconcile()
-      else if (res.file && !change) await reconcileResolvedFile(res.file, reconcileAppliedFile, refreshInlineChangesAfterReconcile)
+      else if (res.file && scope) await reconcileResolvedFile(res.file.file.path, scope, refreshInlineChangesAfterReconcile)
       else if (res.file) await refreshInlineChangesAfterReconcile() // reconciled in the owner's route
       else await reloadChanges()
+      if (scope && !scope.isCurrent()) return true
       if (res.message) flash(res.message)
       settleChange(id, advance)
       return true
     },
-    [suggestionForChange, changes, acceptSuggestion, isWriterChange, resolveWriterEditById, ledger, handleAgentWorkspaceChange, reconcileAppliedFile, acceptThroughOwner, refreshInlineChangesAfterReconcile, reloadChanges, flash, settleChange, onAcceptRefused],
+    [suggestionForChange, changes, acceptSuggestion, isWriterChange, resolveWriterEditById, ledger, handleAgentWorkspaceChange, captureAppliedFileScope, acceptThroughOwner, refreshInlineChangesAfterReconcile, reloadChanges, flash, settleChange, onAcceptRefused],
   )
   const acceptAndNext = useCallback((id: string) => acceptChange(id, true), [acceptChange])
   const rejectChange = useCallback(
@@ -224,20 +235,34 @@ export function useReviewActions(deps: ReviewActionDeps): ReviewActions {
         if (resolved) settleChange(id, false)
         return resolved
       }
-      const res = change ? await inDocumentQueue(change.path, () => ledger.resolveChange(id, 'reject')) : await ledger.resolveChange(id, 'reject')
+      const scope = captureAppliedFileScope(change?.path)
+      const resolve = async () => {
+        if (!scope.isCurrent()) return null
+        const res = await ledger.resolveChange(id, 'reject')
+        const recorded = res.applied && change !== undefined && scope.owns(change.path)
+          && editorRef.current?.recordSuggestionResolution(change.path, id, 'reject') === true
+        const path = res.file?.file.path
+        const reconciled = res.applied && !recorded && path !== undefined && path === change?.path
+        if (reconciled) await scope.reconcile(path, { now: true })
+        return { res, recorded, reconciled }
+      }
+      const result = change ? await inDocumentQueue(change.path, resolve) : await resolve()
+      if (!result) return false
+      const { res, recorded, reconciled } = result
+      if (!scope.isCurrent()) return res.applied
       if (!res.applied) {
         flash(res.message ?? 'This suggestion is no longer live — ask the agent to redo the edit.')
         return false
       }
-      const recorded = change ? editorRef.current?.recordSuggestionResolution(change.path, id, 'reject') === true : false
-      if (recorded) await refreshInlineChangesAfterReconcile()
-      else if (res.file) await reconcileResolvedFile(res.file, reconcileAppliedFile, refreshInlineChangesAfterReconcile)
+      if (recorded || reconciled) await refreshInlineChangesAfterReconcile()
+      else if (res.file) await reconcileResolvedFile(res.file.file.path, scope, refreshInlineChangesAfterReconcile)
       else await reloadChanges()
+      if (!scope.isCurrent()) return true
       flash(res.message ?? 'Suggestion discarded')
       settleChange(id, false)
       return true
     },
-    [suggestionForChange, changes, rejectSuggestion, isWriterChange, resolveWriterEditById, ledger, editorRef, inDocumentQueue, reconcileAppliedFile, refreshInlineChangesAfterReconcile, reloadChanges, flash, settleChange],
+    [suggestionForChange, changes, rejectSuggestion, isWriterChange, resolveWriterEditById, ledger, editorRef, inDocumentQueue, captureAppliedFileScope, refreshInlineChangesAfterReconcile, reloadChanges, flash, settleChange],
   )
   const holdChange = useCallback(
     async (id: string): Promise<boolean> => {

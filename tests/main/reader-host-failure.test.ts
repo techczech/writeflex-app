@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
@@ -32,6 +32,7 @@ async function fixture(body: (f: any) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), 'wf-reader-watch-')), identity = statSync(root), project = root + '/p'
   const calls: string[] = [], errors: any[] = [], ends: any[] = []
   let watcher: any, closed = false, refuseOutput = false
+  const invalidations = new Map<string, number>()
   try {
     mkdirSync(project); cpSync(A + '/src', project + '/src', { recursive: true }); mkdirSync(project + '/node_modules')
     for (const name of readdirSync(A + '/node_modules')) if (!['.vite', '.vite-temp', '.cache'].includes(name)) symlinkSync(A + '/node_modules/' + name, project + '/node_modules/' + name)
@@ -46,10 +47,30 @@ async function fixture(body: (f: any) => Promise<void>) {
       // Keep the real Rollup watcher while avoiding the runner's unreliable FSEvents delivery.
       watcher = await build({ configFile: false, root: project, logLevel: 'warn',
         plugins: [readerHostDevelopment(project), { name: 'synthetic-output-refusal', writeBundle() { if (refuseOutput) throw Error('Synthetic completed-stage output hook refusal.') } }, installedObserver(project, calls)],
-        build: { outDir: project + '/out/main', watch: { chokidar: { usePolling: true } }, lib: { entry: main, formats: ['es'], fileName: () => 'watch-entry.mjs' }, rollupOptions: { external: ['node:path'] } } })
+        build: { outDir: project + '/out/main', watch: {
+          buildDelay: 100,
+          chokidar: { usePolling: true },
+          onInvalidate(path) { invalidations.set(path, (invalidations.get(path) ?? 0) + 1) },
+        }, lib: { entry: main, formats: ['es'], fileName: () => 'watch-entry.mjs' }, rollupOptions: { external: ['node:path'] } } })
       watcher.on('event', (event: any) => { if (event.code === 'ERROR') errors.push(event.error); if (event.code === 'END') ends.push(event) })
     }
-    await body({ project, main, dependency, original, mainOriginal, output, calls, errors, ends, start, setOutputFailure(value: boolean) { refuseOutput = value } })
+    const rebuild = async (path: string, text: string, phase: string) => {
+      const before = invalidations.get(path) ?? 0
+      const nextEnd = ends.length + 1
+      writeFileSync(path, text)
+      let stamp = statSync(path).mtimeMs
+      // END can precede Chokidar's first stat of a newly added path after a build error.
+      // Keep the edited bytes stable and advance the mtime until Rollup sees the edit.
+      const touch = setInterval(() => {
+        if ((invalidations.get(path) ?? 0) !== before) return
+        stamp += 1000
+        utimesSync(path, stamp / 1000, stamp / 1000)
+      }, 150)
+      try { await waitForBuild(() => ends.length >= nextEnd, phase) }
+      finally { clearInterval(touch) }
+      expect(invalidations.get(path)).toBeGreaterThan(before)
+    }
+    await body({ rebuild, project, main, dependency, original, mainOriginal, output, calls, errors, ends, start, setOutputFailure(value: boolean) { refuseOutput = value } })
     expect(readFileSync(project + '/out/main/user-owned.txt', 'utf8')).toBe('retain user output')
   } finally {
     if (watcher) { await watcher.close(); closed = true }
@@ -84,8 +105,7 @@ test('finite real watcher preserves running output on host and main failure and 
     await waitForBuild(() => f.ends.length >= 1, 'the initial invalid host build')
     expect(f.errors).toHaveLength(1)
     expect(f.calls).toEqual([]); expect(readFileSync(f.output, 'utf8')).toBe('last usable main')
-    writeFileSync(f.dependency, f.original)
-    await waitForBuild(() => f.ends.length >= 2, 'the repaired host build')
+    await f.rebuild(f.dependency, f.original, 'the repaired host build')
     expect(f.errors).toHaveLength(1)
     expect(f.calls).toEqual(['initial-launch'])
     const directory = async (n: number) => (await import(f.output + '?generation=' + n)).readerHostDirectory(f.output)
@@ -93,14 +113,12 @@ test('finite real watcher preserves running output on host and main failure and 
     const first = await directory(0), before = createReaderResources(vendor, first)
     const key = [...before.assets.keys()].find(k => k.startsWith('assets/') && k.endsWith('.js'))!
     const bytes = before.read(key), mainBytes = readFileSync(f.output)
-    writeFileSync(f.dependency, f.original + '\nexport const brokenAgain = ;\n')
-    await waitForBuild(() => f.ends.length >= 3, 'the invalid running host build')
+    await f.rebuild(f.dependency, f.original + '\nexport const brokenAgain = ;\n', 'the invalid running host build')
     expect(f.errors).toHaveLength(2)
     expect(f.calls).toEqual(['initial-launch']); expect(readFileSync(f.output)).toEqual(mainBytes); expect(before.read(key)).toEqual(bytes)
     const marker = 'Reader view state prototype refused.'
     expect(f.original).toContain(marker)
-    writeFileSync(f.dependency, f.original.replaceAll(marker, 'Reader view state refreshed prototype refused.'))
-    await waitForBuild(() => f.ends.length >= 4, 'the refreshed host build')
+    await f.rebuild(f.dependency, f.original.replaceAll(marker, 'Reader view state refreshed prototype refused.'), 'the refreshed host build')
     expect(f.errors).toHaveLength(2)
     expect(f.calls.filter((x: string) => x === 'restart')).toHaveLength(1)
     const next = await directory(1), after = createReaderResources(vendor, next)
@@ -112,14 +130,12 @@ test('finite real watcher preserves running output on host and main failure and 
     for (const [k, item] of after.assets) expect(hash(after.read(k))).toBe(item.sha256)
     const usable = readFileSync(f.output)
     f.setOutputFailure(true)
-    writeFileSync(f.main, f.mainOriginal.replace("ordinaryMain='before'", "ordinaryMain='refused'"))
-    await waitForBuild(() => f.ends.length >= 5, 'the refused main output')
+    await f.rebuild(f.main, f.mainOriginal.replace("ordinaryMain='before'", "ordinaryMain='refused'"), 'the refused main output')
     expect(f.errors).toHaveLength(3)
     expect(f.calls.filter((x: string) => x === 'restart')).toHaveLength(1); expect(readFileSync(f.output)).toEqual(usable)
     expect(before.read(key)).toEqual(bytes)
     f.setOutputFailure(false)
-    writeFileSync(f.main, f.mainOriginal.replace("ordinaryMain='before'", "ordinaryMain='after'"))
-    await waitForBuild(() => f.ends.length >= 6, 'the repaired main output')
+    await f.rebuild(f.main, f.mainOriginal.replace("ordinaryMain='before'", "ordinaryMain='after'"), 'the repaired main output')
     expect(f.errors).toHaveLength(3)
     expect((await import(f.output + '?generation=2')).ordinaryMain).toBe('after')
     expect(f.calls.filter((x: string) => x === 'initial-launch')).toHaveLength(1)

@@ -190,7 +190,7 @@ export type RequestExecutorOptions = {
    *  `onChanged`, so a link follows its piece (or ends) before any save signal names the paths. */
   sharing?: SharingFollow
   /** @internal Test seams. `afterActing` runs once the operation has finished and before its outcome is recorded. */
-  seams?: { write?: WriteSeams; afterActing?: () => Promise<void>; beforeRead?: (id: string) => Promise<void>; reply?: HeldWriteSeams; afterReviewAdded?: () => Promise<void> }
+  seams?: { write?: WriteSeams; afterActing?: () => Promise<void>; beforeRead?: (id: string) => Promise<void>; reply?: HeldWriteSeams; afterReviewAdded?: () => Promise<void>; repeatedLimit?: number }
 }
 
 type HandledRecord = { version: 1; id: string; at: string; reply?: Reply }
@@ -408,7 +408,8 @@ export class RequestExecutor {
     const record = await this.#record([folders.records, ...folders.otherRecords], id)
     if (record) {
       if (this.#repeated.has(id)) return null
-      rememberUpTo(this.#repeated, id, MAX_NAMES_REMEMBERED)
+      // Tests may lower the cap to exercise eviction with a small real inbox.
+      rememberUpTo(this.#repeated, id, Math.min(MAX_NAMES_REMEMBERED, this.#options.seams?.repeatedLimit ?? MAX_NAMES_REMEMBERED))
       const reply = record.reply ?? refuse(
         `WriteFlex stopped while it was carrying out this request (${id}), so it may be partly applied. It was not carried out again. Run "writeflex undo --list": a change that did not finish is listed as interrupted and can be undone.`,
         'failed',

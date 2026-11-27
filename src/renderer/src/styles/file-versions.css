@@ -13,7 +13,7 @@
 .fvp-head{display:flex;align-items:center;gap:6px;margin:0;padding:6px 12px;background:var(--bg-sunk);font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);border-bottom:1px solid var(--line)}
 .fvp-head svg{width:13px;height:13px;flex:none}
 .fvp-head .path{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;max-width:55%}
-.fvp-rows{margin:0;padding:0;list-style:none}
+.fvp-rows{max-block-size:min(12rem,30vh);overflow-y:auto;overscroll-behavior-y:contain;margin:0;padding:0;list-style:none}
 .fvp-row{display:flex;gap:9px;align-items:flex-start;width:100%;padding:8px 12px;border:0;border-bottom:1px solid var(--line-soft);background:transparent;color:var(--ink);font:inherit;text-align:left}
 button.fvp-row{cursor:pointer}
 button.fvp-row:hover{background:var(--hover)}

@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { pastedImagePath } from '../../src/main/workspace'
 import { mkdtempSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs'
-import { link, readFile, rename } from 'node:fs/promises'
+import { link, mkdtemp, readFile, rename, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { AreaImageJournal } from '../../src/main/area-image-journal'
 import { Workspace, sanitiseFileName } from '../../src/main/workspace'
 
 function makeRoot(): string {
@@ -44,6 +45,60 @@ test('discarding an Area removes its own PNG and preserves a replacement at the 
   await expect(replaced.discard()).rejects.toThrow('changed after the Area drop wrote it')
   expect(await readFile(replacedPath, 'utf8')).toBe('another writer’s asset')
   expect(await readFile(movedPath)).toEqual(bytes)
+})
+
+test('startup sweeps only old, pending, unchanged and unreferenced Area images', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'wf-area-sweep-'))
+  try {
+    const root = join(fixture, 'collection')
+    const areaImageJournalDir = join(fixture, 'receipts')
+    mkdirSync(root)
+    const start = Date.UTC(2026, 10, 24)
+    const oneDay = 24 * 60 * 60 * 1000
+    let clock = start
+    const areaImageJournal = new AreaImageJournal(areaImageJournalDir, () => clock)
+    const ws = new Workspace(root, { areaImageJournal })
+    const bytes = new Uint8Array([137, 80, 78, 71])
+    const abandoned = await ws.prepareAreaImage(bytes)
+    const linked = await ws.prepareAreaImage(bytes)
+    const replaced = await ws.prepareAreaImage(bytes)
+    const hardLinked = await ws.prepareAreaImage(bytes)
+    const settled = await ws.prepareAreaImage(bytes)
+    clock += oneDay
+    const young = await ws.prepareAreaImage(bytes)
+    const regular = await ws.saveImage(bytes, 'png')
+    // A reference definition in a hidden folder is still a writer's link. Encode a dash in its URL.
+    mkdirSync(join(root, '.drafts'))
+    writeFileSync(join(root, '.drafts', 'linked.markdown'),
+      '![Area][image]\n\n[image]: ../' + linked.path.replace('pasted-', 'pasted%2D'))
+    await rename(join(root, replaced.path), join(root, 'old.png'))
+    writeFileSync(join(root, replaced.path), 'A writer’s replacement')
+    await link(join(root, hardLinked.path), join(root, 'hard-link.png'))
+    await settled.keep()
+
+    // Reopen without knowledge of the renderer receipts or of the earlier Workspace.
+    const nextJournal = new AreaImageJournal(areaImageJournalDir, () => clock)
+    const restarted = new Workspace(root, { areaImageJournal: nextJournal })
+    expect(await nextJournal.sweep(restarted, () => true)).toEqual([])
+    clock += 1
+    expect(await areaImageJournal.sweep(ws, () => true)).toEqual([]) // A drop in this app run could still be live.
+    expect(await nextJournal.sweep(restarted, () => false)).toEqual([])
+    expect(existsSync(join(root, abandoned.path))).toBe(true)
+    expect(await nextJournal.sweep(restarted, () => true)).toEqual([abandoned.path])
+    expect(existsSync(join(root, abandoned.path))).toBe(false)
+    for (const image of [linked, replaced, hardLinked, settled, young, regular]) {
+      expect(existsSync(join(root, image.path)), image.path).toBe(true)
+    }
+    expect(await readFile(join(root, replaced.path), 'utf8')).toBe('A writer’s replacement')
+    clock += oneDay
+    // The image is linked through an alias, so its original basename never appears in the document.
+    await symlink(join(root, young.path), join(root, 'assets', 'area-alias.png'))
+    writeFileSync(join(root, 'alias.md'), '![Area](assets/area-alias.png)')
+    expect(await nextJournal.sweep(restarted, () => true)).toEqual([])
+    expect(existsSync(join(root, young.path))).toBe(true)
+  } finally {
+    await rm(fixture, { recursive: true, force: true })
+  }
 })
 
 describe('duplicateFile', () => {

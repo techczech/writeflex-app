@@ -926,13 +926,15 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
      * The watcher saw the file change (or go). Queued: runs after any route holding the path. `read` is
      * made when it runs, so the version applied is the one on disk then. A buffer is replaced only when
      * it is saved (gen, in flight, unknown); otherwise the writer is asked (reconcile.ts rules).
+     * The caller can bind the read to a workspace lifetime with `isCurrent`, checked in the turn.
      */
-    applyOutside(path: string, read: () => Promise<EditorReadResult>, options: { now?: boolean } = {}): Promise<OutsideOutcome> {
+    applyOutside(path: string, read: () => Promise<EditorReadResult>, options: { now?: boolean; isCurrent?: () => boolean } = {}): Promise<OutsideOutcome> {
       const rec = records.get(path)
+      const isCurrent = (): boolean => records.get(path) === rec && (options.isCurrent?.() ?? true)
       const op = async (): Promise<OutsideOutcome> => {
-        if (!rec || records.get(path) !== rec) return { kind: 'skipped' }
+        if (!rec || !isCurrent()) return { kind: 'skipped' }
         const result = await read()
-        if (records.get(path) !== rec || result.kind === 'stale') return { kind: 'skipped' }
+        if (!isCurrent() || result.kind === 'stale') return { kind: 'skipped' }
         const buffer = ports.buffer(path)
         if (buffer == null) return { kind: 'skipped' } // activation seeds a tab not yet live
         if (result.kind !== 'read') return failedOutsideRead(path, result.kind)

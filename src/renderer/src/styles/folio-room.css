@@ -7,7 +7,6 @@
 .fr-titlerow{display:flex;align-items:baseline;gap:12px;margin-top:4px}
 .fr-titlerow h1{flex:1;min-width:0;margin:0;font:700 19px/1.2 var(--prose);letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
 .fr-info{flex:none;font:11px var(--ui);color:var(--ink-3);white-space:nowrap}
-.fr-viewrow{display:flex;align-items:center;gap:8px;margin-top:8px}.fr-viewrow .g{flex:1}
 .fr-views button{padding:5px 9px;gap:5px}
 .fr-views .fr-k{font-size:8.5px;padding:0 3px;border-bottom-width:1px;color:var(--ink-4);margin-left:1px}
 .fr-views button[aria-pressed="true"] .fr-k{color:var(--ink-3)}
@@ -33,7 +32,7 @@
 .fr-cs.none{color:var(--ink-4)}
 .fr-cf{display:flex;align-items:center;gap:6px;margin-top:auto;padding-top:8px;font-size:10px;color:var(--ink-4)}.fr-cf .g{flex:1}.fr-cf .w{font-variant-numeric:tabular-nums}
 .fr-card[aria-selected="true"]{border-color:var(--accent);box-shadow:0 0 0 2.5px var(--accent-soft)}
-.fr-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fr-card:focus{outline:2px solid var(--accent);outline-offset:2px}
 .fr-card.unw{border:1.5px dashed rgba(128,128,128,.45);background:repeating-linear-gradient(135deg,transparent 0 9px,rgba(185,125,16,.035) 9px 18px),var(--bg-elev)}
 .fr-card.unw .fr-strip{opacity:.45}.fr-card.unw .fr-ct{color:var(--ink-2)}.fr-card.unw .w{font-style:italic;color:var(--amber)}
 .fr-card.clash{border-color:var(--danger)}
@@ -86,7 +85,6 @@
 .cv-room-back{padding:8px 26px 0;display:flex}
 .fr-brow:disabled{opacity:.7;cursor:default}.fr-brow:disabled:hover{background:none}
 /* A narrow middle pane (the Panels pane open beside the inspector): the controls wrap instead of being cut. */
-.fr-viewrow{flex-wrap:wrap}
 .fr-views{flex-wrap:nowrap;max-width:100%;overflow:hidden}
 .fr-views button{white-space:nowrap}
 .fr-foot{flex-wrap:wrap;gap:4px 14px}.fr-foot span{white-space:nowrap}
@@ -113,7 +111,7 @@
 .fr-olr .pr{text-align:right}.fr-olr .pr.high{font-weight:700;color:var(--ink)}.fr-olr .pr.low{color:var(--ink-4)}
 .fr-olr .num,.fr-olt .num{text-align:right;font-variant-numeric:tabular-nums}
 .fr-olr[aria-selected="true"]{background:var(--accent-soft)}.fr-olr[aria-selected="true"]::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:2.5px;border-radius:2px;background:var(--accent)}
-.fr-olr:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fr-olr:focus{outline:2px solid var(--accent);outline-offset:-2px}
 .fr-olr.unw .tt b{color:var(--ink-2);font-style:italic}.fr-olr.unw{background:repeating-linear-gradient(135deg,transparent 0 9px,rgba(185,125,16,.04) 9px 18px);outline:1.5px dashed rgba(128,128,128,.4);outline-offset:-3px}
 .fr-olr.unw[aria-selected="true"]{background:repeating-linear-gradient(135deg,transparent 0 9px,rgba(185,125,16,.05) 9px 18px),var(--accent-soft)}
 .fr-olt{padding-top:8px;padding-bottom:8px;font:600 11px var(--ui);color:var(--ink-2);background:var(--bg-sunk);border-bottom:1px solid var(--line)}
@@ -527,33 +525,86 @@ textarea.fr-syn{resize:vertical;box-sizing:border-box}.fr-edit:focus-visible,.fr
 .fvc-menuitem:hover,.fvc-menuitem:focus-visible{background:var(--hover)}
 
 .fvi-notstaged{margin:6px 0 4px 26px;padding:0;list-style:disc;font-size:12.5px;color:var(--ink-3)}.fvi-notstaged li{margin:2px 0}
-/* Manage Folio: ONE bar (R1/R2): back, name, views, Details, Split, and the outline's tools; no key legend (it is in the cheat sheet, ⌘/). */
-.fr-bar{--folio-toolbar-control-height:27px;display:flex;align-items:center;gap:6px;padding:7px 12px;flex-wrap:nowrap;min-width:0}
-.fr-bar .fr-open{flex:0 0 auto;width:max-content;margin:0}
-.fr-bar .fr-open .folio-open{padding:0;background:none;width:max-content;flex:none}
-.fr-bar .fr-open .folio-open-split{width:max-content}
-.fr-bar .fr-open .back-control-label{overflow:visible;text-overflow:clip;min-width:auto}
-.fr-bar :is(.folio-open-main,.folio-open-caret){height:var(--folio-toolbar-control-height)}
-.fr-bar .fr-open .folio-open-main{width:max-content;max-width:none;overflow:hidden;background:var(--bg-elev);color:var(--ink-2);border:1px solid var(--line);border-right:0;font-weight:500}
+/* Reserve the menu's slot on the first row. The view controls can wrap as one flex item. */
+.fr-bar{
+  --folio-toolbar-control-height:27px;
+  --folio-toolbar-inset:12px;
+  --folio-toolbar-gap:6px;
+  --folio-menu-width:80px;
+  container:folio-toolbar / inline-size;
+  position:relative;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:var(--folio-toolbar-gap);
+  padding:7px var(--folio-toolbar-inset);
+  padding-inline-end:calc(var(--folio-toolbar-inset) + var(--folio-menu-slot, 0px));
+  min-width:0
+}
+.fr-bar:has(> .cv-menu-anchor){
+  --folio-menu-slot:calc(var(--folio-menu-width) + var(--folio-toolbar-gap))
+}
+.fr-bar > .cv-menu-anchor{position:absolute;inset-block-start:7px;inset-inline-end:var(--folio-toolbar-inset)}
+.fr-bar .cv-menu-trigger{
+  inline-size:var(--folio-menu-width);
+  height:var(--folio-toolbar-control-height);
+  padding:0 5px!important;
+  gap:4px;
+  justify-content:space-between;
+  white-space:nowrap
+}
+.fr-bar > .fr-viewrow{display:flex;align-items:center;gap:var(--folio-toolbar-gap);flex:0 1 auto;min-width:0}
+.fr-bar > .fr-view-controls{
+  display:flex;
+  align-items:center;
+  gap:var(--folio-toolbar-gap);
+  flex:none;
+  white-space:nowrap;
+  /* On the second row the group may use the space below the menu. */
+  max-width:calc(100% + var(--folio-menu-slot, 0px))
+}
+.fr-bar .fr-open{display:block;flex:0 1 auto;min-width:58px;margin:0}
+.fr-bar .fr-open .folio-open{padding:0;background:none}
+.fr-bar .fr-open .folio-open-split{display:flex;box-shadow:none}
+.fr-bar .fr-open .back-control-label{display:block}
+.fr-bar :is(.folio-open-main,.folio-open-caret){
+  display:inline-flex;
+  height:var(--folio-toolbar-control-height);
+  padding:0 7px;
+  gap:5px;
+  font-size:11.5px
+}
+.fr-bar .fr-open .folio-open-main{min-width:0;background:var(--bg-elev);color:var(--ink-2);border:1px solid var(--line);border-right:0;border-radius:7px 0 0 7px;font-weight:500}
 .fr-bar .fr-open .folio-open-main:hover{background:var(--hover)}
 .fr-bar .fr-open .folio-open-main kbd{display:none}
-.fr-bar .fr-open .folio-open-caret{background:var(--bg-elev);color:var(--ink-2);border:1px solid var(--line)}
-.fr-bar .fr-open :is(.folio-open-main,.folio-open-caret) .icon{color:currentColor}
-.fr-bar .fr-open .folio-open-split{box-shadow:none}
-.fr-bar .fr-crumb{flex:1 1 40px;min-width:0;overflow:hidden}
+.fr-bar .fr-open .folio-open-caret{flex:none;background:var(--bg-elev);color:var(--ink-2);border:1px solid var(--line);border-radius:0 7px 7px 0}
+.fr-bar .fr-open :is(.folio-open-main,.folio-open-caret) .icon{width:13px;height:13px;flex:none;color:currentColor}
+.fr-bar .fr-crumb{display:flex;flex:0 1 auto;min-width:36px}
+.fr-bar .fr-crumb .icon{flex:none}
 .fr-bar .fr-crumb b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.fr-bar .fr-viewrow{display:contents}
-.fr-bar .fr-views{flex:0 1 auto;max-width:none;overflow:visible;gap:0}
-.fr-bar .fr-views button{padding:0 7px;height:var(--folio-toolbar-control-height)}
+.fr-bar .fr-views{flex:none;max-width:none;overflow:visible;gap:0}
+.fr-bar .fr-views button{padding:0 5px;height:var(--folio-toolbar-control-height)}
 .fr-bar .fr-views button:not([aria-selected="true"]) .fr-vl{display:none}
 .fr-bar .fr-views button .fr-vl{margin-left:5px}
 .fr-bar .fr-tb{height:var(--folio-toolbar-control-height);padding:0 7px;flex:none}
 .fr-bar .fr-tb:not(.on) .fr-vl{display:none}
-.fr-bar .fr-viewrow>.g{display:none}
 .fr-bar .fr-tools,.fr-bar .fr-otools-inline{display:inline-flex;align-items:center;gap:4px;flex:none}
-.fr-bar .fr-otools-inline .fr-tb{font-size:0;gap:0;padding:0 7px;border:0;background:none}
+.fr-bar .fr-tools:empty,.fr-bar .fr-otools-inline:empty{display:none}
+.fr-bar .fr-otools-inline .fr-tb{font-size:0;gap:0;padding:0 5px;border:0;background:none}
 .fr-bar .fr-otools-inline .fr-tb svg{width:14px;height:14px}
-.fr-bar .cv-menu-trigger{height:var(--folio-toolbar-control-height);padding:0 8px!important}
 .fr-bar .fr-otools-inline .fr-heading-filter{height:var(--folio-toolbar-control-height);font-size:11px;padding:3px 6px;width:104px;min-width:0;margin-left:0;max-width:140px}
+/* A wide sidebar can stay open as the window narrows. Keep the primary row's icon targets and the Folio name. */
+@container folio-toolbar (max-width:374px){
+  .fr-bar .fr-open{min-width:42px}
+  .fr-bar .fr-open :is(.folio-open-main,.folio-open-caret){padding-inline:3px}
+  .fr-bar .fr-crumb{min-width:20px}
+  .fr-bar .fr-crumb .icon{display:none}
+  .fr-bar .fr-views button{padding-inline:2px;gap:0}
+  .fr-bar .fr-views button .fr-vl{max-width:0;margin-left:0;overflow:hidden}
+  .fr-bar > .fr-view-controls{gap:3px}
+  .fr-bar :is(.fr-tools,.fr-otools-inline){gap:3px}
+  .fr-bar .fr-view-controls .fr-tb{padding-inline:2px}
+  .fr-bar .fr-otools-inline .fr-tb{min-width:18px}
+}
 /* The old key-legend footer kept the room's last row clear of the Scratchpad pill; without it the bottom actions sat under the pill. */
 .fr-mid{padding-bottom:44px;box-sizing:border-box}

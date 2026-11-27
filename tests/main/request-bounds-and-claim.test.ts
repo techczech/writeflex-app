@@ -14,7 +14,7 @@ import { ChangeStore, closedCodeOf, type Change } from '../../src/main/changes'
 import { outsideRequestOf } from '../../src/main/outside-change'
 import { holdFolder, keepUpTo, rememberUpTo } from '../../src/main/cli/request-files'
 import { INBOX_DIR, OUTBOX_DIR, claimedFileName, idOfClaimedName, looksLikeConflictCopy, newRequestId } from '../../src/main/cli/request-format'
-import { MAX_ENTRIES_LISTED, MAX_NAMES_REMEMBERED, MAX_REQUESTS_PER_PASS } from '../../src/main/cli/review-format'
+import { MAX_ENTRIES_LISTED, MAX_NAMES_REMEMBERED } from '../../src/main/cli/review-format'
 import { STALE_TEMPORARY_MS, removeStaleTemporaryFiles } from '../../src/main/cli/stale-temporary-files'
 import { InboxClaims } from '../../src/main/request-claims'
 import { STALE_FILE_MS, type RequestExecutorOptions } from '../../src/main/request-executor'
@@ -30,6 +30,7 @@ beforeEach(async () => {
   app = undefined
 }, 30_000)
 afterEach(async () => {
+  await app?.executor.dispose()
   await app?.close()
   await fx.dispose()
 }, 30_000)
@@ -38,7 +39,10 @@ afterEach(async () => {
 // the backstop; capture the fixture so a timed-out continuation cannot clean up a later fixture.
 async function finishBulkFixture(fixture: WriteFixture): Promise<void> {
   const ownedApp = app?.workspace.root === fixture.root ? app : undefined
-  try { await ownedApp?.close() }
+  try {
+    await ownedApp?.executor.dispose()
+    await ownedApp?.close()
+  }
   finally {
     if (app === ownedApp) app = undefined
     await fixture.dispose()
@@ -96,33 +100,32 @@ test('what is told once is kept to a count, the oldest forgotten first; a name s
   expect([...map.keys()]).toEqual(['k9995', 'k9996', 'k9997', 'k9998', 'k9999'])
 })
 
-test('requests answered again from their record are remembered up to a count, however many are met', async () => {
-  const fixture = fx
-  try {
-    const side = await open()
-    await mkdir(fx.handledDir, { recursive: true, mode: 0o700 })
-    // Three inboxes' worth of requests that each have a receipt and a file that cannot be removed (a
-    // folder stands at the name), so each is remembered as answered again: more than is ever kept.
-    const perRound = Math.ceil((MAX_NAMES_REMEMBERED + 1) / 3)
-    let met = 0
-    for (let round = 0; round < 3; round += 1) {
-      const ids = numbered(perRound, (index) => newRequestId(new Date(Date.UTC(2026, round, 1) + index * 1000)))
-      for (let from = 0; from < ids.length; from += 250) {
-        await Promise.all(ids.slice(from, from + 250).map(async (id) => {
-          await writeFile(join(fx.handledDir, `${id}.json`), JSON.stringify({ version: 1, id, at: new Date().toISOString() }))
-          await mkdir(join(fx.root, INBOX_DIR, `${id}.json`), { recursive: true })
-        }))
-      }
-      for (let looks = 0; looks < Math.ceil(perRound / MAX_REQUESTS_PER_PASS); looks += 1) {
-        met += (await side.executor.drain()).handled.length
-        expect(side.executor.remembered.repeated).toBeLessThanOrEqual(MAX_NAMES_REMEMBERED)
-      }
-      await rm(join(fx.root, INBOX_DIR), { recursive: true, force: true })
-    }
-    expect(met).toBeGreaterThan(MAX_NAMES_REMEMBERED)
-    expect(side.executor.remembered.repeated).toBe(MAX_NAMES_REMEMBERED)
-  } finally { await finishBulkFixture(fixture) }
-}, 600_000) // Cross the real 4,000-entry cap with two durable writes per request, even on a busy Studio.
+test('the production remember limit evicts the oldest entry when crossed', () => {
+  const remembered = new Set<number>()
+  for (let id = 0; id <= MAX_NAMES_REMEMBERED; id += 1) {
+    rememberUpTo(remembered, id, MAX_NAMES_REMEMBERED)
+    expect(remembered.size).toBeLessThanOrEqual(MAX_NAMES_REMEMBERED)
+  }
+  expect([...remembered]).toEqual(Array.from({ length: MAX_NAMES_REMEMBERED }, (_, index) => index + 1))
+})
+
+test('requests answered again from their record are remembered across looks and the oldest is evicted', async () => {
+  const limit = 4
+  const side = await open({ seams: { repeatedLimit: limit } })
+  await mkdir(fx.handledDir, { recursive: true, mode: 0o700 })
+  const ids = inOrder(limit + 1)
+  for (const [index, id] of ids.entries()) {
+    await writeFile(join(fx.handledDir, `${id}.json`), JSON.stringify({ version: 1, id, at: new Date().toISOString() }))
+    // A folder at the inbox name cannot be unlinked. Only the remembered set stops another reply.
+    await mkdir(join(fx.root, INBOX_DIR, `${id}.json`), { recursive: true })
+    const look = await side.executor.drain()
+    expect(look.handled).toEqual([expect.objectContaining({ id, repeat: true })])
+    expect(side.executor.remembered.repeated).toBe(Math.min(index + 1, limit))
+  }
+  const next = await side.executor.drain()
+  expect(next.handled[0]).toMatchObject({ id: ids[0], repeat: true })
+  expect(side.executor.remembered.repeated).toBe(limit)
+}, 15_000)
 
 test('clearing the outbox is bounded too: a look removes what is stale among the entries it lists, says the listing was cut, and the next look goes on', async () => {
   const fixture = fx

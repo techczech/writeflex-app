@@ -10,6 +10,9 @@ import { EPUB_EXPORT_AVAILABLE } from '../../src/shared/epub-feature'
 const repo = fileURLToPath(new URL('../..', import.meta.url))
 const preloadDir = join(repo, 'src', 'preload')
 const sharedDir = join(repo, 'src', 'shared') + sep
+// Two real bootstrap processes load Settings, SQLite and IPC. Studio contention stalled
+// the old 7 s test. Bound each child first, then allow the parent to drain and remove profiles.
+const PROBE_TIMEOUT_MS = 20_000
 
 // Isolate the Electron module mock and keep startup, SQLite and settings in a throwaway profile.
 // Boot index.ts, the same module loaded by bootstrap.ts, so new registrations are picked up.
@@ -110,12 +113,12 @@ async function recordedChannels(gitSyncEnabled: boolean): Promise<{ handles: str
       },
       stdout: 'pipe',
       stderr: 'pipe',
-      timeout: 5_000,
+      timeout: PROBE_TIMEOUT_MS,
     })
     const [code, stdout, stderr] = await Promise.all([
       child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
     ])
-    if (code !== 0) throw new Error(`IPC registration probe exited ${code}:\n${stderr}`)
+    if (code !== 0) throw new Error(`IPC registration probe exited ${child.signalCode ?? code}:\n${stderr}`)
     const result = stdout.split('\n').find(line => line.startsWith('IPC_PARITY '))
     if (!result) throw new Error('IPC registration probe produced no channel inventory.')
     return JSON.parse(result.slice('IPC_PARITY '.length))
@@ -199,4 +202,4 @@ test('preload invokes and main IPC handlers have matching channels', async () =>
     mainOnly: Object.keys(mainOnly).sort(),
     preloadOnly: Object.keys(preloadOnly).sort(),
   })
-}, 7_000)
+}, PROBE_TIMEOUT_MS + 10_000)

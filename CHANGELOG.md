@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.29.0-alpha.9] — 2026-11-27
+
+An alpha: early, and it can break.
+
+### Fixed
+- Renaming a Folio part, or fixing its title from the Folio, keeps that card selected and the keyboard on it; ⌘Z undoes the newer title fix or move.
+- Enter in Search opens a result of the search on screen, never a hit left over from the previous search.
+- Files offers Try again when the workspace cannot be read, and keeps the last list it showed when a reread fails.
+- Restoring a version: the safety copy made before a restore is labelled "Before a restore attempt", so History stays accurate when the restore is refused; an unreadable OneDrive version says how to download it first.
+- Images dropped into an Area and then abandoned are cleared from the Collection on a later open, only when nothing refers to them.
+- Reading back a named version no longer overtakes a later save.
+- The review panel no longer redraws while no edits are waiting.
+
+### Changed
+- Folio: the view you open or switch to takes the keyboard; the toolbar stays inside its pane.
+- Versions: Save version, Compare, Restore and Save as a copy sit right under the working copy; the unbuilt whole-Folio Restore buttons are gone.
+- ⌘S confirms "Saved to disk · checkpoint kept in history".
+- The command palette says why a greyed-out command is not available; Search and Folio reorder messages are plainer.
+- Settings works from the keyboard; the Git sync and Backup pages explain which is which.
+- Board: empty panels fold away and each stage keeps a usable width.
+
 ## [0.29.0-alpha.8] — 2026-11-26
 
 An alpha: early, and it can break.

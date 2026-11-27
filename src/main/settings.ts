@@ -172,7 +172,7 @@ export interface SharedPreferences {
   /** Every non-default preference. */
   values(): Record<string, SettingValue>
   /** Resolves only after saving, or rejects with the store problem. */
-  persist(key: string, value: SettingValue | null): Promise<void>
+  persist(key: string, value: SettingValue | null, opts?: { log?: false }): Promise<void>
 }
 
 export class SettingsStore {
@@ -764,7 +764,7 @@ export class SettingsStore {
     const work=this.#syncWrites.catch(()=>undefined).then(async()=>{
       const entries=syncVaultPreferences(this.get(SYNC_VAULTS_KEY))
       entries[id]={...(entries[id]??{enabled:false,wait:3}),...patch}
-      if(this.#shared)await this.#shared.persist(SYNC_VAULTS_KEY,JSON.stringify(entries))
+      if(this.#shared)await this.#shared.persist(SYNC_VAULTS_KEY,JSON.stringify(entries),{log:false})
       else this.#setLegacy(SYNC_VAULTS_KEY,JSON.stringify(entries),'Git sync preferences',{log:false})
     })
     this.#syncWrites=work;return work

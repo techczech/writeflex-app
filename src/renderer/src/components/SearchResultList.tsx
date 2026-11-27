@@ -43,7 +43,7 @@ export function SearchExcerpt({ hit }: { hit: SearchMatch | undefined }): JSX.El
           </div>
         </>
       ) : (
-        <div className="search-excerpt-from">no hit selected</div>
+        <div className="search-excerpt-from">Choose a result to preview it here.</div>
       )}
     </div>
   )

@@ -64,7 +64,8 @@ export function paletteKeyAction({ view, query, key, selectedIsGroup }: {
 }
 
 /** The footer line in commands mode. */
-export function paletteFooterHint(view: PaletteView, query: string): string {
+export function paletteFooterHint(view: PaletteView, query: string, unavailableReason: string | null): string {
+  if (unavailableReason !== null) return unavailableReason ? `Not available: ${unavailableReason}` : 'Not available here'
   if (view.kind === 'group') return '← back · ↵ run'
   return query.trim() ? '↑↓ move · ↵ run' : '↑↓ move · → open group · ↵ run'
 }

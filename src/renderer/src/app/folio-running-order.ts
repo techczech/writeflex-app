@@ -21,7 +21,7 @@ import {
   type RunningOrderResult,
   type RunningOrderUndo,
 } from '../../../shared/folio-running-order'
-import { moveOrder, newCardFlash, undoneNewCardAnnouncement, withManifestNote } from '../../../shared/folio-room-order'
+import { moveOrder, newCardFlash, undoneNewCardAnnouncement, withManifestNote, withRunningOrderSaved } from '../../../shared/folio-room-order'
 import type { RoomAuthoringResult } from '../../../shared/folio-room-authoring'
 import type { PlanCardKey } from '../../../shared/folio-running-order'
 
@@ -51,7 +51,11 @@ type Deps = {
 }
 
 /** The one Undo step, with the Folio it was made in (`folioScope`). */
-type HeldUndo = { step: RunningOrderUndo; scope: string }
+type HeldUndo = { step: RunningOrderUndo; scope: string; sequence: number }
+
+// A renderer's Folio edits share one ordering for the keyboard's choice of Undo.
+let folioUndoSequence = 0
+export function nextFolioUndoSequence(): number { return ++folioUndoSequence }
 
 export type FolioRunningOrder = {
   openIdentity: (dir: string, force?: boolean) => Promise<boolean>
@@ -81,6 +85,8 @@ export type FolioRunningOrder = {
   /** One request of another Folio write (the Details card's) through the same save of the Folio's open buffers and the editor's save queue. */
   write: Deps['write']
   canUndo: boolean
+  /** The order of the current room's last undoable move, or zero. */
+  roomMoveUndoSequence: number
   /** The live-region text for the last change. */
   announcement: string
   /** The row to put focus on once the Outline has read the change: a tick so the same path can be asked twice. */
@@ -126,7 +132,7 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
 
   /** Keep `step` as the Undo step of the Folio `scope`, unless another Folio is on screen by now (then there is none). */
   const remember = useCallback((step: RunningOrderUndo | null, scope = '') => {
-    const held = step && undoStepKeptAmong(scope, openScopesRef.current) ? { step, scope } : null
+    const held = step && undoStepKeptAmong(scope, openScopesRef.current) ? { step, scope, sequence: nextFolioUndoSequence() } : null
     undoRef.current = held
     setUndoStep(held)
   }, [])
@@ -324,8 +330,8 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
       remember({ kind: 'plan-reorder', dir, order: inverseOrder(order), after: result.parts, room: true, title }, scope)
       setJustAdded([])
       refresh()
-      say(withManifestNote(movedFlash(title, position, result.parts.length), result.manifestCreated, result.notInRunningOrder), { label: 'Undo', run: () => { void undo() } })
-      setAnnouncement(withManifestNote(movedAnnouncement(title, position, result.parts.length).replace(/\.$/, ''), result.manifestCreated, result.notInRunningOrder))
+      say(withRunningOrderSaved(movedFlash(title, position, result.parts.length), result.manifestCreated), { label: 'Undo', run: () => { void undo() } })
+      setAnnouncement(withRunningOrderSaved(movedAnnouncement(title, position, result.parts.length), result.manifestCreated))
       return true
     })
     return left
@@ -395,9 +401,11 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
   }, [openScopesKey, clear])
 
   const canUndo = undoStep !== null && undoStepUsableOnScreen(undoStep.scope, outlineScope, planScope)
+  const roomMoveUndoSequence = undoStep !== null && undoStep.scope === planScope
+    && undoStep.step.kind === 'plan-reorder' && undoStep.step.room === true ? undoStep.sequence : 0
   return useMemo(
-    () => ({ openIdentity, movePiece, addPieces, sortPlan, addToPlan, moveInRoom, reorderInRoom, addRoomCard, removeToBin, undo, write, canUndo, announcement, touched, justAdded, clear }),
-    [openIdentity, movePiece, addPieces, sortPlan, addToPlan, moveInRoom, reorderInRoom, addRoomCard, removeToBin, undo, write, canUndo, announcement, touched, justAdded, clear],
+    () => ({ openIdentity, movePiece, addPieces, sortPlan, addToPlan, moveInRoom, reorderInRoom, addRoomCard, removeToBin, undo, write, canUndo, roomMoveUndoSequence, announcement, touched, justAdded, clear }),
+    [openIdentity, movePiece, addPieces, sortPlan, addToPlan, moveInRoom, reorderInRoom, addRoomCard, removeToBin, undo, write, canUndo, roomMoveUndoSequence, announcement, touched, justAdded, clear],
   )
 }
 

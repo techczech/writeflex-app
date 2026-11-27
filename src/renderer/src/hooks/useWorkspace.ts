@@ -1,18 +1,21 @@
-import { startTransition, useCallback, useEffect, useRef, useState } from 'react'
-import type { MarkdownFile, WorkspaceContext } from '../../../preload'
+import { startTransition, useCallback, useEffect, useReducer, useRef } from 'react'
+import type { MarkdownFile } from '../../../preload'
 import { patchedListing } from '../../../shared/listing-patch'
 
 export type UseWorkspace = {
-  /** `undefined` while the workspace context is in flight; `null` once fetched with no workspace
-   *  bound; a string once a Workspace is open. Consumers must distinguish loading from empty so a
-   *  workspace-bound boot never paints the start screen before the fetch resolves. */
+  /** `undefined` until we know the workspace, `null` for an accepted unbound window, or a root. */
   root: string | null | undefined
   files: MarkdownFile[]
   folders: string[]
   assetBaseUrl: string | null
+  /** The window has accepted a listing (including an empty one) or is confirmed unbound. */
   listingReady: boolean
+  /** The latest read failed. A previously accepted listing is still usable. */
+  listingFailed: boolean
   canRestoreTabsEarly: boolean
   refresh: () => Promise<void>
+  refreshInBackground: () => void
+  retryListing: () => void
   /**
    * Answer a `collection:changed` push. Coalesce changes until the first listing is displayed.
    * After that, patch an own save in place when possible and re-list for other changes.
@@ -20,86 +23,116 @@ export type UseWorkspace = {
   applyCollectionChange: (change: unknown) => void
 }
 
-type WorkspaceView = Omit<WorkspaceContext, 'root'> & {
-  root: string | null | undefined
-  files: MarkdownFile[]
-  folders: string[]
-  listingReady: boolean
-}
+type WorkspaceView = Pick<UseWorkspace, 'root' | 'files' | 'folders' | 'assetBaseUrl' | 'listingReady' | 'listingFailed' | 'canRestoreTabsEarly'>
+type WorkspaceUpdate = (current: WorkspaceView) => WorkspaceView
 
 /** The window publishes its root before walking the tree. The full listing can render in the
  * background while tab restoration and input use the same workspace. */
 export function useWorkspace(): UseWorkspace {
-  // Start with `root: undefined` (loading) so the very first render is a neutral frame, not the
-  // start screen — the fetch below resolves it to a string (workspace) or null (genuinely none).
-  const [state, setState] = useState<WorkspaceView>({
+  const [state, dispatch] = useReducer((current: WorkspaceView, update: WorkspaceUpdate) => update(current), {
     root: undefined,
     files: [],
     folders: [],
     assetBaseUrl: null,
     canRestoreTabsEarly: false,
     listingReady: false,
-  })
+    listingFailed: false,
+  } satisfies WorkspaceView)
   const filesRef = useRef(state.files)
   filesRef.current = state.files
-  const refreshesInFlight = useRef(0)
+  const mounted = useRef(false)
   const revision = useRef(0)
+  const refreshesInFlight = useRef(0)
   const initialListing = useRef<{ changed: boolean } | null>(null)
-  const refresh = useCallback(async (startup?: { changed: boolean }) => {
-    // An explicit refresh can follow a user action that changed the root or needs a fresh listing.
-    if (!startup) initialListing.current = null
-    const request = ++revision.current
+
+  const publish = useCallback((request: number, update: WorkspaceUpdate) => {
+    if (!mounted.current || request !== revision.current) return
+    // The reducer checks again when React renders a queued transition.
+    dispatch(current => request === revision.current ? update(current) : current)
+  }, [])
+
+  const readListing = useCallback(async (request: number, defer: boolean) => {
+    if (!mounted.current || request !== revision.current) return
     refreshesInFlight.current += 1
     try {
       const view = await window.writeflex.getWorkspace()
-      const publish = () => setState((current) => request === revision.current
-        ? { ...view, listingReady: true, canRestoreTabsEarly: false }
-        : current)
-      if (startup) startTransition(publish)
-      else publish()
+      const accept = () => publish(request, () => ({
+        ...view, listingReady: true, listingFailed: false, canRestoreTabsEarly: false,
+      }))
+      if (defer) startTransition(accept)
+      else accept()
     } catch (error) {
-      if (initialListing.current === startup) initialListing.current = null
+      if (request === revision.current) initialListing.current = null
+      publish(request, current => ({
+        ...current,
+        // A launch from the start screen may have bound a root before its listing failed.
+        ...(current.root === null ? { root: undefined, listingReady: false } : {}),
+        listingFailed: true,
+      }))
       throw error
     } finally {
       refreshesInFlight.current -= 1
     }
-  }, [])
+  }, [publish])
+
+  const refresh = useCallback(() => readListing(++revision.current, false), [readListing])
+  const refreshInBackground = useCallback(() => { void refresh().catch(() => {}) }, [refresh])
+  const retryListing = useCallback(() => {
+    const request = ++revision.current
+    const first = !state.listingReady
+    if (first) initialListing.current = { changed: false }
+    publish(request, current => ({ ...current, listingFailed: false }))
+    void readListing(request, first).catch(() => {})
+  }, [publish, readListing, state.listingReady])
+
   const applyCollectionChange = useCallback((change: unknown) => {
+    if (!mounted.current) return
     if (initialListing.current) {
       initialListing.current.changed = true
       return
     }
     if (refreshesInFlight.current > 0 || !patchedListing(filesRef.current, change)) {
-      void refresh()
+      refreshInBackground()
       return
     }
-    // Patched against the listing React holds when the update runs. If a re-list landed in between and
-    // no longer holds the path, that re-list already is the truth: keep it.
-    setState((current) => {
+    // Patch the listing React holds when this runs. An accepted re-list may have removed the path.
+    dispatch((current) => {
       const next = patchedListing(current.files, change)
       return next ? { ...current, files: next } : current
     })
-  }, [refresh])
+  }, [refreshInBackground])
+
   useEffect(() => {
-    let live = true
+    mounted.current = true
     const request = ++revision.current
-    void window.writeflex.getWorkspaceContext().then((context) => {
-      if (!live || request !== revision.current) return
-      setState((current) => ({ ...current, ...context, listingReady: context.root === null }))
-      if (context.root !== null) {
-        const startup = { changed: false }
-        initialListing.current = startup
-        void refresh(startup)
+    const readStartup = async (): Promise<void> => {
+      // A full listing can recover the root if the lightweight context read failed.
+      const context = await window.writeflex.getWorkspaceContext().catch(() => null)
+      if (request !== revision.current) return
+      if (context) {
+        publish(request, current => ({
+          ...current, ...context, listingReady: context.root === null, listingFailed: false,
+        }))
+        if (context.root === null) return
       }
-    }).catch(() => { if (live && request === revision.current) void refresh() })
-    return () => { live = false }
-  }, [refresh])
+      initialListing.current = { changed: false }
+      await readListing(request, context !== null)
+    }
+    void readStartup().catch(() => {})
+    return () => {
+      mounted.current = false
+      revision.current += 1
+      initialListing.current = null
+    }
+  }, [publish, readListing])
+
   useEffect(() => {
     const startup = initialListing.current
     if (!state.listingReady || !startup) return
     // Wait for the transition to commit. Starting the follow-up earlier would invalidate its result.
     initialListing.current = null
-    if (startup.changed) void refresh()
-  }, [state.listingReady, refresh])
-  return { ...state, refresh, applyCollectionChange }
+    if (startup.changed) refreshInBackground()
+  }, [state.listingReady, refreshInBackground])
+
+  return { ...state, refresh, refreshInBackground, retryListing, applyCollectionChange }
 }

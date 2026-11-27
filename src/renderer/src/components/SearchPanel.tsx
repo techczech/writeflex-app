@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { SearchField } from './SearchField'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { ChevronLeft, Search } from 'lucide-react'
+import { ChevronLeft } from 'lucide-react'
 import type { FolderFocus, SearchMatch } from '../../../preload'
 import { createSequencer, scopeLabel } from '../search-hits'
 import { SearchExcerpt, SearchResultList, type SearchResults } from './SearchResultList'
@@ -21,6 +21,8 @@ type SearchPanelProps = {
 }
 
 type ScopeSide = 'folder' | 'everywhere'
+type SearchIdentity = { query: string; folder: string | null; side: ScopeSide }
+type SearchOutcome = { results: SearchResults; error?: never } | { error: string; results?: never }
 
 /**
  * Workspace-wide search (⇧⌘F / File ▸ Search Files…, PRD S20). A RAIL SWAP: it takes the sidebar
@@ -34,87 +36,73 @@ type ScopeSide = 'folder' | 'everywhere'
  */
 export default function SearchPanel({ onOpenHit, onClose, focus = null }: SearchPanelProps): JSX.Element {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchResults | null>(null) // null = the "type a query" hint
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [reply, setReply] = useState<{ identity: SearchIdentity; outcome: SearchOutcome } | null>(null)
   const [selected, setSelected] = useState(0)
   const sequencerRef = useRef(createSequencer())
   const inputRef = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
   const focusPath = focus?.path ?? null
-  const [side, setSide] = useState<ScopeSide>('folder')
-  // A new focus (or none) starts back on the focused folder: the default is always "here".
-  useEffect(() => setSide('folder'), [focusPath])
+  const [scope, setScope] = useState<{ folder: string | null; side: ScopeSide }>({ folder: focusPath, side: 'folder' })
+  // A new focus starts on its folder before any search for that focus can run.
+  if (scope.folder !== focusPath) setScope({ folder: focusPath, side: 'folder' })
+  const side = focusPath === null ? 'everywhere' : scope.side
+  const trimmed = query.trim()
+  const identity = useMemo<SearchIdentity>(() => ({ query: trimmed, folder: focusPath, side }), [trimmed, focusPath, side])
+  const current = reply?.identity === identity ? reply.outcome : null
+  const results = current?.results
+  const pending = Boolean(trimmed && !current)
+  const hitCount = results?.matches.length ?? 0
+  const selectedHit = results?.matches[selected]
+  // Both counts describe the same query and folder, so they can stay visible across a side switch.
+  const counts = reply?.identity.query === trimmed && reply.identity.folder === focusPath && reply.outcome.results?.scope?.folder === focusPath
+    ? reply.outcome.results.scope
+    : undefined
 
   // Keyboard-first: the panel owns the keyboard the instant it swaps in.
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
 
-  // Live, debounced, race-guarded search. begin() on every run (empty query included) supersedes any
-  // in-flight request, whose late response would otherwise repopulate a panel the user has moved on from.
-  useEffect(() => {
-    const trimmed = query.trim()
-    const seq = sequencerRef.current.begin()
-    if (!trimmed) {
-      setResults(null)
-      setError(null)
-      setPending(false)
-      return
+  // Retire the previous request in the same commit that hides its rows, including on clear.
+  useLayoutEffect(() => {
+    if (!identity.query) return
+    const sequencer = sequencerRef.current
+    const seq = sequencer.begin()
+    const accept = (outcome: SearchOutcome): void => {
+      if (!sequencer.isCurrent(seq)) return
+      setReply({ identity, outcome })
+      setSelected(0)
     }
-    setPending(true)
-    setError(null)
     const handle = setTimeout(() => {
-      const searching = focusPath
-        ? window.writeflex.searchWorkspace(trimmed, { scope: { folder: focusPath, results: side } })
-        : window.writeflex.searchWorkspace(trimmed)
-      searching
-        .then((result) => {
-          if (!sequencerRef.current.isCurrent(seq)) return
-          setResults({ query: trimmed, matches: result.matches, total: result.total, note: result.note, scope: result.scope })
-          setPending(false)
-        })
-        .catch((err: unknown) => {
-          if (!sequencerRef.current.isCurrent(seq)) return
-          setResults({ query: trimmed, matches: [], total: 0, note: undefined })
-          setError(err instanceof Error ? err.message : String(err))
-          setPending(false)
-        })
+      const searching = identity.folder
+        ? window.writeflex.searchWorkspace(identity.query, { scope: { folder: identity.folder, results: identity.side } })
+        : window.writeflex.searchWorkspace(identity.query)
+      void searching.then(
+        (result) => accept({ results: { ...result, query: identity.query } }),
+        (err: unknown) => accept({ error: err instanceof Error ? err.message : String(err) }),
+      )
     }, SEARCH_DEBOUNCE_MS)
-    return () => clearTimeout(handle)
-  }, [query, focusPath, side])
-
-  const flatHits = useMemo(() => results?.matches ?? [], [results])
-  const selectedHit = flatHits[selected]
-
-  // New results re-rank the list — start the highlight at the top again.
-  useEffect(() => {
-    setSelected(0)
-  }, [results])
+    return () => {
+      clearTimeout(handle)
+      sequencer.begin()
+    }
+  }, [identity])
 
   // Keep the highlighted hit scrolled into view as arrows move it past the fold.
   useEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
-  }, [selected, flatHits])
-
-  const openAt = useCallback(
-    (index: number) => {
-      const match = flatHits[index]
-      if (match) onOpenHit(match)
-    },
-    [flatHits, onOpenHit],
-  )
+  }, [selected, results])
 
   function onInputKeyDown(event: ReactKeyboardEvent<HTMLInputElement>): void {
     if (event.key === 'ArrowDown') {
       event.preventDefault()
-      setSelected((s) => Math.min(s + 1, Math.max(0, flatHits.length - 1)))
+      if (hitCount > 0) setSelected((s) => Math.min(s + 1, hitCount - 1))
     } else if (event.key === 'ArrowUp') {
       event.preventDefault()
-      setSelected((s) => Math.max(s - 1, 0))
+      if (hitCount > 0) setSelected((s) => Math.max(s - 1, 0))
     } else if (event.key === 'Enter') {
       event.preventDefault()
-      openAt(selected)
+      if (selectedHit) onOpenHit(selectedHit)
     }
     // Escape bubbles to the panel root (onPanelKeyDown) so it closes from the input or a hovered row.
   }
@@ -141,7 +129,7 @@ export default function SearchPanel({ onOpenHit, onClose, focus = null }: Search
           ref={inputRef}
           wrapClassName="search-panel-field search-field"
           value={query}
-          onValueChange={(value) => setQuery(value)}
+          onValueChange={setQuery}
           onKeyDown={onInputKeyDown}
           placeholder={focus && side === 'folder' ? `Search ${scopeLabel(focus.kind).toLowerCase()}…` : 'Search every file…'}
           aria-label="Search query"
@@ -150,7 +138,6 @@ export default function SearchPanel({ onOpenHit, onClose, focus = null }: Search
         {focus && (
           <div className="search-scope" role="group" aria-label="Search scope">
             {(['folder', 'everywhere'] as const).map((option) => {
-              const counts = results?.scope?.folder === focus.path ? results.scope : undefined
               const count = option === 'folder' ? counts?.inFolder : counts?.everywhere
               return (
                 <button
@@ -158,7 +145,9 @@ export default function SearchPanel({ onOpenHit, onClose, focus = null }: Search
                   type="button"
                   aria-pressed={side === option}
                   title={option === 'folder' ? `Search only ${focus.path}` : 'Search the whole vault'}
-                  onClick={() => setSide(option)}
+                  onClick={() => {
+                    if (side !== option) setScope({ folder: focusPath, side: option })
+                  }}
                 >
                   {option === 'folder' ? scopeLabel(focus.kind) : 'Everywhere'}
                   {count !== undefined && <span className="n">{count}</span>}
@@ -172,29 +161,29 @@ export default function SearchPanel({ onOpenHit, onClose, focus = null }: Search
       <div className="search-results" ref={listRef}>
         {pending ? (
           <div className="search-empty">Searching…</div>
-        ) : results === null ? (
+        ) : current === null ? (
           <div className="search-empty">
             {focus && side === 'folder'
               ? `Type a query to search ${scopeLabel(focus.kind).toLowerCase()}, ${focus.path.split('/').at(-1)}.`
               : 'Type a query to search across the whole vault.'}
           </div>
-        ) : error ? (
-          <div className="search-empty">Search failed: {error}</div>
-        ) : results.matches.length === 0 ? (
+        ) : !current.results ? (
+          <div className="search-empty">Search failed: {current.error}</div>
+        ) : current.results.matches.length === 0 ? (
           <div className="search-empty">
-            No matches for <span className="search-q">{results.query}</span>.
+            No matches for <span className="search-q">{current.results.query}</span>.
           </div>
         ) : (
           <SearchResultList
-            results={results}
+            results={current.results}
             selected={selected}
             onHover={setSelected}
             onOpen={onOpenHit}
-            folderBase={focus && results.scope?.results === 'folder' ? focus.path : undefined}
+            folderBase={focus && current.results.scope?.results === 'folder' ? focus.path : undefined}
           />
         )}
       </div>
-      <SearchExcerpt hit={selectedHit} />
+      {hitCount > 0 && <SearchExcerpt hit={selectedHit} />}
     </div>
   )
 }

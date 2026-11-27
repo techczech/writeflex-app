@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { createElement } from 'react'
 import { renderToString } from 'react-dom/server'
-import { acceptedSummary, useReviewActions, type ReviewActions, type ReviewActionDeps } from '../../src/renderer/src/app/review-actions'
+import { acceptedSummary, reconcileResolvedFile, useReviewActions, type ReviewActions, type ReviewActionDeps } from '../../src/renderer/src/app/review-actions'
 import type { Change, FileReadResult } from '../../src/preload'
 import { acceptThroughOwner, replayAcceptRedo } from '../../src/renderer/src/app/resolution-routes'
 import { createDocumentOwner } from '../../src/renderer/src/app/document-owner'
@@ -10,20 +10,10 @@ import { createDeclineConfirmation, type DeclineContext } from '../../src/render
 import { buildMarginModel } from '../../src/renderer/src/app/margin-model'
 
 test('a resolved file is reconciled before the final inline-change refresh', async () => {
-  const reviewActions = await import('../../src/renderer/src/app/review-actions') as typeof import('../../src/renderer/src/app/review-actions') & {
-    reconcileResolvedFile?: (
-      file: FileReadResult,
-      reconcile: (file: FileReadResult) => void,
-      refreshInlineChanges: () => Promise<void>,
-    ) => Promise<void>
-  }
   const order: string[] = []
-  const file = { file: { path: 'draft.md', name: 'draft.md' }, content: '# Draft\n' } as FileReadResult
-
-  expect(typeof reviewActions.reconcileResolvedFile).toBe('function')
-  await reviewActions.reconcileResolvedFile!(
-    file,
-    () => order.push('reconcile'),
+  await reconcileResolvedFile(
+    'draft.md',
+    { isCurrent: () => true, owns: () => true, reconcile: () => { order.push('reconcile') } },
     async () => {
       order.push('refresh-inline')
     },
@@ -54,7 +44,7 @@ for (const message of [undefined, 'Change declined, but its Agent note failed: u
       refreshInlineChangesAfterReconcile: async () => undefined,
       flash: (text) => { events.push(text) },
       handleAgentWorkspaceChange: () => undefined,
-      reconcileAppliedFile: () => undefined,
+      captureAppliedFileScope: () => ({ isCurrent: () => true, owns: () => true, reconcile: () => undefined }),
       acceptThroughOwner: async (_path, _id, resolve) => ({ status: 'acted', result: await resolve(), recorded: false }),
       inDocumentQueue: (_path, run) => run(),
       focusComposer: () => undefined,
@@ -83,7 +73,7 @@ const APPLIED_NOT_DISCARDED = 'That change is already applied, so it was not dis
 const LEDGER_CHANGE = { id: 'opening', path: 'draft.md', provenance: 'agent', status: 'pending', oldText: 'old', newText: 'new' } as unknown as Change
 const LEDGER_FILE = { file: { path: 'draft.md', name: 'draft.md' }, content: 'new\n' } as FileReadResult
 
-function ledgerHarness(options: { recorded: boolean }) {
+function ledgerHarness(options: { recorded: boolean; rejectFile?: boolean }) {
   const main = { status: 'pending', calls: [] as string[] }
   const events: string[] = []
   const flashes: string[] = []
@@ -113,7 +103,7 @@ function ledgerHarness(options: { recorded: boolean }) {
         }
         if (main.status === 'accepted') return { applied: false, message: APPLIED_NOT_DISCARDED }
         main.status = 'rejected'
-        return { applied: true }
+        return options.rejectFile ? { applied: true, file: LEDGER_FILE } : { applied: true }
       },
       setChangeStatus: async () => undefined,
     },
@@ -127,7 +117,16 @@ function ledgerHarness(options: { recorded: boolean }) {
     refreshInlineChangesAfterReconcile: async () => { events.push('refresh-inline') },
     flash: (text) => { flashes.push(text) },
     handleAgentWorkspaceChange: () => undefined,
-    reconcileAppliedFile: (file) => { events.push(`reconcile:${file.content}`) },
+    captureAppliedFileScope: () => ({
+      isCurrent: () => true,
+      owns: () => true,
+      reconcile: async (path, turn) => {
+        await owner.applyOutside(path, async () => {
+          events.push(`reconcile:${path}`)
+          return { kind: 'read', content: 'old\n' }
+        }, turn)
+      },
+    }),
     acceptThroughOwner: (path, id, resolve) => acceptThroughOwner({
       owner,
       bufferOf: () => buffer,
@@ -159,6 +158,19 @@ test('accepting through the ledger when the editor did not take it: the returned
   const h = ledgerHarness({ recorded: false })
   expect(await h.actions.acceptChange('opening')).toBe(true)
   expect(h.events).toEqual(['written-by-main:new\n', 'refresh-inline'])
+})
+
+test('a ledger reply for the held path is read in the reject turn before refreshing inline changes', async () => {
+  const h = ledgerHarness({ recorded: false, rejectFile: true })
+  const ledgerResolve = h.ledger.resolveChange
+  h.ledger.resolveChange = (...args) => {
+    void h.owner.inQueue('draft.md', async () => { h.events.push('later owner turn') })
+    return ledgerResolve(...args)
+  }
+  expect(await h.actions.rejectChange('opening')).toBe(true)
+  await h.owner.settled('draft.md')
+  expect(h.events[0]).toBe('reconcile:draft.md')
+  expect(h.events.slice(1).sort()).toEqual(['later owner turn', 'refresh-inline'])
 })
 
 test('redo of an accept, then Discard from the review pane: main receives them in that order, the Discard is refused as already applied, the change stays accepted and the text stays', async () => {
@@ -235,7 +247,7 @@ function bulkHarness(
     refreshInlineChangesAfterReconcile: async () => undefined,
     flash: (text) => { calls.push(`flash:${text}`) },
     handleAgentWorkspaceChange: () => undefined,
-    reconcileAppliedFile: () => undefined,
+    captureAppliedFileScope: () => ({ isCurrent: () => true, owns: () => true, reconcile: () => undefined }),
     acceptThroughOwner: async (_path, _id, resolve) => ({ status: 'acted', result: await resolve(), recorded: false }),
     inDocumentQueue: (_path, run) => run(),
     focusComposer: (text) => { calls.push(`composer:${text}`) },

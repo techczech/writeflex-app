@@ -158,7 +158,9 @@ export const BULK_THRESHOLD = 6
 
 /** The batch after the waiting edits changed. A new piece starts a new batch; so does a piece with nothing left waiting. Arrivals join it. */
 export function nextBatch(batch: ReviewBatch, key: string | null, waitingEditIds: readonly string[]): ReviewBatch {
-  if (key !== batch.key || waitingEditIds.length === 0) return { key, ids: new Set(waitingEditIds) }
+  if (key !== batch.key || (waitingEditIds.length === 0 && batch.ids.size > 0)) {
+    return { key, ids: new Set(waitingEditIds) }
+  }
   if (waitingEditIds.every((id) => batch.ids.has(id))) return batch
   return { key, ids: new Set([...batch.ids, ...waitingEditIds]) }
 }

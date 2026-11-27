@@ -22,6 +22,7 @@ import { DocumentReadRefused, asFileSystemError, readDocumentBytesGuarded, readD
 import { GuardedMoveRefused, moveDocumentGuarded, type PathIdentity } from './guarded-document-move'
 import { recordMainProcessDiagnostic } from './shutdown'
 import { GuardedWriteRefused, carryLeftover, documentSaveSeams, standsAsPinnedFolder, writeDocumentGuarded, type CommitTarget, type FolderIdentity } from './guarded-document-write'
+import { removeAreaImage, type AreaImageJournal } from './area-image-journal'
 import { CollectionWriteTurn } from './collection-write-turn'
 import { HeldForBackup, NonAtomicWriteRefused, nonAtomicWritePolicy, type NonAtomicDecision, type SaveReceiptHandle } from './save-receipt-gate'
 
@@ -441,7 +442,10 @@ export class Workspace {
    *  tests can count reads at the seam. */
   readonly searchIndex: SearchIndex
 
-  constructor(readonly root: string, options: { searchCacheDir?: string } = {}) {
+  readonly #areaImageJournal: AreaImageJournal | undefined
+
+  constructor(readonly root: string, options: { searchCacheDir?: string; areaImageJournal?: AreaImageJournal } = {}) {
+    this.#areaImageJournal = options.areaImageJournal
     this.searchIndex = new SearchIndex(
       (path) => readFile(this.absolute(path), 'utf8'),
       extractFrontmatterTags,
@@ -1003,35 +1007,39 @@ export class Workspace {
   }
 
   /** A drop owns only the new file it created, even if the window changes Collections. */
-  async prepareAreaImage(bytes: Uint8Array): Promise<{ path: string; discard: () => Promise<void> }> {
+  async prepareAreaImage(bytes: Uint8Array): Promise<{ path: string; keep: () => void; discard: () => Promise<void> }> {
     this.assertWritable()
     return this.exclusiveAll(async () => {
       this.assertWritable()
       const path = pastedImagePath('png', new Date(), (candidate) => existsSync(this.absolute(candidate)))
-      const folder = join(realpathSync.native(this.root), 'assets')
+      const root = realpathSync.native(this.root)
+      const folder = join(root, 'assets')
       await mkdir(dirname(this.absolute(path)), { recursive: true })
       const { dev, ino } = lstatSync(folder)
       const pinned: FolderIdentity = { real: folder, dev, ino }
       let written!: FileIdentity
+      let retire: (() => void) | undefined
       await this.#writeDocument(path, bytes, 'create', undefined, (target) => {
         this.assertWritable()
         if (!target) throw new Error('Could not identify the new Area image.')
         written = target.staged
+        if (!retire && this.#areaImageJournal) {
+          retire = this.#areaImageJournal.remember(root, { path, folder: pinned, file: written })
+          // The journal sync can take time. Re-apply the write gates before giving the image its name.
+          this.assertWritable()
+          this.#assertInPinnedFolder(path, this.absolute(path), pinned)
+        }
       }, false, pinned)
 
-      return { path, discard: () => this.exclusiveAll(async () => {
-        this.assertWritable()
-        this.#assertInPinnedFolder(path, this.absolute(path), pinned)
-        const absolute = join(folder, basename(path))
-        const current = lstatSync(absolute, { bigint: true, throwIfNoEntry: false })
-        if (!current) return
-        if (!current.isFile() || current.nlink !== 1n || current.dev !== written.dev
-          || current.ino !== written.ino || current.size !== written.size || current.mtimeNs !== written.mtimeNs) {
-          throw new Error(`${path} changed after the Area drop wrote it.`)
-        }
-        unlinkSync(absolute)
-        this.recordOwnWrite(path, 'absent')
-      }) }
+      return {
+        path,
+        keep: () => { retire?.() },
+        discard: () => this.exclusiveAll(async () => {
+          this.assertWritable()
+          if (removeAreaImage(this.root, { path, folder: pinned, file: written })) this.recordOwnWrite(path, 'absent')
+          retire?.()
+        }),
+      }
     })
   }
 

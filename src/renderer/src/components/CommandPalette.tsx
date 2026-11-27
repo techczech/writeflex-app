@@ -121,6 +121,13 @@ export type PaletteItem =
   | { kind: 'manage-skills'; key: string }
   | { kind: 'ask'; key: string; query: string }
 
+/** null means enabled; an empty reason still means the row is disabled. */
+function unavailableReason(item: PaletteItem | undefined): string | null {
+  if (item?.kind === 'command' && item.command.disabled) return item.command.disabledReason ?? ''
+  if (item?.kind === 'skill' && item.disabled) return 'Needs an open document'
+  return null
+}
+
 export type PaletteSection = {
   label: string
   items: PaletteItem[]
@@ -349,6 +356,7 @@ export function CommandPalette({
   const selectedIndex = flatItems.findIndex((item) => selectedKey === undefined || paletteSelectionKey(item) === selectedKey)
   const selectedItem = flatItems[selectedIndex]
   const resolvedKey = selectedItem ? paletteSelectionKey(selectedItem) : undefined
+  const selectedUnavailableReason = unavailableReason(selectedItem)
 
   // Pin the default once it arrives. A removed row stays cleared even if it later returns.
   useLayoutEffect(() => {
@@ -519,20 +527,15 @@ export function CommandPalette({
               <div className={`pal-sec${section.subgroup ? ' pal-subsec' : ''}`}>{section.label}</div>
               {section.items.map((item) => {
                 const isSelected = item === selectedItem
+                const reason = unavailableReason(item)
                 return (
                   <button
                     key={item.key}
                     className={`pal-row${item.kind === 'group' ? ' pal-group-row' : ''}${item.kind === 'ask' ? ' pal-ask' : ''}${item.kind === 'skill' ? ' pal-skill-row' : ''}${item.kind === 'manage-skills' ? ' pal-manage-skills' : ''}`}
                     aria-selected={isSelected}
                     aria-pressed={item.kind === 'command' && item.command.checked !== undefined ? item.command.checked : undefined}
-                    disabled={(item.kind === 'skill' && item.disabled) || (item.kind === 'command' && item.command.disabled)}
-                    title={
-                      item.kind === 'skill' && item.disabled
-                        ? 'Needs an open document'
-                        : item.kind === 'command' && item.command.disabled
-                          ? item.command.disabledReason
-                          : undefined
-                    }
+                    disabled={reason !== null}
+                    title={reason || undefined}
                     aria-label={item.kind === 'group' ? `${item.group}, ${commandCountText(item.count)}` : undefined}
                     onMouseMove={() => setSelectedKey(paletteSelectionKey(item))}
                     onClick={() => activate(item)}
@@ -636,7 +639,9 @@ export function CommandPalette({
           </div>
         )}
         {mode === 'commands' && (
-          <div className="palette-footer" data-testid="palette-footer">{paletteFooterHint(view, query)}</div>
+          <div className={`palette-footer${selectedUnavailableReason !== null ? ' unavailable' : ''}`} data-testid="palette-footer" role="status">
+            {paletteFooterHint(view, query, selectedUnavailableReason)}
+          </div>
         )}
       </div>
     </div>
