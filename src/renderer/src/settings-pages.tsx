@@ -4,7 +4,7 @@ import { stopSentences } from '../../shared/git-sync-view'
 // is not a single setting: the ChatGPT sign-in, the model and voice lists, the Counted Collections, the
 // command-line tool and Get started. Every call goes through window.writeflexSettings, which main answers
 // only for this window; a preference is written through the shared bridge (window.bridleSettings).
-import { useCallback, useEffect, useMemo, useState, type JSX } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { CustomPage } from '@app-patterns/settings-react'
 import type { SettingsView } from '@app-patterns/settings-electron'
 import { useIpcAuthFlow } from '@bridle/electron/renderer'
@@ -198,25 +198,84 @@ function GetStartedPage(): JSX.Element {
   )
 }
 
-function GitSyncPreferences({ view }: { view: SettingsView }): JSX.Element {
-  const entries = syncVaultPreferences(view.state.settings[SYNC_VAULTS_KEY])
-  const [problem,setProblem]=useState<string|null>(null)
-  const [tools,setTools]=useState<boolean|null>(null)
-  const askTools=(action:'status'|'install'|'check')=>void window.writeflexSettings.gitTools(action).then(r=>setTools(r.present),()=>setTools(null))
-  useEffect(()=>askTools('status'),[])
-  const change=(id:string,value:{enabled?:boolean;wait?:number})=>void window.writeflexSettings.gitSync(id,value).then(()=>setProblem(null),e=>setProblem(String(e.message??e)))
-  return <div className="wf-page">{tools===false&&<div className="wf-page-row" role="status"><span className="grow">{stopSentences['tools-missing']}</span><button type="button" onClick={()=>askTools('install')}>Install Command Line Tools</button><button type="button" onClick={()=>askTools('check')}>Check again</button></div>}<p className="wf-page-note">{experimentalGitSyncOn(view.state.settings[EXPERIMENTAL_GIT_SYNC_KEY]) ? 'Git sync is per vault on this Mac. Turn it on in that vault’s Sync tab.' : 'Git sync is experimental. While “Vault sync with Git (experimental)” in Advanced is off, nothing is sent or received; switching it on or off takes effect the next time WriteFlex starts.'}</p>{Object.entries(entries).map(([id,entry]) => <div className="wf-page-row" key={id}><span className="grow">{entry.path ?? `Vault ${id.slice(0,8)}`}{tools===false&&entry.enabled?' (paused)':''}</span><label><input type="checkbox" aria-label={`Sync for ${id}`} checked={entry.enabled} onChange={e => change(id,{enabled:e.target.checked})} />Sync</label><select aria-label={`Send wait for ${id}`} value={entry.wait} onChange={e => change(id,{wait:Number(e.target.value)})}>{[1,3,10].map(n => <option key={n} value={n}>{n} {n===1?'minute':'minutes'}</option>)}</select></div>)}<Notice text={problem}/></div>
+function GitSyncPreferences({ view, showSection }: { view: SettingsView; showSection(section: string): void }): JSX.Element {
+  const entries = Object.entries(syncVaultPreferences(view.state.settings[SYNC_VAULTS_KEY]))
+  const enabled = experimentalGitSyncOn(view.state.settings[EXPERIMENTAL_GIT_SYNC_KEY])
+  const [running, setRunning] = useState<boolean | null>(null)
+  const [problem, setProblem] = useState<string | null>(null)
+  const [tools, setTools] = useState<boolean | null>(null)
+  const toolsRequest = useRef(0)
+  const askTools = useCallback((action: 'status' | 'install' | 'check'): void => {
+    const request = ++toolsRequest.current
+    void window.writeflexSettings.gitTools(action).then(
+      ({ present }) => { if (request === toolsRequest.current) setTools(present) },
+      () => { if (request === toolsRequest.current) setTools(null) },
+    )
+  }, [])
+  useEffect(() => {
+    let active = true
+    void window.writeflexSettings.context().then(
+      ({ gitSyncRunning }) => { if (active) setRunning(gitSyncRunning) },
+      () => { if (active) setProblem('Git sync’s launch state could not be read.') },
+    )
+    askTools('status')
+    return () => { active = false; ++toolsRequest.current }
+  }, [askTools])
+  const change = (id: string, value: { enabled?: boolean; wait?: number }): void => {
+    void window.writeflexSettings.gitSync(id, value).then(() => setProblem(null), e => setProblem(String(e.message ?? e)))
+  }
+  const note = running === null ? null
+    : enabled && running ? "Git sync is set per vault on this Mac. Turn it on in a vault's Sync tab; the vaults you have turned it on for are listed here."
+    : enabled ? "Vault sync with Git is switched on and starts the next time WriteFlex opens. Quit and reopen WriteFlex, then turn sync on in a vault's Sync tab."
+    : running ? 'Vault sync with Git is switched off and stops the next time WriteFlex opens. Until then the vaults below keep syncing.'
+    : 'Git sync is experimental. While “Vault sync with Git (experimental)” in Advanced is off, nothing is sent or received; switching it on or off takes effect the next time WriteFlex starts.'
+  return (
+    <div className="wf-page">
+      {note && <p className="wf-page-note">{note}</p>}
+      <p className="wf-related-settings">Git sync sends a vault to the repository it already belongs to and brings in changes from your other Macs. It is separate from <button type="button" className="git-link" onClick={() => showSection('backup')}>Backup</button>. A backup program outside WriteFlex is connected in <button type="button" className="git-link" onClick={() => showSection('advanced')}>Advanced</button>.</p>
+      {tools === false && <div className="wf-page-row" role="status">
+        <span className="grow">{stopSentences['tools-missing']}</span>
+        <button type="button" onClick={() => askTools('install')}>Install Command Line Tools</button>
+        <button type="button" onClick={() => askTools('check')}>Check again</button>
+      </div>}
+      {running && entries.length === 0 && <p className="wf-page-note">No vault on this Mac has sync turned on.</p>}
+      {entries.map(([id, entry]) => {
+        const path = typeof entry.path === 'string' ? entry.path : undefined
+        const name = path?.split('/').filter(Boolean).at(-1) ?? `Vault ${id.slice(0, 8)}`
+        return <div className="wf-page-row wf-sync-vault" key={id}>
+          <div className="grow">
+            <strong>{name}</strong>{tools === false && entry.enabled && ' (paused)'}
+            {path && <div className="wf-sync-vault-path" title={path}>{path}</div>}
+          </div>
+          <label className="wf-sync-vault-control">
+            Sync this vault
+            <button type="button" role="switch" aria-label={`Sync ${name}`} aria-checked={entry.enabled}
+              className={entry.enabled ? 'bsw-tg bsw-on' : 'bsw-tg'} onClick={() => change(id, { enabled: !entry.enabled })}>
+              <i aria-hidden="true" />
+            </button>
+          </label>
+          <label className="wf-sync-vault-control">
+            Send after
+            <select aria-label={`Send after, ${name}`} value={entry.wait} onChange={e => change(id, { wait: Number(e.target.value) })}>
+              {[1, 3, 10].map(n => <option key={n} value={n}>{n} {n === 1 ? 'minute' : 'minutes'}</option>)}
+            </select>
+          </label>
+        </div>
+      })}
+      <Notice text={problem} />
+    </div>
+  )
 }
 
 /** The custom pages, in sidebar order. Ids match settings-host.ts CUSTOM_PAGES. */
-export function useCustomPages(view: SettingsView | null, openAccounts: () => void): CustomPage[] {
+export function useCustomPages(view: SettingsView | null, showSection: (section: string) => void): CustomPage[] {
   return useMemo(() => (view ? [
-    { id: 'git-sync', label: 'Git sync', icon: 'refresh-cw', render: () => <GitSyncPreferences view={view} /> },
+    { id: 'git-sync', label: 'Git sync', icon: 'refresh-cw', render: () => <GitSyncPreferences view={view} showSection={showSection} /> },
     { id: 'sign-in', label: 'Sign in', icon: 'log-in', placement: 'all' as const, render: () => <SignIn /> },
-    { id: 'model', label: 'Model', icon: 'bot', render: () => <ModelPage view={view} openAccounts={openAccounts} /> },
+    { id: 'model', label: 'Model', icon: 'bot', render: () => <ModelPage view={view} openAccounts={() => showSection('accounts')} /> },
     { id: 'voice', label: 'Voice', icon: 'audio-lines', render: () => <VoicePage view={view} /> },
     { id: 'counted', label: 'Counted Collections', icon: 'book-open-check', render: () => <CountedPage /> },
     { id: 'command-line', label: 'Command-line tool', icon: 'terminal', render: () => <CommandLinePage /> },
     { id: 'get-started', label: 'Get started', icon: 'sparkles', render: () => <GetStartedPage /> },
-  ] : []), [view, openAccounts])
+  ] : []), [view, showSection])
 }

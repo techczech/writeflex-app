@@ -17,7 +17,7 @@ function SharingPage(): JSX.Element {
     : <SharingSettingsPanel onFlash={setNotice} onOpenSetup={() => setSetup(true)} />}</div>
 }
 
-function CurrentPage({ kind, view, resetAll }: { kind: string; view: SettingsView; resetAll(): void }): JSX.Element {
+function CurrentPage({ kind, view, showSection }: { kind: string; view: SettingsView; showSection(section: string, sheet?: SheetState): void }): JSX.Element {
   const [notice, setNotice] = useState('')
   const [context, setContext] = useState<{ root: string | null }>({ root: null })
   useEffect(() => {
@@ -35,19 +35,23 @@ function CurrentPage({ kind, view, resetAll }: { kind: string; view: SettingsVie
   }
   return <div className="wf-current-page">
     {notice && <p role="status">{notice}</p>}
-    {kind === 'updates' && <><AboutPanel onFlash={setNotice} onSet={set} /><button type="button" onClick={resetAll}>Reset all settings…</button></>}
-    {kind === 'backup' && <><p className="sub">Vault: {context.root ?? 'Open a vault, then reopen Settings to change its backup.'}</p><BackupSettingsPanel onFlash={setNotice} /></>}
+    {kind === 'updates' && <><AboutPanel onFlash={setNotice} onSet={set} /><button type="button" onClick={() => showSection('updates', { kind: 'reset-all' })}>Reset all settings…</button></>}
+    {kind === 'backup' && <>
+      <p className="wf-related-settings">Backup keeps copies of a vault in a GitHub repository of its own. A vault that is already a Git repository can use <button type="button" className="git-link" onClick={() => showSection('git-sync')}>Git sync</button> instead; use one or the other for a vault, not both.</p>
+      <p className="sub">Vault: {context.root ?? 'Open a vault, then reopen Settings to change its backup.'}</p>
+      <BackupSettingsPanel onFlash={setNotice} />
+    </>}
     {kind === 'scratchpad' && <ScratchpadSettingsPanel values={view.state.settings} onSet={set} onFlash={setNotice} workspaceRoot="settings" />}
     {kind === 'command-line' && <AgentSkillSettings onFlash={setNotice} />}
   </div>
 }
 
-export function currentPages(view: SettingsView, openSheet: (section: string, sheet: SheetState) => void): CustomPage[] {
+export function currentPages(view: SettingsView, showSection: (section: string, sheet?: SheetState) => void): CustomPage[] {
   return [
-    { id: 'updates', label: 'About and updates', icon: 'info', render: () => <CurrentPage kind="updates" view={view} resetAll={() => openSheet('updates', { kind: 'reset-all' })} /> },
-    { id: 'backup', label: 'Backup', icon: 'cloud', render: () => <CurrentPage kind="backup" view={view} resetAll={() => {}} /> },
+    { id: 'updates', label: 'About and updates', icon: 'info', render: () => <CurrentPage kind="updates" view={view} showSection={showSection} /> },
+    { id: 'backup', label: 'Backup', icon: 'cloud', render: () => <CurrentPage kind="backup" view={view} showSection={showSection} /> },
     { id: 'sharing', label: 'Sharing', icon: 'share', render: () => <SharingPage /> },
-    { id: 'scratchpad', label: 'Scratchpad', icon: 'clipboard', render: () => <CurrentPage kind="scratchpad" view={view} resetAll={() => {}} /> },
-    { id: 'command-line', label: 'Agents and command-line tool', icon: 'terminal', render: () => <CurrentPage kind="command-line" view={view} resetAll={() => {}} /> },
+    { id: 'scratchpad', label: 'Scratchpad', icon: 'clipboard', render: () => <CurrentPage kind="scratchpad" view={view} showSection={showSection} /> },
+    { id: 'command-line', label: 'Agents and command-line tool', icon: 'terminal', render: () => <CurrentPage kind="command-line" view={view} showSection={showSection} /> },
   ]
 }

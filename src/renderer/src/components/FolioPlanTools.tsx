@@ -46,7 +46,7 @@ export type FolioPlanTools = {
   runCommand: (command: PlanCommandName, key: { title: string; path: string | null } | null, loosePath: string | null) => void
 }
 
-export function useFolioPlanTools({ dir, active, model, runningOrder, onStatus, onOpenPiece, onLeave, onSelectPart }: {
+export function useFolioPlanTools({ dir, active, model, runningOrder, onStatus, onOpenPiece, onLeave, onSelectPart, focusOutline }: {
   dir: string
   active: boolean
   /** Changes with every read of the room: the Plan is read again after it. */
@@ -55,6 +55,7 @@ export function useFolioPlanTools({ dir, active, model, runningOrder, onStatus, 
   onStatus: (message: string) => void
   onSelectPart: (index: number) => void
   onLeave: () => void
+  focusOutline: () => void
   onOpenPiece: (path: string) => void
 }): FolioPlanTools {
   const [plan, setPlan] = useState<Plan | null>(null)
@@ -108,7 +109,11 @@ export function useFolioPlanTools({ dir, active, model, runningOrder, onStatus, 
     setAddAllOpen(true)
   }
   const closeAddAll = (): void => { setAddAllOpen(false); requestAnimationFrame(() => { if (addAllButton.current?.isConnected) addAllButton.current.focus() }) }
-  const fixAll = (direction: TitleFixDirection): void => { if (titleActions) void run(() => titleActions.fixAll(dir, titleConflicts, direction)) }
+  const fixAll = (direction: TitleFixDirection): void => {
+    if (!titleActions) return
+    focusOutline()
+    void run(() => titleActions.fixAll(dir, titleConflicts, direction))
+  }
   const fixOne = (target: TitleFixTarget, direction: TitleFixDirection): void => { if (titleActions) void run(() => titleActions.fixPart(dir, target, direction)) }
   const chooseHeading = (path: string, mode: 'own' | 'none'): void => {
     void run(async () => {
@@ -190,18 +195,28 @@ export function useFolioPlanTools({ dir, active, model, runningOrder, onStatus, 
     void (async () => {
       const current = await reload()
       if (!current || loaded.current !== dir) return
-      const at = key ? current.parts.findIndex(part => part.title === key.title && part.path === key.path) : -1
-      if (key && at < 0) { onStatus(HANDOVER_PART_GONE); return }
-      if (command === 'title-heading-to-title' || command === 'title-title-to-heading') {
-        const part = current.parts[at]
-        const target = part ? titleFixTargetOf(part) : null
-        if (target) fixOne(target, command === 'title-heading-to-title' ? 'heading-to-title' : 'title-to-heading')
-        else onStatus(part ? titleFixUnavailable(part) : 'Select a part first.')
-      } else if (command === 'titles-heading-to-title' || command === 'titles-title-to-heading') {
+      if (command === 'titles-heading-to-title' || command === 'titles-title-to-heading') {
         const targets = [...new Map(current.parts.flatMap(part => { const target = titleFixTargetOf(part); return target ? [[target.path, target] as const] : [] })).values()]
         if (targets.length < 2) onStatus(targets.length === 1 ? 'Only one part has a title that differs from its heading. Select it and choose a fix.' : 'Every part’s title matches its heading.')
         else if (titleActions) void run(() => titleActions.fixAll(dir, targets, command === 'titles-heading-to-title' ? 'heading-to-title' : 'title-to-heading'))
-      } else if (command === 'open-part') {
+        return
+      }
+
+      const at = key ? current.parts.findIndex(part => part.title === key.title && part.path === key.path) : -1
+      if (command === 'title-heading-to-title' || command === 'title-title-to-heading') {
+        // The room may still show the title from before a fix or its Undo. The new fingerprint
+        // and title facts come from this read of the same uniquely bound file.
+        const matches = at < 0 && key?.path ? current.parts.filter(part => part.path === key.path) : []
+        const part = current.parts[at] ?? (matches.length === 1 ? matches[0] : null)
+        if (!part && key) { onStatus(HANDOVER_PART_GONE); return }
+        const target = part ? titleFixTargetOf(part) : null
+        if (target) fixOne(target, command === 'title-heading-to-title' ? 'heading-to-title' : 'title-to-heading')
+        else onStatus(part ? titleFixUnavailable(part) : 'Select a part first.')
+        return
+      }
+
+      if (key && at < 0) { onStatus(HANDOVER_PART_GONE); return }
+      if (command === 'open-part') {
         if (at >= 0) startPreview(at, current)
       } else if (command === 'add-all') {
         if (addAllCandidates(current.unlisted).length) setAddAllOpen(true)

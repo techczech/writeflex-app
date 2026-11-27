@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test'
+import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { emptyState, set, type ChangeEntry } from '@app-patterns/settings'
+import { emptyState, set, type ChangeEntry, type OpContext } from '@app-patterns/settings'
 import { MAX_FILE_BYTES, runSettingsCli, acquireLock } from '@app-patterns/settings/node'
 import { runMigration, storeOptions, STAMP_FILE } from '../../src/main/settings-migration'
 import { SharedSettingsStore } from '../../src/main/shared-settings-store'
@@ -329,14 +330,29 @@ describe('migration retry and failed writes', () => {
     writeFileSync(path, JSON.stringify(state))
   }
 
-  test('the review probe preserves a user rebind after 310 ordinary sets and repeated launches', async () => {
+  test('repeated launches preserve a user rebind after its history entry is evicted', async () => {
     const dir = fresh()
     legacy(dir, { 'edit.italic': '⌃⌥⌘9', 'edit.bold': '⌘W' })
     await runMigration(dir, version)
     const accepted = stamp(dir).keys['shortcuts.overrides']
     const store = await open(dir)
     expect((await store.rebind('edit.bold', '⌘⌃⌥7')).ok).toBe(true)
-    for (let n = 0; n < 310; n++) expect((await store.set('appearance.theme', n % 2 ? 'light' : 'dark')).ok).toBe(true)
+    // Seed 299 ordinary changes in one write so the 300-entry history still holds the rebind.
+    // The remaining real sets exercise eviction without syncing the whole file for every seed change.
+    const seededSets = 299
+    const { schema, registry: commands } = storeOptions(dir, version)
+    const ctx: OpContext = { schema, commands, who: { kind: 'you' }, now: Date.now, newId: randomUUID }
+    let seeded = store.view()
+    for (let n = 0; n < seededSets; n++) {
+      const result = set(seeded, 'appearance.theme', n % 2 ? 'light' : 'dark', ctx)
+      expect(result.ok).toBe(true)
+      if (result.ok) seeded = result.state
+    }
+    expect(seeded.changes).toHaveLength(300)
+    expect(seeded.changes.at(-1)?.commandId).toBe('edit.bold')
+    expect((await store.file.update(() => ({ write: seeded, result: undefined }))).ok).toBe(true)
+
+    for (let n = seededSets; n < 310; n++) expect((await store.set('appearance.theme', n % 2 ? 'light' : 'dark')).ok).toBe(true)
     expect(store.view().changes).toHaveLength(300)
     expect(store.view().changes.some((entry) => entry.commandId === 'edit.bold')).toBe(false)
     await store.close()
@@ -350,7 +366,7 @@ describe('migration retry and failed writes', () => {
       expect(readFileSync(join(dir, SETTINGS_V2_FILE), 'utf8')).toBe(persisted)
       expect(stamp(dir).keys['shortcuts.overrides']).toEqual(accepted)
     }
-  }, 20_000)
+  })
 
   test('all-refused legacy data, including a round-two stamp with no subset entry, never resets shortcuts', async () => {
     const dir = fresh()

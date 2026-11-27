@@ -47,6 +47,7 @@ import { PIN_DOCUMENT_EXTENSION, type VaultWriteResult } from '../../../shared/v
 import type { ActionRow } from '../commands/actions-here'
 import { BinPopover, MoveFolderPicker } from './file-menu'
 import { ActionsHere } from './ActionsHere'
+import { WorkspaceReadProblem } from './WorkspaceReadProblem'
 import { placeOfRow } from '../commands/place'
 
 type NameRefusal = { problem: string }
@@ -71,6 +72,8 @@ export type SidebarFileOps = {
 
 export type SidebarProps = {
   listingReady?: boolean
+  listingFailed?: boolean
+  retryListing?: () => void
   vaultSidebar?: VaultSidebarView
   files: MarkdownFile[]
   /** Checklist notes' "done / total" (checkbox-lists frame 8); a file absent from it has no chip. */
@@ -239,6 +242,8 @@ function SidebarView({
   syncMarks,
   folders,
   listingReady = true,
+  listingFailed = false,
+  retryListing,
   vaultSidebar,
   pieceCount,
   folderPiecePaths = new Set(),
@@ -1578,6 +1583,12 @@ function SidebarView({
         {filterQuery && <div className="file-filter-count">{hasFilter ? `${shownTree.length} results` : `${filesInFocus} files`}{hiddenNow > 0 ? ` · ${hiddenNow} hidden by Writing only are searched too` : ''}</div>}
       </div>}
 
+      {listingFailed && retryListing && (
+        <WorkspaceReadProblem
+          phase={listingReady ? 'refresh' : 'listing'}
+          onRetry={retryListing}
+        />
+      )}
       <div className="tree-region" ref={treeRef} onKeyDown={onTreeKeyDown}>
       {showPinned && <div className={`tree-pinned${isVault ? ' lv-vault' : ''}`}>{pinnedSection()}</div>}
       {!hasFilter && vaultSidebar?.status === 'loading' && <div className="filter-empty">Loading Folios…</div>}
@@ -1602,7 +1613,7 @@ function SidebarView({
             {shownTree.length > 0 || renaming?.isNew ? (
               hasFilter ? shownTree.map((node) => node.kind === 'folder' ? (node.work ? workFolderRow(node, 0) : folderRow(node, 0)) : fileRow(node, 0)) : renderNodes(shownTree, 0, '')
             ) : !listingReady ? (
-              <div className="filter-empty" role="status">Loading files…</div>
+              listingFailed ? null : <div className="filter-empty" role="status">Loading files…</div>
             ) : hasFilter || !focusPath ? (
               <div className="filter-empty">
                 No names match <span>{filterQuery.trim()}</span>.

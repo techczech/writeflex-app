@@ -95,5 +95,5 @@ test('the preview clips a mark past its 200-char cap and shows the empty state w
     snippet: { text: 'river', marks: [{ column: 1, length: 5 }] },
   }
   expect(renderToStaticMarkup(<SearchExcerpt hit={hit} />).match(/<mark>/g)).toHaveLength(1)
-  expect(renderToStaticMarkup(<SearchExcerpt hit={undefined} />)).toContain('no hit selected')
+  expect(renderToStaticMarkup(<SearchExcerpt hit={undefined} />)).toContain('Choose a result to preview it here.')
 })

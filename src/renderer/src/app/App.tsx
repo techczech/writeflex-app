@@ -37,7 +37,7 @@ import { Transaction, type StateCommand } from '@codemirror/state'
 import type { Command as EditorViewCommand } from '@codemirror/view'
 import { isolateHistory, redo, undo, undoDepth } from '@codemirror/commands'
 import type { EditorReadResult } from '../../../shared/editor-read'
-import type { AgentObjectNote, AttributedChange, Change, CollectionTarget, ExplicitSessionState, FileReadResult, ProseEditInput, RenameFileResult, Scrap, SearchMatch, SettingValue, ShelfRow, SkillMeta, Suggestion, ThreadRunComplete, Version, VersionCompareEndpointId } from '../../../preload'
+import type { AgentObjectNote, AttributedChange, Change, CollectionTarget, ExplicitSessionState, ProseEditInput, RenameFileResult, Scrap, SearchMatch, SettingValue, ShelfRow, SkillMeta, Suggestion, ThreadRunComplete, Version, VersionCompareEndpointId } from '../../../preload'
 import type { ClipboardKind, FileRenamePlan } from '../../../preload'
 import type { ReadingRoomWriteRefusal, ReadingRoomWriteResult } from '../../../preload'
 import { createOutboxSyncRunner, outboxResultAnnouncement } from '../reading-room-sync'
@@ -131,6 +131,7 @@ import { useDiskNoticeStore, useDiskNotices } from './disk-notices'
 import { StartScreen } from '../components/StartScreen'
 import { AgentSkillStep } from '../components/AgentSkillOffer'
 import { WorkspaceEmpty } from '../components/WorkspaceEmpty'
+import { WorkspaceReadProblem } from '../components/WorkspaceReadProblem'
 import { EditorPane, type EditorHandle } from '../components/EditorPane'
 import { readPreferredView, type MarginControl } from '../components/ReviewMargin'
 import { readTextRoom, setPreferredView, usePreferredView, useTextRoom } from './margin-view-store'
@@ -157,7 +158,7 @@ import { runFileVersionsCommand, type FileVersionsAction } from '../plan/file-ve
 import { OPEN_COMPARE_EVENT, OPEN_EXPORT_EVENT, OPEN_IMPORT_EVENT, OPEN_MARK_SENT_EVENT, OPEN_READ_ONLY_EVENT, requestImportOnNextVersionsTab } from '../components/FolioRoomVersions'
 import { OPEN_VERSION_NUDGE_EVENT, OPEN_VERSION_REQUEST_EVENT, anyVersionRead, setWaitingOpenVersion, useAnyReadingVersion, useAnyVersionRead, type OpenVersionRequest } from '../plan/folio-reading'
 import { registerVersionSendHost, sendVersionSelectionFromCommand } from '../scratchpad/version-send'
-import { ROOM_VIEWS } from '../../../shared/folio-room'
+import { ROOM_VIEWS, type RoomView } from '../../../shared/folio-room'
 import { folderIsFolio } from './folio-routing'
 import { createFolioOpenNavigation, type FolioOpenDecision } from './folio-open-navigation'
 import { dispatchSidebar } from '../plan/folio-sidebar'
@@ -241,14 +242,15 @@ import { basisFromBaseline } from '../../../shared/save-basis'
 import type { EditorViewMode } from '../editor/view-mode'
 import type { SuggestionResolutionEffect } from '../editor/suggestion-resolution-history'
 import { materialiseSeed, type WikilinkRange } from '../editor/wikilinks'
-import { useReviewActions } from './review-actions'
+import { useReviewActions, type AppliedFileScope } from './review-actions'
 import { keepTitleInMetadataOnlySteps, CLOSE_REFUSED_MESSAGE } from './keep-title-in-metadata'
 import { buildMarginModel, isUnfiltered, makeAnchorResolver } from './margin-model'
 import { myEditsSessionIds, reviewModeOf, toggleMode, trackWaitingAgain, withMode, type ReviewMode } from './margin-mode'
 import { kindSegmentOf, shownIds, withKindSegment, withoutKinds, type KindSegment } from './margin-filter'
 import { reviewLine, reviewLineCompact } from '../components/status-bar-model'
 import { countMenu, viewCountsOf, whoChipLabel, withoutWho, type CountMenuAction } from './margin-count-menu'
-import { batchProgress, bulkTargets, EMPTY_BATCH, nextBatch, runTargets, sendBackScope, visibleSelection, waitingEditIds, type ReviewBatch, type SendBackScope } from './margin-bulk'
+import { batchProgress, bulkTargets, runTargets, sendBackScope, visibleSelection, waitingEditIds, type SendBackScope } from './margin-bulk'
+import { useReviewBatch } from './use-review-batch'
 import { createDeclineConfirmation, type DeclineRequest } from './decline-confirmation'
 import { EMPTY_HEAD_FILTER, type HeadFilterState } from './margin-head-state'
 import { useDismissedNotApplied, useOutsideDock } from './outside-dock'
@@ -912,7 +914,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // The window's ONE workspace instance — useTabs/useFavourites take root/files as arguments so a
   // post-mount bind (start screen → Open dialog / Open Recent → refresh()) reaches every consumer.
   // A hook privately instantiating useWorkspace would only ever see the mount-time pull (fix wave 1).
-  const { root, files, folders, assetBaseUrl, listingReady, canRestoreTabsEarly, refresh, applyCollectionChange } = useWorkspace()
+  const { root, files, folders, assetBaseUrl, listingReady, listingFailed, canRestoreTabsEarly, refresh, refreshInBackground, retryListing, applyCollectionChange } = useWorkspace()
   // The page has loaded its workspace view: main shows a window the vault switcher opened hidden only
   // once this names the root it bound (vaults 06 review round 2). Again on every change of root.
   useEffect(() => {
@@ -1341,9 +1343,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // they refresh the tree AND bump savedTick — the outline's folder scope re-scans exactly as it
   // does after a user save (the T10 ledger note for agent tasks).
   const handleAgentWorkspaceChange = useCallback(() => {
-    void refresh()
+    refreshInBackground()
     setSavedTick((n) => n + 1)
-  }, [refresh])
+  }, [refreshInBackground])
   // A note the agent leaves about a piece must be seen, not hunted for : the
   // completed notes.create opens the Agent notes tab; the pane re-lists on the main-side push.
   const showAgentNotesTab = useCallback(() => openRightTab('agent'), [openRightTab])
@@ -1661,12 +1663,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // "checkpoint on close" setting, while an explicit ⌘S (auto:false) always fires.
   const uncheckpointed = useRef(new Set<string>())
   const checkpointPath = useCallback(
-    async (path: string, auto: boolean): Promise<void> => {
+    async (path: string, auto: boolean): Promise<boolean | null> => {
       // Flush the latest text to disk before snapshotting it. If the write FAILS, do not snapshot stale
       // on-disk content and do not clear the pending flag (Codex P2) — leave it for a later checkpoint.
-      if (!(await savePath(path))) return
-      await window.writeflex.checkpoint(path, { auto })
+      if (!(await savePath(path))) return null
+      const recorded = await window.writeflex.checkpoint(path, { auto })
       uncheckpointed.current.delete(path)
+      return recorded
     },
     [savePath],
   )
@@ -1885,9 +1888,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if (guideContext.shown) {
       // Main opens the example's window at 00 Start here.md and asks that window to open its Guide tab.
       if (guideContext.here) openGuideTab()
-      void window.writeflex.openExample('guide').then(refresh, () => {})
+      void window.writeflex.openExample('guide').then(refreshInBackground, () => {})
     } else openGuideTab()
-  }, [guideContext.shown, guideContext.here, refresh, openGuideTab])
+  }, [guideContext.shown, guideContext.here, refreshInBackground, openGuideTab])
 
   /** While the example is not shown, what would open it says where it went instead. */
   const sayExampleGone = useCallback(() => flash('The Example collection is not on the start screen. Settings → Get started brings it back.'), [flash])
@@ -1908,7 +1911,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       if (event.type !== 'drop') return
       const result = classifyExternalDrop(droppedPaths(transfer))
       if (!result.openable) { flash(result.reason); return }
-      void window.writeflex.openDialog(result.path.path).then(() => refresh())
+      void window.writeflex.openDialog(result.path.path).then(refreshInBackground)
     }
     window.addEventListener('dragover', preventExternalFileNavigation)
     window.addEventListener('drop', preventExternalFileNavigation)
@@ -1916,7 +1919,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       window.removeEventListener('dragover', preventExternalFileNavigation)
       window.removeEventListener('drop', preventExternalFileNavigation)
     }
-  }, [flash, refresh])
+  }, [flash, refreshInBackground])
 
   // Copy (Round B T5, PRD §2). The scope law: the selection if there is one, otherwise the whole
   // document — no dialog, no second command, the selection IS the scope as everywhere else in the
@@ -1971,14 +1974,21 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     })()
   }, [activeCollectionDir, boardActive, boardDir, collectionDir, flash, openTab, flushPaths])
 
+  const planOpenRequest = useRef<object | null>(null)
   /** Open the Plan. `folioDir` is the Folio's own folder (the line and title-bar button pass it: a
    *  piece in a sub-folder can belong to a different Collection than the Folio it names). */
-  const openPlanIn = useCallback((folioDir?: string) => {
+  const openPlanIn = useCallback((folioDir?: string, view: RoomView = 'outline') => {
     pendingEditorJump.current = null
     retireOpenFolio()
+    const workspace = documentWorkspaceRef.current
+    const request = {}
+    planOpenRequest.current = request
+    const isCurrent = (): boolean => planOpenRequest.current === request && documentWorkspaceRef.current === workspace
     void (async () => {
       const current = activeRef.current
-      if (current && (await flushPaths([current])).status !== 'saved') {
+      const saved = !current || (await flushPaths([current])).status === 'saved'
+      if (!isCurrent() || activeRef.current !== current) return
+      if (!saved) {
         flash('Could not save the current Piece — the Folio outline stayed closed.')
         return
       }
@@ -1989,6 +1999,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         : boardActive ? await planDirFor({ folder: boardDir }, planApi)
           : current ? await planDirFor({ file: current }, planApi)
             : await planDirFor({ folder: activeCollectionDir }, planApi))
+      if (!isCurrent() || activeRef.current !== current) return
       if (boardActive) {
         const editable = lastEditablePath && tabsRef.current.includes(lastEditablePath)
           ? lastEditablePath
@@ -1996,8 +2007,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         if (editable) activateTab(editable)
         else close(BOARD_TAB_ID)
       }
-      await window.writeflex.folioRoom.setState(targetDir, { view: 'outline', split: false, ...(current ? { selected: { title: '', path: current } } : {}) }).catch(error => { console.warn('Could not remember the Folio view; opening Manage Folio anyway.', error) })
-      if (collectionDir === targetDir) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'outline' }))
+      await window.writeflex.folioRoom.setState(targetDir, { view, split: false, ...(current ? { selected: { title: '', path: current } } : {}) }).catch(error => { console.warn('Could not remember the Folio view; opening Manage Folio anyway.', error) })
+      if (!isCurrent() || (!boardActive && activeRef.current !== current)) return
+      if (collectionDir === targetDir) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: view }))
       setSelectedFolderPiece(null)
       setOpenPlanRequested(true)
       setCollectionDir(targetDir)
@@ -2336,7 +2348,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // ── Change Ledger dock (Task 4) ──────────────────────────────────────────────────────────────
   // The dock lists the ACTIVE document's changes; reload when the document changes or main pushes
   // `changes:changed` (agent ingest, accept/reject). A doc switch clears the linked selection.
-  const reloadChanges = useCallback(async (): Promise<Change[]> => {
+  const reloadChanges = useCallback(async (isCurrent?: () => boolean): Promise<Change[]> => {
+    if (isCurrent?.() === false) return []
     const path = active // capture: the loaded list is tagged with the file it was fetched for
     if (!path) {
       setChanges([])
@@ -2345,12 +2358,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     }
     try {
       const list = await window.writeflex.listChanges({ path })
-      if (activeRef.current !== path) return [] // a newer switch won mid-flight: drop this stale response
+      if (activeRef.current !== path || isCurrent?.() === false) return [] // a newer switch won mid-flight: drop this stale response
       setChanges(list)
       setChangesPath(path)
       return list
     } catch {
-      if (activeRef.current !== path) return []
+      if (activeRef.current !== path || isCurrent?.() === false) return []
       setChanges([])
       setChangesPath(null)
       return []
@@ -2845,8 +2858,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if (kept.length !== refusedAccepts.size) setRefusedAccepts(new Map(kept))
   }, [refusedAccepts, dockChanges, snapshot?.docText])
   const refusedReasons = useMemo(() => new Map([...refusedAccepts].map(([id, entry]) => [id, entry.reason])), [refusedAccepts])
-  // The edits this review pass is working through, for "M of N settled".
-  const [reviewBatch, setReviewBatch] = useState<ReviewBatch>(EMPTY_BATCH)
   const marginFilter = marginFilterState.filter
   // Ticket 08: Settled today and My edits are modes held in the margin's filter state. Items reopened while Settled today
   // is on stay in it as Open cards ("waiting again"); leaving the mode or opening another piece forgets them.
@@ -2893,7 +2904,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if ([...sentBackIds].some((id) => settled.has(id))) setSentBackIds(new Set([...sentBackIds].filter((id) => !settled.has(id))))
   }, [dockChanges, sentBackIds])
   const batchWaiting = useMemo(() => (reviewModels ? waitingEditIds(reviewModels.unfiltered) : []), [reviewModels])
-  useEffect(() => { setReviewBatch((batch) => nextBatch(batch, active, batchWaiting)) }, [active, batchWaiting])
+  const reviewBatch = useReviewBatch(active, batchWaiting)
   const statusReview = useMemo(() => {
     if (!reviewModels) return null
     if (reviewMode === 'settled') {
@@ -3230,9 +3241,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     void window.writeflex.readFolioDir(dir).then(parent => {
       if (parent !== null) throw new Error('This folder is already inside a Folio.')
       return window.writeflex.createNestedFolio(dir)
-    }).then((child) => { void refresh(); openPlanIn(child) })
+    }).then((child) => { refreshInBackground(); openPlanIn(child) })
       .catch((error) => flash(humanReadableError(error, 'Could not create a new Folio.')))
-  }, [refresh, openPlanIn, flash])
+  }, [refreshInBackground, openPlanIn, flash])
   const [collectionFolioParent, setCollectionFolioParent] = useState<{ dir: string; root: typeof root; folio: string | null } | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -5632,7 +5643,15 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         disabledReason: 'Focus a folder first',
         run: () => { if (folderFocus) helpWithReport(folderFocus.path) },
       },
-      ...ROOM_VIEWS.map((view) => ({ id: `folio.room.${view}`,    disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: view })) })),
+      ...ROOM_VIEWS.map((view) => ({
+        id: `folio.room.${view}`,
+        disabled: openFolioDir === null,
+        disabledReason: 'Open a Folio first',
+        run: () => {
+          if (collectionDir !== null) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: view }))
+          else if (openFolioDir !== null) openPlanIn(openFolioDir, view)
+        },
+      })),
       { id: 'folio.room.inspector',    disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => { openLeftTab('outline'); dispatchSidebar('toggle-inspector') } },
       { id: 'folio.room.split',    disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: () => window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'split' })) },
       { id: 'plan.addPart',    disabled: collectionDir === null, disabledReason: 'Open a Collection first', run: () => runFolioPlanCommand('add') },
@@ -6006,6 +6025,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     turnBackFolio,
     openPlan,
     openFolio,
+    openPlanIn,
     openFolioDir,
     openFolioComments,
     folioPlace,
@@ -6551,8 +6571,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // snapshot it as a returnable point. Saving itself is automatic, so this is the deliberate "mark this
   // point" gesture — labelled Checkpoint in the File menu and cheat-sheet.
   const save = useCallback(async () => {
-    if (active && loadedPath.current === active) await checkpointPath(active, false)
-  }, [active, checkpointPath])
+    if (!active || loadedPath.current !== active) return
+    const recorded = await checkpointPath(active, false)
+    if (recorded !== null) flash(recorded ? 'Saved to disk · checkpoint kept in history' : 'Saved')
+  }, [active, checkpointPath, flash])
 
   // Flush any pending auto-save when the writer switches tabs (the buffer just left is written before it
   // stops being active — savePath then reads it from EditorPane's cache) or blurs the window.
@@ -7125,7 +7147,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         owner,
         notice: () => externalDiskNoticesRef.current.get(path),
         isCurrentTab: () => workspace !== null && documentWorkspaceRef.current === workspace && tabsRef.current.includes(path),
-        checkpoint: (p) => window.writeflex.checkpoint(p, { auto: true }),
+        checkpoint: async (p) => { await window.writeflex.checkpoint(p, { auto: true }) },
         closeForgotten,
         saveRefusalReported: () => guardRefusalPath.current === path,
         flash,
@@ -7738,22 +7760,27 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     [open],
   )
 
-  /**
-   * Reconcile one file the apply pipeline just rewrote on disk with whatever buffer state this
-   * window holds for it: a clean buffer takes the disk version outright; a dirty buffer over changed
-   * disk gets the changed-on-disk banner, like any other outside change (Reload or Keep mine), and keeps
-   * its saved baseline, so no save of the buffer replaces the agent's version until the writer chooses
-   * Keep mine against it. Other files' unsaved buffers are never touched.
-   */
-  const reconcileAppliedFile = useCallback(
-    async (file: FileReadResult, options: { now?: boolean } = {}): Promise<void> => {
-      // The owner's read of the disk, with the file main returned as what is there (document-owner.ts,
-      // applyOutside): queued behind any route holding the path, or `now` from inside one.
-      const path = file.file.path
-      raiseForOutside(path, await owner.applyOutside(path, async () => ({ kind: 'read', content: file.content }), options))
-    },
-    [owner, raiseForOutside],
-  )
+  // A write can answer after the workspace or a document at the same path has been replaced.
+  // Capture identity before dispatching to main. A Folio or a Review reply can supply its paths later.
+  const captureAppliedFileScope = useCallback((path?: string): AppliedFileScope => {
+    const workspace = documentWorkspaceRef.current
+    const epochs = new Map((path === undefined ? owner.pathsUnder('') : [path])
+      .map((p) => [p, owner.readToken(p)?.docEpoch] as const))
+    const isCurrent = (): boolean => workspace !== null && documentWorkspaceRef.current === workspace
+    const owns = (p: string): boolean => {
+      const epoch = epochs.get(p)
+      return isCurrent() && epoch !== undefined && owner.readToken(p)?.docEpoch === epoch
+    }
+    const reconcile: AppliedFileScope['reconcile'] = async (p, options) => {
+      if (!owns(p)) return
+      const outcome = await owner.applyOutside(p, () => readEditorDocument(p), {
+        ...options,
+        isCurrent,
+      })
+      if (owns(p)) raiseForOutside(p, outcome)
+    }
+    return { isCurrent, owns, reconcile }
+  }, [owner, readEditorDocument, raiseForOutside])
 
   // The Board's status move: the shared flushed route (D-STA-1), never the IPC on its own.
   const setBoardPieceStatus = useCallback(
@@ -7903,7 +7930,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         if (!resolvedChange) return false
         // Capture WHERE the edit will land before applying: the staged anchor's start is where the
         // replacement text begins once oldText→newText lands (everything before it is untouched), so
-        // the applied range is recoverable even though reconcileAppliedFile rebuilds the buffer below.
+        // the applied range is recoverable even if the owner rebuilds the buffer below.
         const view = editorRef.current?.view()
         const proseInput =
           suggestion.capabilityName === 'prose.edit' ? (suggestion.input as ProseEditInput) : null
@@ -8033,7 +8060,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     refreshInlineChangesAfterReconcile,
     flash,
     handleAgentWorkspaceChange,
-    reconcileAppliedFile,
+    captureAppliedFileScope,
     acceptThroughOwner,
     inDocumentQueue,
     focusComposer,
@@ -8244,17 +8271,25 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         setVersionDialogError('Name the version before saving.')
         return
       }
+      const scope = captureAppliedFileScope(active)
+      if (!scope.isCurrent()) return
       cancelPendingFlush() // save-version flushes explicitly; a racing debounced flush must not double-record
       await flushWriterChanges(active)
+      if (!scope.isCurrent()) return
       // Written until the owner counts it saved (parcel 2a pulls this one route forward from 2b): the
       // applied file is reconciled below by the owner's rule, which replaces only a saved buffer.
-      if ((await owner.withFlushed([active], () => undefined)).status !== 'acted') {
+      const flushed = await owner.withFlushed([active], () => undefined)
+      if (!scope.isCurrent()) return
+      if (flushed.status !== 'acted') {
         flash('Could not save the latest text, so no version snapshot was made.')
         return
       }
       const latest = await window.writeflex.listChanges({ path: active })
-      setChanges(latest)
-      setChangesPath(active)
+      if (!scope.isCurrent()) return
+      if (scope.owns(active) && activeRef.current === active) {
+        setChanges(latest)
+        setChangesPath(active)
+      }
       const result = await window.writeflex.saveChangeVersion({
         path: active,
         name: trimmed,
@@ -8262,22 +8297,29 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           .filter((change) => !change.snapshotId && change.status !== 'rejected')
           .map((change) => change.id),
       })
-      editorRef.current?.settleWriterChanges(active)
-      clearFileWriterState(active)
+      if (!scope.isCurrent()) return
+      if (scope.owns(active)) {
+        editorRef.current?.settleWriterChanges(active)
+        clearFileWriterState(active)
+      }
       // Saving a version APPLIES still-pending accepted edits on disk (main-side), so the open buffer
       // is now stale — reconcile it with the applied file or the editor keeps showing pre-apply text.
       try {
-        await reconcileAppliedFile(await window.writeflex.readFile(active))
+        await scope.reconcile(active)
       } catch {
         /* the file just saved; a read failure here only delays the refresh to the next reload */
       }
-      await reloadChanges()
+      if (!scope.isCurrent()) return
+      await reloadChanges(() => scope.owns(active))
       await reloadVersions()
-      closePalette()
-      setChangesOpen(true)
+      if (!scope.isCurrent()) return
+      if (scope.owns(active) && activeRef.current === active) {
+        closePalette()
+        setChangesOpen(true)
+      }
       flash(`Version “${result.record.name}” saved — ${result.accepted} kept, ${result.pending} pending`)
     })()
-  }, [active, owner, cancelPendingFlush, flushWriterChanges, clearFileWriterState, reconcileAppliedFile, reloadChanges, reloadVersions, closePalette, flash])
+  }, [active, owner, cancelPendingFlush, flushWriterChanges, clearFileWriterState, captureAppliedFileScope, reloadChanges, reloadVersions, closePalette, flash])
   // The sheet's go-ahead: the buffers are recorded and saved again, then main saves the Folio version, accepting the
   // writer's own waiting changes into their files first (the sheet said so). Open buffers of those files are then
   // reconciled with what was written, as the per-part save does. A refusal is a sentence in the sheet; nothing was written.
@@ -8286,41 +8328,49 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     // finds it held. Everything this invocation does afterwards is bound to ITS sheet (`sheetId`) and ITS token.
     const sheet = folioSaveRef.current
     if (sheet?.stage !== 'sheet' || sheet.busy) return
+    const scope = captureAppliedFileScope()
+    if (!scope.isCurrent()) return
     const token = folioSaveGate.current.begin('saving')
     if (token === null) return
     const { dir, sheetId } = sheet
     const ours = (): boolean => {
       const current = folioSaveRef.current
-      return current?.stage === 'sheet' && current.sheetId === sheetId
+      return scope.isCurrent() && current?.stage === 'sheet' && current.sheetId === sheetId
     }
     const show = (patch: { busy?: boolean; error?: string; changed?: string[] | null; facts?: FolioSheetFacts }): void => {
       const current = folioSaveRef.current
-      if (current?.stage === 'sheet' && current.sheetId === sheetId) setFolioSave({ ...current, ...patch })
+      if (scope.isCurrent() && current?.stage === 'sheet' && current.sheetId === sheetId) setFolioSave({ ...current, ...patch })
     }
     show({ busy: true, error: '', changed: null })
     holdOverlay(true)
     try {
       cancelPendingFlush()
       const drained = await flushWriterChangesNow()
+      if (!scope.isCurrent()) return
       const flushed = await flushPaths(documentsUnder(folderPrefix(dir)))
+      if (!scope.isCurrent()) return
       if (drained.failed.length > 0 || flushed.status !== 'saved') {
         show({ busy: false, error: 'WriteFlex could not save the latest text, so no Folio version was saved. Check that the files can be written and try again.' })
         return
       }
       const saved = await window.writeflex.folioVersionSave.save({ dir, ...input })
+      if (!scope.isCurrent()) return
       if (saveChanged(saved)) {
         // The Folio moved on while the sheet was open. Nothing was written. Show the Folio as it is, say what moved, and wait for another go-ahead.
         const before = sheet.facts
         show({ busy: false, facts: saved.facts, changed: describeSheetChange(before, saved.facts, input.includeUnlisted) })
         return
       }
-      for (const entry of saved.settled) {
-        editorRef.current?.settleWriterChanges(entry.path)
-        clearFileWriterState(entry.path)
-        try { await reconcileAppliedFile(await window.writeflex.readFile(entry.path)) } catch { /* the file was just saved; a later reload shows it */ }
+      for (const { path } of saved.settled) {
+        if (!scope.owns(path)) continue
+        editorRef.current?.settleWriterChanges(path)
+        clearFileWriterState(path)
+        try { await scope.reconcile(path) } catch { /* the file was just saved; a later reload shows it */ }
       }
-      await reloadChanges()
+      if (!scope.isCurrent()) return
+      await reloadChanges(scope.isCurrent)
       await reloadVersions()
+      if (!scope.isCurrent()) return
       // Only this invocation's own sheet is dismissed.
       if (ours()) {
         setFolioSave(null)
@@ -8333,7 +8383,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       folioSaveGate.current.end(token)
       holdOverlay(false)
     }
-  }, [holdOverlay, cancelPendingFlush, flushWriterChangesNow, flushPaths, documentsUnder, clearFileWriterState, reconcileAppliedFile, reloadChanges, reloadVersions, closePalette, flash, setFolioSave])
+  }, [holdOverlay, cancelPendingFlush, flushWriterChangesNow, flushPaths, documentsUnder, clearFileWriterState, captureAppliedFileScope, reloadChanges, reloadVersions, closePalette, flash, setFolioSave])
   // ⇧⌘S (Save Version…) is dispatched by the T6 chord table; the menu item stays the mouse path.
   // Revise hands off to the agent: open the composer for a fresh instruction on this change.
 
@@ -8349,22 +8399,22 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // (Opening while a Workspace is already open binds a new window in main and leaves this one as-is.)
   const openDialog = useCallback(async () => {
     await window.writeflex.openDialog()
-    await refresh()
-  }, [refresh])
+    refreshInBackground()
+  }, [refreshInBackground])
   const openRecent = useCallback(
     async (recentRoot: string) => {
       await window.writeflex.openRecent(recentRoot)
-      await refresh()
+      refreshInBackground()
     },
-    [refresh],
+    [refreshInBackground],
   )
   // The start screen's Guide and Example collection entries: main holds the path and binds it.
   const openExample = useCallback(
     async (target: 'guide' | 'collection') => {
       await window.writeflex.openExample(target)
-      await refresh()
+      refreshInBackground()
     },
-    [refresh],
+    [refreshInBackground],
   )
 
   // ⌘O is a native File-menu accelerator; menu.ts routes it to the focused renderer as a menu action
@@ -8377,15 +8427,16 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     [openDialog],
   )
 
-  // The first workspace:get is still in flight (root === undefined): paint a neutral frame — the
-  // traffic-light drag region + brand over an empty body — rather than the start screen. Resolution
-  // is fast, so a workspace-bound boot swaps straight to the shell without flashing the empty state.
+  // Keep the neutral frame until a workspace is known. A failed read can be retried here
+  // while the start screen still waits for a confirmed unbound answer.
   if (root === undefined) {
     return (
       <div className="app-shell">
         <UpdateNotices protectedMode={distractionFree} />
         <WindowTitlebar className="toolbar" />
-        <div className="body" />
+        <div className="body">
+          {listingFailed && <WorkspaceReadProblem phase="workspace" onRetry={retryListing} />}
+        </div>
       </div>
     )
   }
@@ -8585,6 +8636,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 }}>
                   <Sidebar
                     listingReady={listingReady}
+                    listingFailed={listingFailed}
+                    retryListing={retryListing}
                     vaultSidebar={vaultSidebar}
                     files={files}
                     syncMarks={syncStatus.presentation.marks}
@@ -8791,13 +8844,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           {/* Only when nothing is on screen: no open tabs AND not browsing a collection. The empty state
               is z-12 and the collection overlay z-9, so without the collectionDir guard the start screen
               sits on top of a browsed collection and swallows its clicks (browse-with-no-file-open). */}
-          {tabs.length === 0 && collectionDir === null && (
+          {listingReady && tabs.length === 0 && collectionDir === null && (
             <div className="workspace-empty">
               <WorkspaceEmpty files={files} onNewFile={handleNewTab} onSearchFiles={openSearchTab} onOpenFile={open} />
             </div>
           )}
           {/* A widget step that moved documents, left unfinished by a crash or a quit: named, never acted on by itself. */}
-          <WidgetStepLeftoverNotice root={root} onStatus={flash} onChanged={() => { void refresh() }} />
+          <WidgetStepLeftoverNotice root={root} onStatus={flash} onChanged={refreshInBackground} />
           {historicalView && (
             <div className="historical-banner" role="status">
               <span>

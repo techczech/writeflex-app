@@ -23,19 +23,27 @@ export function setOffcutsHidden(dir: string, hidden: boolean): void {
   }
 }
 
-/** Whether the Sources rail is collapsed to its strip (locked design frame 8) in this collection. */
-export function sourcesCollapsed(dir: string): boolean {
+/** An explicit choice wins over the default based on the Collection's source count. */
+export function sourcesVisibility(dir: string): boolean | null {
+  const key = `${SOURCES_COLLAPSED}${dir}`
   try {
-    return localStorage.getItem(`${SOURCES_COLLAPSED}${dir}`) === '1'
+    if (sessionStorage.getItem(key) === 'expanded') return true
+    return localStorage.getItem(key) === '1' ? false : null
   } catch {
-    return false
+    return null
   }
 }
 
 export function setSourcesCollapsed(dir: string, collapsed: boolean): void {
+  const key = `${SOURCES_COLLAPSED}${dir}`
   try {
-    if (collapsed) localStorage.setItem(`${SOURCES_COLLAPSED}${dir}`, '1')
-    else localStorage.removeItem(`${SOURCES_COLLAPSED}${dir}`)
+    if (collapsed) {
+      sessionStorage.removeItem(key)
+      localStorage.setItem(key, '1')
+    } else {
+      sessionStorage.setItem(key, 'expanded')
+      localStorage.removeItem(key)
+    }
   } catch {
     // Storage unavailable: the choice lasts until the Board remounts.
   }

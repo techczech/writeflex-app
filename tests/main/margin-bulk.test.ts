@@ -177,6 +177,11 @@ test('Send back covers the agent’s shown waiting items only and says who is le
   expect(sendBackScope(buildMarginModel({ changes: [changes[3]], document: DOC, view: 'margin', now: NOW })).ids).toEqual([])
 })
 
+test('a fresh empty snapshot keeps the empty batch for the same piece', () => {
+  const batch = nextBatch(EMPTY_BATCH, 'draft.md', [])
+  expect(nextBatch(batch, 'draft.md', [])).toBe(batch)
+})
+
 test('a batch of six or more: progress once one is settled; a new piece or an empty piece starts again; arrivals join', () => {
   const ids = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7']
   let batch = nextBatch(EMPTY_BATCH, 'a.md', ids)

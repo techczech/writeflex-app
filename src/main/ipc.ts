@@ -164,6 +164,7 @@ import { asFrontmatterForWindow } from './frontmatter-change'
 import { REPLY_KEY_FOLDER, readReplyKey } from './reply-key'
 import { watchRequestInbox } from './request-inbox-watch'
 import { queueThenTurn, readyBeforeTurn, REQUEST_READINESS_WAIT_MS } from './collection-write-order'
+import { AreaImageJournal } from './area-image-journal'
 import { removeStaleTemporaryFiles } from './cli/stale-temporary-files'
 import { normaliseRoot, resolveWorkspaceRoot, WorkspaceRootError } from './root-resolution'
 import { isMarkdownPath } from './writeflex-url'
@@ -664,6 +665,8 @@ function e2eHooksAllowed(): boolean {
   return e2eWriteHooksAllowed(process.env, app.isPackaged)
 }
 
+let areaImageJournal: AreaImageJournal | undefined
+
 /** Registers every IPC handler and returns cleanup hooks the WindowManager calls on window close. */
 export function registerIpc(
   router: OpenPathRouter,
@@ -696,6 +699,7 @@ export function registerIpc(
   })
   const gitSync = registerGitSync(settings, (state, paths) => notifyCollectionChanged(state, paths, undefined, true))
   const disposeConfirmIpc = registerConfirmIpc()
+  areaImageJournal = new AreaImageJournal(join(app.getPath('userData'), 'area-image-receipts'))
   const authFilePath = resolve(join(app.getPath('userData'), 'auth.json'))
   const vaultIndexDir = join(app.getPath('userData'), 'vault-index')
   vaultIndexService = new VaultIndexService({ cacheDir: vaultIndexDir })
@@ -986,7 +990,7 @@ export function registerIpc(
     const { bytes, ext } = imagePayload(input)
     return requireWorkspace(stateForSender(event.sender.id)).saveImage(bytes, ext)
   })
-  const pendingAreaImages = new WeakMap<Electron.WebContents, Map<string, (() => Promise<void>) | null>>()
+  const pendingAreaImages = new WeakMap<Electron.WebContents, Map<string, ((inserted: boolean) => Promise<void>) | null>>()
   ipcMain.handle('assets:prepare-area-image', async (event, bytes: unknown, root: unknown) => {
     if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) throw new Error('Invalid Area image owner.')
     const state = stateForSender(event.sender.id)
@@ -1000,12 +1004,15 @@ export function registerIpc(
     // Reserve an entry before saving so concurrent drops share the same limit.
     pending.set(receipt, null)
     try {
-      const { path, discard } = await workspace.prepareAreaImage(image.bytes)
+      const { path, keep, discard } = await workspace.prepareAreaImage(image.bytes)
       if (state.workspace !== workspace) {
         await discard()
         throw new Error('The destination Collection changed while the Area image was saved.')
       }
-      pending.set(receipt, discard)
+      pending.set(receipt, async (inserted) => {
+        if (inserted) keep()
+        else await discard()
+      })
       return { path, receipt }
     } catch (error) {
       pending.delete(receipt)
@@ -1016,10 +1023,10 @@ export function registerIpc(
     if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame
       || typeof receipt !== 'string' || typeof inserted !== 'boolean') throw new Error('Invalid Area image receipt.')
     const pending = pendingAreaImages.get(event.sender)
-    const discard = pending?.get(receipt)
-    if (!pending || !discard) throw new Error('The Area image receipt is missing.')
+    const finish = pending?.get(receipt)
+    if (!pending || !finish) throw new Error('The Area image receipt is missing.')
     pending.delete(receipt)
-    if (!inserted) await discard()
+    await finish(inserted)
   })
   ipcMain.handle('workspace:context', async (event) => {
     const state = stateForSender(event.sender.id)
@@ -3051,13 +3058,13 @@ export function registerIpc(
   // Auto-save has already put the latest text on disk, so this snapshots exactly what the writer sees.
   // One document's checkpoint, for the IPC call below (⌘S, closing a tab) and for a closing window's
   // run (close-checkpoints.ts), which resolves the agent and the author once for all of its documents.
-  const checkpointDocument = async (state: WindowState, agent: Awaited<ReturnType<typeof requireAgent>>, path: string, auto: boolean, author?: AuthorIdentity): Promise<void> => {
+  const checkpointDocument = async (state: WindowState, agent: Awaited<ReturnType<typeof requireAgent>>, path: string, auto: boolean, author?: AuthorIdentity): Promise<boolean> => {
     // A spec makes every checkpoint slow to show that a closing window does not wait for them.
     const e2eDelay = process.env.WRITEFLEX_E2E === '1' ? Number(process.env.WRITEFLEX_E2E_CHECKPOINT_DELAY_MS ?? 0) : 0
     if (e2eDelay > 0) await new Promise((resolve) => setTimeout(resolve, e2eDelay))
-    if (!(auto && settings.get('snapshots.frequency') === 'manual')) {
-      await agent.checkpointFile(path)
-    }
+    const recorded = auto && settings.get('snapshots.frequency') === 'manual'
+      ? false
+      : await agent.checkpointFile(path)
     // The same close event creates ADR-0031's one foundation version. This is independent of the
     // close-checkpoint preference: that setting suppresses tier 2, not the one automatic tier-3 floor.
     if (auto) {
@@ -3071,23 +3078,23 @@ export function registerIpc(
       })
       if (initial) sendSafe(state, 'versions:changed', null)
     }
+    return recorded
   }
   ipcMain.handle('snapshot:checkpoint', async (event, input: { path: string; auto?: boolean }) => {
     // Checkpoints are a data-safety tier: if the agent is still booting, WAIT for it rather than
     // silently dropping the snapshot; only a window with no Workspace at all skips (agentReady null).
     const state = stateForSender(event.sender.id)
-    if (!state.agentReady) return
+    if (!state.agentReady) return false
     const startedAt = Date.now()
     try {
-      await checkpointDocument(state, await requireAgent(state), input.path, input.auto === true)
+      return await checkpointDocument(state, await requireAgent(state), input.path, input.auto === true)
     } finally {
       void recordMainProcessDiagnostic('snapshot.checkpoint.settled', { auto: input.auto === true, elapsedMs: Date.now() - startedAt })
     }
   })
   // Keep one exact version before it is replaced (Merge on the changed-on-disk banner): the receipt names
   // the History entry whose sha256 equals `text` (preserve-version.ts). With no agent there is no History,
-  // and the request is refused: nothing is kept elsewhere and nothing is written. Unlike
-  // snapshot:checkpoint it never returns quietly without keeping anything.
+  // and the request is refused: nothing is kept elsewhere and nothing is written.
   ipcMain.handle('snapshot:preserve', async (event, input: { path: string; text: string }) => {
     if (typeof input?.path !== 'string' || typeof input.text !== 'string') throw new Error('Invalid preserve request.')
     assertRelativeWorkspacePath(input.path)
@@ -3530,7 +3537,7 @@ export function registerIpc(
       state.closeWork = startCloseCheckpoints(paths, {
         prepare: async () => {
           const [agent, author] = await Promise.all([requireAgent(state), humanAuthorForWorkspace(root)])
-          return (path) => checkpointDocument(state, agent, path, true, author)
+          return async (path) => { await checkpointDocument(state, agent, path, true, author) }
         },
         record: (name, details) => { void recordMainProcessDiagnostic(name, details) },
         now: () => Date.now(),
@@ -3727,6 +3734,7 @@ export async function bindWorkspace(
   if (previousWorkspace) clearFolioDeclarations(previousWorkspace.root)
   state.workspace = withFolioTitleIdentity(new Workspace(root, {
     searchCacheDir: join(app.getPath('userData'), 'search-index'),
+    areaImageJournal,
   }), {
     beforeIndexWrite: async path => { if (state.agent) await state.agent.checkpointFile(path) },
     onLinked: result => {
@@ -3811,6 +3819,9 @@ export async function bindWorkspace(
   if (state.syncReplicas && settings.get('workspace.watchExternalChanges') === false) configureWorkspaceWatcher(state, false)
   /** This binding is still the window's: not bound to another Collection since, and not closed. */
   const stillBound = (): boolean => state.workspace === workspace && state.bindGeneration === generation
+  void areaImageJournal?.sweep(workspace, () => stillBound() && !state.window.isDestroyed()).then((removed) => {
+    if (removed.length) void recordMainProcessDiagnostic('area-images.abandoned-removed', { root, removed })
+  })
   // The command line's writes while this Collection is open here: carried out by the app, on request.
   // The executor is bound to THIS Collection for its life: everything it is given here was made for
   // this root above, and it is disposed when the window is bound again or closed.
@@ -4022,7 +4033,7 @@ export async function bindWorkspace(
         ...(scriptedQueues ? { sessionFactory: scriptedSessionFactory(queueForThread(scriptedQueues, threadId)) } : {}),
         ...(composition ? { composition } : {}),
       })
-      checkpointCreated = (path) => created.checkpointFile(path)
+      checkpointCreated = async (path) => { await created.checkpointFile(path) }
       const catalogue = created.modelCatalogue()
       const models = process.env.WRITEFLEX_E2E === '1' && process.env.WRITEFLEX_E2E_AVAILABLE_MODELS === '1'
         ? catalogue

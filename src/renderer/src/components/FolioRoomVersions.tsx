@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Sparkles, Eye, FileDown, FileText, GitCompare, Globe, History, Image as ImageIcon, Pencil, RotateCcw, Send, Table2, Upload, type LucideIcon } from 'lucide-react'
+import { Sparkles, Eye, FileDown, FileText, GitCompare, Globe, History, Image as ImageIcon, Pencil, Send, Table2, Upload, type LucideIcon } from 'lucide-react'
 import { COMPARE_WORKING } from '../../../shared/folio-version-compare'
 import { FolioVersionCompare, type CompareChoice, type TakeHost } from './FolioVersionCompare'
 import { FolioVersionImport } from './FolioVersionImport'
@@ -37,7 +37,7 @@ let importWaiting = 0
 export function requestImportOnNextVersionsTab(): void { importWaiting = Date.now() + 4000 }
 const takeImportRequest = (): boolean => { const held = importWaiting > Date.now(); importWaiting = 0; return held }
 
-const ACTION_ICONS: Record<VersionActionId, LucideIcon> = { 'open-read-only': Eye, compare: GitCompare, restore: RotateCcw, export: Upload, 'mark-sent': Send }
+const ACTION_ICONS: Record<Exclude<VersionActionId, 'restore'>, LucideIcon> = { 'open-read-only': Eye, compare: GitCompare, export: Upload, 'mark-sent': Send }
 
 function fileIcon(path: string): LucideIcon {
   if (/\.(csv|tsv)$/i.test(path)) return Table2
@@ -491,8 +491,10 @@ function VersionContents({ row, contents, actions, onDecide, unavailable, action
       {onDecide && <div className="fv-actions"><button type="button" className="fv-btn pri" data-testid="version-decide" aria-disabled={unavailable || undefined} onClick={() => { const current = actionRow(row.id); if (current) onDecide(current) }}>Decide what to take…</button></div>}
       <div className="fv-actions" role="group" aria-label="This version">
         {VERSION_ACTIONS.map((action) => {
-          const Icon = ACTION_ICONS[action.id]
-          const run = actions?.[action.id]
+          const { id } = action
+          if (id === 'restore') return null
+          const Icon = ACTION_ICONS[id]
+          const run = actions?.[id]
           return (
             <button key={action.id} type="button" className="fv-btn" data-action={action.id} aria-disabled={unavailable || !run || undefined} title={run ? undefined : action.reason} onClick={() => { const current = actionRow(row.id); if (current) run?.(current) }}>
               <Icon aria-hidden="true" />{action.label}

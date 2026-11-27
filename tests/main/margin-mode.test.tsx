@@ -140,7 +140,7 @@ function harness(changes: Change[]) {
     editorRef: { current: null }, recordedWriterChanges: { current: new Map() },
     acceptSuggestion: async () => false, rejectSuggestion: async () => false, savePath: async () => true,
     reloadChanges: async () => undefined, refreshInlineChangesAfterReconcile: async () => undefined,
-    flash: () => undefined, handleAgentWorkspaceChange: () => undefined, reconcileAppliedFile: () => undefined,
+    flash: () => undefined, handleAgentWorkspaceChange: () => undefined, captureAppliedFileScope: () => ({ isCurrent: () => true, owns: () => true, reconcile: () => undefined }),
     acceptThroughOwner: async (_path, _id, resolve) => ({ status: 'acted', result: await resolve(), recorded: false }),
     inDocumentQueue: (_path, run) => run(),
     documentWrittenByMain: () => undefined,

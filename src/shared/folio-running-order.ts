@@ -176,7 +176,7 @@ export function dropFor(order: readonly string[], source: number, slot: number):
 export const dragLabel = (title: string, position: number, total: number): string => `Move ${title} to ${position} of ${total}`
 
 /** The flash, the live region, and the Undo texts. The live-region wording is the spec's; the flash is shorter. */
-export const movedFlash = (title: string, position: number, total: number): string => `Moved ${title} to ${position} of ${total}`
+export const movedFlash = (title: string, position: number, total: number): string => `Moved “${title}” to ${position} of ${total}.`
 export const movedAnnouncement = (title: string, position: number, total: number): string => `${title} moved to position ${position} of ${total}.`
 export const addedFlash = (titles: readonly string[]): string =>
   titles.length === 1 ? `Added ${titles[0]} to the running order` : `Added ${titles.length} pieces to the running order`

@@ -131,7 +131,6 @@ export function Rail({ dir, name, activePath, activeContent, onClose, onOpenPiec
           <strong>{name}</strong>
           <button type="button" className="rail-close" aria-label="Dismiss Rail" onClick={onClose}><PanelRightClose aria-hidden="true" /></button>
         </div>
-        <div className="rail-projection">one query · <span className="on">rail</span> · <span>board</span> · <span>in-doc query</span></div>
       </header>
       <div className="rail-scroll">
         <DiaryGlance dir={dir} onSettings={onDiarySettings} />

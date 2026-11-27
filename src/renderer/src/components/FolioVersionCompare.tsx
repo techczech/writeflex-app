@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, ChevronDown, ChevronRight, FileText, Globe, Image as ImageIcon, RotateCcw, Table2, X, type LucideIcon } from 'lucide-react'
+import { ArrowRight, ChevronDown, ChevronRight, FileText, Globe, Image as ImageIcon, Table2, X, type LucideIcon } from 'lucide-react'
 import {
   COMPARE_WORKING, NOTHING_CHANGED, comparingText, nothingChanged, stateChipText,
   type FolioCompareEntry, type FolioComparePart, type FolioCompareResult, type FolioCompareRow, type FolioCompareSegment,
@@ -168,7 +168,6 @@ export function FolioVersionCompare({ dir, versions, choice, choicesUnavailable,
           {choiceOptions(versions, choice.to)}
         </select></label>
       <span className="fvc-push">
-        <button type="button" className="fv-btn" aria-disabled="true" title="Restoring a whole Folio is not built yet." data-testid="compare-restore"><RotateCcw aria-hidden="true" />Restore the whole Folio…</button>
         <button type="button" className="fv-btn" data-testid="compare-close" onClick={onClose}><X aria-hidden="true" />Close comparison</button>
       </span>
     </div>

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { createOutsideChangeFollower } from './sharing-outside-changes'
 import { applyFollowSignal, takeAtStart, watchFollowSignals } from './sharing-follow-signals'
 import type { GitSyncLifecycle } from './git-sync-app'
+import { EXPERIMENTAL_GIT_SYNC_KEY, experimentalGitSyncOn } from '../shared/git-sync-settings'
 import { onDocumentsChanged, onDocumentsChangedOutside, onSharingIdentityChanged, onDocumentsMoved, onDocumentsTrashed, onWindowWorkspaceBound, onWorkspaceOpened, reconcileSyncedCollectionsAfterWake, registerIpc } from './ipc'
 import { installUpdateNotices } from './update-notices'
 import { SettingsStore } from './settings'
@@ -488,6 +489,8 @@ if (!app.requestSingleInstanceLock()) {
     const stopUpdateSettings = readySettings.onChange(key => { if (key === 'updates.checkForNewVersions' || key === 'updates.alphaVersions') updates.settingChanged() })
     app.once('will-quit', () => { updates.stop(); stopUpdateSettings() })
 
+    // Settings reports the same launch-time switch that registerIpc reads when it wires Git sync.
+    const gitSyncRunning = experimentalGitSyncOn(readySettings.get(EXPERIMENTAL_GIT_SYNC_KEY))
     const ipc = registerIpc(manager.router(), readySettings, skills, {
       appVersionLabel: `${app.getVersion()}${appVariant.versionLabelSuffix}`,
       guide,
@@ -668,7 +671,7 @@ if (!app.requestSingleInstanceLock()) {
     })
     ipcMain.handle('wf-settings-window:context', (event) => {
       if (!settingsApp?.isSettingsSender(event)) throw new Error('Only Settings may read its context.')
-      return { root: settingsRoot() }
+      return { root: settingsRoot(), gitSyncRunning }
     })
     registerBackupEnrolmentIpc(ipcMain, backupEnrolment)
     app.once('will-quit', () => { githubAuth.quit(); backupEnrolment.quit(); void backupServices.dispose() })

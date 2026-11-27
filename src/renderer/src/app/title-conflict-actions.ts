@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { plainErrorForScreen } from '../error-text'
 import { folioScope, undoStepKeptAmong, undoStepUsableOnScreen } from '../../../shared/folio-running-order'
 import type { TitleFixAnswer, TitleFixDirection } from '../../../preload'
-import type { FlashAction } from './folio-running-order'
+import { nextFolioUndoSequence, type FlashAction } from './folio-running-order'
 
 /**
  * The renderer's side of the title-conflict buttons on the Plan and the Outline (title-conflict buttons,
@@ -31,6 +31,7 @@ export type TitleConflictActions = {
   fixAll: (dir: string, parts: readonly TitleFixTarget[], direction: TitleFixDirection) => Promise<boolean>
   undo: () => Promise<void>
   canUndo: boolean
+  undoSequence: number
 }
 
 type Deps = {
@@ -56,7 +57,7 @@ export function titleUndoOnScreen(scope: string, screen: TitleUndoScreen): { usa
   return { usable: undoStepUsableOnScreen(scope, screen.outlineScope, screen.planScope), kept: undoStepKeptAmong(scope, open) }
 }
 
-type HeldStep = { token: string; scope: string }
+type HeldStep = { token: string; scope: string; sequence: number }
 
 const nameOf = (path: string): string => (path.split('/').pop() ?? path).replace(/\.(?:md|markdown|mdx)$/i, '')
 
@@ -114,7 +115,7 @@ export function useTitleConflictActions({ say, unsaved, root, openDir, planDir }
     if (!answer.ok) { say(answer.message); return false }
     const scope = folioScope(rootRef.current, dir)
     // An answer that arrives after another Folio came on screen does not put a step back.
-    if (answer.undo) keep(titleUndoOnScreen(scope, screenRef.current).kept ? { token: answer.undo, scope } : null)
+    if (answer.undo) keep(titleUndoOnScreen(scope, screenRef.current).kept ? { token: answer.undo, scope, sequence: nextFolioUndoSequence() } : null)
     const skipped = answer.skipped.map((item) => `${nameOf(item.path)}: ${item.message}`).join(' ')
     const message = answer.written.length ? fixedSentence(direction, answer.written.length) : 'Nothing was changed.'
     const action = answer.undo ? { label: 'Undo', run: () => { void undo() } } : undefined
@@ -143,6 +144,6 @@ export function useTitleConflictActions({ say, unsaved, root, openDir, planDir }
   const fixPart = useCallback((dir: string, part: TitleFixTarget, direction: TitleFixDirection) => run(dir, [part], direction, false), [run])
   const fixAll = useCallback((dir: string, parts: readonly TitleFixTarget[], direction: TitleFixDirection) => run(dir, parts, direction, true), [run])
 
-  const canUndo = step !== null && titleUndoOnScreen(step.scope, screen).usable
-  return useMemo(() => ({ fixPart, fixAll, undo, canUndo }), [canUndo, fixAll, fixPart, undo])
+  const undoSequence = step !== null && titleUndoOnScreen(step.scope, screen).usable ? step.sequence : 0
+  return useMemo(() => ({ fixPart, fixAll, undo, canUndo: undoSequence > 0, undoSequence }), [fixAll, fixPart, undo, undoSequence])
 }

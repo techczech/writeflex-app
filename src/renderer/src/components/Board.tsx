@@ -9,7 +9,7 @@ import { humanReadableError } from '../error-text'
 import { boardAge, boardOffcuts, boardSources, groupBoardRows, isOffcutKey, isSourceKey, offcutKey, sourceKey, type BoardSource } from './board-projection'
 import { BoardCardChips, BoardCardDrawer, BoardCardTasks } from './BoardCardMaterial'
 import { BoardActivity, OffcutNamer, OffcutsColumn, OFFCUT_DRAG_MIME, type BoardActivityRow } from './BoardOffcuts'
-import { columnOrder, setColumnOrder, orderColumns, moveColumn, offcutsHidden, setOffcutsHidden, setSourcesCollapsed, sourcesCollapsed } from './board-view-state'
+import { columnOrder, setColumnOrder, orderColumns, moveColumn, offcutsHidden, setOffcutsHidden, setSourcesCollapsed, sourcesVisibility } from './board-view-state'
 import { SOURCE_DRAG_MIME, SourceCarryHint, SourcesRail } from './BoardSources'
 import { BOARD_COMMAND_EVENT, type BoardCommandName } from './board-commands'
 import type { QueryInsertionContext } from './Rail'
@@ -79,11 +79,11 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
   const [dragPath, setDragPath] = useState<string | null>(null)
   const [dragOffcut, setDragOffcut] = useState<Offcut | null>(null)
   const [showOffcuts, setShowOffcuts] = useState(() => !offcutsHidden(dir))
+  const [emptyOffcutsExpanded, setEmptyOffcutsExpanded] = useState(false)
   const [viewMenuOpen, setViewMenuOpen] = useState(false)
   // The Sources rail (frames 1, 4, 7, 8): shown or collapsed per collection; a source being dragged,
   // the card under it, and a source picked up with the keyboard (⌥←) waiting for a card and ⏎.
-  const [sourcesShown, setSourcesShown] = useState(() => !sourcesCollapsed(dir))
-  useMenuCommandChecks({ 'board.toggleOffcuts': showOffcuts, 'board.toggleSources': sourcesShown })
+  const [sourcesChoice, setSourcesChoice] = useState(() => sourcesVisibility(dir))
   const [dragSource, setDragSource] = useState<BoardSource | null>(null)
   const [overCard, setOverCard] = useState<string | null>(null)
   const [carrying, setCarrying] = useState<BoardSource | null>(null)
@@ -194,23 +194,30 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     rows: column.rows.filter((row) => includesFilter(row, filter)),
   })), [rows, filter, seenStatuses, savedOrder])
   const shownRows = useMemo(() => columns.flatMap((column) => column.rows), [columns])
-  const offcuts = useMemo(() => boardOffcuts(rows).filter((offcut) => {
+  const allOffcuts = useMemo(() => boardOffcuts(rows), [rows])
+  const allSources = useMemo(() => boardSources(rows), [rows])
+  // A filter can hide every tile without making the Collection's material empty.
+  const offcutsCollapsed = allOffcuts.length === 0 && !emptyOffcutsExpanded
+  const sourcesShown = sourcesChoice ?? allSources.length > 0
+  useMenuCommandChecks({ 'board.toggleOffcuts': showOffcuts, 'board.toggleSources': sourcesShown })
+
+  const offcuts = useMemo(() => allOffcuts.filter((offcut) => {
     const needle = filter.trim().toLocaleLowerCase()
     return needle === '' || offcut.text.toLocaleLowerCase().includes(needle) || offcut.originTitle.toLocaleLowerCase().includes(needle)
-  }), [rows, filter])
-  const sources = useMemo(() => boardSources(rows).filter((source) => {
+  }), [allOffcuts, filter])
+  const sources = useMemo(() => allSources.filter((source) => {
     const needle = filter.trim().toLocaleLowerCase()
     return needle === '' || source.title.toLocaleLowerCase().includes(needle)
-  }), [rows, filter])
+  }), [allSources, filter])
   // The Offcuts column stands just before Idea (frame 1), and the Sources rail after the last stage;
   // keyboard columns follow the same order.
   const ideaIndex = columns.findIndex((column) => column.status.toLocaleLowerCase() === 'idea')
   const navColumns = useMemo(() => {
     const keys = columns.map((column) => column.rows.map((row) => row.path))
-    if (showOffcuts) keys.splice(ideaIndex < 0 ? 0 : ideaIndex, 0, offcuts.map(offcutKey))
+    if (showOffcuts && !offcutsCollapsed) keys.splice(ideaIndex < 0 ? 0 : ideaIndex, 0, offcuts.map(offcutKey))
     if (sourcesShown) keys.push(sources.map(sourceKey))
     return keys
-  }, [columns, ideaIndex, offcuts, showOffcuts, sources, sourcesShown])
+  }, [columns, ideaIndex, offcuts, offcutsCollapsed, showOffcuts, sources, sourcesShown])
   const selectedOffcut = selected !== null && isOffcutKey(selected) ? offcuts.find((offcut) => offcutKey(offcut) === selected) ?? null : null
   const selectedSource = selected !== null && isSourceKey(selected) ? sources.find((source) => sourceKey(source) === selected) ?? null : null
   const queryContextFor = useCallback((status: string): QueryInsertionContext => ({
@@ -411,13 +418,11 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
   }, [dir])
 
   const toggleSources = useCallback(() => {
-    setSourcesShown((shown) => {
-      setSourcesCollapsed(dir, shown)
-      return !shown
-    })
+    setSourcesCollapsed(dir, sourcesShown)
+    setSourcesChoice(!sourcesShown)
     setCarrying(null)
     setViewMenuOpen(false)
-  }, [dir])
+  }, [dir, sourcesShown])
 
   const reorderColumn = (from: string, to: string): void => {
     if (!requireCurrentProjection()) return
@@ -541,6 +546,42 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
     event.dataTransfer.setData(OFFCUT_DRAG_MIME, JSON.stringify({ scrapsPath: offcut.scrapsPath, id: offcut.id }))
   }
 
+  const finishOffcutDrag = (): void => {
+    setDragOffcut(null)
+    setOverStatus(null)
+  }
+
+  const offcutsColumn = offcutsCollapsed ? (
+    <section
+      className="boff-col collapsed"
+      data-status="offcuts"
+      aria-label="Offcuts"
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes(OFFCUT_DRAG_MIME)) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.types.includes(OFFCUT_DRAG_MIME)) return
+        event.preventDefault()
+        finishOffcutDrag()
+      }}
+    >
+      <button type="button" className="boff-strip" aria-expanded="false" onClick={() => {
+        setEmptyOffcutsExpanded(true)
+        rootRef.current?.focus()
+      }}>Offcuts · {offcuts.length}</button>
+    </section>
+  ) : (
+    <OffcutsColumn
+      offcuts={offcuts}
+      selectedKey={selected}
+      onSelect={(offcut) => { setSelected(offcutKey(offcut)); rootRef.current?.focus() }}
+      onDragStart={startOffcutDrag}
+      onDragEnd={finishOffcutDrag}
+    />
+  )
+
   const startSourceDrag = (event: DragEvent, source: BoardSource): void => {
     setSelected(sourceKey(source))
     setCarrying(null)
@@ -596,9 +637,6 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
             <button type="button" disabled title="Outline comes in a later wave"><ListTree aria-hidden="true" /> Outline</button>
           </div>
         </div>
-        <div className="board-projnote">
-          one query · <span className="pj">rail</span><span className="pj on">{label.toLowerCase()}</span><span className="pj">in-doc query</span>
-        </div>
         {accepted && failed && (
           <div className="board-activity refused">
             <span role="alert">Could not refresh {label}. Showing the last result.</span>
@@ -637,13 +675,13 @@ function BoardProjection({ onBack, label = 'Board', dir, name, filter, onOpenPie
       ) : (
         <div className="board-body">
         <div className="board-cols" ref={colsRef}>
-          {showOffcuts && ideaIndex < 0 && <OffcutsColumn offcuts={offcuts} selectedKey={selected} onSelect={(offcut) => { setSelected(offcutKey(offcut)); rootRef.current?.focus() }} onDragStart={startOffcutDrag} onDragEnd={() => { setDragOffcut(null); setOverStatus(null) }} />}
+          {showOffcuts && ideaIndex < 0 && offcutsColumn}
           {columns.map((column, columnIndex) => {
             const stalled = column.rows.filter((row) => boardAge(row).stalled).length
             const isOver = overStatus === column.status
             const isIdea = columnIndex === ideaIndex
             return (<Fragment key={column.status}>
-              {showOffcuts && isIdea && <OffcutsColumn offcuts={offcuts} selectedKey={selected} onSelect={(offcut) => { setSelected(offcutKey(offcut)); rootRef.current?.focus() }} onDragStart={startOffcutDrag} onDragEnd={() => { setDragOffcut(null); setOverStatus(null) }} />}
+              {showOffcuts && isIdea && offcutsColumn}
               <section
                 className={`bcol${column.status === UNSORTED_STATUS ? ' unsorted' : ''}${isOver ? ' over armed' : ''}`}
                 data-status={column.status}

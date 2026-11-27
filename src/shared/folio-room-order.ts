@@ -13,6 +13,11 @@ import type { PlanOrderResult, PlanPartKey } from './folio-running-order'
 
 /** Said by the first room write that creates the Folio's manifest (D-ORD-2), and by the Index-only banner's repair. */
 export const MANIFEST_CREATED = 'This Folio now has a manifest, so export and sharing follow its running order.'
+/** The move already ends with a full stop, including when the first move saves the running order. */
+export function withRunningOrderSaved(text: string, manifestCreated: boolean | undefined): string {
+  return manifestCreated ? `${text} The running order is now saved with this Folio.` : text
+}
+
 /** The Index-only banner (spec § 12): an Index Note with a running order and no manifest. */
 export const INDEX_ONLY_BANNER = 'Export and sharing follow file names until this Folio’s order is written'
 /** The banner's button, the same words as the export sheet's (D-ORD-3). */

@@ -1,4 +1,4 @@
-import { syncVaultPreferences } from '../../shared/git-sync-settings'
+import { SYNC_VAULTS_KEY, syncVaultPreferences } from '../../shared/git-sync-settings'
 // Renderer-only choice labels; the persisted schema and its validation stay authoritative in main.
 import type { Schema, SettingDef, SettingValue, SettingsState } from '@app-patterns/settings'
 import { schema } from '../../shared/settings-schema'
@@ -20,6 +20,8 @@ const shortcutRegistry = {
 
 /** Read-only projection for the shared UI; migrated bare keys cannot be written into its persisted keys map. */
 export function settingsShortcutDisplay(state: SettingsState) {
+  // Older builds logged vault bookkeeping. Keep that history on disk and out of the Settings UI.
+  state = { ...state, changes: state.changes.filter(entry => entry.key !== SYNC_VAULTS_KEY) }
   const appKeys = state.settings[APP_KEYS_SETTING]
   const migrated = Object.keys(parseOverrideJson(appKeys))
   if (!migrated.length || appKeysStateError(state.keys, appKeys)) return { state, registry: shortcutRegistry }
@@ -48,8 +50,8 @@ export function settingsDisplaySchema(state: SettingsState, voices: SpeechVoiceI
     if (value === null || value === undefined || options.has(value)) continue
     options.set(value, key === 'editor.fixedLine' && typeof value === 'number' ? fixedLineCustomLabel(value) : String(value))
   }
-  const settings = schema.settings.filter(def => def.key !== 'sync.vaults').map((def): SettingDef => {
-    if (def.key === 'snapshots.retention' && Object.values(syncVaultPreferences(state.settings['sync.vaults'])).some(v=>v.enabled)) return {...def,help:'Older history is kept while sync is on'}
+  const settings = schema.settings.filter(def => def.key !== SYNC_VAULTS_KEY).map((def): SettingDef => {
+    if (def.key === 'snapshots.retention' && Object.values(syncVaultPreferences(state.settings[SYNC_VAULTS_KEY])).some(v=>v.enabled)) return {...def,help:'Older history is kept while sync is on'}
     const options = labels.get(def.key)
     return options ? { ...def, type: 'choice', options: [...options].map(([value, label]) => ({ value, label })) } : def
   })

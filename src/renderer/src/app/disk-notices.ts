@@ -173,8 +173,7 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
     for (const path of stalePaths(noticesRef.current, tabs, new Set(files.map((file) => file.path)))) clear(path)
   }, [tabs, files, noticesRef, clear])
 
-  // What the app raises for the owner's answer to a read of the disk (the watcher's, and a file main
-  // returned after writing it: reconcileAppliedFile).
+  // What the app raises for the owner's answer to a disk read, from the watcher or after a write.
   const raiseForOutside = useCallback((path: string, outcome: OutsideOutcome): void => {
     const standing = noticesRef.current.get(path)
     const step = stepForOutside(standing, outcome)
@@ -359,7 +358,7 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
         buffer: bufferNow,
         preserve: (p, text) => window.writeflex.preserveVersion(p, text),
         saved: (p) => ({ editor: owner.baselineOf(p), disk: owner.baselineDiskOf(p) }),
-        checkpoint: (p) => window.writeflex.checkpoint(p),
+        checkpoint: async (p) => { await window.writeflex.checkpoint(p) },
         keepMine: (p, notice) => {
           cancelAutosaveFor(p)
           if (guardRefusalPath.current === p) guardRefusalPath.current = null

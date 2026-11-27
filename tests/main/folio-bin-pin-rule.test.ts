@@ -17,27 +17,40 @@ import { join } from 'node:path'
 import { FOLIO_BIN, setBinAwaitHookForTest, setBinIoForTest } from '../../src/main/folio-bin'
 import { cleanUpBinTests, inodes, ok, OPS, prepare, refusingLink, runWithPoints, swapOut, tempDir, treeWithModes, watchCalls, type LinkFallback } from '../helpers/folio-bin-harness'
 
-afterEach(cleanUpBinTests)
+let activeSweep: Promise<void> | undefined
+
+afterEach(async () => {
+  // Bun can time out a test while its filesystem operations are still pending.
+  // Wait for the operation to leave the module's shared test hooks before resetting them.
+  await activeSweep?.catch(() => {})
+  activeSweep = undefined
+  await cleanUpBinTests()
+}, 120_000)
+
+function testSweep(name: string, work: () => Promise<void>): void {
+  // A contended Studio run spent over 90 s in a folder-swap case and 240 s in
+  // rollback fixture I/O. Each smaller sweep gets its own real-filesystem budget.
+  test(name, () => (activeSweep = work()), 300_000)
+}
 
 /** Each sweep runs with hard links, and again where link(2) is not supported, so the exclusive copy runs (Sol r4). */
 const LINK_MODES: LinkFallback[] = [null, 'ENOTSUP']
 
-test('r3 B1 (r4: with and without hard links): a folder swapped at any await of Remove, Restore or Undo never makes a file outside the Folio linked, moved, read or chmod\'ed, and every call stays in the Folio', async () => {
-  let injections = 0
-  for (const noLinks of LINK_MODES) {
-    for (const op of OPS) {
-      // How many awaits this operation passes through when nothing is swapped.
-      const dry = await prepare(op, await tempDir('dry'))
-      let points = 0
-      setBinIoForTest(noLinks ? { linkSync: refusingLink(noLinks) } : null)
-      ok(await runWithPoints(dry.run, async () => { points += 1 }))
-      setBinAwaitHookForTest(null)
-      setBinIoForTest(null)
-      expect(points).toBeGreaterThan(2)
-
-      for (let at = 0; at < points; at += 1) {
-        for (const target of [FOLIO_BIN, 'contents']) {
-          for (const mode of ['left', 'put back at the next await'] as const) {
+for (const noLinks of LINK_MODES) {
+  for (const op of OPS) {
+    for (const target of [FOLIO_BIN, 'contents']) {
+      for (const mode of ['left', 'put back at the next await'] as const) {
+        testSweep(`r3 B1: ${op} stays inside the Folio when ${target} is swapped and ${mode} (${noLinks ?? 'hard links'})`, async () => {
+          let injections = 0
+          // How many awaits this operation passes through when nothing is swapped.
+          const dry = await prepare(op, await tempDir('dry'))
+          let points = 0
+          setBinIoForTest(noLinks ? { linkSync: refusingLink(noLinks) } : null)
+          ok(await runWithPoints(dry.run, async () => { points += 1 }))
+          setBinAwaitHookForTest(null)
+          setBinIoForTest(null)
+          expect(points).toBeGreaterThan(2)
+          for (let at = 0; at < points; at += 1) {
             const base = await tempDir('swap')
             const outside = await tempDir('outside')
             const { folio, run } = await prepare(op, base)
@@ -72,22 +85,20 @@ test('r3 B1 (r4: with and without hard links): a folder swapped at any await of 
               expect({ where, shared: [...outsideIno].filter((ino) => inside.has(ino)) }).toEqual({ where, shared: [] })
             }
           }
-        }
+          expect(injections).toBe(points)
+        })
       }
     }
   }
-  expect(injections).toBeGreaterThan(80)
-}, 300_000)
+}
 
-test('r3 M2 (r4: with and without hard links): a failure at any synchronous step of Remove, Restore or Undo (fchmod, link or copy, unlink, the bin\'s list and folder) is taken back in full and said so', async () => {
-  const real = { fchmodSync, linkSync, copyFileSync, unlinkSync, renameSync, writeFileSync, mkdirSync } as Record<string, (...a: unknown[]) => unknown>
-  let failures = 0
-  let copyFailures = 0
-  for (const noLinks of LINK_MODES) {
-    // Where link(2) is not supported, every placement is a copy: the copy is the step that can fail, not the link.
-    const base = noLinks ? { linkSync: refusingLink(noLinks) } : {}
-    const steps = ['fchmodSync', noLinks ? 'copyFileSync' : 'linkSync', 'unlinkSync', 'renameSync', 'writeFileSync', 'mkdirSync']
-    for (const op of OPS) {
+const real = { fchmodSync, linkSync, copyFileSync, unlinkSync, renameSync, writeFileSync, mkdirSync } as Record<string, (...a: unknown[]) => unknown>
+for (const noLinks of LINK_MODES) {
+  for (const op of OPS) {
+    testSweep(`r3 M2: synchronous failures during ${op} are taken back in full (${noLinks ?? 'hard links'})`, async () => {
+      // Where link(2) is not supported, every placement is a copy: the copy is the step that can fail, not the link.
+      const base = noLinks ? { linkSync: refusingLink(noLinks) } : {}
+      const steps = ['fchmodSync', noLinks ? 'copyFileSync' : 'linkSync', 'unlinkSync', 'renameSync', 'writeFileSync', 'mkdirSync']
       // How often this operation makes each call when nothing fails.
       const dry = await prepare(op, await tempDir('dry'))
       const counts = new Map<string, number>()
@@ -96,10 +107,10 @@ test('r3 M2 (r4: with and without hard links): a failure at any synchronous step
         return real[step]!(...args)
       }]))
       setBinIoForTest({ ...counting, ...base } as never)
-      ok(await dry.run())
-      setBinIoForTest(null)
+      ok(await dry.run().finally(() => setBinIoForTest(null)))
       if (op === 'restore') for (const step of ['fchmodSync', steps[1]!, 'unlinkSync']) expect({ noLinks, op, step, made: counts.get(step) ?? 0 }).toEqual({ noLinks, op, step, made: 1 })
 
+      let failures = 0
       for (const step of steps) {
         for (let nth = 0; nth < (counts.get(step) ?? 0); nth += 1) {
           const { folio, run } = await prepare(op, await tempDir('fail'))
@@ -109,10 +120,8 @@ test('r3 M2 (r4: with and without hard links): a failure at any synchronous step
             if (calls++ === nth) throw Object.assign(new Error(`Synthetic ${step} failure`), { code: 'EIO' })
             return real[step]!(...args)
           } } as never)
-          const answer = await run()
-          setBinIoForTest(null)
+          const answer = await run().finally(() => setBinIoForTest(null))
           failures += 1
-          if (step === 'copyFileSync') copyFailures += 1
           const where = `${noLinks ? `no links (${noLinks})` : 'links'}: ${op}: ${step} #${nth + 1} fails`
           expect({ where, ok: answer.ok }).toEqual({ where, ok: false })
           const message = answer.ok ? '' : answer.message
@@ -122,11 +131,11 @@ test('r3 M2 (r4: with and without hard links): a failure at any synchronous step
           expect({ where, tree: await treeWithModes(folio) }).toEqual({ where, tree: before })
         }
       }
-    }
+      expect(failures).toBeGreaterThanOrEqual(3)
+      expect(counts.get(noLinks ? 'copyFileSync' : 'linkSync') ?? 0).toBeGreaterThan(0)
+    })
   }
-  expect(failures).toBeGreaterThanOrEqual(24)
-  expect(copyFailures).toBeGreaterThanOrEqual(4)
-}, 240_000)
+}
 
 test('r3 M2: Restore clears the execute and set-id bits through the file\'s handle before the file has its name in the Folio', async () => {
   const base = await tempDir('bits')

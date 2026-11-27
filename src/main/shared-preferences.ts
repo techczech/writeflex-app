@@ -5,6 +5,7 @@ import { SharedSettingsStore } from './shared-settings-store'
 import { runMigration, storeOptions, type MigrationOutcome, type MigrationOptions } from './settings-migration'
 import { schema, APP_ID, acceptedValue, coerceLegacy, preferencesFromLegacy } from '../shared/settings-schema'
 import { APP_KEYS_SETTING, LEGACY_OVERRIDES_KEY, overridesValueFromStore, splitOverrides, parseOverrideJson } from '../shared/keymap-overrides'
+import { SYNC_VAULTS_KEY } from '../shared/git-sync-settings'
 import { registry } from '../shared/bridle-commands'
 import type { SettingsStore as LegacyStore, SharedPreferences } from './settings'
 
@@ -107,14 +108,16 @@ export async function openPreferences(legacy: LegacyStore, dir: string, version:
         const overrides = read(LEGACY_OVERRIDES_KEY)
         return { ...writable.view().settings, ...(overrides ? { [LEGACY_OVERRIDES_KEY]: overrides } : {}) }
       },
-      async persist(key, value) {
+      async persist(key, value, opts) {
         if (!active) {
           throw new Error(writable.problem()?.error ?? 'WriteFlex preferences are read-only.')
         }
         if (key === LEGACY_OVERRIDES_KEY || key === APP_KEYS_SETTING) {
           throw new Error('Change shortcuts in Settings › Shortcuts.')
         }
-        const result = value === null ? await writable.reset(key) : await writable.set(key, value)
+        const result = key === SYNC_VAULTS_KEY && opts?.log === false && typeof value === 'string'
+          ? await writable.setSyncVaultPreferences(value)
+          : value === null ? await writable.reset(key) : await writable.set(key, value)
         if (!result.ok) {
           throw new Error(result.error)
         }

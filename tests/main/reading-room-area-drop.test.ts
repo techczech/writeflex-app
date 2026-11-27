@@ -142,6 +142,41 @@ describe('an Area arriving in the draft', () => {
     expect(events).toEqual(['The destination draft changed before the Area could be inserted.'])
   })
 
+  test('reports a draft edit while the refused image is still waiting to be discarded', async () => {
+    let saved!: () => void
+    let beginDiscard!: () => void
+    let finishDiscard!: () => void
+    const save = new Promise<void>(resolve => { saved = resolve })
+    const discarding = new Promise<void>(resolve => { beginDiscard = resolve })
+    const discard = new Promise<void>(resolve => { finishDiscard = resolve })
+    const events: string[] = []
+    let draft = 'Before the drop'
+    const original = draft
+    const drop = commitReadingRoomAreaDrop(valid, {
+      saveImage: async () => {
+        await save
+        return { path: 'assets/area.png', finish: async (inserted) => {
+          events.push('finish:' + inserted)
+          beginDiscard()
+          await discard
+        } }
+      },
+      isCurrent: () => draft === original,
+      insert: () => { events.push('insert'); return true },
+      recordQuotation: () => { events.push('record') },
+      onStatus: (message) => events.push(message),
+    })
+    draft += ' with more typing'
+    saved()
+    await discarding
+    try {
+      expect(events).toEqual(['The destination draft changed before the Area could be inserted.', 'finish:false'])
+    } finally {
+      finishDiscard()
+      expect(await drop).toBe('stale')
+    }
+  })
+
   test('turns a thrown editor transaction into a handled insertion failure', async () => {
     const events: string[] = []
     const result = await commitReadingRoomAreaDrop(valid, {

@@ -22,10 +22,10 @@ export type VersionRestoreCheckpoints = {
 
 type VersionRestorer = SnapshotContentReader & VersionRestoreCheckpoints
 
-export const RESTORE_RECOVERY_NAME = 'Before a version was restored'
+export const RESTORE_RECOVERY_NAME = 'Before a restore attempt'
 
 export type VersionRestoreResult =
-  | { refused: 'recovery-unverified'; message: string }
+  | { refused: 'recovery-unverified' | 'version-unavailable'; message: string }
   | (EditorSaveResult & { status: 'restored' })
   | (EditorSaveResult & {
     status: 'restored-with-history-error'
@@ -43,6 +43,7 @@ export function historyRestoreCheckpoints(
       const result = await capture(path, text)
       if (!result.kept) return result
       if (await history.readSnapshotContent(result.receipt.entryId) !== text) return { kept: false, refused: 'unavailable' }
+      // The row is durable before the guarded write, which can still refuse at commit.
       await versions?.append({ path, name: RESTORE_RECOVERY_NAME, author: WRITEFLEX_SELF_AUTHOR, snapshotId: result.receipt.entryId })
       return result
     },
@@ -137,7 +138,14 @@ export async function restoreVersionContent(
   beforeCommit?: SaveFileOptions['beforeCommit'],
 ): Promise<VersionRestoreResult | null> {
   const result = await readVersionContent(versions, restorer, input)
-  if (!result?.path || result.content === null) return null
+  if (!result?.path) return null
+  if (result.content === null) {
+    if (!replicaSnapshotHash(result.snapshotId ?? '')) return null
+    return {
+      refused: 'version-unavailable',
+      message: 'This OneDrive version could not be read on this Mac. If you’re offline, connect to OneDrive and download the copy before trying again.',
+    }
+  }
   const { path, content } = result
   const { basis } = input
   writer.assertDocumentPath(path)

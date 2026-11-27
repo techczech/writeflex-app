@@ -352,7 +352,14 @@ export function resolveSelection(parts: readonly Pick<RoomPart, 'key'>[], select
 
 /** The part the room shows selected: the stored selection when it still resolves, else the first part, else none. */
 export function shownSelection(parts: readonly Pick<RoomPart, 'key'>[], selected: PlanPartKey | null): number | null {
-  return resolveSelection(parts, selected) ?? (parts.length > 0 ? 0 : null)
+  const exact = resolveSelection(parts, selected)
+  if (exact !== null) return exact
+  // A title fix can change the Plan title while the selected file stays the same.
+  if (selected?.path) {
+    const first = parts.findIndex(part => part.key.path === selected.path)
+    if (first >= 0 && !parts.some((part, index) => index > first && part.key.path === selected.path)) return first
+  }
+  return parts.length > 0 ? 0 : null
 }
 
 // ---- Drawing helpers --------------------------------------------------------------------------
@@ -409,8 +416,11 @@ function expandedPaths(raw: unknown): string[] | undefined {
 
 function validTitleWidth(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 140 && value <= 1800 }
 
-/** Stable row identity; indistinguishable unwritten titles alone need a positional fallback. */
+/** A uniquely bound file keeps the same row and focus when its title changes. */
 export function roomPartRenderKey(part: RoomPart, parts: readonly RoomPart[]): string {
-  const duplicate = part.key.path === null && parts.some(other => other !== part && other.key.path === null && other.key.title === part.key.title)
-  return JSON.stringify([part.key.title, part.key.path, duplicate ? part.index : null])
+  const { path, title } = part.key
+  const samePath = parts.filter(other => other.key.path === path)
+  if (path !== null && samePath.length <= 1) return JSON.stringify([path])
+  const duplicate = samePath.filter(other => other.key.title === title).length > 1
+  return JSON.stringify([title, path, duplicate ? part.index : null])
 }

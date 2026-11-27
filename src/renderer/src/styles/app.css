@@ -225,6 +225,7 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .abcfg-foot .abcfg-note{color:var(--accent);max-width:34ch;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .abcfg-foot .btn{padding:5px 11px;font-size:12px}
 .body{flex:1;display:flex;min-height:0}
+.body>.workspace-read-problem{margin:auto;text-align:center}
 .body.tabbed-shell{background:var(--bg-pane)}
 .chrome-pane{flex:none;display:flex;flex-direction:column;min-height:0;background:var(--bg-side);overflow:hidden}
 .left-pane{width:268px;border-right:1px solid var(--line)}
@@ -745,10 +746,8 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 .board-head .bh-count{font-size:12px;color:var(--ink-3);font-variant-numeric:tabular-nums}
 .board-head .seg-view{margin-left:auto}
 .board-projnote{padding:0 22px 8px;font-family:var(--mono);font-size:10px;color:var(--ink-4);display:flex;align-items:center;gap:6px}
-.board-projnote .pj{padding:1px 5px;border-radius:4px;background:var(--bg-sunk);border:1px solid var(--line-soft)}
-.board-projnote .pj.on{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft);font-weight:600}
 .board-cols{flex:1;display:flex;gap:0;overflow-x:auto;padding:0 12px 12px;min-height:0}
-.bcol{flex:1;min-width:200px;display:flex;flex-direction:column;border-right:1px solid var(--line-soft);padding:4px 10px;min-height:0}
+.bcol{flex:1;min-width:220px;display:flex;flex-direction:column;border-right:1px solid var(--line-soft);padding:4px 10px;min-height:0}
 .bcol:last-child{border-right:none}
 .bcol-head{display:flex;align-items:center;gap:7px;padding:8px 4px 10px;position:sticky;top:0;background:var(--bg-pane);z-index:1}
 .bcol-head .c-dot{width:8px;height:8px;border-radius:50%;flex:none}
@@ -821,6 +820,10 @@ kbd{font-family:var(--ui);font-size:10.5px;color:var(--ink-2);background:var(--b
 /* Offcuts (scraps-and-sources design, frames 1, 2, 3, 6): the column before Idea, its scrap tiles in
    the Scratchpad's warm paper, the name field an offcut opens on Idea, and the activity row with Undo. */
 .boff-col{flex:1;min-width:200px;display:flex;flex-direction:column;border-right:1px solid var(--line-soft);padding:4px 10px;min-height:0}
+.boff-col.collapsed{flex:0 0 30px;min-width:30px;padding:0;background:var(--bg-sunk)}
+.boff-strip{flex:1;writing-mode:vertical-rl;text-align:left;padding:8px 6px;border:0;background:none;color:var(--ink-3);font:700 10px var(--ui);letter-spacing:.07em;text-transform:uppercase;cursor:pointer}
+.boff-strip:hover,.boff-strip:focus-visible{color:var(--accent)}
+.boff-strip:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .boff-col .c-dot.offcuts{background:var(--amber)}
 .boff-col .c-name.offcuts{color:var(--amber)}
 .boff-col .bcol-head{min-height:40px}
@@ -926,7 +929,6 @@ button.bsrc-ico:hover,button.bsrc-ico:focus-visible{color:var(--accent);border-c
 .collection-rail .rail-title{display:flex;align-items:center;gap:7px;margin-bottom:6px}.collection-rail .rail-title>svg{width:15px;height:15px;color:var(--amber)}
 .collection-rail .rail-title strong{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600}
 .collection-rail .rail-close{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;color:var(--ink-3)}.collection-rail .rail-close:hover{background:var(--hover);color:var(--ink)}.collection-rail .rail-close svg{width:14px;height:14px}
-.rail-projection{font:9.5px var(--mono);color:var(--ink-4)}.rail-projection .on{padding:1px 5px;border:1px solid var(--accent-soft);border-radius:4px;background:var(--accent-soft);color:var(--accent);font-weight:600}
 .collection-rail .rail-scroll{flex:1;min-height:0;overflow-y:auto;padding:10px 10px 8px}
 .rail-section-label{padding:3px 4px 7px;font:600 9.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
 .rail-card{margin-bottom:12px;border:1px solid var(--line-soft);border-radius:10px;background:var(--bg-elev);box-shadow:0 1px 2px rgba(20,25,40,.03);overflow:hidden}
@@ -1741,6 +1743,7 @@ table.gfm-style td{border-bottom:1px solid var(--line);padding:5px 10px}
 .pal-ask .icon{color:var(--accent)}
 .pal-empty{padding:22px 14px;font-size:12.5px;color:var(--ink-3);text-align:center}
 .palette-footer{padding:8px 16px;border-top:1px solid var(--line-soft);background:var(--bg-sunk);font-size:10.5px;color:var(--ink-3)}
+.palette-footer.unavailable{color:var(--amber)}
 .pal-group-row{min-height:44px;gap:12px}
 .pal-group-row .pal-name{font-weight:600;font-size:13.5px}
 .pal-group-tile{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:7px;background:var(--accent-soft);color:var(--accent)}

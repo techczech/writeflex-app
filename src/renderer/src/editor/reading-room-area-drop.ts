@@ -180,9 +180,9 @@ export async function commitReadingRoomAreaDrop(
     refusal = { result: 'failed', message: `Could not insert the Area capture: ${errorMessage(error)}` }
   }
   if (refusal) {
+    destination.onStatus(refusal.message)
     try {
       await saved.finish(false)
-      destination.onStatus(refusal.message)
     } catch (error) {
       destination.onStatus(`${refusal.message} Could not discard the Area image: ${errorMessage(error)}`)
     }

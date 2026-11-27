@@ -19,6 +19,9 @@ import { WindowTitlebar } from './components/WindowTitlebar'
 import { useCustomPages, usePlatformVoices } from './settings-pages'
 
 const bridge = window.bridleSettings
+const SETTINGS_ROOT = '.bsw-root.wf-settings'
+const SEARCH_INPUT = 'input[aria-label="Search settings"]'
+const SECTION_BUTTON = 'button[data-section]'
 
 const ROW_HINTS: Record<string, RowHint> = {
   'appearance.theme': { control: 'segmented' },
@@ -45,9 +48,11 @@ function SettingsApp(): React.JSX.Element {
   const [opened, setOpened] = useState<Opened>({ section: 'general', n: 0 })
   const [seenAt, setSeenAt] = useState(() => Date.now())
   const [viewFailed, setViewFailed] = useState(false)
+  const [retrying, setRetrying] = useState(false)
   const [importFailed, setImportFailed] = useState(false)
   const sectionVersion = useRef(0)
   const readView = useRef<(() => void) | null>(null)
+  const firstViewArrived = useRef(false)
   const showSection = useCallback((section: string, sheet?: SheetState): number => {
     const n = ++sectionVersion.current
     setImportFailed(false)
@@ -68,7 +73,7 @@ function SettingsApp(): React.JSX.Element {
   useEffect(() => {
     let live = true
     let hasView = false
-    let latestRead = 0
+    let reading = false
     let pendingImport: { section: string; n: number } | null = null
 
     const startImport = (): void => {
@@ -85,6 +90,7 @@ function SettingsApp(): React.JSX.Element {
       }, () => { if (isCurrent()) setImportFailed(true) })
     }
     const open = (request: SectionRequest): void => {
+      if (!live) return
       const n = showSection(request.section)
       pendingImport = request.action === 'import' ? { section: request.section, n } : null
       startImport()
@@ -93,27 +99,35 @@ function SettingsApp(): React.JSX.Element {
       hasView = true
       setView(next)
       setViewFailed(false)
+      setRetrying(false)
     }
 
     const offChanged = bridge.onChanged((next) => {
+      if (!live) return
       acceptView(next)
       startImport()
     })
     const offSection = bridge.onSection(open)
-    const read = (): void => {
-      const n = ++latestRead
+    const read = (retry = false): void => {
+      if (!live || hasView || reading) return
+      reading = true
+      if (retry) setRetrying(true)
       // A pushed view supersedes any pending read of the initial view.
-      const isCurrent = () => live && n === latestRead && !hasView
-      setViewFailed(false)
+      const isCurrent = () => live && !hasView
       void bridge.view().then((next) => {
         if (!isCurrent()) return
         acceptView(next)
         // The host can return the original open request on retry. Any section already received wins.
         if (next.request && sectionVersion.current === 0) open(next.request)
         else startImport()
-      }, () => { if (isCurrent()) setViewFailed(true) })
+      }, () => {
+        if (!isCurrent()) return
+        reading = false
+        setViewFailed(true)
+        setRetrying(false)
+      })
     }
-    readView.current = read
+    readView.current = () => read(true)
     // Subscribe first. In development, let StrictMode discard its first effect before the one-shot host request.
     queueMicrotask(() => { if (live) read() })
     return () => {
@@ -124,22 +138,82 @@ function SettingsApp(): React.JSX.Element {
     }
   }, [showSection])
 
+  useEffect(() => {
+    if (!view || firstViewArrived.current) return
+    firstViewArrived.current = true
+    if (!opened.sheet) document.querySelector<HTMLInputElement>(`${SETTINGS_ROOT} ${SEARCH_INPUT}`)?.focus()
+  }, [view, opened.sheet])
+
+  useEffect(() => {
+    const root = document.querySelector<HTMLElement>(SETTINGS_ROOT)
+    const nav = root?.querySelector('.bsw-side')
+    if (!root || !nav) return
+    const updateTabStops = (): void => {
+      for (const button of nav.querySelectorAll<HTMLButtonElement>(SECTION_BUTTON)) {
+        button.tabIndex = button.dataset.section === root.dataset.section ? 0 : -1
+      }
+    }
+    updateTabStops()
+    // The shared window owns sidebar navigation and exposes its current section on the root.
+    const observer = new MutationObserver(updateTabStops)
+    observer.observe(root, { attributeFilter: ['data-section'] })
+    observer.observe(nav, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [opened.section, opened.n, view])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      const root = document.querySelector(SETTINGS_ROOT)
+      if (!root || event.defaultPrevented || root.querySelector('[role="dialog"]')) return
+      if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
+        const search = root.querySelector<HTMLInputElement>(SEARCH_INPUT)
+        if (!search) return
+        event.preventDefault()
+        search.focus()
+        search.select()
+        return
+      }
+      const active = document.activeElement
+      if (!(active instanceof HTMLButtonElement) || !active.matches(SECTION_BUTTON)) return
+      const buttons = [...root.querySelectorAll<HTMLButtonElement>(SECTION_BUTTON)]
+      const index = buttons.indexOf(active)
+      if (index < 0) return
+      let next: number
+      switch (event.key) {
+        case 'ArrowDown': next = index + 1; break
+        case 'ArrowUp': next = index - 1; break
+        case 'Home': next = 0; break
+        case 'End': next = buttons.length - 1; break
+        default: return
+      }
+      event.preventDefault()
+      const button = buttons[next]
+      if (!button || button === active) return
+      button.focus()
+      button.click()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+
   // ChatGPT is a sign-in, not a key: its row offers Sign out, and signing in is on the Sign in page.
   const slots = useMemo<Slot[] | undefined>(() => view?.slots.map((s) => ({
     ...s,
     group: 'Model providers',
     ...(ACCOUNT_SLOTS.has(s.id) ? { kind: 'account' as const, icon: 'message-circle' } : { icon: 'key-round' }),
   })), [view])
-  const customPages = useCustomPages(view, useCallback(() => { showSection('accounts') }, [showSection]))
+  const customPages = useCustomPages(view, showSection)
 
   const titlebar = <WindowTitlebar className="wf-titlebar"><span>Settings</span></WindowTitlebar>
   if (!view) return (
     <>
       {titlebar}
-      {viewFailed ? (
+      {viewFailed || retrying ? (
         <div role="alert" className="bsw-notice wf-settings-problem">
           <span>Settings could not be loaded.</span>
-          <button type="button" className="bsw-btn" onClick={() => readView.current?.()}>Try again</button>
+          <button type="button" className="bsw-btn" autoFocus aria-disabled={retrying} onClick={() => readView.current?.()}>
+            {retrying ? 'Trying…' : 'Try again'}
+          </button>
         </div>
       ) : <div role="status" className="wf-settings-loading">Loading settings…</div>}
     </>

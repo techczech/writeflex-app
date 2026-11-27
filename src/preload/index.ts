@@ -962,8 +962,8 @@ export type WriteFlexApi = {
   clearDocument: (path: string) => Promise<ClearDocumentResult | null>
   /** Tier 2 (ADR-0013): checkpoint a file's on-disk state as a returnable point (the git *commit*).
    *  `auto: true` marks an app-made close-checkpoint (gated by the "checkpoint on close" setting); a ⌘S
-   *  checkpoint passes no `auto` and always fires. */
-  checkpoint: (path: string, opts?: { auto?: boolean }) => Promise<void>
+   *  checkpoint passes no `auto`. Returns whether the file was kept in History. */
+  checkpoint: (path: string, opts?: { auto?: boolean }) => Promise<boolean>
   /** Keep exactly `text` (a version of `path`) in History before it is replaced. The answer carries a
    *  receipt (the History entry, sha256) or says why nothing was kept: no History in this window, or the
    *  file no longer holds that text (main/preserve-version.ts). */

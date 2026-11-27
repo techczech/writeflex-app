@@ -383,16 +383,30 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
       {listing === null && !problem && <p className="fvp-note" role="status">Reading the versions…</p>}
       {listing !== null && working && (
         <>
+          <div className="fvp-row" data-testid="file-working">
+            <Pencil aria-hidden="true" />
+            <div className="t">
+              <div className="nm">Working copy{working.state === 'changed' && <span className="fvp-chip warn">unsaved</span>}{working.state === 'same' && <span className="fvp-chip">saved</span>}</div>
+              <div className="meta" data-testid="file-working-state">{workingSentence(working, kind)}</div>
+            </div>
+          </div>
+          <div className="fvp-actions" role="group" aria-label={`What to do with ${file}`}>
+            <button type="button" className="fvp-btn" data-testid="file-save-version" disabled={working.state === 'too-large' || working.state === 'missing' || working.state === 'unreadable'} onClick={() => run('save')}><History aria-hidden="true" />Save version…</button>
+            <button type="button" className="fvp-btn" data-testid="file-compare-button" aria-disabled={canCompare ? undefined : true} title={canCompare ? undefined : compareReason} onClick={() => run('compare')}><GitCompare aria-hidden="true" />{chosen ? `Compare v${chosen.number} with working` : 'Compare with working'}</button>
+            <button type="button" className="fvp-btn" data-testid="file-restore-button" aria-disabled={canRestore ? undefined : true} title={canRestore ? undefined : restoreReason} onClick={() => run('restore')}><RotateCcw aria-hidden="true" />{chosen ? `Restore v${chosen.number}` : 'Restore'}</button>
+            <button type="button" className="fvp-btn" data-testid="file-copy-button" aria-disabled={chosen && chosen.sha256 !== null ? undefined : true} title={chosen ? undefined : 'No version holds a copy of this file yet.'} onClick={() => run('copy')}><Copy aria-hidden="true" />{chosen ? `Save v${chosen.number} as a copy…` : 'Save as a copy…'}</button>
+          </div>
+          {naming && (
+            <form className="fvp-name" data-testid="file-version-name" onSubmit={(event) => { event.preventDefault(); void doSave() }}
+              onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNaming(false); setName(''); setSaveProblem('') } }}>
+              <input ref={nameRef} value={name} aria-label={`Name for the version of ${file}`} placeholder="Name this version" disabled={busy}
+                onChange={(event) => { setName(event.target.value); setSaveProblem('') }} />
+              <button type="submit" className="fvp-btn pri" disabled={busy} data-testid="file-version-name-save"><Save aria-hidden="true" />Save</button>
+            </form>
+          )}
+          {saveProblem && <p className="fvp-err" role="alert" data-testid="file-version-name-error">{saveProblem}</p>}
+          {compare && <CompareView result={compare} onClose={() => setCompare(null)} />}
           <ul className="fvp-rows" aria-label="Versions, newest first">
-            <li>
-              <div className="fvp-row" data-testid="file-working">
-                <Pencil aria-hidden="true" />
-                <div className="t">
-                  <div className="nm">Working copy{working.state === 'changed' && <span className="fvp-chip warn">unsaved</span>}{working.state === 'same' && <span className="fvp-chip">saved</span>}</div>
-                  <div className="meta" data-testid="file-working-state">{workingSentence(working, kind)}</div>
-                </div>
-              </div>
-            </li>
             {rows.map((row) => (
               <li key={row.id}>
                 <button type="button" className="fvp-row" data-version-row={row.id} data-testid="file-version-row" data-number={row.number} aria-pressed={chosen?.id === row.id} onClick={() => setSelected(row.id)}>
@@ -409,23 +423,6 @@ export function FileVersionsPanel({ path, request = null, onReveal, onStatus }: 
           {working.state === 'too-large' && (
             <p className="fvp-err" role="status" data-testid="file-too-large"><TriangleAlert aria-hidden="true" style={{ width: 13, height: 13, verticalAlign: '-2px' }} /> {file} is over {FILE_VERSION_CAP_LABEL}, so a Folio version lists it as a reference and keeps no copy of it. It has no file versions.</p>
           )}
-          {naming ? (
-            <form className="fvp-name" data-testid="file-version-name" onSubmit={(event) => { event.preventDefault(); void doSave() }}
-              onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNaming(false); setName(''); setSaveProblem('') } }}>
-              <input ref={nameRef} value={name} aria-label={`Name for the version of ${file}`} placeholder="Name this version" disabled={busy}
-                onChange={(event) => { setName(event.target.value); setSaveProblem('') }} />
-              <button type="submit" className="fvp-btn pri" disabled={busy} data-testid="file-version-name-save"><Save aria-hidden="true" />Save</button>
-            </form>
-          ) : (
-            <div className="fvp-actions" role="group" aria-label={`What to do with ${file}`}>
-              <button type="button" className="fvp-btn" data-testid="file-save-version" disabled={working.state === 'too-large' || working.state === 'missing' || working.state === 'unreadable'} onClick={() => run('save')}><History aria-hidden="true" />Save version…</button>
-              <button type="button" className="fvp-btn" data-testid="file-compare-button" aria-disabled={canCompare ? undefined : true} title={canCompare ? undefined : compareReason} onClick={() => run('compare')}><GitCompare aria-hidden="true" />{chosen ? `Compare v${chosen.number} with working` : 'Compare with working'}</button>
-              <button type="button" className="fvp-btn" data-testid="file-restore-button" aria-disabled={canRestore ? undefined : true} title={canRestore ? undefined : restoreReason} onClick={() => run('restore')}><RotateCcw aria-hidden="true" />{chosen ? `Restore v${chosen.number}` : 'Restore'}</button>
-              <button type="button" className="fvp-btn" data-testid="file-copy-button" aria-disabled={chosen && chosen.sha256 !== null ? undefined : true} title={chosen ? undefined : 'No version holds a copy of this file yet.'} onClick={() => run('copy')}><Copy aria-hidden="true" />{chosen ? `Save v${chosen.number} as a copy…` : 'Save as a copy…'}</button>
-            </div>
-          )}
-          {saveProblem && <p className="fvp-err" role="alert" data-testid="file-version-name-error">{saveProblem}</p>}
-          {compare && <CompareView result={compare} onClose={() => setCompare(null)} />}
           <p className="fvp-note" data-testid="file-versions-note">The text always shows the current file; a saved Folio version keeps the file as it was. A backup carries a version once a Folio version has used it.</p>
         </>
       )}

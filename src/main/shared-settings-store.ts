@@ -2,8 +2,9 @@ import {
   set, rebindMany, reset, resetSection, resetShortcuts, resetAll, resetEntry, applyImport, undoBatch,
   capChanges, MAX_CHANGES, type ChangeEntry, type Actor, type ImportPreview, type WriteRoute,
 } from '@app-patterns/settings'
-import { SettingsStore, type SettingsStoreOptions, type StoreResult, type StoreUndoResult } from '@app-patterns/settings/node'
+import { MAX_FILE_BYTES, SettingsStore, type SettingsStoreOptions, type StoreResult, type StoreUndoResult } from '@app-patterns/settings/node'
 import { schema } from '../shared/settings-schema'
+import { SYNC_VAULTS_KEY } from '../shared/git-sync-settings'
 import { APP_KEYS_SETTING, effectiveBindings, parseOverrideJson } from '../shared/keymap-overrides'
 import { bridleIdOf, bridleChordOf } from '../shared/bridle-commands'
 import { updateSettings, type StateOperation, type TransactionOptions } from './settings-transaction'
@@ -24,6 +25,20 @@ export class SharedSettingsStore extends SettingsStore {
   override set(key: string, value: unknown): Promise<StoreResult> {
     if (key === APP_KEYS_SETTING) return Promise.resolve({ ok: false, code: 'rejected', error: 'These shortcuts are managed by migration. Use Shortcuts to rebind a command.' })
     return super.set(key, value)
+  }
+  /** Save machine-managed vault preferences under the usual write policy, preserving existing history. */
+  setSyncVaultPreferences(value: string): Promise<StoreResult> {
+    return updateSettings(this, this.version, this.actor, (state, ctx) => {
+      const result = set(state, SYNC_VAULTS_KEY, value, ctx)
+      if (!result.ok || !result.entries.length) return result
+      // Keep the proposed change for the write policy, while preserving the entire stored change list.
+      const next = { ...result.state, changes: state.changes }
+      const maxBytes = this.transactionOptions.maxBytes ?? MAX_FILE_BYTES
+      if (Buffer.byteLength(JSON.stringify(next, null, 2) + '\n', 'utf8') > maxBytes) {
+        return { ok: false, code: 'invalid-value', error: 'The vault preferences would make the settings file too large.' }
+      }
+      return { ...result, state: next }
+    }, { ...this.transactionOptions, route: 'set' })
   }
   private change(route: WriteRoute, operation: StateOperation, ids?: readonly string[] | 'all'): Promise<StoreResult> {
     return updateSettings(this, this.version, this.actor, (state, ctx) => {

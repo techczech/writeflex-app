@@ -4,6 +4,8 @@
 import { readEditorFile } from '../../src/main/editor-read'
 import { Workspace } from '../../src/main/workspace'
 import { afterAll, describe, expect, it } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import ts from 'typescript'
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,7 +16,8 @@ import { textForSave } from '../../src/shared/line-endings'
 import { basisAllows, type SaveBasis } from '../../src/shared/save-basis'
 import type { ExternalDiskNotice } from '../../src/renderer/src/editor/reconcile'
 import { createUnsavedRegistry } from '../../src/renderer/src/app/unsaved-registry'
-import { createDocumentOwner } from '../../src/renderer/src/app/document-owner'
+import { stepForOutside } from '../../src/renderer/src/app/disk-notices'
+import { createDocumentOwner, type OutsideOutcome } from '../../src/renderer/src/app/document-owner'
 import type { WriteAnswer } from '../../src/renderer/src/app/write-buffer'
 
 const P = 'note.md'
@@ -449,5 +452,152 @@ describe('refusal', () => {
       afterSave: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) },
     })
     expect(outcome).toEqual({ status: 'refused', path: P })
+  })
+})
+
+describe('reconciling a named Folio version through App', () => {
+  // Run the production callbacks with the real owner, without mounting the Electron window.
+  const app = ts.createSourceFile('App.tsx', readFileSync(new URL('../../src/renderer/src/app/App.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const component = app.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === 'App')
+  const names = new Set(['readEditorDocument', 'captureAppliedFileScope', 'reconcileAppliedFile', 'runFolioSave'])
+  const callbacks = (component?.body?.statements ?? [])
+    .filter((node): node is ts.VariableStatement => ts.isVariableStatement(node))
+    .filter(node => node.declarationList.declarations.some(decl => names.has(decl.name.getText(app))))
+    .map(node => node.getText(app)).join('\n')
+  const callbackJs = ts.transpile(callbacks + '\nreturn runFolioSave', { target: ts.ScriptTarget.ES2022 })
+  const afterIpc = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+  function versionHarness() {
+    const { owner, h, type } = harness('B\r\n')
+    const mainCalled = Promise.withResolvers<void>()
+    const mainReply = Promise.withResolvers<void>()
+    const readCalled = Promise.withResolvers<void>()
+    const readReply = Promise.withResolvers<void>()
+    const reads: Array<string | null> = []
+    const writerStateSettled: string[] = []
+    const workspace = { current: {} }
+    const tabs = { current: [P] }
+    const sheet = { current: { stage: 'sheet', sheetId: 1, dir: '', busy: false } }
+    const read = async () => {
+      const captured = h.disk
+      reads.push(captured)
+      readCalled.resolve()
+      await readReply.promise
+      return captured
+    }
+    const ports = {
+      useCallback: (fn: unknown) => fn,
+      root: '/test-workspace',
+      documentWorkspaceRef: workspace,
+      tabsRef: tabs,
+      owner,
+      window: { writeflex: {
+        readFile: async (path: string) => ({ file: { path }, content: await read() }),
+        readEditorFile: async () => ({ kind: 'read', content: await read() }),
+        folioVersionSave: { save: async () => {
+          mainCalled.resolve()
+          await mainReply.promise
+          return { settled: [{ path: P }] }
+        } },
+      } },
+      raiseForOutside: (path: string, outcome: OutsideOutcome) => {
+        const step = stepForOutside(h.notices.get(path), outcome)
+        if (step?.notice === 'clear') h.notices.delete(path)
+        else if (step?.notice && step.notice !== 'keep') h.notices.set(path, step.notice)
+      },
+      folioSaveRef: sheet,
+      folioSaveGate: { current: { begin: () => 1, end: () => {} } },
+      folderPrefix: (dir: string) => dir,
+      documentsUnder: () => [P],
+      flushPaths: (paths: string[]) => owner.flush(paths),
+      cancelPendingFlush: () => {},
+      flushWriterChangesNow: async () => ({ failed: [] }),
+      editorRef: { current: { settleWriterChanges: (path: string) => writerStateSettled.push(path) } },
+      clearFileWriterState: () => {},
+      setFolioSave: () => {},
+      holdOverlay: () => {},
+      saveChanged: () => false,
+      savedToast: () => 'Version saved',
+      refusalSentence: (error: unknown) => { throw error },
+      reloadChanges: async () => [],
+      reloadVersions: async () => {},
+      closePalette: () => {},
+      flash: () => {},
+    }
+    const run = new Function(...Object.keys(ports), callbackJs)(...Object.values(ports)) as
+      (input: { name: string; note: string; includeUnlisted: boolean; expect: string }) => Promise<void>
+    const version = run({ name: 'Named', note: '', includeUnlisted: false, expect: '' })
+    return { owner, h, type, version, mainCalled, mainReply, readCalled, readReply, reads, workspace, writerStateSettled }
+  }
+
+  for (const [label, typing, outside] of [
+    ['keeps a later confirmed save', false, false],
+    ['keeps unsaved typing without reporting its own save as an outside edit', true, false],
+    ['reports genuine outside bytes while keeping unsaved typing', true, true],
+  ] as const) {
+    it(label, async () => {
+      const v = versionHarness()
+      await v.mainCalled.promise
+      const writing = Promise.withResolvers<void>()
+      const commit = Promise.withResolvers<void>()
+      v.h.during = () => { writing.resolve(); return commit.promise }
+      v.type('C\n')
+      const save = v.owner.save(P)
+      await writing.promise
+      const laterTurn = Promise.withResolvers<void>()
+      const turn = v.owner.inQueue(P, () => laterTurn.promise)
+      v.mainReply.resolve()
+      // Main's reply is delivered with the owner's write paused. An out-of-turn read captures B now.
+      // An in-turn read waits behind both of the explicitly held operations.
+      await afterIpc()
+      commit.resolve()
+      expect(await save).toBe(true)
+      if (typing) v.type('D\n')
+      if (outside) v.h.disk = 'E\r\n'
+      laterTurn.resolve()
+      v.readReply.resolve()
+      await v.version
+      await turn
+      expect({
+        buffer: v.h.buffer,
+        baseline: v.owner.baselineDiskOf(P),
+        disk: v.h.disk,
+        notice: v.h.notices.get(P),
+      }).toEqual({
+        buffer: typing ? 'D\n' : 'C\n',
+        baseline: 'C\r\n',
+        disk: outside ? 'E\r\n' : 'C\r\n',
+        notice: outside ? { kind: 'changed', dirty: true, diskText: 'E\r\n' } : undefined,
+      })
+      expect(v.reads).toEqual([outside ? 'E\r\n' : 'C\r\n'])
+    })
+  }
+
+  it('does not settle or read a reopened document when the version completion belongs to its old owner record', async () => {
+    const v = versionHarness()
+    await v.mainCalled.promise
+    v.owner.drop(P)
+    v.h.buffer = 'Reopened.\n'
+    v.owner.activated(P, v.h.buffer, () => 'Reopened.\n')
+    v.mainReply.resolve()
+    v.readReply.resolve()
+    await v.version
+    expect({ buffer: v.h.buffer, baseline: v.owner.baselineDiskOf(P), reads: v.reads, settled: v.writerStateSettled })
+      .toEqual({ buffer: 'Reopened.\n', baseline: 'Reopened.\n', reads: [], settled: [] })
+  })
+
+  it('ignores a read that answers after a return to the same workspace root', async () => {
+    const v = versionHarness()
+    await v.mainCalled.promise
+    v.h.disk = 'Old workspace version.\n'
+    v.mainReply.resolve()
+    await v.readCalled.promise
+    v.workspace.current = {}
+    v.type('New workspace text.\n')
+    v.h.disk = 'New workspace disk.\n'
+    v.readReply.resolve()
+    await v.version
+    expect({ buffer: v.h.buffer, baseline: v.owner.baselineDiskOf(P), notice: v.h.notices.get(P) })
+      .toEqual({ buffer: 'New workspace text.\n', baseline: 'B\r\n', notice: undefined })
   })
 })
