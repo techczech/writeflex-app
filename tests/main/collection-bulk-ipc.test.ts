@@ -30,6 +30,9 @@ const probe = String.raw`
   state.agent = null
   state.agentReady = null
   registerIpc({ openFolder: async () => {}, openFile: async () => {}, recents: () => [], openRecent: async () => {} }, await settingsForIpcTest(root), {})
+  const { addCollectionTagsFlushed, runCollectionBatch } = await import('./src/renderer/src/app/collection-bulk.ts')
+  const { createDocumentOwner } = await import('./src/renderer/src/app/document-owner.ts')
+  const { createUnsavedRegistry } = await import('./src/renderer/src/app/unsaved-registry.ts')
   const event = { sender }
   const invoke = (name, value) => handlers.get(name)(event, value)
   try {
@@ -71,7 +74,68 @@ const probe = String.raw`
     await invoke('collection:begin-batch')
     sender.emit('did-start-loading')
     const recovered = sent.filter(([channel]) => channel === 'collection:changed').length === changes + 2
-    console.log(JSON.stringify({ before, changes, queries, kept, restored, refusedHidden, recovered, nullWrites, rejectedWrites, scans }))
+    await writeFile(join(root, 'c.md'), '# Original C\n')
+    let buffer = '# Original D\n'
+    await writeFile(join(root, 'd.md'), buffer)
+    const owner = createDocumentOwner({
+      buffer: path => path === 'd.md' ? buffer : null,
+      notice: () => undefined,
+      registry: createUnsavedRegistry(),
+      write: (path, text, basis) => state.workspace.saveFileOver(path, text, basis),
+      replaceBuffer: (_path, text) => { buffer = text },
+      forgetBuffer: () => {},
+      dirtyChanged: () => {},
+      setReadOnly: () => {},
+      report: { slow: () => {}, refusedByNotice: () => {}, refusedByMain: () => {}, diskChanged: () => {}, saved: () => {}, outsideAfterWrite: () => {}, unknown: () => {} },
+    })
+    owner.activated('d.md', buffer, () => buffer)
+
+    const readC = Promise.withResolvers()
+    const resumeC = Promise.withResolvers()
+    const readD = Promise.withResolvers()
+    const resumeD = Promise.withResolvers()
+    const readFileFromWorkspace = state.workspace.readFile.bind(state.workspace)
+    state.workspace.readFile = async path => {
+      const source = await readFileFromWorkspace(path)
+      if (path === 'c.md') {
+        readC.resolve()
+        await resumeC.promise
+      } else if (path === 'd.md') {
+        readD.resolve()
+        await resumeD.promise
+      }
+      return source
+    }
+
+    let written
+    const addTags = async (dir, path, tags) => {
+      const saved = await invoke('collection:add-tags', { dir, path, tags })
+      if (path === 'd.md') written = saved.written
+      return saved
+    }
+    await invoke('collection:begin-batch')
+    const batch = runCollectionBatch(['c.md', 'd.md'], path =>
+      addCollectionTagsFlushed(owner, addTags, '', path, ['batch-tag']))
+    await readC.promise
+    try {
+      await writeFile(join(root, 'c.md'), '# Newer C\n')
+    } finally {
+      resumeC.resolve()
+    }
+
+    await readD.promise
+    try {
+      buffer += '\nTyped during tagging.\n'
+      owner.edited('d.md', buffer)
+    } finally {
+      resumeD.resolve()
+    }
+    const partial = await batch
+    await invoke('collection:end-batch')
+    const refusedText = await readFile(join(root, 'c.md'), 'utf8')
+    const succeededText = await readFile(join(root, 'd.md'), 'utf8')
+    console.log(JSON.stringify({ before, changes, queries, kept, restored, refusedHidden, recovered, nullWrites, rejectedWrites, scans,
+      partial, refusedText, succeededText, written, buffer, saved: owner.isSaved('d.md') }))
   } finally { await rm(root, { recursive: true, force: true }) }
 `
 
@@ -79,10 +143,22 @@ test('bulk IPC keeps per-file checkpoints, coalesces refreshes, rejects hidden m
   const child = Bun.spawn([process.execPath, '-e', probe], { cwd: new URL('../..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe' })
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   if (code !== 0) throw new Error(`Collection bulk unit probe failed: ${stderr}`)
-  expect(JSON.parse(stdout)).toEqual({
+  const { partial, refusedText, succeededText, written, buffer, saved, ...original } = JSON.parse(stdout)
+  expect(original).toEqual({
     before: 0, changes: 2, queries: 2,
     kept: [['a.md', '# Original A\n'], ['b.md', '---\ntags: alpha, beta\n---\n# Original B\n']],
     restored: '---\ntags: alpha, beta\n---\n# Original B\n',
     refusedHidden: true, recovered: true, nullWrites: true, rejectedWrites: true, scans: 1,
   })
+  expect(partial).toEqual({
+    succeeded: ['d.md'],
+    failed: ['c.md'],
+    message: 'Changed 1 of 2. c.md was not changed: This document changed on disk. Review the disk changes, then try adding the tags again.',
+  })
+  expect(refusedText).toBe('# Newer C\n')
+  expect(succeededText).toContain('batch-tag')
+  expect(succeededText).toEndWith('# Original D\n')
+  expect(written).toBe(succeededText)
+  expect(buffer).toBe('# Original D\n\nTyped during tagging.\n')
+  expect(saved).toBe(false)
 })

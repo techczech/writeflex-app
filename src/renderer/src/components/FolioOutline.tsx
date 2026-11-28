@@ -47,8 +47,10 @@ type FolioOutlinePartProps = {
   onMovePiece: (path: string, beforePath: string | null, expected: string[]) => void
   /** Add files to the end of the running order. */
   onAdd: (files: Array<{ path: string; title: string }>) => void
-  /** A write is under way: nothing can be dragged or added. */
+  /** A read or write has to settle before another running-order action. */
   busy: boolean
+  refreshing?: boolean
+  revision?: object | null
   /** The pieces the last Add added, tinted until the next change. */
   justAdded: readonly string[]
   /** The live-region text. */
@@ -85,7 +87,7 @@ const fileNameOf = (path: string): string => path.slice(path.lastIndexOf('/') + 
  * editor's own (so unsaved ones show), every other file's come from disk. The rows are one roving-focus
  * list: ↑ ↓ move, ← → collapse and expand a file, Enter opens.
  */
-export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferHeadings, bufferPath, bufferText, activeFrom, needle, levelLimit, expanded, onToggle, onOpenFile, onJumpToFile, onJumpOpen, listRef, onMovePiece, onAdd, busy, justAdded, announcement, touched, onFocusedRow, onOpenPlan }: FolioOutlinePartProps): JSX.Element {
+export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferHeadings, bufferPath, bufferText, activeFrom, needle, levelLimit, expanded, onToggle, onOpenFile, onJumpToFile, onJumpOpen, listRef, onMovePiece, onAdd, busy, refreshing, revision, justAdded, announcement, touched, onFocusedRow, onOpenPlan }: FolioOutlinePartProps): JSX.Element {
   // A buffer from another file (the snapshot trails a tab switch) is ignored: the open piece then shows its disk headings.
   const fromBuffer = openPath !== null && bufferPath === openPath
   const titleActions = useTitleConflictContext()
@@ -153,6 +155,7 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
     listRef,
     pieces: contentsPieces.map((file) => ({ path: file.path, title: titleOf(file) })),
     enabled: canChange && !filtering && !busy,
+    revision,
     onDrop: (path, beforePath) => onMovePiece(path, beforePath, outline.pieces.map((file) => file.path)),
     suppressClick,
   })
@@ -251,7 +254,7 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
     const base = headings.reduce((least, heading) => Math.min(least, heading.level), 6)
     const title = titleOf(file)
     const front = kind === 'piece' && file.frontMatter === true
-    const draggable = kind === 'piece' && !front && canChange
+    const draggable = kind === 'piece' && !front && canChange && !busy
     return (
       <div key={key} role="presentation" data-fo-box={kind === 'piece' && !front ? index : undefined} data-fo-front-box={front ? index : undefined}>
         <div
@@ -393,6 +396,7 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
         className={`ol-list fo-scroll${drag ? ' dragging' : ''}`}
         role="tree"
         aria-label="Folio outline"
+        aria-busy={refreshing || undefined}
         onKeyDown={onKeyDown}
       >
         {hasFront && (
@@ -409,7 +413,7 @@ export function FolioOutlinePart({ outline, openPath, bufferHeadings: rawBufferH
         )}
         <div className="fo-sec fo-pin" id="fo-grp-run" role="presentation">
           <span>Contents · {flow.sections?.length ? `${flow.sections.length} ${flow.sections.length === 1 ? 'section' : 'sections'} · ` : ''}{contentsPieces.length} {contentsPieces.length === 1 ? 'part' : 'parts'} written</span>
-          {canChange && !filtering && contentsPieces.length > 1 && <span className="fo-hint" data-fo-hint="true">{movingTitle ? `moving ${titleOf(movingTitle)}` : 'drag to reorder'}</span>}
+          {canChange && !busy && !filtering && contentsPieces.length > 1 && <span className="fo-hint" data-fo-hint="true">{movingTitle ? `moving ${titleOf(movingTitle)}` : 'drag to reorder'}</span>}
         </div>
         {/* Each group's rows sit in a labelled group; the sticky headings stay direct children of the scroller. */}
         <div role="group" aria-labelledby="fo-grp-run">

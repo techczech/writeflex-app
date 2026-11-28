@@ -18,8 +18,9 @@ import type { ScratchMode } from '../../../shared/scratchpad-layout'
 import { createNoticeTimer } from './notice-timer'
 import { ROOM_ON_SCREEN_EVENT, roomOnScreen } from '../plan/room-on-screen'
 import { flushRoomPending } from '../folio-room-pending'
-import { addCollectionBatchToFolio, runCollectionBatch } from './collection-bulk'
+import { addCollectionBatchToFolio, addCollectionTagsFlushed, runCollectionBatch } from './collection-bulk'
 import { setPieceStatusFlushed } from './piece-status'
+import { setFolderPieceModeFlushed } from './folder-piece-mode'
 import { COLLECTION_PAGE_COMMANDS, dispatchCollectionPageCommand } from '../components/collection-page-commands'
 import { flushUntilClean, type CloseFlushResult } from './close-flush'
 import { researchCaptureTarget } from './research-capture-target'
@@ -80,7 +81,8 @@ import { askFolioPlace } from './folio-place-request'
 import { useFolioRunningOrder, type FlashAction } from './folio-running-order'
 import { planDirFor } from './plan-dir'
 import { changedOnDiskMessage, inFolioFolder, saveQueuedBehindFolioWriteMayRun, writeFolioThroughSaveQueue } from '../../../shared/folio-write-preparation'
-import { ORDER_IN_PLAN_LINE, blockCommandTarget, commandTarget, type FocusedFolioRow } from '../../../shared/folio-running-order'
+import { runFolioOutlineCommand, useFolioOutlineRead, type FolioOutlineCommand } from './folio-outline-read'
+import { useOutlineFocus } from './outline-focus'
 import { createPlayer, normaliseReadAloudRate, type Player, type PlayerState } from '../editor/read-aloud-player'
 import { normaliseReadAloudScrollMode, type ReadAloudScrollMode } from '../editor/read-aloud'
 import {
@@ -152,11 +154,12 @@ import { PieceSourcesPopover } from '../components/PieceSources'
 import { Board } from '../components/Board'
 import { Rail, type QueryInsertionContext } from '../components/Rail'
 import { InsertQueryConfirm } from '../components/InsertQueryConfirm'
-import { folioOpenTarget, readFolioOpenParts } from '../components/FolioOpenButton'
+import { readFolioOpenParts } from '../components/FolioOpenButton'
+import { readFolderOpenDestination } from './folder-open-navigation'
 import { FOLIO_VERSION_COMMAND_EVENT, ROOM_VIEW_EVENT, type RoomViewCommand } from '../components/FolioRoom'
 import { runFileVersionsCommand, type FileVersionsAction } from '../plan/file-versions-focus'
 import { OPEN_COMPARE_EVENT, OPEN_EXPORT_EVENT, OPEN_IMPORT_EVENT, OPEN_MARK_SENT_EVENT, OPEN_READ_ONLY_EVENT, requestImportOnNextVersionsTab } from '../components/FolioRoomVersions'
-import { OPEN_VERSION_NUDGE_EVENT, OPEN_VERSION_REQUEST_EVENT, anyVersionRead, setWaitingOpenVersion, useAnyReadingVersion, useAnyVersionRead, type OpenVersionRequest } from '../plan/folio-reading'
+import { anyVersionRead, useAnyReadingVersion, useAnyVersionRead, useScratchpadVersionOpen } from '../plan/folio-reading'
 import { registerVersionSendHost, sendVersionSelectionFromCommand } from '../scratchpad/version-send'
 import { ROOM_VIEWS, type RoomView } from '../../../shared/folio-room'
 import { folderIsFolio } from './folio-routing'
@@ -413,7 +416,7 @@ function closeCheckpointOrder(flushed: string[], changed: string[], open: string
  * one, else the piece's own folder. Asked by the wikilink resolver and by the Export sheet — which
  * must agree, because the sheet offers a bundle of exactly the Collection the links resolve within.
  */
-async function collectionDirFor(path: string): Promise<string> {
+async function collectionDirFor(path: string, isCurrent?: () => boolean): Promise<string> {
   const start = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
   const ancestors: string[] = []
   let cursor = start
@@ -423,7 +426,9 @@ async function collectionDirFor(path: string): Promise<string> {
     cursor = cursor.includes('/') ? cursor.slice(0, cursor.lastIndexOf('/')) : ''
   }
   for (const candidate of ancestors) {
-    if ((await window.writeflex.collection.status(candidate)).collection) return candidate
+    const status = await window.writeflex.collection.status(candidate)
+    if (isCurrent?.() === false) break
+    if (status.collection) return candidate
   }
   return start
 }
@@ -707,6 +712,8 @@ type EditorJumpTarget =
   | { kind: 'line'; line: number; offset?: number; focus?: boolean }
   | { kind: 'match'; line: number; column: number; length: number }
 
+type FolderOpenTarget = { dir: string; restoredFolio?: true } | { focusedRow: SidebarFocusedRow | null }
+
 type EditorJump = {
   workspace: object | null
   path: string
@@ -714,6 +721,8 @@ type EditorJump = {
   room: string | null
   target: EditorJumpTarget
 }
+
+const FOLIO_FOCUS_OVERLAY = '.pal, .overlay.open, .cv-sheet, [role="dialog"], [role="alertdialog"], [aria-modal="true"]'
 
 export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {}): JSX.Element {
   const [readingRoomOpen, setReadingRoomOpen] = useState(false)
@@ -750,7 +759,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const e2eSavesSentRef = useRef<Array<{ path: string; content: string }>>([])
   const e2eSlowSaveReleaseRef = useRef<(() => void) | null>(null)
   const [sidebarFilterFocusTick, setSidebarFilterFocusTick] = useState(0)
-  const [outlineOpen, setOutlineOpen] = useState(true)
   const [agentOpen, setAgentOpen] = useState(true)
   // Change Ledger dock (Task 4, ADR-0010/0011): a right-side panel listing the active document's
   // changes over the ChangeStore. ReviewCursor owns the dock↔document current-change invariant.
@@ -859,9 +867,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     viewportWidth,
     defaultRightTab: window.writeflex.e2eEnabled && !window.writeflex.e2eFreshSidebars ? 'agent' : undefined,
     folioCommentsShown: folioCommentsOpen,
-    onLeftTabOpened: (tab) => {
-      if (tab === 'outline') setOutlineOpen(true)
-    },
     onRightTabOpened: (tab) => {
       if (tab === 'agent' || tab === 'scratchpad') setAgentOpen(true)
       if (tab === 'versions') setChangesOpen(true)
@@ -960,8 +965,24 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const diskNoticeStore = useDiskNoticeStore()
   const { ref: externalDiskNoticesRef, notices: externalDiskNotices } = diskNoticeStore
   const [folioOpenNavigation] = useState(() => createFolioOpenNavigation(readFolioOpenParts))
-  const { retire: retireOpenFolio } = folioOpenNavigation
-  const { tabs, active: activeTab, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, renamed: renameTab, close: closeTabInStrip, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, listingReady, canRestoreTabsEarly, boardDir, (path) => namingInFlight.current.has(path) || unsaved.textOf(path) !== undefined || externalDiskNoticesRef.current.get(path)?.kind === 'unavailable', path => {
+  const queuedFolderOpen = useRef<{ target: FolderOpenTarget; workspace: object | null } | null>(null)
+  const folderOpenRequest = useRef<{ tab: string | null; followRestoredRoom: boolean } | null>(null)
+  const collectionRenameFollow = useRef<object | null>(null)
+  const collectionTabsInTransit = useRef(new Set<(path: string) => boolean>())
+  const boardOpenRequest = useRef<object | null>(null)
+  const pendingBoardOpen = useRef<{ workspace: object | null } | null>(null)
+  const retireOpenBoard = useCallback(() => {
+    pendingBoardOpen.current = null
+    boardOpenRequest.current = null
+  }, [])
+  const retireBoardAndCollectionOpens = useCallback(() => {
+    retireOpenBoard()
+    queuedFolderOpen.current = null
+    folderOpenRequest.current = null
+    collectionRenameFollow.current = null
+  }, [retireOpenBoard])
+  const { tabs, active: activeTab, hydrated: tabsHydrated, pinned: pinnedTabs, recent: recentTabs, strip: stripTabs, groups: openTabGroups, open: openTab, replaceActive: replaceActiveTab, renamed: renameTab, close: closeTabInStrip, activate: activateTab, cycle: cycleTab, pin: pinTab, reorderPin: reorderPinnedTab } = useTabs(root, files, listingReady, canRestoreTabsEarly, boardDir, (path) => namingInFlight.current.has(path) || unsaved.textOf(path) !== undefined || externalDiskNoticesRef.current.get(path)?.kind === 'unavailable'
+    || [...collectionTabsInTransit.current].some(keep => keep(path)), path => {
     if (path.includes('://')) return
     const restoredRoot = root
     void window.writeflex.readFolioPlace(path).then(place => {
@@ -1023,6 +1044,32 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [roomTextPath, setRoomTextPath] = useState<string | null>(null)
   const roomTextRef = useRef<string | null>(null)
   roomTextRef.current = roomTextPath
+  const pendingFolioEditorFocus = useRef<{ workspace: object; room: string; path: string; from: string | null; origin: Element | null } | null>(null)
+  const retireFolioEditorFocus = useCallback(() => { pendingFolioEditorFocus.current = null }, [])
+  const navigateFolioRoom = useCallback(() => {
+    retireFolioEditorFocus()
+    retireBoardAndCollectionOpens()
+  }, [retireFolioEditorFocus, retireBoardAndCollectionOpens])
+  useLayoutEffect(() => {
+    const yieldFocus = (event: Event) => {
+      const request = pendingFolioEditorFocus.current
+      const target = event.target
+      if (!request || !(target instanceof Node)) return
+      const { origin } = request
+      if (event.type === 'focusin' ? target === origin
+        : origin !== document.body && origin !== document.documentElement && origin?.contains(target)) return
+      retireFolioEditorFocus()
+    }
+    document.addEventListener('focusin', yieldFocus, true)
+    document.addEventListener('pointerdown', yieldFocus, true)
+    window.addEventListener('blur', retireFolioEditorFocus)
+    return () => {
+      retireFolioEditorFocus()
+      document.removeEventListener('focusin', yieldFocus, true)
+      document.removeEventListener('pointerdown', yieldFocus, true)
+      window.removeEventListener('blur', retireFolioEditorFocus)
+    }
+  }, [retireFolioEditorFocus])
   const [folioPlace, setFolioPlace] = useState<FolioPlace | null>(null)
   const folioPlaceRequest = useRef(0)
   const [boardFilter, setBoardFilter] = useState('')
@@ -1030,6 +1077,21 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const [folioBoardShown, setFolioBoardShown] = useState(false)
   const boardCommandsOn = boardActive || folioBoardShown
   const [selectedFolderPiece, setSelectedFolderPiece] = useState<{ dir: string; folderPath: string; mode: 'one' | 'many' } | null>(null)
+  const openScratchpadFolioRoom = useCallback((dir: string): void => {
+    setSelectedFolderPiece(null)
+    setOpenPlanRequested(true)
+    setCollectionDir(dir)
+  }, [])
+  const { retire: retireScratchpadVersionOpen, pendingOpen: scratchpadVersionPending } = useScratchpadVersionOpen(collectionDir, openScratchpadFolioRoom, retireBoardAndCollectionOpens)
+  useLayoutEffect(() => {
+    if (typeof root === 'string') return retireScratchpadVersionOpen
+  }, [root, retireScratchpadVersionOpen])
+  // Retire at navigation entry points. Restoring tabs and mounting the requested room are part of arrival.
+  const retireFolderOpen = useCallback(() => {
+    folioOpenNavigation.retire()
+    retireScratchpadVersionOpen()
+    retireBoardAndCollectionOpens()
+  }, [folioOpenNavigation, retireScratchpadVersionOpen, retireBoardAndCollectionOpens])
   const [folderPieceChoices, setFolderPieceChoices] = useState<FolderPieceChoice[]>([])
   const [sidebarCollectionSummary, setSidebarCollectionSummary] = useState<{ pieceCount: number; folderPiecePaths: Set<string> } | null>(null)
   const boardSeenStatusesRef = useRef(new Set<string>())
@@ -1046,34 +1108,34 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const open = useCallback((path: string, focusText = true) => {
     filesActivation.current = !focusText && typeof root === 'string' ? { root, path } : null
     pendingEditorJump.current = null
-    retireOpenFolio()
+    retireFolderOpen()
     noteOpenSource(path, 'other')
     setCollectionDir(null)
     setOpenPlanRequested(false)
     openTab(path)
-  }, [retireOpenFolio, openTab, noteOpenSource, root])
+  }, [retireFolderOpen, openTab, noteOpenSource, root])
   const activate = useCallback((path: string) => {
     filesActivation.current = null
     pendingEditorJump.current = null
-    retireOpenFolio()
+    retireFolderOpen()
     setCollectionDir(null)
     setOpenPlanRequested(false)
     setSelectedFolderPiece(null)
     activateTab(path)
-  }, [retireOpenFolio, activateTab])
+  }, [retireFolderOpen, activateTab])
   const cycle = useCallback((dir: 1 | -1) => {
     filesActivation.current = null
     pendingEditorJump.current = null
-    retireOpenFolio()
+    retireFolderOpen()
     setCollectionDir(null)
     setOpenPlanRequested(false)
     setSelectedFolderPiece(null)
     cycleTab(dir)
-  }, [retireOpenFolio, cycleTab])
+  }, [retireFolderOpen, cycleTab])
   const close = useCallback((path: string) => {
-    retireOpenFolio()
+    retireFolderOpen()
     closeTabInStrip(path)
-  }, [retireOpenFolio, closeTabInStrip])
+  }, [retireFolderOpen, closeTabInStrip])
   const { favourites, toggle: toggleFavourite } = useFavourites(root)
   // The window's writing session (Task 12): +words · elapsed · wpm across every tab for the window's
   // lifetime. App owns it because it sees both a file's load baseline and its every edit.
@@ -1287,6 +1349,17 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     documentWorkspaceRef.current = typeof root === 'string' ? {} : null
     return () => { documentWorkspaceRef.current = null }
   }, [root])
+  const showRoomText = useCallback((path: string | null) => {
+    const workspace = documentWorkspaceRef.current
+    const origin = document.activeElement
+    // An editable field already holding the keyboard keeps it even when a shortcut changes the room.
+    pendingFolioEditorFocus.current = path !== null && workspace !== null && collectionDir !== null
+      && !origin?.closest('input, textarea, select, [contenteditable="true"]:not(.cm-content)')
+      && !document.querySelector(FOLIO_FOCUS_OVERLAY)
+      ? { workspace, room: collectionDir, path, from: activeRef.current, origin }
+      : null
+    setRoomTextPath(path)
+  }, [collectionDir])
   const readEditorDocument = useCallback(async (path: string): Promise<EditorReadResult> => {
     const workspace = documentWorkspaceRef.current
     if (!workspace || typeof root !== 'string') return { kind: 'stale' }
@@ -1476,10 +1549,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const refusalReasons = useRef(new Map<string, string>())
   // Late-bound (declared with the notices below): main refused a write because the disk no longer holds
   // the version the buffer was based on. `answering`: the write was Keep mine to that notice.
-  const diskChangedUnderBufferRef = useRef<((path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice) => void) | null>(null)
+  const diskChangedUnderBufferRef = useRef<((path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice, announce?: boolean) => void) | null>(null)
   // Late-bound (declared with the notices below): the file read back after a write is not what was
   // written. Another program wrote it in between: an outside change, asked about like any other.
-  const outsideAfterWriteRef = useRef<((path: string, diskText: string) => void) | null>(null)
+  const outsideAfterWriteRef = useRef<((path: string, diskText: string, announce?: boolean) => void) | null>(null)
   // The per-render values the owner's reports use (stable callbacks read them through this).
   const requestAutoNameRef = useRef<(path: string, departed?: boolean) => Promise<string>>(async path => path)
   const settleAutoNameRef = useRef<(path: string) => Promise<string>>(async path => path)
@@ -1556,20 +1629,20 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           else next.delete(p)
           return next
         }),
-        refusedByNotice: (p, message) => {
+        refusedByNotice: (p, message, announce = true) => {
           guardRefusalPath.current = p // the callers' own "could not save" lines give way to this one
           refusalReasons.current.set(p, message)
-          flashRef.current?.(message)
+          if (announce) flashRef.current?.(message)
         },
-        refusedByMain: (p, message) => {
+        refusedByMain: (p, message, announce = true) => {
           guardRefusalPath.current = p
           refusalReasons.current.set(p, message)
           setSaveFailures((current) => (current.has(p) ? current : new Set(current).add(p)))
-          flashRef.current?.(message)
+          if (announce) flashRef.current?.(message)
         },
-        diskChanged: (p, diskText, buffer, answering) => {
+        diskChanged: (p, diskText, buffer, answering, announce) => {
           guardRefusalPath.current = p
-          diskChangedUnderBufferRef.current?.(p, diskText, buffer, answering)
+          diskChangedUnderBufferRef.current?.(p, diskText, buffer, answering, announce)
         },
         saved: (p, changed) => {
           refusalReasons.current.delete(p)
@@ -1586,12 +1659,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
           // buffer already there changed nothing an Undo turn would rewind (a flush before an accept).
           if (changed) noteUserSaveRef.current()
         },
-        outsideAfterWrite: (p, diskText) => outsideAfterWriteRef.current?.(p, diskText),
-        unknown: (p) => {
+        outsideAfterWrite: (p, diskText, announce) => outsideAfterWriteRef.current?.(p, diskText, announce),
+        unknown: (p, announce = true) => {
           refusalReasons.current.delete(p)
           if (guardRefusalPath.current === p) guardRefusalPath.current = null
           setSaveFailures((current) => (current.has(p) ? current : new Set(current).add(p)))
-          flashRef.current?.(`Could not save ${p.split('/').at(-1) ?? p}.`)
+          if (announce) flashRef.current?.(`Could not save ${p.split('/').at(-1) ?? p}.`)
         },
       },
     })
@@ -1724,9 +1797,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // notice's own line says why) until the writer answers it: the file is never taken as the screen's text
   // while the two may differ (2b review P2).
   const flushPaths = useCallback(
-    (paths: readonly string[]) => {
+    (paths: readonly string[], mayAnnounceSaveFailure?: () => boolean) => {
       for (const p of paths) cancelAutosaveFor(p)
-      return owner.flush(paths)
+      return owner.flush(paths, { mayAnnounceSaveFailure })
     },
     [cancelAutosaveFor, owner],
   )
@@ -1942,23 +2015,34 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     [flash],
   )
 
-  const openBoard = useCallback(() => {
-    pendingEditorJump.current = null
+  const startBoardOpen = useCallback(() => {
+    const workspace = documentWorkspaceRef.current
+    if (!workspace) return
+    const request = {}
+    const current = activeRef.current
+    boardOpenRequest.current = request
+    const isCurrent = (): boolean => boardOpenRequest.current === request
+      && documentWorkspaceRef.current === workspace && activeRef.current === current
     void (async () => {
       // A Board status write must never race an outgoing autosave and later be overwritten by it.
-      const current = activeRef.current
-      if (current && (await flushPaths([current])).status !== 'saved') {
+      const saved = !current || (await flushPaths([current], isCurrent)).status === 'saved'
+      if (!isCurrent()) return
+      if (!saved) {
         flash('Could not save the current Piece — the Board stayed closed.')
         return
       }
-      const targetDir = collectionDir ?? (boardActive ? boardDir : current ? await collectionDirFor(current) : activeCollectionDir)
+      const targetDir = collectionDir ?? (boardActive ? boardDir : current ? await collectionDirFor(current, isCurrent) : activeCollectionDir)
+      if (!isCurrent()) return
+      const isFolio = await folderIsFolio(targetDir, window.writeflex)
+      if (!isCurrent()) return
       // A Folio has no Board of its own (ADR-0049): its status lanes are Cards, grouped by status, in the workspace.
-      if (await folderIsFolio(targetDir, window.writeflex)) {
+      if (isFolio) {
         await window.writeflex.folioRoom.setState(targetDir, { view: 'cards', split: false, cardsByStatus: true }).catch(() => undefined)
-        if (collectionDir === targetDir) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'status-lanes' }))
+        if (!isCurrent()) return
         setSelectedFolderPiece(null)
         setOpenPlanRequested(true)
         setCollectionDir(targetDir)
+        if (collectionDir === targetDir) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'status-lanes' }))
         return
       }
       setCollectionDir(null)
@@ -1973,13 +2057,34 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       openTab(BOARD_TAB_ID)
     })()
   }, [activeCollectionDir, boardActive, boardDir, collectionDir, flash, openTab, flushPaths])
+  const openBoard = useCallback(() => {
+    retireFolderOpen()
+    if (root === null) return
+    pendingEditorJump.current = null
+    if (!tabsHydrated) {
+      pendingBoardOpen.current = { workspace: documentWorkspaceRef.current }
+      return
+    }
+    startBoardOpen()
+  }, [root, tabsHydrated, retireFolderOpen, startBoardOpen])
+  const resumeBoardOpen = useCallback(() => {
+    const pending = pendingBoardOpen.current
+    if (!pending) return
+    if (root === null || (pending.workspace !== null && pending.workspace !== documentWorkspaceRef.current)) {
+      pendingBoardOpen.current = null
+    } else if (tabsHydrated) {
+      // Consume before opening: a route update may synchronously schedule another render.
+      pendingBoardOpen.current = null
+      startBoardOpen()
+    }
+  }, [root, tabsHydrated, startBoardOpen])
 
   const planOpenRequest = useRef<object | null>(null)
   /** Open the Plan. `folioDir` is the Folio's own folder (the line and title-bar button pass it: a
    *  piece in a sub-folder can belong to a different Collection than the Folio it names). */
   const openPlanIn = useCallback((folioDir?: string, view: RoomView = 'outline') => {
     pendingEditorJump.current = null
-    retireOpenFolio()
+    retireFolderOpen()
     const workspace = documentWorkspaceRef.current
     const request = {}
     planOpenRequest.current = request
@@ -2015,18 +2120,40 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       setCollectionDir(targetDir)
       void requestIdentityLinks.current(targetDir)
     })()
-  }, [retireOpenFolio, activeCollectionDir, activateTab, boardActive, boardDir, close, collectionDir, flash, lastEditablePath, flushPaths])
+  }, [retireFolderOpen, activeCollectionDir, activateTab, boardActive, boardDir, close, collectionDir, flash, lastEditablePath, flushPaths])
   // The palette and the Board/Collection buttons call this with no argument: the folder is then found as before.
   const openPlan = useCallback(() => openPlanIn(), [openPlanIn])
   const openFolioPlan = useCallback(() => { if (folioPlace) openPlanIn(folioPlace.dir) }, [folioPlace, openPlanIn])
   // All Open Folio entry points share the explicit editor route, including the header's menu.
   const openFolioDir = collectionDir ?? folioPlace?.dir ?? null
   const readingVersionNow = useAnyReadingVersion()
-  // Renew the context on every committed navigation, including those that bypass the ordinary tab commands.
-  const folioOpenContext = useMemo(() => ({ workspace: root, dir: openFolioDir }), [
-    root, openFolioDir, activeTab, boardDir, collectionDir, workspaceFolioDir, openPlanRequested, roomTextPath,
+  // Binding the workspace and restoring its active tab are startup commits. A Board command
+  // waiting for those commits belongs to the restored tab; an already running request ends here.
+  useLayoutEffect(() => () => { boardOpenRequest.current = null }, [root, activeTab])
+  // Other committed route changes can also supersede either kind of request.
+  useLayoutEffect(() => retireOpenBoard, [
+    retireOpenBoard, boardDir, collectionDir, workspaceFolioDir, openPlanRequested, roomTextPath,
     historicalView, compareView?.selection.fromId, compareView?.selection.toId, readingVersionNow, sharingPageOpen, sharesListOpen,
   ])
+  useLayoutEffect(resumeBoardOpen, [resumeBoardOpen])
+  // Undo can mount the restored Folio room inside its Collection while the chapter is opening.
+  // Keep the Undo open current through that mount, while other opens still follow the full surface.
+  const committedFolderRoute = useMemo(() => ({ workspace: root }), [
+    root, boardDir, collectionDir, openPlanRequested,
+    historicalView, compareView?.selection.fromId, compareView?.selection.toId, readingVersionNow, sharingPageOpen, sharesListOpen,
+  ])
+  useLayoutEffect(() => () => { folderOpenRequest.current = null }, [committedFolderRoute])
+  const committedSurface = useMemo(() => ({ workspace: committedFolderRoute.workspace }), [committedFolderRoute, workspaceFolioDir, roomTextPath])
+  useLayoutEffect(() => () => {
+    if (!folderOpenRequest.current?.followRestoredRoom) folderOpenRequest.current = null
+    collectionRenameFollow.current = null
+  }, [committedSurface])
+  useLayoutEffect(() => {
+    const request = folderOpenRequest.current
+    if (request && request.tab !== activeTab) folderOpenRequest.current = null
+  }, [activeTab])
+  // For explicit Folio opens, a newly classified active file can also change the destination.
+  const folioOpenContext = useMemo(() => ({ workspace: committedSurface.workspace, dir: openFolioDir }), [committedSurface, activeTab, openFolioDir])
   useLayoutEffect(() => {
     folioOpenNavigation.bind(folioOpenContext)
     return () => folioOpenNavigation.bind(null)
@@ -2047,12 +2174,15 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   }, [open, requestOutline, leftTab, leftPaneCollapsed, flash])
   const openFolioAt = useCallback((path: string) => {
     pendingEditorJump.current = null
+    retireBoardAndCollectionOpens()
     folioOpenNavigation.openAt(folioOpenContext, path, applyFolioOpen.current)
-  }, [folioOpenNavigation, folioOpenContext])
+  }, [retireBoardAndCollectionOpens, folioOpenNavigation, folioOpenContext])
   const openFolio = useCallback(() => {
+    retireScratchpadVersionOpen()
     pendingEditorJump.current = null
+    retireBoardAndCollectionOpens()
     void folioOpenNavigation.openDefault(folioOpenContext, decision => applyFolioOpen.current(decision))
-  }, [folioOpenNavigation, folioOpenContext])
+  }, [retireBoardAndCollectionOpens, folioOpenNavigation, folioOpenContext, retireScratchpadVersionOpen])
   // Running order from the Outline: the writes go through main by path (see main/folio-running-order.ts).
   const [folioRefreshTick, setFolioRefreshTick] = useState(0)
   // Late-bound: the reconciliation with the disk is declared below.
@@ -2170,28 +2300,17 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     const { path, conflict } = openTitleConflict
     setDismissedTitleConflicts((current) => new Map(current).set(path, titleConflictKey(conflict)))
   }, [openTitleConflict])
-  const runFolioCommand = useCallback(async (command: 'up' | 'down' | 'add' | 'addAll') => {
-    // The row with keyboard focus, read before anything else changes focus.
-    const rowEl = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>('[data-fo-path]') : null
-    const focused: FocusedFolioRow = rowEl?.dataset.foPath && (rowEl.dataset.kind === 'piece' || rowEl.dataset.kind === 'also') ? { path: rowEl.dataset.foPath, kind: rowEl.dataset.kind } : null
+  const outlinePath = loadedFile ?? active
+  const outlineFolioPlace = active !== null ? shownFolioPlace : null
+  const folioOutlineRead = useFolioOutlineRead(root ?? null, active === null ? null : outlinePath, workspaceFolioDir, outlineFolioPlace !== null, savedTick, folioRefreshTick)
+  const runFolioCommand = useCallback((command: FolioOutlineCommand) => {
     const path = activeRef.current
-    if (!path) { flash('Open a file of a Folio first.'); return }
-    const outline = await window.writeflex.readFolioOutline(path)
-    if (!outline) { flash('This file is not in a Folio.'); return }
-    if (outline.orderInPlanOnly) { flash(ORDER_IN_PLAN_LINE); return }
-    const seen = { dir: outline.dir, pieces: outline.pieces }
-    if (command === 'addAll') {
-      const files = outline.also.filter((file) => file.addable === true).map((file) => ({ path: file.path, title: file.title }))
-      if (files.length === 0) { flash(`Every piece that can join ${outline.name} is already in the running order.`); return }
-      await folioRunningOrder.addPieces(seen, files)
+    if (path && workspaceFolioDir === null && path !== outlinePath) {
+      flash('Wait for the Folio Outline to finish reading.')
       return
     }
-    // A move stays on its side of the front-matter boundary (ADR-0046).
-    const target = command === 'add' ? commandTarget(command, focused, path, outline) : blockCommandTarget(command, focused, path, outline)
-    if ('message' in target) { flash(target.message); return }
-    if (command === 'add') await folioRunningOrder.addPieces(seen, [{ path: target.path, title: target.title }])
-    else await folioRunningOrder.movePiece(seen, target.path, target.beforePath)
-  }, [flash, folioRunningOrder])
+    runFolioOutlineCommand(command, path, folioOutlineRead, folioRunningOrder, flash)
+  }, [flash, folioRunningOrder, folioOutlineRead, outlinePath, workspaceFolioDir])
   // Folio Undo leaves when its step cannot be used in the Folio on screen. Scratchpad and naming
   // Undo have their own targets and remain available independently of the running order.
   useEffect(() => {
@@ -2214,9 +2333,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const cancelPendingExport = useCallback(() => { pendingExportOpen.current = null }, [])
   const nameVersionChooser = useMemo(createNameVersionChooser, [])
   const cancelOverlayPreparation = useCallback(() => {
+    retireFolioEditorFocus()
     cancelPendingExport()
     nameVersionChooser.cancelPreparation()
-  }, [cancelPendingExport, nameVersionChooser])
+  }, [retireFolioEditorFocus, cancelPendingExport, nameVersionChooser])
   const overlay = useOverlayGuard(cancelOverlayPreparation)
   const { active: overlayActive, isOpenRef: overlayOpenRef, open: openOverlay, close: closeOverlay, hold: holdOverlay } = overlay
   const bumpSaved = useCallback(() => setSavedTick((tick) => tick + 1), [])
@@ -3152,51 +3272,86 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // A folder-name click in the sidebar opens its Collection in the main area. A New piece / Create
   // Index Note lands a file on disk; the main-process push refreshes the tree exactly as an agent
   // write does. New piece then refreshes first (so the file is in `files`) and opens it in a tab.
-  const openCollection = useCallback((dir: string) => {
+  // Folder opens wait for the committed tabs, including startup restoration and app-owned tab
+  // moves. Only the latest queued intent gets to read or change the destination.
+  const [folderOpenTick, setFolderOpenTick] = useState(0)
+  const queueFolderOpen = useCallback((target: FolderOpenTarget) => {
+    if (root === null) return
     pendingEditorJump.current = null
-    retireOpenFolio()
+    retireFolderOpen()
+    queuedFolderOpen.current = { target, workspace: documentWorkspaceRef.current }
+    setFolderOpenTick(tick => tick + 1)
+  }, [root, retireFolderOpen])
+  const openCollection = useCallback((dir: string) => queueFolderOpen({ dir }), [queueFolderOpen])
+  const openFolderDashboard = useCallback(() => {
+    const row = sidebarFocusedRow.current
+    queueFolderOpen({ focusedRow: row?.kind === 'folder' ? row : null })
+  }, [queueFolderOpen])
+  useLayoutEffect(() => {
+    const pending = queuedFolderOpen.current
+    if (!pending) return
+    const workspace = documentWorkspaceRef.current
+    if (root === null || (pending.workspace !== null && pending.workspace !== workspace)) {
+      queuedFolderOpen.current = null
+      return
+    }
+    if (!tabsHydrated || !workspace) return
+    // Consume the queued intent before any subsequent route setter can render again.
+    queuedFolderOpen.current = null
+    const request = {
+      tab: activeTab,
+      followRestoredRoom: 'dir' in pending.target && pending.target.restoredFolio === true && pending.target.dir === collectionDir,
+    }
+    folderOpenRequest.current = request
+    const current = activeRef.current
+    const isCurrent = (): boolean => folderOpenRequest.current === request
+      && documentWorkspaceRef.current === workspace
+    const dir = 'dir' in pending.target ? pending.target.dir : createTargetDirectory({
+      focusedRow: pending.target.focusedRow,
+      activePath: current,
+      focus: folderFocus?.path ?? null,
+    })
+
     void (async () => {
-      const current = activeRef.current
-      if (current && (await flushPaths([current])).status !== 'saved') {
+      const saved = !current || (await flushPaths([current], isCurrent)).status === 'saved'
+      if (!isCurrent()) return
+      if (!saved) {
+        folderOpenRequest.current = null
         flash('Could not save the current Piece — the folder stayed closed.')
         return
       }
+      const destination = await readFolderOpenDestination(dir, isCurrent, {
+        declaration: window.writeflex.readFolioDeclaration,
+        parts: dir => readFolioOpenParts(dir, { reportReadErrors: true }),
+        rememberedPath: async dir => (await window.writeflex.folioRoom.getState(dir)).selected?.path,
+      })
+      if (!destination || !isCurrent()) return
+
+      folderOpenRequest.current = null
       if (boardActive) {
         const editable = lastEditablePath && tabsRef.current.includes(lastEditablePath)
           ? lastEditablePath
-          : tabsRef.current.find((path) => !isSurfaceTabId(path)) ?? null
+          : tabsRef.current.find(path => !isSurfaceTabId(path)) ?? null
         if (editable) activateTab(editable)
         else close(BOARD_TAB_ID)
       }
-      if (await folderIsFolio(dir, window.writeflex)) {
-        const parts = await readFolioOpenParts(dir)
-        const stored = await window.writeflex.folioRoom.getState(dir)
-        const target = parts.find(part => part.path === stored.selected?.path)?.path ?? folioOpenTarget(parts)
-        if (target) {
-          borrowedSidebar.current ??= { tab: leftTab, collapsed: leftPaneCollapsed }
-          setFolioEditingDir(dir)
-          open(target)
-          requestOutline('showFolio')
-          void requestIdentityLinks.current(dir)
-          return
-        }
+      if (destination.path !== null) {
+        borrowedSidebar.current ??= { tab: leftTab, collapsed: leftPaneCollapsed }
+        setFolioEditingDir(dir)
+        open(destination.path)
+        requestOutline('showFolio')
+      } else {
+        setSelectedFolderPiece(null)
+        setOpenPlanRequested(false)
+        setCollectionDir(dir)
       }
-      setSelectedFolderPiece(null)
-      setOpenPlanRequested(false)
-      setCollectionDir(dir)
-      if (await folderIsFolio(dir, window.writeflex)) void requestIdentityLinks.current(dir)
-    })()
-  }, [retireOpenFolio, flash, flushPaths, boardActive, lastEditablePath, activateTab, close, open, requestOutline, leftTab, leftPaneCollapsed])
-  // The Folder dashboard command: the Files tree's keyboard-focused folder row, else the open file's folder,
-  // else the whole collection (the same ruling as the New file target, minus a file row's parent).
-  const openFolderDashboard = useCallback(() => {
-    const row = sidebarFocusedRow.current
-    openCollection(createTargetDirectory({
-      focusedRow: row?.kind === 'folder' ? row : null,
-      activePath: activeRef.current,
-      focus: folderFocus?.path ?? null,
-    }))
-  }, [folderFocus, openCollection])
+      if (destination.isFolio) void requestIdentityLinks.current(dir)
+    })().catch(() => {
+      if (!isCurrent()) return
+      folderOpenRequest.current = null
+      flash('Could not open that folder. Try again.')
+    })
+  }, [root, tabsHydrated, folderOpenTick, folderFocus, flash, flushPaths, activeTab, collectionDir, boardActive, lastEditablePath, activateTab, close, open, requestOutline, leftTab, leftPaneCollapsed])
 
   // The main-side push: as handleAgentWorkspaceChange, except that an own save in place patches its one
   // listing entry instead of re-listing the folder (shared/listing-patch.ts; every other change re-lists).
@@ -3292,12 +3447,12 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       if (turnBackUndo.current !== token) return
       turnBackUndo.current = null
       if (await window.writeflex.undoTurnBack(token.dir)) {
-        openCollection(token.dir)
+        queueFolderOpen({ dir: token.dir, restoredFolio: true })
         turnBackUndo.current = null
         flash('Restored the Folio, running order and instructions exactly.')
       }
     })().catch(error => flash(humanReadableError(error, 'Could not undo Turn back.')))
-  }, [turnBackUndo, root, collectionDir, flushPaths, openCollection, flash])
+  }, [turnBackUndo, root, collectionDir, flushPaths, queueFolderOpen, flash])
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.key.toLowerCase() !== 'z' || !turnBackUndo.current || turnBackUndo.current.root !== root || collectionDir !== turnBackUndo.current.dir) return
@@ -3441,11 +3596,16 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       return !open
     })
   }, [])
-  const openOutlineTab = useCallback(() => {
-    openLeftTab('outline')
-    setOutlineOpen(true)
-    setOutlineFocusTick((n) => n + 1)
-  }, [openLeftTab])
+  // Loaded bytes and Folio rereads may arrive later on the same route. Navigation retires the
+  // handoff, including a switch between two documents within the same Folio.
+  const outlineFocusRoute = useMemo(() => ({}), [
+    root, activeTab, boardDir, collectionDir, sidebarFolioDir, workspaceFolioDir, roomTextPath,
+    openPlanRequested, historicalView, compareView?.selection.fromId, compareView?.selection.toId,
+    readingVersionNow, sharingPageOpen, sharesListOpen,
+  ])
+  const { openOutline: openOutlineTab, focusRequest: outlineFocusRequest } = useOutlineFocus(
+    outlineFocusRoute, typeof root === 'string' && leftTab === 'outline' && !leftPaneCollapsed && overlayActive === null, openLeftTab,
+  )
   const openSyncTab = useCallback(() => {
     openLeftTab('sync')
     requestAnimationFrame(() => (document.querySelector<HTMLElement>('.sync-panel button:not(:disabled):not([aria-disabled="true"])') ?? document.querySelector<HTMLElement>('.sync-panel'))?.focus())
@@ -4078,14 +4238,17 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
 
   const applyFolderPieceMode = useCallback((selection: FolderPieceChoice) => {
     const mode = selection.mode === 'one' ? 'many' : 'one'
-    void window.writeflex.collection
-      .setPieceMode(selection.dir, selection.folderPath, mode)
-      .then(() => {
+    void setFolderPieceModeFlushed(owner, window.writeflex.collection.setPieceMode, selection.dir, selection.folderPath, mode)
+      .then(({ path, outcome }) => {
+        if (outcome?.kind === 'moved') {
+          cancelAutosaveFor(path)
+          raiseExternalDiskNotice(path, { kind: 'changed', dirty: true, diskText: outcome.diskText })
+        }
         setSelectedFolderPiece({ ...selection, mode })
         flash(mode === 'one' ? 'Folder now appears as one Piece' : 'Folder contents now appear as many Pieces')
       })
       .catch((error: unknown) => flash(humanReadableError(error, 'Could not change how that folder appears.')))
-  }, [flash])
+  }, [owner, cancelAutosaveFor, raiseExternalDiskNotice, flash])
 
   const openFolderPieceChooser = useCallback(() => {
     if (folderPieceContextDir === null) return
@@ -4769,20 +4932,22 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   // Folio versions ticket 07: Open Folio Version Read-only opens the version the Versions tab shows. From any other tab it takes the writer to the Versions tab to choose one.
   const versionRead = useAnyVersionRead()
   const openFolioVersionReadOnly = useCallback(() => {
+    retireScratchpadVersionOpen()
     const detail = { handled: false }
     window.dispatchEvent(new CustomEvent(OPEN_READ_ONLY_EVENT, { detail }))
     if (detail.handled) return
     window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' }))
     flash('Choose a Folio version in the Versions tab, then open it read-only.')
-  }, [flash])
+  }, [flash, retireScratchpadVersionOpen])
   // Ticket 08: Compare Folio Versions… compares the version the Versions tab shows with the working draft; from another tab it takes the writer there to choose.
   const openFolioVersionCompare = useCallback(() => {
+    retireScratchpadVersionOpen()
     const detail = { handled: false }
     window.dispatchEvent(new CustomEvent(OPEN_COMPARE_EVENT, { detail }))
     if (detail.handled) return
     window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' }))
     flash('Choose a Folio version in the Versions tab, then compare it.')
-  }, [flash])
+  }, [flash, retireScratchpadVersionOpen])
   // Ticket 11: Export This Folio Version… and Mark Version as Sent… act on the version open read-only, else the one the Versions tab shows; from another tab they take the writer there to choose.
   const openFolioVersionExport = useCallback(() => {
     const detail = { handled: false }
@@ -4841,6 +5006,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const openFolioVersionsTab = useCallback((): void => {
     const dir = cueDir
     if (dir === null) return
+    retireScratchpadVersionOpen()
+    retireBoardAndCollectionOpens()
     void (async () => {
       if (collectionDir === dir) { window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'versions' })); return }
       await window.writeflex.folioRoom.setState(dir, { view: 'versions', split: false }).catch(() => undefined)
@@ -4848,24 +5015,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       setOpenPlanRequested(true)
       setCollectionDir(dir)
     })()
-  }, [cueDir, collectionDir])
-  // Ticket 10: a Scratchpad card that came from a saved version asks to be opened in that version, on that part. The app makes sure the Folio's room is
-  // open (as for the Versions tab above) and nudges it; the room takes the request waiting for its Folio and opens the version read-only.
-  useEffect(() => {
-    const onRequest = (event: Event): void => {
-      const request = (event as CustomEvent<OpenVersionRequest>).detail
-      if (!request || typeof request.dir !== 'string' || typeof request.versionId !== 'string' || typeof request.path !== 'string') return
-      setWaitingOpenVersion(request)
-      void (async () => {
-        if (collectionDir === request.dir) { window.dispatchEvent(new Event(OPEN_VERSION_NUDGE_EVENT)); return }
-        setSelectedFolderPiece(null)
-        setOpenPlanRequested(true)
-        setCollectionDir(request.dir)
-      })()
-    }
-    window.addEventListener(OPEN_VERSION_REQUEST_EVENT, onRequest)
-    return () => window.removeEventListener(OPEN_VERSION_REQUEST_EVENT, onRequest)
-  }, [collectionDir])
+  }, [retireBoardAndCollectionOpens, cueDir, collectionDir, retireScratchpadVersionOpen])
   // Ticket 10: where the status line is and which folder this window is bound to, for sending a copy of a saved version's text to the Scratchpad.
   const rootNow = useRef<string | null>(null)
   rootNow.current = typeof root === 'string' && root !== '' ? root : null
@@ -5194,7 +5344,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     const target = folderBrowsePath(files, current, direction)
     if (!target || target === current) return
     pendingEditorJump.current = null
-    retireOpenFolio()
+    retireFolderOpen()
     // The owner writes the buffer until it is saved, detaches it in the turn of the last check, and forgets
     // it only if nothing moved since (document-owner.ts; Muse M1, round 2): typing during the flush is
     // written first, or the browse does not happen.
@@ -5213,7 +5363,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     }
     setCollectionDir(null)
     replaceActiveTab(target)
-  }, [retireOpenFolio, files, flash, replaceActiveTab, owner, cancelAutosaveFor, clearExternalDiskNotice])
+  }, [retireFolderOpen, files, flash, replaceActiveTab, owner, cancelAutosaveFor, clearExternalDiskNotice])
 
   // Writing goal (Round A T5, ADR-0002/0019/0028): a `goal:` in the ACTIVE document's frontmatter
   // upgrades the status-bar count cell into the Goal Gauge — one instrument, upgraded, never a
@@ -5856,7 +6006,10 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       { id: 'file.nameVersion', run: requestNameVersion },
       { id: 'folio.versions.openReadOnly',   disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is already open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioVersionReadOnly },
       { id: 'folio.versions.compare',   disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioVersionCompare },
-      { id: 'folio.versions.backToWorking',   disabled: !versionRead, disabledReason: 'No saved version is open', run: () => window.dispatchEvent(new CustomEvent(FOLIO_VERSION_COMMAND_EVENT, { detail: 'back-to-working-draft' })) },
+      { id: 'folio.versions.backToWorking',   disabled: !versionRead && !scratchpadVersionPending, disabledReason: 'No saved version is open', run: () => {
+        retireScratchpadVersionOpen()
+        window.dispatchEvent(new CustomEvent(FOLIO_VERSION_COMMAND_EVENT, { detail: 'back-to-working-draft' }))
+      } },
       { id: 'file.exportFolioVersion',   disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: openFolioVersionExport },
       { id: 'file.importFolioRevision',   disabled: collectionDir === null || versionRead, disabledReason: versionRead ? 'A saved version is open. Go back to the working draft first.' : 'Open a Folio first', run: openFolioRevisionImport },
       { id: 'file.markFolioVersionSent',   disabled: collectionDir === null, disabledReason: 'Open a Folio first', run: openFolioVersionMarkSent },
@@ -6091,6 +6244,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     requestSaveFolioVersion,
     openFolioDir,
     versionRead,
+    scratchpadVersionPending,
+    retireScratchpadVersionOpen,
     openFolioVersionReadOnly,
     openFolioVersionCompare,
     openFolioVersionExport,
@@ -6439,6 +6594,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const previousEditorCommit = useRef<{ active: string | null; loaded: string | null } | null>(null)
   const alternateReader = historicalActive || compareActive || readingVersionNow !== null || sharingPageOpen || sharesListOpen
   useLayoutEffect(() => {
+    if (configureActionBarOpen || switcherOpen || tabsListOpen) retireFolioEditorFocus()
+  }, [configureActionBarOpen, switcherOpen, tabsListOpen, retireFolioEditorFocus])
+  useLayoutEffect(() => {
     const previous = previousEditorCommit.current
     previousEditorCommit.current = { active, loaded: loadedFile }
     const activationChanged = previous?.active !== active || previous?.loaded !== loadedFile
@@ -6450,6 +6608,16 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     const roomTextVisible = collectionDir !== null && roomTextPath === active
       && view?.dom.closest('.editor-wrap[data-room-text]') != null
     const visible = !alternateReader && (collectionDir === null || roomTextVisible)
+    let folioFocus = pendingFolioEditorFocus.current
+    const focus = document.activeElement
+    if (folioFocus && (folioFocus.workspace !== documentWorkspaceRef.current
+      || folioFocus.room !== collectionDir || folioFocus.path !== roomTextPath
+      || (active !== folioFocus.path && (active !== folioFocus.from || previous?.active === folioFocus.path))
+      || alternateReader
+      || (focus !== folioFocus.origin && focus !== document.body && focus !== document.documentElement)
+      || document.querySelector(FOLIO_FOCUS_OVERLAY))) {
+      pendingFolioEditorFocus.current = folioFocus = null
+    }
     let jump = pendingEditorJump.current
     if (jump) {
       const workspace = documentWorkspaceRef.current
@@ -6467,6 +6635,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
 
     // The buffer and its destination surface must both have committed. Retire before dispatch:
     // the selection update can schedule another render.
+    const completeFolioFocus = roomTextVisible && folioFocus !== null
+    if (completeFolioFocus) pendingFolioEditorFocus.current = null
     let landed = false
     if (jump?.path === active && jump.workspace !== null && visible) {
       landed = true
@@ -6479,7 +6649,8 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     const fileActivation = filesActivation.current
     const keepFilesFocus = fileActivation?.root === root && fileActivation?.path === active
     if (keepFilesFocus) filesActivation.current = null
-    if ((visible || compareToEditable) && !landed && !keepFilesFocus) view.focus()
+    const implicitFocus = visible && (collectionDir === null || completeFolioFocus)
+    if ((implicitFocus || compareToEditable) && !landed && !keepFilesFocus) view.focus()
   }, [active, activeTab, loadedFile, root, collectionDir, roomTextPath, alternateReader, compareToEditable, editorJumpTick])
   // Bind widget Undo to the history the writer receives after Create, once the created text is on screen.
   // The activation may show the cached buffer first and take Create's bytes from the queued reconcile a
@@ -6657,7 +6828,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   useEffect(
     () => {
       const onCloseRequested = async (): Promise<void> => {
-        retireOpenFolio()
+        retireFolderOpen()
         // Ack immediately — before the (possibly slow) flush — so main knows the renderer is alive. A
         // blank/crashed renderer never reaches this line.
         void window.writeflex.acknowledgeClose()
@@ -6751,7 +6922,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       const off = window.writeflex.onCloseRequested(() => { void onCloseRequested() })
       return () => { closeRequestRef.current = null; off() }
     },
-    [retireOpenFolio, flushEveryDirtyBuffer, flushWriterChangesNow, flash, owner],
+    [retireFolderOpen, flushEveryDirtyBuffer, flushWriterChangesNow, flash, owner],
   )
 
   // A status line main sends this window (an open that found the folder's window still being switched to).
@@ -6789,37 +6960,6 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     if (line !== undefined) jumpToFileLineRef.current(path, line)
     else open(path)
   }), [open])
-
-  // ⇧⌘E / ⇧⌘O (Open Files / Open Outline) are dispatched by the T6 chord table. They remain
-  // OPEN + SWITCH + ACTIVATE commands: repeat presses never close; only ⌘[ collapses the left pane.
-
-  // The menu's Outline item routes through the same open-and-focus path. menu.ts registers it with
-  // registerAccelerator:false, so Electron shows the shortcut without claiming the keydown.
-  /*
-  // ⇧⌘O toggles the outline. menu.ts registers View ▸ Toggle Outline with registerAccelerator:false —
-  // Electron shows the shortcut for discoverability but does NOT bind it, so the RENDERER owns the
-  // ⇧⌘O keydown (the Quick Open / Search pattern). Capture phase so it wins before the editor's own
-  // keymap consumes the key; the shift guard keeps plain ⌘O (File ▸ Open) untouched.
-  */
-
-  // Opening the outline (via ⇧⌘O, the menu, the palette, or the toolbar button — all funnel through
-  // outlineOpen) lands the keyboard on its active row so the writer can Arrow around immediately;
-  // closing hands focus back to the editor (the panel-close focus-restore pattern). Fires ONLY on the
-  // open/close transition — the ref skips the boot render (the outline is open by default), so this
-  // never steals focus on an unrelated re-render.
-  const [outlineFocusTick, setOutlineFocusTick] = useState(0)
-  const outlineFocusPrimed = useRef(false)
-  useEffect(() => {
-    if (!outlineFocusPrimed.current) {
-      outlineFocusPrimed.current = true
-      return
-    }
-    // Opening asks the pane to land the keyboard on its active row — deferred to the pane because the
-    // shared outline snapshot may not have populated the rows yet (it recomputes on a debounce), so
-    // the pane focuses once the row actually exists. Closing hands focus straight back to the editor.
-    if (outlineOpen) setOutlineFocusTick((n) => n + 1)
-    else editorRef.current?.view()?.focus()
-  }, [outlineOpen])
 
   // The first click or keystroke in the document after a file was opened from Files/Search moves the sidebar
   // to Outline, once per opened file (ticket 13). Never moves focus: the writer is typing in the document.
@@ -7112,12 +7252,13 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
     [stepProseSize, stepLineWidth, resetProseZoom, toggleSidebar, focusEditor],
   )
 
+  const pendingTabCloses = useRef(new Set<{ workspace: object | null; path: string }>())
   // Closing a tab leaves the workspace window open, including when this was its last document.
   // The editor drops the closed file's cached buffer state and its dirty bookkeeping with it.
   const closeTab = useCallback(
     async (path: string) => {
       if (pendingEditorJump.current?.path === path) pendingEditorJump.current = null
-      retireOpenFolio()
+      retireFolderOpen()
       if (isBoardTabId(path)) {
         boardSeenStatusesRef.current.clear()
         close(path)
@@ -7132,7 +7273,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       if (isUntitledPiece(path.split('/').at(-1) ?? '')) path = await settleAutoNameRef.current(path)
       if (guardRefusalPath.current === path) guardRefusalPath.current = null
       // The app's own traces of the tab, once the owner has forgotten its buffer.
-      const closeForgotten = (): void => {
+      const closeForgotten = (path: string): void => {
         uncheckpointed.current.delete(path)
         if (loadedPath.current === null || loadedPath.current === path) setLoadedFile((current) => (current === path ? null : current))
         clearFileWriterState(path)
@@ -7143,23 +7284,33 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         close(path)
       }
       cancelAutosaveFor(path)
-      await closeDocumentTab(path, {
-        owner,
-        notice: () => externalDiskNoticesRef.current.get(path),
-        isCurrentTab: () => workspace !== null && documentWorkspaceRef.current === workspace && tabsRef.current.includes(path),
-        checkpoint: async (p) => { await window.writeflex.checkpoint(p, { auto: true }) },
-        closeForgotten,
-        saveRefusalReported: () => guardRefusalPath.current === path,
-        flash,
-      })
+      const closing = { workspace, path }
+      pendingTabCloses.current.add(closing)
+      try {
+        await closeDocumentTab(path, {
+          owner,
+          currentPath: () => closing.path,
+          notice: (path) => externalDiskNoticesRef.current.get(path),
+          isCurrentTab: (path) => workspace !== null && documentWorkspaceRef.current === workspace && tabsRef.current.includes(path),
+          checkpoint: async (path) => { await window.writeflex.checkpoint(path, { auto: true }) },
+          closeForgotten,
+          saveRefusalReported: (path) => guardRefusalPath.current === path,
+          flash,
+        })
+      } finally {
+        pendingTabCloses.current.delete(closing)
+      }
     },
-    [retireOpenFolio, close, owner, cancelAutosaveFor, setSaveFailed, setSaveSlow, flash, clearFileWriterState, clearExternalDiskNotice],
+    [retireFolderOpen, close, owner, cancelAutosaveFor, setSaveFailed, setSaveSlow, flash, clearFileWriterState, clearExternalDiskNotice],
   )
 
   // The room's text pane asks for a part's file: open it as any open does (a tab, the editor's own buffer, saves and conflict handling),
   // but stay in the room. Reading and showing the file writes nothing to the Folio.
   useEffect(() => {
     if (roomTextPath === null || collectionDir === null) return
+    // A restored room can activate remembered Text while Undo is still opening the chapter.
+    const opening = folderOpenRequest.current
+    if (opening?.followRestoredRoom) opening.tab = roomTextPath
     noteOpenSource(roomTextPath, 'other')
     openTab(roomTextPath)
   }, [roomTextPath, collectionDir, openTab, noteOpenSource])
@@ -7176,11 +7327,11 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         // still unsaved or being written, the close handler's flush runs first.
         // Writer-review records still waiting: the close handler drains them first.
         else {
-          retireOpenFolio()
+          retireFolderOpen()
           if (!writerChangesIdle() || !closeWindowIfClean()) closeRequestRef.current?.()
         }
       }),
-    [activeTab, tabs, pinnedTabs, recentTabs, closeTab, writerChangesIdle, retireOpenFolio],
+    [activeTab, tabs, pinnedTabs, recentTabs, closeTab, writerChangesIdle, retireFolderOpen],
   )
 
   // ---- Sidebar file management (ADR-0017, the Quiet Menu) ---------------------------------------
@@ -7337,6 +7488,16 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       uncheckpointed.current.add(to) // saved, not yet checkpointed: the next ⌘S/close checkpoints it there
     }
   }, [owner, autosave, forgetAppTraces, moveExternalDiskNotice, queueAutosave])
+  const followCollectionMove = (from: string, to: string): void => {
+    if (from === to) return
+    afterMainMoved(from, to)
+    for (const closing of pendingTabCloses.current) {
+      if (closing.workspace === documentWorkspaceRef.current && closing.path === from) closing.path = to
+    }
+    const opening = folderOpenRequest.current
+    if (opening?.tab === from) opening.tab = to
+    renameTab(from, to)
+  }
   /**
    * Inside a route holding the documents main's link repair wrote (after `afterMainMoved`): the open document with
    * typing over the version the repair read takes the repair's edit (repair-in-buffer.ts), so the repair's own
@@ -7728,6 +7889,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
   const requestEditorJump = useCallback((path: string, target: EditorJumpTarget, room: string | null = null) => {
     if (alternateReader || anyVersionRead()) return
     if (room === null) open(path)
+    else retireBoardAndCollectionOpens()
     const jump: EditorJump = { workspace: documentWorkspaceRef.current, path, fromTab: activeTab, room, target }
     pendingEditorJump.current = jump
     setEditorJumpTick(tick => tick + 1)
@@ -7738,7 +7900,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
       }
       window.dispatchEvent(new CustomEvent<RoomViewCommand>(ROOM_VIEW_EVENT, { detail: { path, owner } }))
     }
-  }, [activeTab, alternateReader, open])
+  }, [activeTab, alternateReader, open, retireBoardAndCollectionOpens])
   const jumpToFileLine = useCallback((file: string, line: number) => {
     requestEditorJump(file, { kind: 'line', line })
   }, [requestEditorJump])
@@ -8464,22 +8626,24 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
         editorRef={editorRef}
         snapshot={snapshot}
         // The buffer the editor really shows: after a failed read `active` is the target but the old buffer stays on screen.
-        activePath={loadedFile ?? active}
+        activePath={outlinePath}
         onJumpToFile={(file, line, isPart, options) => {
           const keepFocus = options?.keepFocus && collectionDir === null && active === file && loadedFile === file
           requestEditorJump(file, { kind: 'line', line, offset: options?.offset ?? 0, focus: !keepFocus }, isPart ? workspaceDir ?? null : null)
         }}
         savedTick={savedTick}
-        focusTick={outlineFocusTick}
+        focusRequest={(workspaceDir !== undefined
+          ? workspaceDir === workspaceFolioDir
+          : workspaceFolioDir === null && outlinePath === active) ? outlineFocusRequest : null}
         shortcutFor={(commandId) => resolveChord(commandId, shortcutOverrides)}
         request={outlineRequest}
-        folioPlace={active !== null ? shownFolioPlace : null}
+        folioPlace={outlineFolioPlace}
         folderFileCount={outlineFolderFileCount}
         onOpenFile={(file, isPart) => { if (workspaceDir !== undefined && isPart === true) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: { path: file } })); else open(file) }}
         onOpenPlan={workspaceDir !== undefined ? () => openPlanIn(workspaceDir) : openFolioPlan}
         onStatus={flash}
         runningOrder={folioRunningOrder}
-        folioRefreshTick={folioRefreshTick}
+        folioRead={(workspaceDir ?? null) === workspaceFolioDir ? folioOutlineRead : null}
       />
     </aside>
   )
@@ -8680,7 +8844,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 </nav>
               </div>
               <div className={leftTab === 'outline' ? 'pane-view active' : 'pane-view hidden'} role="tabpanel" aria-label="Outline">
-                <RoomBinderSwitch onOpenFile={open} write={folioRunningOrder.write} contents={renderDocumentOutline(workspaceFolioDir ?? undefined)}>
+                <RoomBinderSwitch onOpenFile={open} write={folioRunningOrder.write} contents={workspaceFolioDir === null ? undefined : renderDocumentOutline(workspaceFolioDir)}>
                 {renderDocumentOutline()}
                 </RoomBinderSwitch>
               </div>
@@ -8732,7 +8896,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 key={`${root}:${collectionDir}`}
                 dir={collectionDir}
                 canAddToFolio={canTurnBack}
-                onShowRoomText={setRoomTextPath}
+                onShowRoomText={showRoomText}
                 roomTextLoaded={loadedFile}
                 roomEditor={editorRef}
                 onRunCommand={actionsHereApi.runCommand}
@@ -8741,22 +8905,44 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                   if (!collectionDir) throw new Error('Rename the workspace folder in Finder.')
                   if (name === collectionDir.split('/').at(-1)) return
                   const prefix = `${collectionDir}/`
-                  const openBefore = tabsRef.current.filter(path => path.startsWith(prefix))
-                  const activeBefore = activeRef.current
-                  const moved = await withPathsSaved(() => renameMembers(documentsUnder(prefix), [], documentsUnder('')), async snapshots => {
-                    const renamed = await window.writeflex.renameFolder(collectionDir, name)
-                    for (const path of snapshots.keys()) if (path.startsWith(prefix)) afterMainMoved(path, `${renamed.path}${path.slice(collectionDir.length)}`)
-                    await takeRepairWrites(renamed.repair, p => snapshots.has(p))
-                    return renamed
-                  }, prefix)
-                  if (!moved) throw new Error('Could not save the documents. The collection was not renamed.')
-                  await refresh()
-                  for (const path of openBefore) openTab(`${moved.result.path}${path.slice(collectionDir.length)}`)
-                  if (activeBefore) activateTab(activeBefore.startsWith(prefix) ? `${moved.result.path}${activeBefore.slice(collectionDir.length)}` : activeBefore)
-                  openCollection(moved.result.path)
-                  flash(formatFolderRenameRepairMessage(`Renamed folder to ${moved.result.path.split('/').at(-1) ?? moved.result.path}`, moved.result.repair))
+                  const workspace = documentWorkspaceRef.current
+                  const follow = {}
+                  collectionRenameFollow.current = follow
+                  const destinations = new Set<string>()
+                  // A listing notification can arrive on either side of the move receipt.
+                  const keep = (path: string) => documentWorkspaceRef.current === workspace
+                    && (path.startsWith(prefix) || destinations.has(path))
+                  collectionTabsInTransit.current.add(keep)
+                  try {
+                    const moved = await withPathsSaved(() => renameMembers(documentsUnder(prefix), [], documentsUnder('')), async snapshots => {
+                      const renamed = await window.writeflex.renameFolder(collectionDir, name)
+                      if (documentWorkspaceRef.current === workspace) {
+                        for (const path of new Set([...snapshots.keys(), ...tabsRef.current])) {
+                          if (!path.startsWith(prefix)) continue
+                          const to = renamed.indexNote?.from === path
+                            ? renamed.indexNote.to
+                            : renamed.path + path.slice(collectionDir.length)
+                          destinations.add(to)
+                          followCollectionMove(path, to)
+                        }
+                        await takeRepairWrites(renamed.repair, p => snapshots.has(p))
+                      }
+                      return renamed
+                    }, prefix)
+                    if (!moved) throw new Error('Could not save the documents. The collection was not renamed.')
+                    await refresh()
+                    if (collectionRenameFollow.current === follow) {
+                      collectionRenameFollow.current = null
+                      openCollection(moved.result.path)
+                    }
+                    flash(formatFolderRenameRepairMessage(`Renamed folder to ${moved.result.path.split('/').at(-1) ?? moved.result.path}`, moved.result.repair))
+                  } finally {
+                    collectionTabsInTransit.current.delete(keep)
+                    if (collectionRenameFollow.current === follow) collectionRenameFollow.current = null
+                  }
                 }}
                 onBulkAction={async (action, paths, value) => {
+                  const workspace = documentWorkspaceRef.current
                   if (action === 'move') {
                     const current = await window.writeflex.listCollection(collectionDir)
                     if (current.rows.some(row => row.folderPath && paths.includes(row.path))) {
@@ -8770,9 +8956,9 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                     return addCollectionBatchToFolio(folioRunningOrder, collectionDir, target.pieces, paths, current.rows)
                   }
                   await window.writeflex.collection.beginBatch()
-                  const openBefore = new Set(tabsRef.current)
-                  const activeBefore = activeRef.current
-                  const movedTabs = new Map<string, string>()
+                  const movingPaths = new Set(paths)
+                  const keep = (path: string) => documentWorkspaceRef.current === workspace && movingPaths.has(path)
+                  if (action === 'move') collectionTabsInTransit.current.add(keep)
                   try {
                     const result = await runCollectionBatch(paths, async path => {
                       if (action === 'move') {
@@ -8780,31 +8966,28 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                         // An empty picker value names the workspace root, which rename planning calls null.
                         const result = await withRenameScopeSaved(path, () => window.writeflex.planFileRename(path, name, value || null), async planned => {
                           const moved = await window.writeflex.moveFile(path, planned.newPath, collectionDir)
-                          if (moved.file.path !== path) afterMainMoved(path, moved.file.path)
-                          await takeRepairWrites(moved.repair, p => planned.repairPaths.includes(p))
-                          return moved
+                          if (documentWorkspaceRef.current === workspace) {
+                            movingPaths.add(moved.file.path)
+                            followCollectionMove(path, moved.file.path)
+                            await takeRepairWrites(moved.repair, p => planned.repairPaths.includes(p))
+                          }
                         })
                         if (!result) throw new Error('Could not save this document. Try again.')
-                        if (openBefore.has(path)) movedTabs.set(path, result.result.file.path)
                       } else if (action === 'status') {
                         await setPieceStatusFlushed(owner, window.writeflex.collection.setStatus, collectionDir, path, value)
                       } else {
-                        const result = await owner.withFlushed([path], async snapshots => {
-                          const snapshot = snapshots.get(path)!
-                          const saved = await window.writeflex.collection.addTags(collectionDir, path, value.split(',').map(tag => tag.trim()).filter(Boolean))
-                          owner.replaceFromMain(path, saved, { since: snapshot.gen, mode: 'replace' })
-                        })
-                        if (result.status !== 'acted') throw new Error('Could not save this document. Try again.')
+                        const tags = value.split(',').map(tag => tag.trim()).filter(Boolean)
+                        await addCollectionTagsFlushed(owner, window.writeflex.collection.addTags, collectionDir, path, tags)
                       }
                     })
                     flash(result.message)
                     return result
                   } finally {
-                    await window.writeflex.collection.endBatch()
-                    if (action === 'move') {
-                      await refresh()
-                      for (const path of movedTabs.values()) openTab(path)
-                      if (activeBefore) activateTab(movedTabs.get(activeBefore) ?? activeBefore)
+                    try {
+                      await window.writeflex.collection.endBatch()
+                      if (action === 'move') await refresh()
+                    } finally {
+                      collectionTabsInTransit.current.delete(keep)
                     }
                   }
                 }}
@@ -8812,6 +8995,7 @@ export default function App({ syncAdapter }: { syncAdapter?: SyncAdapter } = {})
                 onNewPiece={newPiece}
                 onStatus={flash}
                 onOpenBoard={openBoard}
+                onRoomNavigation={navigateFolioRoom}
                 onOpenFolder={openCollection}
                 onReturnToFolio={openPlanIn}
                 onStartFolio={startNestedFolio}

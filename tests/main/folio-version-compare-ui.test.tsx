@@ -112,7 +112,10 @@ describe('the banner of a version being read', () => {
 })
 
 describe('Take that text / Keep current (ticket 09)', () => {
-  const host = { isUnsaved: () => false, openPart: () => undefined }
+  const host = {
+    isUnsaved: () => false, openPart: () => undefined,
+    request: Symbol(), blocked: false, canAuthorTake: () => true,
+  }
   const SHA = 'a'.repeat(64)
   const taking: FolioCompareResult = { ...RESULT, parts: RESULT.parts.map((part) => (part.state === 'changed' ? { ...part, workingSha256: SHA } : part)) }
   const buttonsIn = (html: string, id: string): number => (html.match(new RegExp(`data-testid="${id}"`, 'g')) ?? []).length

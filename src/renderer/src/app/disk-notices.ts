@@ -224,7 +224,7 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
   // nothing unsaved simply takes the disk version, as the watcher would give it.
   // "Nothing unsaved" needs the baseline to be known: after a write of unknown outcome it is not (Sol M2),
   // and the buffer is replaced only by the writer's choice.
-  const noteDiskChangedUnderBuffer = useCallback((path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice) => {
+  const noteDiskChangedUnderBuffer = useCallback((path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice, announce = true) => {
     cancelAutosaveFor(path)
     // A guarded refusal may carry null when it could not read back. Confirm absence before
     // offering either recreation or discard, and protect the buffer during that re-read.
@@ -245,13 +245,13 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
     if (notice !== standing) raise(path, notice)
     const message = diskNoticeRefusalMessage(path, notice)
     refusalReasons.current.set(path, message)
-    flash(message)
+    if (announce) flash(message)
   }, [owner, unsaved, noticesRef, refusalReasons, cancelAutosaveFor, flash, raise, reconcile, askAboutRefusedWrite])
 
   // A write was made and the file read back holds other text: another program wrote it between the
   // commit and the readback. The buffer stays based on what was written, and the writer is asked
   // whether or not the buffer has typing since: their text was replaced on disk without their seeing it.
-  const noteOutsideAfterWrite = useCallback((path: string, diskText: string) => {
+  const noteOutsideAfterWrite = useCallback((path: string, diskText: string, announce = true) => {
     cancelAutosaveFor(path)
     const notice = noticeAfterOutsideWrite(noticesRef.current.get(path), diskText)
     if (notice) raise(path, notice)
@@ -259,7 +259,7 @@ export function useDiskNotices(store: DiskNoticeStore, deps: DiskNoticeDeps) {
     const message = `${name} was changed on disk by another program just after it was saved. Choose Reload or Keep mine above the text.`
     guardRefusalPath.current = path // the callers' own "could not save" lines give way to this one
     refusalReasons.current.set(path, message)
-    flash(message)
+    if (announce) flash(message)
   }, [noticesRef, guardRefusalPath, refusalReasons, cancelAutosaveFor, flash, raise])
 
   useEffect(

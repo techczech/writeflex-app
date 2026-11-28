@@ -6,6 +6,7 @@ import type { PeopleChange, PeopleResult } from '../shared/sharing-people'
 import type { DiaryGlance } from '../shared/diary-glance'
 import type { ReaderLease } from '../shared/reading-room-channel'
 import type { ReaderNotice } from '../main/reading-room-resources'
+import type { FolderRenameResult } from '../main/rename-doors'
 import { BACKUP_GITHUB_CHANNELS, type BackupGitHubPort } from '../shared/backup-github'
 import { updateNoticesApi } from './update-notices'
 import type { FolioSectionExportField } from '../shared/folio-sections'
@@ -985,7 +986,7 @@ export type WriteFlexApi = {
   revealFile: (path: string) => Promise<void>
   openDocumentLocation: (path: string, location: 'default-app' | 'containing-folder') => Promise<void>
   createFolder: (path: string) => Promise<{ path: string }>
-  renameFolder: (path: string, newName: string) => Promise<{ path: string; repair?: { writtenPaths: string[]; unrepairedReferences: string[]; receipts?: RepairReceipt[] } }>
+  renameFolder: (path: string, newName: string) => Promise<FolderRenameResult>
   trashFolder: (path: string) => Promise<{ path: string }>
   /** Scraps (Task 20): file-native cuttings in scraps/<origin>-SCRAPS.md. Every mutation pushes
    *  `scraps:changed` (onScrapsChanged) so the pane re-lists and the file tree refreshes. */
@@ -1055,11 +1056,12 @@ export type WriteFlexApi = {
     pattern: (dir: string) => Promise<CollectionPattern>
     query: (dir: string, source: string) => Promise<QueryResult>
     unresolvedFolderPieces: (dir: string) => Promise<UnresolvedFolderPiece[]>
+    /** A tag write returns its own receipt. An unchanged tag set returns only the read. */
+    addTags: (dir: string, path: string, tags: string[]) => Promise<FileReadResult & Partial<WriteReceipt>>
     /** Board move: app-owned frontmatter status write; main emits collection invalidation. */
-    addTags: (dir: string, path: string, tags: string[]) => Promise<FileReadResult>
     setStatus: (dir: string, path: string, status: BoardStatus) => Promise<FileReadResult>
     /** Persist the selected folder's one-work/many-files override in its Index Note. */
-    setPieceMode: (dir: string, folderPath: string, mode: 'one' | 'many') => Promise<FileReadResult>
+    setPieceMode: (dir: string, folderPath: string, mode: 'one' | 'many') => Promise<FileSaveWritten>
     links: (dir: string, from?: string, content?: string) => Promise<CollectionLink[]>
     targets: () => Promise<CollectionTarget[]>
     focusPiece: (windowId: number, path: string) => Promise<void>

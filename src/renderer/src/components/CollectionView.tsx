@@ -8,7 +8,7 @@ import type { Collection, CollectionRow, CollectionSubfolder } from '../../../pr
 import { effectiveSheetChords, type OverrideMap } from '../commands/chords'
 import { PLAN_COMMAND_EVENT, type PlanCommandName } from '../plan/plan-commands'
 import { FolioManifestWarning } from './PlanView'
-import { FolioRoom, ROOM_VIEW_EVENT } from './FolioRoom'
+import { FolioRoom, ROOM_VIEW_EVENT, type RoomViewCommand } from './FolioRoom'
 import { useCollectionFolioEligibility } from './collection-folio-eligibility'
 import type { RoomView } from '../../../preload'
 import { subscribeRoom } from '../plan/folio-room-store'
@@ -21,6 +21,7 @@ import { orderDashboard, type DashEntry, type DashSort, type DashSortKey } from 
 import { registryCommand } from '../commands/registry'
 import { CollectionMenu } from './CollectionMenu'
 import { CollectionFilterBar } from './CollectionFilterBar'
+import { findCollectionControl, focusCollectionControl, isCollectionControl } from './collection-control-focus'
 import { COLLECTION_BULK_COMMANDS, COLLECTION_PAGE_EVENT, type CollectionPageCommand } from './collection-page-commands'
 import { EMPTY_COLLECTION_FILTERS, filterCollectionRows, prepareCollectionRows, groupCollectionRows, type CollectionGroup } from './collection-view-state'
 import { fileNameProblem } from '../../../shared/file-name-rules'
@@ -54,6 +55,7 @@ export type CollectionViewProps = {
   /** Inline status flashes (create-index / Make Folio errors). */
   onStatus: (message: string) => void
   onOpenBoard: () => void
+  onRoomNavigation?: () => void
   /** Open a subfolder's own Folder dashboard (App's openCollection; a Folio opens as it does from the sidebar). */
   onOpenFolder?: (dir: string) => void
   onReturnToFolio?: (dir: string) => void
@@ -133,7 +135,7 @@ export function CollectionFolioStatus({
  * and whenever a Collection write pushes `collection:changed`. Every row and control is a button, so
  * the whole surface is keyboard-reachable (Enter/Space opens a piece; the header buttons re-sort).
  */
-export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus, onOpenBoard, onOpenFolder, onReturnToFolio, onFolderPieceSelected, shortcutOverrides = {}, openPlanRequested = false, onStartFolio, onHelpWithReport, onMakeVault, rootIsVault = false, runningOrder, onOpenFolio, onRunCommand, onExport, onRename, onBulkAction, canAddToFolio = false, onShowRoomText, roomTextLoaded, roomEditor, headingOutline, renderBoard, onBoardShown, onSaveFolioVersion, partIsUnsaved, resolveSuggestion }: CollectionViewProps): JSX.Element {
+export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus, onOpenBoard, onRoomNavigation, onOpenFolder, onReturnToFolio, onFolderPieceSelected, shortcutOverrides = {}, openPlanRequested = false, onStartFolio, onHelpWithReport, onMakeVault, rootIsVault = false, runningOrder, onOpenFolio, onRunCommand, onExport, onRename, onBulkAction, canAddToFolio = false, onShowRoomText, roomTextLoaded, roomEditor, headingOutline, renderBoard, onBoardShown, onSaveFolioVersion, partIsUnsaved, resolveSuggestion }: CollectionViewProps): JSX.Element {
   const pageRef = useRef<HTMLDivElement>(null)
   useEscapeBack(onBack)
   // The vault's root page is titled with the vault's name, not its folder's, and is not "a Collection" (house rule R4).
@@ -215,7 +217,7 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
   // The room owns refreshes while it is on screen. The wrapper reads again when the room
   // is unavailable, when it leaves, or while its embedded Files tab is showing.
   const roomOnScreenRef = useRef(false)
-  const roomOpensRef = useRef(false)
+  const controlRequest = useRef<symbol | null>(null)
   useEffect(() => window.writeflex.onCollectionChanged(() => {
     if (roomOnScreenRef.current) return
     if (batchRunning.current) { reloadPending.current = true; return }
@@ -232,7 +234,7 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
   const roomOpens = surface === 'workspace'
   // The Files tab lists the folder, so it reads it (and every change to it) like the list does; the other tabs take the room's one read.
   roomOnScreenRef.current = roomOpens && roomView !== 'files'
-  roomOpensRef.current = roomOpens
+  useLayoutEffect(() => () => { controlRequest.current = null }, [dir, roomOpens])
   useEffect(() => { if (roomOpens && roomView === 'files') reload() }, [roomOpens, roomView, reload])
   const previousRoomDir = useRef<string | null>(null)
   useEffect(() => {
@@ -315,6 +317,7 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
     if (data) setSelection(previous => new Set([...previous].filter(path => visiblePaths.has(path))))
   }, [data, visiblePaths])
   const runPageCommand = useCallback((command: CollectionPageCommand) => {
+    controlRequest.current = null
     if (command === 'menu') { setMenuOpen(value => !value); return }
     const isWriteSheet = command === 'rename' || command in COLLECTION_BULK_COMMANDS
     if ((isWriteSheet || command === 'index') && !canUseListing()) return
@@ -344,16 +347,18 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
       if (command === 'bulk-move') setMoveFolders([])
       setSheet(command === 'rename' ? 'rename' : COLLECTION_BULK_COMMANDS[command as keyof typeof COLLECTION_BULK_COMMANDS]); setSheetValue(command === 'rename' ? data.name : command === 'bulk-move' ? NO_MOVE_DESTINATION : ''); setSheetError(''); return
     }
-    // The folder's controls live in the Files tab of a Folio's workspace.
-    if (roomOpensRef.current) window.dispatchEvent(new CustomEvent(ROOM_VIEW_EVENT, { detail: 'files' }))
-    // Palette dismissal restores its prior focus; focus this view after that restoration.
-    requestAnimationFrame(() => {
-      const control = pageRef.current?.querySelector<HTMLElement>(`[data-collection-control="${command}"]`)
-      if (control?.tagName === 'DETAILS') { (control as HTMLDetailsElement).open = true; control.querySelector<HTMLElement>('input, button')?.focus() }
-      else control?.focus()
-    })
-  }, [folio, manifestUnreadable, makeFolio, data, canUseListing, onOpenPiece, createIndex, hits, selectedPaths, sortedRows, onStatus, busy, canAddToFolio, canMakeFolio, repairNeeded, eligibilityIsCurrent])
-  useEffect(() => {
+    if (!isCollectionControl(command)) return
+    if (roomOpens) {
+      const request = controlRequest.current = Symbol()
+      window.dispatchEvent(new CustomEvent<RoomViewCommand>(ROOM_VIEW_EVENT, {
+        detail: { dir, control: command, current: () => controlRequest.current === request },
+      }))
+    } else {
+      const control = findCollectionControl(pageRef.current, command)
+      if (control) focusCollectionControl(control)
+    }
+  }, [dir, roomOpens, folio, manifestUnreadable, makeFolio, data, canUseListing, onOpenPiece, createIndex, hits, selectedPaths, sortedRows, onStatus, busy, canAddToFolio, canMakeFolio, repairNeeded, eligibilityIsCurrent])
+  useLayoutEffect(() => {
     const listener = (event: Event) => runPageCommand((event as CustomEvent<CollectionPageCommand>).detail)
     window.addEventListener(COLLECTION_PAGE_EVENT, listener)
     return () => window.removeEventListener(COLLECTION_PAGE_EVENT, listener)
@@ -583,7 +588,7 @@ export function CollectionView({ onBack, dir, onOpenPiece, onNewPiece, onStatus,
     </div>
   )
   if (roomOpens) return (
-    <div ref={pageRef} className="cv-folio-page">{sheetNode}<FolioRoom onOpenFolio={onOpenFolio} headingOutline={headingOutline} editor={roomEditor} dir={dir} onOpenPiece={onOpenPiece} onStatus={onStatus} onViewChange={setRoomView} files={() => renderList(true)} {...(renderBoard ? { board: renderBoard } : {})} {...(onBoardShown ? { onBoardShown } : {})} headerActions={collectionMenu} {...(onShowRoomText ? { onShowText: onShowRoomText } : {})} textLoaded={roomTextLoaded ?? null} {...(runningOrder ? { runningOrder } : {})} shortcutOverrides={shortcutOverrides} {...(onSaveFolioVersion ? { onSaveFolioVersion } : {})} {...(partIsUnsaved ? { partIsUnsaved } : {})} {...(resolveSuggestion ? { resolveSuggestion } : {})} /></div>
+    <div ref={pageRef} className="cv-folio-page">{sheetNode}<FolioRoom onOpenFolio={onOpenFolio} headingOutline={headingOutline} editor={roomEditor} dir={dir} onOpenPiece={onOpenPiece} onStatus={onStatus} onViewChange={setRoomView} onNavigate={onRoomNavigation} files={() => renderList(true)} {...(renderBoard ? { board: renderBoard } : {})} {...(onBoardShown ? { onBoardShown } : {})} headerActions={collectionMenu} {...(onShowRoomText ? { onShowText: onShowRoomText } : {})} textLoaded={roomTextLoaded ?? null} {...(runningOrder ? { runningOrder } : {})} shortcutOverrides={shortcutOverrides} {...(onSaveFolioVersion ? { onSaveFolioVersion } : {})} {...(partIsUnsaved ? { partIsUnsaved } : {})} {...(resolveSuggestion ? { resolveSuggestion } : {})} /></div>
   )
   return renderList(false)
 }

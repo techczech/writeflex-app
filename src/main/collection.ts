@@ -19,6 +19,7 @@ import { isFolioAgentInstructionsFile, manifestPartEntries, readManifest } from 
 import { folioPartPaths } from './folio-part-set'
 import { INDEX_NOTE_EXISTS, indexNoteCreationRefusal } from './folio-index-note'
 import { partTitle } from '../shared/folio-part-title'
+import { collectionIndexNotePath } from '../shared/collection-index-note'
 import { resolvesToRoomSupportFile } from './room-support-target'
 import { REFERENCE_STATUS_ORDER, UNSORTED_STATUS, type BoardStatus } from '../shared/collection-status'
 import { setFrontmatterKeys } from './capabilities'
@@ -322,12 +323,8 @@ function directChildFolder(folderPath: string, dir: string): boolean {
   return (parent === '.' ? '' : parent) === dir
 }
 
-function indexNotePath(dir: string): string {
-  return inDir(dir, `_${basename(dir)}_INDEX.md`)
-}
-
 async function folderPieceMode(ws: Workspace, folderPath: string, files: Set<string>): Promise<FolderPieceMode | null> {
-  const path = indexNotePath(folderPath)
+  const path = collectionIndexNotePath(folderPath)
   if (!files.has(path)) return null
   const value = parseFrontmatter((await ws.readFile(path)).content)?.extra.piece
   const normalised = typeof value === 'string' ? value.trim().toLowerCase() : ''
@@ -552,7 +549,7 @@ export async function unresolvedFolderPieces(ws: Workspace, dir: string): Promis
   const folders = (await ws.listFolders()).filter((folder) => isUnderDir(folder, dir)).sort()
   const unresolved: UnresolvedFolderPiece[] = []
   for (const folderPath of folders) {
-    const indexPath = indexNotePath(folderPath)
+    const indexPath = collectionIndexNotePath(folderPath)
     if (!files.has(indexPath)) continue
     const content = (await ws.readFile(indexPath)).content
     const mode = parseFrontmatter(content)?.extra.piece
@@ -837,11 +834,11 @@ export async function setCollectionPieceMode(
   if (!isUnderDir(folderPath, dir) || !(await ws.listFolders()).includes(folderPath)) {
     throw new Error('Folder Piece is outside its Collection.')
   }
-  const path = indexNotePath(folderPath)
+  const path = collectionIndexNotePath(folderPath)
   const files = new Set((await ws.listFiles()).map((file) => file.path))
   if (!files.has(path)) await createIndexNote(ws, folderPath)
   const source = await ws.readFile(path)
-  return ws.saveFile(path, setFrontmatterKeys(source.content, { piece: mode }, path))
+  return ws.saveFileOverRead(path, setFrontmatterKeys(source.content, { piece: mode }, path), source.content)
 }
 
 /**
@@ -892,7 +889,7 @@ export async function addCollectionPieceTags(ws: Workspace, dir: string, path: s
     : parsedTags
   const next = [...new Set([...existing, ...tags.map(tag => tag.trim())])]
   if (next.length === new Set(existing).size) return source
-  return ws.saveFile(path, setFrontmatterKeys(source.content, { tags: next }, path))
+  return ws.saveFileOver(path, setFrontmatterKeys(source.content, { tags: next }, path), { kind: 'disk', text: source.content })
 }
 
 /** Discover once for a bulk move, shared by both preflight and the exclusive rename turn. */

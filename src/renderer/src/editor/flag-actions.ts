@@ -1,8 +1,8 @@
 import { isolateHistory } from '@codemirror/commands'
-import { StateEffect, StateField, type StateCommand } from '@codemirror/state'
+import { StateEffect, StateField, type StateCommand, type TransactionSpec } from '@codemirror/state'
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, showTooltip, type DecorationSet, type Tooltip } from '@codemirror/view'
 import { flagSelectionEdit } from '../../../shared/markdown/flag-edit'
-import { FLAG_KINDS, findFlags, type FlagKind } from '../../../shared/markdown/flags'
+import { FLAG_KINDS, findFlags, type Flag, type FlagKind } from '../../../shared/markdown/flags'
 
 export const FLAG_LABELS: Record<FlagKind, string> = { 'needs-citation': 'Needs citation', rewrite: 'Rewrite', 'check-fact': 'Check fact', expand: 'Expand' }
 export const FLAG_NOTICE = 'writeflex:flag-notice'
@@ -21,12 +21,22 @@ export function flagSelection(kind: FlagKind): StateCommand {
   }
 }
 
+export function clearFlagSpec(flag: Flag): TransactionSpec {
+  return {
+    changes: [{ from: flag.from, to: flag.wordsFrom }, { from: flag.wordsTo, to: flag.to }],
+    selection: { anchor: flag.from },
+    effects: menu.of(false),
+    annotations: isolateHistory.of('full'),
+    userEvent: 'input.flag',
+  }
+}
+
 export const clearFlagAtCursor: StateCommand = ({ state, dispatch }) => {
   if (state.readOnly) return false
   const range = state.selection.main
   const flag = findFlags(state.doc.toString()).find(flag => flag.from <= range.from && flag.to >= range.to)
   if (!flag) { report('Put the cursor in a flagged passage first.'); return false }
-  dispatch(state.update({ changes: [{ from: flag.from, to: flag.wordsFrom }, { from: flag.wordsTo, to: flag.to }], selection: { anchor: flag.from }, effects: menu.of(false), annotations: isolateHistory.of('full'), userEvent: 'input.flag' }))
+  dispatch(state.update(clearFlagSpec(flag)))
   return true
 }
 export const openFlagMenu: StateCommand = ({ state, dispatch }) => {

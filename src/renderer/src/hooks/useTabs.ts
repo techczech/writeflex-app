@@ -25,6 +25,8 @@ import { useTabGroups } from './useTabGroups'
 export type UseTabs = {
   tabs: string[]
   active: string | null
+  /** The current root's restored tabs are in the same render as this flag. */
+  hydrated: boolean
   pinned: string[]
   recent: string[]
   /** What the top strip holds: pins, then the active file's group (tabStripView). */
@@ -59,17 +61,21 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
   restoredRef.current = onRestored
   const keepTabRef = useRef(keepTab)
   keepTabRef.current = keepTab
-  const [state, setState] = useState<TabState>(emptyTabState)
-  // The root whose persisted tab state has been hydrated into `state`. Hydration keys on root
-  // transitions: null/undefined → string on bind, and string → different string re-hydrates from
-  // the new root's storage key (with file-list reconciliation) so stale tabs never carry across.
+  const [{ state, hydratedRoot }, setTabState] = useState(
+    () => ({ state: emptyTabState, hydratedRoot: null as string | null }),
+  )
+  const setState = useCallback((update: (state: TabState) => TabState) => {
+    setTabState(current => {
+      const next = update(current.state)
+      return next === current.state ? current : { ...current, state: next }
+    })
+  }, [])
+  // Callbacks can accept new opens as soon as hydration enqueues its state. Consumers that read
+  // the restored active tab use hydratedRoot from that same state update instead.
   const loadedRoot = useRef<string | null>(null)
   // open() can't read the `root` prop (stable callback, stale closure), so mirror it in a ref.
   const rootRef = useRef(root)
   rootRef.current = root
-  // The hydration setState below and this render's persist effect commit together; without this
-  // guard the persist effect would write the still-empty pre-hydration state back over storage.
-  const skipPersist = useRef(false)
   // A file-open focus or a held chord can arrive before hydration. Fold the last requested
   // path into the state for this root so restoring the saved tabs cannot wipe out the request.
   const pendingOpen = useRef<string | null>(null)
@@ -91,23 +97,28 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
       return
     }
 
-    const saved = parseTabState(localStorage.getItem(tabStorageKey(root)))
-    const hydrate = (known: Set<string>, inEffect: boolean): void => {
+    let raw: string | null = null
+    try {
+      raw = localStorage.getItem(tabStorageKey(root))
+    } catch {
+      // Storage may be unavailable even when the workspace is readable.
+    }
+    const saved = parseTabState(raw)
+    const hydrate = (known: Set<string>): void => {
       loadedRoot.current = root
-      skipPersist.current = inEffect
       const hydrated = reconcileTabs(saved, known)
       const queued = pendingOpen.current
       pendingOpen.current = null
       if (queued !== null && (known.has(queued) || queued === BOARD_TAB_ID
         || (isWidgetWorkbenchTabId(queued) && known.has(workbenchDocumentOf(queued))))) {
-        setState(openTab(hydrated, queued))
+        setTabState({ state: openTab(hydrated, queued), hydratedRoot: root })
       } else {
-        setState(hydrated)
+        setTabState({ state: hydrated, hydratedRoot: root })
         if (hydrated.active) restoredRef.current?.(hydrated.active)
       }
     }
     if (listingReady) {
-      hydrate(new Set(files.map(file => file.path)), true)
+      hydrate(new Set(files.map(file => file.path)))
       return
     }
     if (!canRestoreTabsEarly) return
@@ -123,20 +134,22 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
       // full listing will validate it and finish hydration.
       const latest = pendingOpen.current
       if (!live || (latest !== null && latest !== BOARD_TAB_ID && !paths.has(documentPath(latest)))) return
-      hydrate(known, paths.size === 0)
+      hydrate(known)
     }
     void restore().catch(() => { /* Fall back to hydration from the full listing. */ })
     return () => { live = false }
-  }, [root, files, listingReady, canRestoreTabsEarly])
+  }, [root, files, listingReady, canRestoreTabsEarly, setState])
 
+  const hydrated = typeof root === 'string' && hydratedRoot === root
   useEffect(() => {
-    if (typeof root !== 'string' || loadedRoot.current !== root) return
-    if (skipPersist.current) {
-      skipPersist.current = false
-      return
+    if (!hydrated) return
+    const serialized = serializeTabState(state)
+    try {
+      localStorage.setItem(tabStorageKey(root), serialized)
+    } catch {
+      // Persistence is best effort. The hydrated tabs are still usable in memory.
     }
-    localStorage.setItem(tabStorageKey(root), serializeTabState(state))
-  }, [root, state])
+  }, [root, state, hydrated])
 
   const open = useCallback((path: string) => {
     if (typeof rootRef.current !== 'string' || loadedRoot.current !== rootRef.current) {
@@ -147,6 +160,7 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
   }, [])
   const replaceActive = useCallback((path: string) => setState((s) => replaceActiveTab(s, path)), [])
   const renamed = useCallback((from: string, to: string) => setState((state) => {
+    if (from === to || !state.tabs.includes(from)) return state
     const move = (path: string) => path === from ? to : path
     const paths = (items: string[]) => [...new Set(items.map(move))]
     return { tabs: paths(state.tabs), active: state.active && move(state.active), pinned: paths(state.pinned), recent: paths(state.recent) }
@@ -159,5 +173,5 @@ export function useTabs(root: string | null | undefined, files: MarkdownFile[], 
   const pin = useCallback((path: string, pinned: boolean) => setState((s) => pinTab(s, path, pinned)), [])
   const reorderPin = useCallback((path: string, before: string | null) => setState((s) => reorderPinnedTab(s, path, before)), [])
 
-  return { tabs: state.tabs, active: state.active, pinned: state.pinned, recent: state.recent, strip: view.strip, groups: view.groups, open, replaceActive, renamed, close, activate, cycle, pin, reorderPin }
+  return { tabs: state.tabs, active: state.active, hydrated, pinned: state.pinned, recent: state.recent, strip: view.strip, groups: view.groups, open, replaceActive, renamed, close, activate, cycle, pin, reorderPin }
 }

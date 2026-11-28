@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.29.0-alpha.10] — 2026-11-28
+
+An alpha: early, and it can break.
+
+### Fixed
+- Adding tags to a document in a Collection no longer overwrites newer text that another program saved to the same file.
+- Switching a Folder Piece between one document and many no longer overwrites newer Index Note text that another program saved.
+- WriteFlex no longer crashes when it cannot store the list of open tabs; the editor stays usable.
+- Commands that finish late no longer land somewhere you have moved on from: Board opens, Scratchpad version opens, delayed folder opens, and Folio citation and flag actions.
+- Open tabs follow files that are moved or renamed in a Collection.
+- Folio Outline keeps its rows and the keyboard through a failed read, and running-order changes match the Outline you see.
+- Folio comparisons stay open when a refresh fails.
+- Collection filter commands and Open Outline put the keyboard where they say.
+- A Folio chapter that is still loading no longer pulls the cursor away.
+
 ## [0.29.0-alpha.9] — 2026-11-27
 
 An alpha: early, and it can break.

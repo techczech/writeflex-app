@@ -26,7 +26,6 @@ test('document outline derives a compact H1 through H5 indent and caps deeper le
       activePath="outline.md"
       onJumpToFile={() => {}}
       savedTick={0}
-      focusTick={0}
       shortcutFor={() => null}
       request={null}
       folioPlace={null}
@@ -53,7 +52,6 @@ test('the header bar reads ↑ ↓ ← → | collapse-all expand-all, then a Lev
       activePath="outline.md"
       onJumpToFile={() => {}}
       savedTick={0}
-      focusTick={0}
       shortcutFor={(id) => (id === 'outline.moveBlockUp' ? '⌥⌘↑' : null)}
       request={null}
       folioPlace={null}
@@ -82,7 +80,6 @@ const SWITCH_PROPS = {
   snapshot: null,
   onJumpToFile: () => {},
   savedTick: 0,
-  focusTick: 0,
   shortcutFor: () => null,
   request: null,
   folderFileCount: 0,
@@ -120,7 +117,6 @@ const paneHtml = (snapshotPath: string, outline: Array<{ level: number; from: nu
     activePath="b.md"
     onJumpToFile={() => {}}
     savedTick={0}
-    focusTick={0}
     shortcutFor={() => null}
     request={null}
     folioPlace={null}

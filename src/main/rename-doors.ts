@@ -69,7 +69,12 @@ export class RenameBatch {
 }
 
 export type FileRenameResult = FileReadResult & { repair: RenameRepairResult }
-export type FolderRenameResult = { path: string; repair: FolderRenameRepairResult }
+export type FolderRenameResult = {
+  path: string
+  repair: FolderRenameRepairResult
+  /** Index Note paths before and after the whole folder rename. */
+  indexNote?: { from: string; to: string }
+}
 
 // One tentative rename per workspace. Another preview replaces it, and the matching commit consumes it.
 const previewMarkdown = new WeakMap<Workspace, { from: string; to: string; cache: RenameRepairMarkdownCache }>()
@@ -236,7 +241,11 @@ export async function renameFolder(deps: RenameDoorDeps, path: string, newName: 
         repair.writtenPaths.push(...indexRepair.writtenPaths.filter((written) => !repair.writtenPaths.includes(written)))
       } catch { /* the rename stands; a link left unrepaired is no loss */ }
     }
-    return { path: moved.path, repair }
+    const indexNote = moved.indexNote && {
+      from: from + moved.indexNote.from.slice(moved.path.length),
+      to: moved.indexNote.to,
+    }
+    return { path: moved.path, repair, ...(indexNote && { indexNote }) }
   })
   let outcome = await attempt(undefined)
   if (!outcome) {

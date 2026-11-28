@@ -1,4 +1,5 @@
-import type { CollectionRow } from '../../../preload'
+import type { CollectionRow, WriteFlexApi } from '../../../preload'
+import type { DocumentOwner } from './document-owner'
 import type { FolioRunningOrder } from './folio-running-order'
 import { plainErrorForScreen } from '../error-text'
 
@@ -24,6 +25,22 @@ export async function runCollectionBatch(paths: readonly string[], change: (path
   }
   const more = failures.length > 3 ? ` and ${failures.length - 3} more.` : ''
   return { succeeded, failed, message: `Changed ${succeeded.length} of ${paths.length}.${failures.length ? ` ${failures.slice(0, 3).join(' ')}${more}` : ''}` }
+}
+
+/** Flush and hold the Piece while main adds tags, then reconcile its receipt against the held generation. */
+export async function addCollectionTagsFlushed(
+  owner: Pick<DocumentOwner, 'withFlushed' | 'replaceFromMain'>,
+  addTags: WriteFlexApi['collection']['addTags'],
+  dir: string,
+  path: string,
+  tags: string[],
+): Promise<void> {
+  const result = await owner.withFlushed([path], async snapshots => {
+    const snapshot = snapshots.get(path)!
+    const saved = await addTags(dir, path, tags)
+    owner.replaceFromMain(path, saved, { since: snapshot.gen, mode: 'replace' })
+  })
+  if (result.status !== 'acted') throw new Error('Could not save this document. Try again.')
 }
 
 /** Keep Folio's existing Undo writer authoritative, including its refusal result. */

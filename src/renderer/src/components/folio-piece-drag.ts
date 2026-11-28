@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import { dragLabel, dropFor, slotAt } from '../../../shared/folio-running-order'
 
 /** What the Folio part draws while a piece is being dragged. Nothing is written until the pointer is released. */
@@ -20,6 +20,8 @@ type Options = {
   pieces: ReadonlyArray<{ path: string; title: string }>
   /** False while a filter is on or a write is under way: nothing can be dragged. */
   enabled: boolean
+  /** The accepted read that owns the gesture. A refresh retires it even if the rows remain visible. */
+  revision?: object | null
   /** Called on release over a place the piece is not already in. `beforePath` null = to the end. */
   onDrop: (path: string, beforePath: string | null, expected: string[]) => void
   /** Set while a drag is live and for a tick after it, so the release is not also a click that opens the file. */
@@ -38,12 +40,14 @@ const START_DISTANCE_PX = 5
  * the pointer, so the release reaches it even outside the window; capture is not taken on the press
  * itself, because a captured press would turn a click on the chevron into a click on the row.
  */
-export function usePieceDrag({ listRef, pieces, enabled, onDrop, suppressClick }: Options): { drag: PieceDragView | null; start: (event: ReactPointerEvent, path: string) => void } {
+export function usePieceDrag({ listRef, pieces, enabled, revision, onDrop, suppressClick }: Options): { drag: PieceDragView | null; start: (event: ReactPointerEvent, path: string) => void } {
   const [drag, setDrag] = useState<PieceDragView | null>(null)
   const piecesRef = useRef(pieces)
   piecesRef.current = pieces
   const dropRef = useRef(onDrop)
   dropRef.current = onDrop
+  const authority = useRef({ enabled, revision })
+  useLayoutEffect(() => { authority.current = { enabled, revision } }, [enabled, revision])
   // The live press's teardown, so an unmount (or a second press) cannot leave listeners on the window.
   const stopRef = useRef<(() => void) | null>(null)
   useEffect(() => () => { stopRef.current?.() }, [])
@@ -52,6 +56,7 @@ export function usePieceDrag({ listRef, pieces, enabled, onDrop, suppressClick }
     if (!enabled || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
     if ((event.target as Element).closest('.fo-chev-btn, button')) return
     stopRef.current?.()
+    const basis = authority.current.revision
     const startX = event.clientX
     const startY = event.clientY
     const row = event.currentTarget instanceof Element ? event.currentTarget : null
@@ -112,6 +117,7 @@ export function usePieceDrag({ listRef, pieces, enabled, onDrop, suppressClick }
       if (active) window.setTimeout(() => { suppressClick.current = false }, 0)
       const result = latest
       if (!commit || !active || !result || result.slot === null || result.inPlace) return
+      if (!authority.current.enabled || authority.current.revision !== basis) return
       const drop = dropFor(expected, expected.indexOf(path), result.slot)
       if (drop.inPlace) return
       dropRef.current(path, drop.beforePath, expected)
