@@ -14,7 +14,7 @@ import { quotedCitation, citationChip } from '../editor/citation'
 import type { RoomEvidenceRow } from '../../../shared/folio-evidence'
 import { FolioRoomFlags, useRoomFlags, type RoomEditorRef, type ShownFlag } from './FolioRoomFlags'
 import { findFlags } from '../../../shared/markdown/flags'
-import { clearFlagAtCursor } from '../editor/flag-actions'
+import { clearFlagSpec } from '../editor/flag-actions'
 import { livePreviewBlocks, setOpenLivePreviewBlock } from '../editor/live-preview'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -33,6 +33,7 @@ import type { FolioRunningOrder } from '../app/folio-running-order'
 import { roomOrderLine } from '../../../shared/folio-room-order'
 import { useExportOrderCheck } from './ExportOrderNotice'
 import { FolioRoomOutline } from './FolioRoomOutline'
+import { findCollectionControl, focusCollectionControl, type CollectionControl } from './collection-control-focus'
 import { FolioRoomText } from './FolioRoomText'
 import { FolioRoomVersions, OPEN_EXPORT_EVENT, OPEN_MARK_SENT_EVENT, type VersionsEntry, type VersionsMemory } from './FolioRoomVersions'
 import { FolioVersionSheetHost, type VersionSheet } from './FolioVersionExport'
@@ -40,7 +41,7 @@ import { READER_TABS, ReadingSession, type ReaderTab } from './FolioVersionReade
 import { COMPARE_WORKING } from '../../../shared/folio-version-compare'
 import { folioRoomEscapeGoesBack } from './BackControl'
 import { READ_ONLY_REFUSAL, type FolioVersionRow, type ReadingVersion } from '../../../shared/folio-versions-view'
-import { OPEN_VERSION_NUDGE_EVENT, setReadingVersion, takeWaitingOpenVersion, type OpenVersionRequest } from '../plan/folio-reading'
+import { OPEN_VERSION_NUDGE_EVENT, pendingOpenVersionFor, retireOpenVersionRequest, setReadingVersion, takeWaitingOpenVersion, type OpenVersionRequest } from '../plan/folio-reading'
 import { NewCard, RoomOrderBanner, RoomOrderSource, RoomLeftOut, chordOf, roomMoveChord, usePartDrag, type PartDrag } from './FolioRoomOrder'
 import { announceUndoToast, onOtherUndoToast, refreshRoom, subscribeRoom, type RoomAnswer } from '../plan/folio-room-store'
 import type { RoomAuthoringResult } from '../../../shared/folio-room-authoring'
@@ -93,6 +94,16 @@ const partKey = (part: Pick<RoomPart, 'key'>): string => `${part.key.title}\u000
 /** The removal toast (drawing 4A): its sentence, its Undo token, and the parts it hid before main answered. */
 type RemovalToast = { message: string; token: string | null; keys: string[] }
 
+type RoomTextAction = { kind: 'citation'; text: string } | { kind: 'flag'; flag: ShownFlag; clear: boolean }
+type PendingTextAction = {
+  room: object
+  part: string
+  path: string
+  view: RoomView
+  split: boolean
+  action: RoomTextAction
+}
+
 type PartFocusTarget = { key: PlanPartKey | null; select?: true; status?: string; afterRead?: number }
 type PartFocusAction = {
   room: object
@@ -114,7 +125,8 @@ export const FOLIO_VERSION_COMMAND_EVENT = 'writeflex:folio-version-command'
 export type FolioVersionCommand = 'back-to-working-draft'
 /** A view, status lanes, Split, or a heading navigation target in the open workspace. */
 type RoomPathRequest = { path: string; owner?: { current: () => boolean; cancel: () => void } }
-export type RoomViewCommand = RoomView | 'split' | 'status-lanes' | RoomPathRequest
+type RoomFilesControlRequest = { dir: string; control: CollectionControl; current: () => boolean }
+export type RoomViewCommand = RoomView | 'split' | 'status-lanes' | RoomPathRequest | RoomFilesControlRequest
 
 const VIEW_ICONS: Record<RoomView, typeof LayoutGrid> = { cards: LayoutGrid, outline: ListTree, map: Network, flags: Flag, text: FileText, evidence: Library, files: FolderOpen, versions: History }
 
@@ -144,6 +156,8 @@ export type FolioRoomProps = {
   onBoardShown?: (shown: boolean) => void
   /** The tab on screen, for the wrapper (the Files tab reads the folder again when it is shown). */
   onViewChange?: (view: RoomView) => void
+  /** A route within this room supersedes a pending Board-open command in the app. */
+  onNavigate?: () => void
   /** The Versions tab's Save Folio version… (the save sheet, Folio versions ticket 04). Absent: the tab shows the button disabled. */
   onSaveFolioVersion?: (suggestedName?: string) => void
   /** Whether a part has typed text not yet saved: Compare's "Take that text" is refused while it has (ticket 09). Absent: no take buttons. */
@@ -202,7 +216,7 @@ function Card({ part, selected, focusable, onSelect, onOpen, compact, drag, onEv
 const NO_TEXT = (): void => undefined
 const NO_STATUS = (): void => undefined
 
-export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoardShown, headingOutline = null, onViewChange, onStatus = NO_STATUS, selectionRef, headerActions, onShowText = NO_TEXT, textLoaded = null, editor, runningOrder, shortcutOverrides = {}, onSaveFolioVersion, partIsUnsaved, resolveSuggestion }: FolioRoomProps): JSX.Element {
+export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoardShown, headingOutline = null, onViewChange, onNavigate, onStatus = NO_STATUS, selectionRef, headerActions, onShowText = NO_TEXT, textLoaded = null, editor, runningOrder, shortcutOverrides = {}, onSaveFolioVersion, partIsUnsaved, resolveSuggestion }: FolioRoomProps): JSX.Element {
   const holdOrder = useRef(false)
   const outlinePress = useRef(false)
   // A saved version open read-only (ticket 07). Held apart from the room's own state (`state`, `model`): opening, browsing and leaving it
@@ -211,7 +225,7 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
   const readingRef = useRef(reading)
   readingRef.current = reading
   const readingOpen = reading !== null
-  const viewEntry = useRef<{ origin: Element | null; view?: RoomView } | null>(null)
+  const viewEntry = useRef<{ origin: Element | null; view?: RoomView; filesControl?: RoomFilesControlRequest } | null>(null)
   const versionsEntry = useRef<VersionsEntry | null>(null)
   const versionsMemory = useRef<VersionsMemory>({ chosen: null, rows: 0, main: 0 })
   const closeVersionCompare = useRef<(() => void) | null>(null)
@@ -245,13 +259,26 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
   const [inspectorMounted, setInspectorMounted] = useState(false)
   const [state, setState] = useState<RoomState | null>(null)
   const [error, setError] = useState(false)
-  const [pendingCitation, setPendingCitation] = useState<{ path: string; text: string } | null>(null)
+  const pendingTextAction = useRef<PendingTextAction | null>(null)
   const evidenceSession = useMemo(() => crypto.randomUUID(), [dir, model?.stateKey])
   const flags = useRoomFlags(model, editor)
-  const [pendingFlag, setPendingFlag] = useState<{ part: RoomPart; flag: ShownFlag; clear?: boolean } | null>(null)
   const stateRef = useRef<RoomState | null>(null)
   const loadedDir = useRef<string | null>(null)
   const roomLoad = useRef<object | null>(null)
+  const versionOpen = useRef<OpenVersionRequest | null>(null)
+  const retireRoomVersionOpen = useCallback((): void => {
+    versionOpen.current = null
+    retireOpenVersionRequest(pendingOpenVersionFor(dir))
+  }, [dir])
+  useLayoutEffect(() => () => {
+    const request = versionOpen.current
+    versionOpen.current = null
+    loadedDir.current = null
+    roomLoad.current = null
+    pendingTextAction.current = null
+    retireOpenVersionRequest(request)
+    setReadingVersion(dir, null)
+  }, [dir])
   const roomRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const [composing, setComposing] = useState(false)
@@ -315,14 +342,20 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
       setState(stored)
     })
     const retireFocus = (event: Event): void => {
+      const intent = viewEntry.current
+      if (event instanceof KeyboardEvent) {
+        if (event.key === 'Escape' && intent?.filesControl) viewEntry.current = null
+        return
+      }
       const destination = event.target
       if (!(destination instanceof Node)) return
       const left = (origin: Element | null): boolean => event.type === 'pointerdown' ? !origin?.contains(destination) : destination !== origin
-      if (viewEntry.current && left(viewEntry.current.origin)) viewEntry.current = null
+      if (intent && (left(intent.origin) || (intent.filesControl && event.type === 'pointerdown'))) viewEntry.current = null
       if (partFocus.current && left(partFocus.current.origin)) partFocus.current = null
       if (versionsEntry.current && left(versionsEntry.current.origin)) versionsEntry.current = null
     }
     document.addEventListener('focusin', retireFocus, true)
+    document.addEventListener('keydown', retireFocus, true)
     document.addEventListener('pointerdown', retireFocus, true)
     const unsubscribe = subscribeRoom(dir, (answer) => {
       if (roomLoad.current !== load) return
@@ -340,8 +373,9 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
       viewEntry.current = null
       versionsEntry.current = null
       document.removeEventListener('focusin', retireFocus, true)
+      document.removeEventListener('keydown', retireFocus, true)
       document.removeEventListener('pointerdown', retireFocus, true)
-      loadedDir.current = null; roomLoad.current = null; pendingViewPath.current = null; setReadingVersion(dir, null); unsubscribe(); releaseSidebar(dir)
+      pendingViewPath.current = null; unsubscribe(); releaseSidebar(dir)
     }
   }, [dir])
 
@@ -358,8 +392,14 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
       if (patch.view !== 'versions') versionsEntry.current = null
     }
     const changesRoute = patch.view !== undefined || patch.split !== undefined || patch.selected !== undefined
+    if (changesRoute) pendingTextAction.current = null
+    if (changesRoute || patch.cardsByStatus !== undefined) onNavigate?.()
+    if (viewEntry.current?.filesControl && (patch.split !== undefined || patch.selected !== undefined || patch.cardsByStatus !== undefined || patch.surface !== undefined)) {
+      viewEntry.current = null
+    }
     if (changesRoute || patch.cardsByStatus !== undefined || patch.surface !== undefined) partFocus.current = null
     if (changesRoute) {
+      retireRoomVersionOpen()
       if (roomJumpOwner.current !== owner) roomJumpOwner.current?.cancel()
       roomJumpOwner.current = owner
     }
@@ -368,7 +408,7 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
     stateRef.current = next
     setState(next)
     void window.writeflex.folioRoom.setState(dir, patch).catch(() => undefined)
-  }, [dir])
+  }, [dir, onNavigate, retireRoomVersionOpen])
 
   const beginPartFocus = useCallback((source: 'list' | 'composer' | 'command' = 'list'): PartFocusAction | null => {
     const room = roomLoad.current
@@ -395,6 +435,16 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
     setFocusCompletion(previous => previous + 1)
   }, [])
 
+  const queueTextAction = (part: RoomPart, action: RoomTextAction, route: Partial<Pick<RoomState, 'view' | 'split'>>): void => {
+    const room = roomLoad.current
+    const path = part.key.path
+    if (!room || loadedDir.current !== dir || readingRef.current || !part.written || !path) return
+    // The action owns the destination established by its own navigation.
+    update({ selected: part.key, ...route })
+    const next = stateRef.current
+    if (next) pendingTextAction.current = { room, part: partKey(part), path, view: next.view, split: next.split, action }
+  }
+
   const insertEvidence = (part: RoomPart, row: RoomEvidenceRow, quote?: string): void => {
     if (!part.written || !part.key.path) return
     let link = row.target
@@ -404,15 +454,11 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
       link = [...from.map(() => '..'), ...to].join('/')
     }
     const citation = { authorYear: row.citationLabel ?? row.title.replace(/^⟨|⟩$/g, ''), link }
-    setPendingCitation({ path: part.key.path, text: row.kind === 'archive' ? archiveLinkMarkdown({ title: row.title, link: row.target, publicUrl: null }) : quote ? quotedCitation(quote, citation) : citationChip(citation) })
-    update({ selected: part.key, ...(stateRef.current?.view === 'text' ? {} : { view: 'cards' as const, split: true }) })
+    const text = row.kind === 'archive'
+      ? archiveLinkMarkdown({ title: row.title, link: row.target, publicUrl: null })
+      : quote ? quotedCitation(quote, citation) : citationChip(citation)
+    queueTextAction(part, { kind: 'citation', text }, stateRef.current?.view === 'text' ? {} : { view: 'cards', split: true })
   }
-  useEffect(() => {
-    if (!pendingCitation || textLoaded !== pendingCitation.path || editor?.current?.path() !== pendingCitation.path) return
-    const handle = editor.current
-    if (handle.view()?.state.readOnly) { setEditMessage('This part is read-only. The citation was not inserted.'); setPendingCitation(null); return }
-    handle.insertText(pendingCitation.text, { block: true }); handle.view()?.focus(); setPendingCitation(null)
-  }, [pendingCitation, textLoaded, editor])
 
   const author: RoomAuthor = useCallback((request: RoomAuthoringRequest): Promise<boolean> => {
     const queued = authorTail.current.then(async () => {
@@ -439,33 +485,11 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
   }, [dir, runningOrder, reload, evidenceSession])
 
   const jumpToFlag = (part: RoomPart, flag: ShownFlag): void => {
-    update({ selected: part.key, view: 'text', split: false })
-    setPendingFlag({ part, flag })
+    queueTextAction(part, { kind: 'flag', flag, clear: false }, { view: 'text', split: false })
   }
-  useEffect(() => {
-    if (!pendingFlag || textLoaded !== pendingFlag.part.key.path || editor?.current?.path() !== textLoaded) return
-    const view = editor.current.view()
-    if (!view) return
-    const expected = pendingFlag.flag
-    const found = findFlags(view.state.doc.toString()).find(flag => flag.from === expected.from && flag.words === expected.words && flag.kind === expected.kind)
-    if (found) {
-      const block = found.inTable ? livePreviewBlocks(view.state).find(block => block.from <= found.from && block.to >= found.to) : null
-      view.dispatch({ selection: { anchor: found.wordsFrom, head: found.wordsTo }, ...(block ? { effects: setOpenLivePreviewBlock.of(block) } : {}), scrollIntoView: true })
-      if (pendingFlag.clear) { clearFlagAtCursor(view); setEditMessage('Cleared the flag; its words are kept. Use Undo in the text to restore it.') }
-      view.focus()
-    } else setEditMessage('That flag changed. Select it again from the refreshed list.')
-    setPendingFlag(null)
-  }, [pendingFlag, textLoaded, editor])
   const clearFlag = (part: RoomPart, flag: ShownFlag): void => {
-    const current = editor?.current
-    const view = current?.path() === part.key.path ? current.view() : null
-    if (view) {
-      const found = findFlags(view.state.doc.toString()).find(item => item.from === flag.from && item.words === flag.words && item.kind === flag.kind)
-      if (!found) { setEditMessage('That flag changed. Select it again from the refreshed list.'); return }
-      view.dispatch({ selection: { anchor: found.wordsFrom, head: found.wordsTo } })
-      clearFlagAtCursor(view)
-      setEditMessage('Cleared the flag; its words are kept. Use Undo in the text to restore it.')
-    } else if (flag.live) { update({ selected: part.key, view: 'text', split: false }); setPendingFlag({part,flag,clear:true}) }
+    pendingTextAction.current = null
+    if (flag.live) queueTextAction(part, { kind: 'flag', flag, clear: true }, { view: 'text', split: false })
     else void author({ op: 'clearFlag', index: part.index, expected: part.card, from: flag.from, fingerprint: flag.fingerprint })
   }
 
@@ -523,11 +547,12 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
     requestAnimationFrame(() => gridRef.current?.querySelector<HTMLElement>(`[data-part-index="${part.index}"]`)?.focus())
   }, [cards, update])
 
-  const setView = useCallback((view: RoomView): void => {
+  const setView = useCallback((view: RoomView, filesControl?: RoomFilesControlRequest): void => {
     if (!ROOM_AVAILABLE_VIEWS.includes(view)) return
     const origin = document.activeElement
-    const wantsFocus = !viewFocusBlocked(origin) && !origin?.closest(ROOM_DIALOG)
-    viewEntry.current = wantsFocus && view !== 'versions' ? { origin, view } : null
+    const wantsFocus = filesControl !== undefined || (!viewFocusBlocked(origin) && !origin?.closest(ROOM_DIALOG))
+    if (filesControl) pendingViewPath.current = null
+    viewEntry.current = wantsFocus && view !== 'versions' ? { origin, view, ...(filesControl ? { filesControl } : {}) } : null
     if (view === 'versions' && stateRef.current?.view !== 'versions' && loadedDir.current === dir && wantsFocus) {
       versionsEntry.current = { dir, origin }
     }
@@ -545,7 +570,11 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
   const openRoomPath = useCallback((request: RoomPathRequest): void => {
     const { path, owner } = request
     if (owner && !owner.current()) return
+    pendingTextAction.current = null
+    retireRoomVersionOpen()
     if (roomLoading) {
+      onNavigate?.()
+      if (viewEntry.current?.filesControl) viewEntry.current = null
       if (roomJumpOwner.current !== owner) roomJumpOwner.current?.cancel()
       roomJumpOwner.current = owner
       pendingViewPath.current = request
@@ -553,24 +582,27 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
     }
     if (!parts.some(part => part.key.path === path)) { onOpenPiece(path); return }
     update({ view: 'text', split: false, selected: { title: '', path } }, owner)
-  }, [roomLoading, parts, onOpenPiece, update])
+  }, [roomLoading, parts, onOpenPiece, onNavigate, update, retireRoomVersionOpen])
   useEffect(() => {
     const onView = (event: Event): void => {
       const command = (event as CustomEvent<RoomViewCommand>).detail
+      if (typeof command === 'object' && 'control' in command && command.dir !== dir) return
       // Reading a saved version: the three tabs it has switch the reader (the room's own tab, selection and Split stay as they were); nothing else moves.
       if (readingRef.current) {
         if (command === 'outline' || command === 'text' || command === 'cards') setReading((held) => (held ? { ...held, tab: command } : held))
         else onStatusRef.current('Go back to the working draft first: a saved version has only Table, Text and Cards.')
         return
       }
-      if (typeof command === 'object') openRoomPath(command)
-      else if (command === 'split') toggleSplit()
+      if (typeof command === 'object') {
+        if ('control' in command) setView('files', command)
+        else openRoomPath(command)
+      } else if (command === 'split') toggleSplit()
       else if (command === 'status-lanes') { setBoardShown(false); update({ view: 'cards', split: false, cardsByStatus: true }) }
       else setView(command)
     }
     window.addEventListener(ROOM_VIEW_EVENT, onView)
     return () => window.removeEventListener(ROOM_VIEW_EVENT, onView)
-  }, [setView, toggleSplit, update, openRoomPath])
+  }, [dir, setView, toggleSplit, update, openRoomPath])
   useEffect(() => {
     if (roomLoading || pendingViewPath.current === null) return
     const request = pendingViewPath.current
@@ -671,6 +703,49 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
   // "Add a Folio outline part" and N open its field there too (review T-2).
   const canAdd = runningOrder !== undefined && model !== null && model !== undefined
   const startAPlan = model?.startAPlan === true
+  useEffect(() => {
+    const pending = pendingTextAction.current
+    if (!pending || state !== stateRef.current) return
+    if (pending.room !== roomLoad.current || loadedDir.current !== dir || readingOpen || startAPlan
+      || pending.view !== view || pending.split !== state?.split || (view !== 'text' && !beside)
+      || !selectedPart || !selectedPart.written || partKey(selectedPart) !== pending.part) {
+      pendingTextAction.current = null
+      return
+    }
+
+    const handle = editor?.current
+    const textView = handle?.view()
+    if (textLoaded !== pending.path || handle?.path() !== pending.path || !textView?.dom.isConnected
+      || !textView.dom.closest('.editor-wrap[data-room-text]')) return
+
+    // Dispatch and focus can trigger renderer updates. Consume before either.
+    pendingTextAction.current = null
+    const { action } = pending
+    if (textView.state.readOnly) {
+      if (action.kind === 'citation') setEditMessage('This part is read-only. The citation was not inserted.')
+      return
+    }
+    if (action.kind === 'citation') {
+      handle.insertText(action.text, { block: true })
+      return
+    }
+
+    const expected = action.flag
+    const found = findFlags(textView.state.doc.toString()).find(flag => flag.from === expected.from && flag.words === expected.words && flag.kind === expected.kind)
+    if (!found) {
+      setEditMessage('That flag changed. Select it again from the refreshed list.')
+      return
+    }
+    const block = found.inTable ? livePreviewBlocks(textView.state).find(block => block.from <= found.from && block.to >= found.to) : null
+    const effects = block ? [setOpenLivePreviewBlock.of(block)] : []
+    if (action.clear) {
+      textView.dispatch(clearFlagSpec(found), { effects, scrollIntoView: true })
+      setEditMessage('Cleared the flag; its words are kept. Use Undo in the text to restore it.')
+    } else {
+      textView.dispatch({ selection: { anchor: found.wordsFrom, head: found.wordsTo }, effects, scrollIntoView: true })
+    }
+    textView.focus()
+  }, [dir, state, readingOpen, startAPlan, view, beside, selectedPart, textLoaded, editor])
   const keys = useMemo(() => parts.map((part) => part.key), [parts])
   /** Move the part at running-order index `from` to `to` (both among the cards: front matter never moves here). */
   const move = useCallback(async (from: number, to: number, sourceKey?: string, explicit = false): Promise<void> => {
@@ -843,6 +918,8 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
    */
   const openReading = useCallback((row: Pick<FolioVersionRow, 'id' | 'name' | 'ts' | 'author'>): void => {
     if (readingRef.current || !model || stateRef.current?.view !== 'versions') return
+    pendingTextAction.current = null
+    retireRoomVersionOpen()
     setToast(null); setComposing(false); setMulti(new Set()); setEditMessage(''); setLooseOpen(false); setLooseSelected(null)
     dispatchSidebar('show-binder')
     // Focus leaves anything that could type before the version appears: the reader takes it once it has read the version.
@@ -850,43 +927,70 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
     const version: ReadingVersion = { id: row.id, name: row.name, ts: row.ts, author: row.author }
     setReadingVersion(dir, version)
     setReading({ version, tab: 'text' })
-  }, [dir, model])
+  }, [dir, model, retireRoomVersionOpen])
   /**
    * Open a saved version read-only on a given part (a Scratchpad card's "Open in that version", ticket 10). The room's own state (view,
    * selection, scroll) is not touched, so Back to working draft returns to exactly where the writer was. Reads and shows; writes nothing.
    */
   const openVersionAt = useCallback(async (request: OpenVersionRequest): Promise<void> => {
+    const load = roomLoad.current
+    if (!load || loadedDir.current !== dir) return
+    pendingTextAction.current = null
+    versionOpen.current = request
+    const current = (): boolean =>
+      roomLoad.current === load && versionOpen.current === request && pendingOpenVersionFor(dir) === request
+    const finish = (): void => {
+      versionOpen.current = null
+      retireOpenVersionRequest(request)
+    }
+
     const listing = await window.writeflex.folioVersions.list(dir).catch(() => null)
+    if (!current()) return
     const row = listing?.versions.find((version) => version.id === request.versionId)
-    if (!row) { onStatusRef.current('That Folio version is not in this Folio any more.'); return }
-    setToast(null); setComposing(false); setMulti(new Set()); setEditMessage(''); setLooseOpen(false); setLooseSelected(null)
+    if (!row) {
+      finish()
+      onStatusRef.current('That Folio version is not in this Folio any more.')
+      return
+    }
+
     dispatchSidebar('show-binder')
+    if (!current()) return
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    if (!current()) return
+    finish()
+    setToast(null); setComposing(false); setEditMessage('')
     const version: ReadingVersion = { id: row.id, name: row.name, ts: row.ts, author: row.author }
     setReadingVersion(dir, version)
     setReading({ version, tab: 'text', startAt: request.path })
   }, [dir])
   // A request waiting for this Folio is taken once the room has loaded, and again whenever the app nudges the room.
+  const roomReadyForReader = !roomLoading && model !== null
   useEffect(() => {
-    if (roomLoading) return undefined
-    const take = (): void => { const request = takeWaitingOpenVersion(dir); if (request) void openVersionAt(request) }
-    take()
+    if (!roomReadyForReader || loadedDir.current !== dir) return
+    const take = (): void => {
+      if (!roomLoad.current || loadedDir.current !== dir) return
+      const request = takeWaitingOpenVersion(dir)
+      if (request) void openVersionAt(request)
+    }
     window.addEventListener(OPEN_VERSION_NUDGE_EVENT, take)
+    take()
     return () => window.removeEventListener(OPEN_VERSION_NUDGE_EVENT, take)
-  }, [dir, roomLoading, openVersionAt])
+  }, [dir, roomReadyForReader, openVersionAt])
   const backToWorkingDraft = useCallback((): void => {
+    retireRoomVersionOpen()
     if (!readingRef.current) return
     setReadingVersion(dir, null)
     setReading(null)
-  }, [dir])
+  }, [dir, retireRoomVersionOpen])
   // Compare with working (the reader's banner, ticket 08): leave the version for the Versions tab with a comparison of it against the working draft open.
   const compareFromReading = useCallback((): void => {
     const held = readingRef.current
     if (!held) return
+    retireRoomVersionOpen()
     versionsMemory.current = { ...versionsMemory.current, chosen: held.version.id, compare: { from: held.version.id, to: COMPARE_WORKING, openedFrom: held.version.id } }
     setReadingVersion(dir, null)
     setReading(null)
-  }, [dir])
+  }, [dir, retireRoomVersionOpen])
   // Compare and the read-only version can take Esc even when focus is outside the room.
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent): void => {
@@ -990,6 +1094,19 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
     if (readingOpen || versionSheet || boardOn || document.querySelector(ROOM_DIALOG)
       || (active !== intent.origin && active !== document.body && active !== document.documentElement)) {
       viewEntry.current = null
+      return
+    }
+
+    const filesControl = intent.filesControl
+    if (filesControl) {
+      if (view !== 'files' || !filesControl.current()) {
+        viewEntry.current = null
+        return
+      }
+      const control = findCollectionControl(room.querySelector('[data-testid="room-files"]'), filesControl.control)
+      if (!control) return
+      viewEntry.current = null
+      focusCollectionControl(control)
       return
     }
 
@@ -1176,7 +1293,7 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
           </div>
           {!reading && headerActions}
           {!reading && <div className="fr-view-controls">
-            {view === 'cards' && !beside && board && <button type="button" className={`fr-tb${boardOn ? ' on' : ''}`} aria-pressed={boardOn} data-testid="cards-board-toggle" title="Sources, offcuts and column order" onClick={() => setBoardShown(!boardShown)}><Columns3 aria-hidden="true" />Sources and offcuts</button>}
+            {view === 'cards' && !beside && board && <button type="button" className={`fr-tb${boardOn ? ' on' : ''}`} aria-pressed={boardOn} data-testid="cards-board-toggle" title="Sources, offcuts and column order" onClick={() => { retireRoomVersionOpen(); onNavigate?.(); setBoardShown(!boardShown) }}><Columns3 aria-hidden="true" />Sources and offcuts</button>}
             <button type="button" className="fr-tb" data-testid="folio-details-toggle" aria-pressed={sidebar.mode === 'inspector'} title="Details for the selected part" onClick={() => dispatchSidebar('toggle-inspector')}><PanelRight aria-hidden="true" /><span className="fr-vl">Details</span></button>
             {view === 'cards' && !beside && !boardOn && <button type="button" className={`fr-tb${byStatus ? ' on' : ''}`} aria-pressed={byStatus} data-testid="group-by-status" title="Group the cards in the Board’s status lanes" onClick={() => update({ cardsByStatus: !byStatus })}>Group by status</button>}
             <button type="button" className={`fr-tb${beside ? ' on' : ''}`} aria-pressed={beside} title={`Text beside the cards${viewChord('split') ? ` (${viewChord('split')})` : ''}`} data-split onClick={toggleSplit}><Columns2 aria-hidden="true" /><span className="fr-vl">Split</span></button>
@@ -1223,7 +1340,7 @@ export function FolioRoom({ dir, onOpenPiece, onOpenFolio, files, board, onBoard
                 <FolioRoomOutline toolsHost={toolsHost} onMove={move} onDragActive={outlineDragActive} onDragRefuse={refuseOutlineDrag} titleWidth={state.outlineTitleWidth} onTitleWidth={width => { update({ outlineTitleWidth: width ?? undefined }); if (width === null) void window.writeflex.folioRoom.setState(dir, { outlineTitleWidth: null } as unknown as Partial<RoomState>) }} expanded={state.outlineExpanded} onExpanded={outlineExpanded => update({ outlineExpanded })} onHeading={target => { const part = parts.find(part => part.key.path === target.path); if (part) { openPart(part); navigateHeading(target) } }} parts={cards} shown={shown} listRef={gridRef} onSelect={selectPart} onKeyDown={onKeyDown} drag={drag} model={model} author={author} busy={busy} multi={multi} flags={flags}
                   newCard={canWrite ? <NewCard row open={composing} parts={keys} folio={model.newCardFolio} busy={busy} onOpen={openComposer} onClose={closeComposer} onAdd={addCard} /> : null} />
               ) : boardOn ? (
-                <div className="fr-boardhost" data-testid="cards-board">{board!({ dir, name: model.name, onLeave: () => setBoardShown(false), onOutline: () => { setBoardShown(false); update({ view: 'outline' }) } })}</div>
+                <div className="fr-boardhost" data-testid="cards-board">{board!({ dir, name: model.name, onLeave: () => { retireRoomVersionOpen(); onNavigate?.(); setBoardShown(false) }, onOutline: () => { setBoardShown(false); update({ view: 'outline' }) } })}</div>
               ) : (
                 <div className={beside ? 'fr-split' : 'fr-plain'}>
                   <div className={beside ? 'fr-cards fr-scol' : byStatus ? 'fr-cards fr-bystatus' : 'fr-cards'} role="listbox" aria-label="Parts, in running order" aria-multiselectable="true" tabIndex={-1} ref={gridRef} onKeyDown={onKeyDown}>

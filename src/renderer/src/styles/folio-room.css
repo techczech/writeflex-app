@@ -523,6 +523,7 @@ textarea.fr-syn{resize:vertical;box-sizing:border-box}.fr-edit:focus-visible,.fr
 .fvc-menu{position:absolute;top:100%;left:0;z-index:5;margin-top:4px;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 28px rgba(0,0,0,.18);padding:4px;min-width:260px}
 .fvc-menuitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--ink);font:13px var(--ui);padding:7px 10px;border-radius:6px;cursor:pointer}
 .fvc-menuitem:hover,.fvc-menuitem:focus-visible{background:var(--hover)}
+.fvc-menuitem[aria-disabled="true"]{opacity:.5;cursor:default}
 
 .fvi-notstaged{margin:6px 0 4px 26px;padding:0;list-style:disc;font-size:12.5px;color:var(--ink-3)}.fvi-notstaged li{margin:2px 0}
 /* Reserve the menu's slot on the first row. The view controls can wrap as one flex item. */

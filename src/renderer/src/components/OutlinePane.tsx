@@ -3,6 +3,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,9 +18,11 @@ import { EditorSelection } from '@codemirror/state'
 import type { EditorHandle } from './EditorPane'
 import { FileRowMenu, type FileMenuItem } from './file-menu'
 import { ActionsHere } from './ActionsHere'
-import type { FolioOutline, FolioPlace, OutlineScanEntry } from '../../../preload'
+import type { FolioPlace, OutlineScanEntry } from '../../../preload'
 import { FolderPartFoot, FolioOutlinePart, folioFileKeys } from './FolioOutline'
 import type { FolioRunningOrder } from '../app/folio-running-order'
+import type { FolioOutlineRead } from '../app/folio-outline-read'
+import type { OutlineFocusRequest } from '../app/outline-focus'
 import { blockCommandTarget, type FocusedFolioRow } from '../../../shared/folio-running-order'
 import { clampOffset } from '../../../shared/folio-outline'
 import { extractOutline, type OutlineHeading } from '../editor/outline'
@@ -66,10 +69,7 @@ type OutlinePaneProps = {
   /** Bumped by App each time a save completes. Folder scope is disk-backed, so it must re-scan when a
    *  save lands a new `//@`/`//`/task on disk — otherwise the view ignores the save the user just made. */
   savedTick: number
-  /** Bumped by App each time the outline OPENS (⇧⌘O, menu, palette, toolbar). A fresh bump lands the
-   *  keyboard on the active row so the writer can Arrow around at once — deferred here because the
-   *  shared snapshot may not have populated the rows at the instant the pane un-hides. */
-  focusTick: number
+  focusRequest?: OutlineFocusRequest | null
   /** The writer's effective chord for a command id (display glyphs), or null. The panel shows these in
    *  its menu and bar and matches the structure chords against them while it has focus. */
   shortcutFor: (commandId: string) => string | null
@@ -86,8 +86,8 @@ type OutlinePaneProps = {
   onStatus: (message: string) => void
   /** The Folio part's running-order changes: moves, Add, Undo, and what they announce. */
   runningOrder: FolioRunningOrder
-  /** Bumped by App after a running-order write: the Folio part reads again at once. */
-  folioRefreshTick: number
+  /** The scoped read and the write authority shared with App's Outline commands. */
+  folioRead: FolioOutlineRead | null
 }
 
 /** The structure commands the panel answers while it has focus: the editor's own ids, so one binding. */
@@ -283,17 +283,16 @@ function sameSet(a: ReadonlySet<number>, list: readonly number[]): boolean {
  * rows drag up/down to move a section and sideways to change its level; ⌘/⇧-click picks several; the
  * header bar, Levels drop-down and right-click menu run the structure commands; rows can show word counts.
  */
-export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot, activePath, onJumpToFile, savedTick, focusTick, shortcutFor, request, folioPlace, folderFileCount, onOpenFile, onOpenPlan, onStatus, runningOrder, folioRefreshTick }: OutlinePaneProps): JSX.Element {
+export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot, activePath, onJumpToFile, savedTick, focusRequest, shortcutFor, request, folioPlace, folderFileCount, onOpenFile, onOpenPlan, onStatus, runningOrder, folioRead }: OutlinePaneProps): JSX.Element {
   // ONE tree (house rule R13): in a Folio, the running order with the open part's headings nested; outside a Folio, the
   // document's headings. There is no Document / Folio switch and no folder scan: where the file sits decides.
-  const folioPart = workspaceDir !== undefined || folioPlace !== null
+  const folioPart = workspaceDir !== undefined || folioPlace !== null || folioRead?.outline != null
   const scope: Scope = folioPart ? 'folder' : 'file'
-  // The Folio part (read-only): the Folio's pieces and the folder's other files with their headings, from main.
-  const [folioOutline, setFolioOutline] = useState<FolioOutline | null>(null)
   const [folioExpanded, setFolioExpanded] = useState<ReadonlyMap<string, boolean>>(() => new Map())
-  const [folioChanged, setFolioChanged] = useState(0)
-  const [folioFocused, setFolioFocused] = useState<FocusedFolioRow>(null)
+  const [folioFocus, setFolioFocus] = useState<{ scope: FolioOutlineRead['scope']; row: FocusedFolioRow } | null>(null)
+  const lastFolioFocus = useRef(folioFocus)
   const [folioBusy, setFolioBusy] = useState(false)
+  const folioBusyRef = useRef(false)
   // Collapsed sections, keyed by heading start offset; reset when the file changes.
   const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set())
   // The row that holds the roving tabindex (and DOM focus during keyboard nav). Distinct from
@@ -501,28 +500,24 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
     return () => { cancelled = true }
   }, [scope, folioPart, folderSubpath, activePath, savedTick])
 
-// The Folio part asks main when it is shown, and again when the open file, a save, or the collection
-  // changes. Main lists the folder and re-reads only files that changed, so this is cheap on a tab switch.
+  const folioScope = folioRead?.scope ?? null
+  const expansionScope = useRef(folioScope)
   useEffect(() => {
-    if (!folioPart || (activePath == null && workspaceDir === undefined)) return
-    let cancelled = false
-    void window.writeflex
-      .readFolioOutline(workspaceDir !== undefined ? `${workspaceDir ? `${workspaceDir}/` : ''}_report-structure.json` : activePath!)
-      .then((next) => { if (!cancelled) setFolioOutline((current) => (JSON.stringify(current) === JSON.stringify(next) ? current : next)) })
-      .catch(() => { if (!cancelled) setFolioOutline(null) })
-    return () => { cancelled = true }
-  }, [folioPart, activePath, workspaceDir, folioPlace?.dir, savedTick, folioChanged, folioRefreshTick])
-  useEffect(() => {
-    if (!folioPart) return
-    const bump = (): void => setFolioChanged((n) => n + 1)
-    const offCollection = window.writeflex.onCollectionChanged(bump)
-    const offDisk = window.writeflex.onFileChangedOnDisk(bump)
-    return () => { offCollection(); offDisk() }
-  }, [folioPart])
-  // A different Folio starts again from "the open piece expanded, the others collapsed".
-  const folioDir = workspaceDir ?? folioPlace?.dir ?? null
-  useEffect(() => { setFolioExpanded(new Map()) }, [folioDir])
-  const folioShown = folioOutline !== null && folioOutline.dir === folioDir ? folioOutline : null
+    if (expansionScope.current === folioScope) return
+    expansionScope.current = folioScope
+    if (folioExpanded.size > 0) setFolioExpanded(new Map())
+  }, [folioScope, folioExpanded])
+  const folioShown = folioRead?.outline ?? null
+  const folioContents = useMemo(() => folioShown && workspaceDir !== undefined ? { ...folioShown, binder: undefined } : folioShown, [folioShown, workspaceDir])
+  const folioReady = folioShown !== null && !folioRead?.failed && !folioRead?.pending
+  const folioFocused = folioFocus?.scope === folioScope ? folioFocus.row : null
+  const reportFolioFocus = useCallback((row: FocusedFolioRow) => {
+    const previous = lastFolioFocus.current
+    if (previous?.scope === folioScope && previous.row?.path === row?.path && previous.row?.kind === row?.kind) return
+    const next = { scope: folioScope, row }
+    lastFolioFocus.current = next
+    setFolioFocus(next)
+  }, [folioScope])
   const setFolioOpen = useCallback((key: string, open: boolean) => {
     setFolioExpanded((current) => new Map(current).set(key, open))
   }, [])
@@ -533,25 +528,23 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
       .catch((error: Error) => onStatus(error?.message ?? 'Could not make this folder a Folio.'))
   }, [folderSubpath, onStatus])
 
-  // Running order: every path sent to main comes from the list on screen, with that list as `expected`.
-  const seenFolio = useCallback((expected?: readonly string[]) => {
-    if (!folioShown) return null
-    const titles = new Map(folioShown.pieces.map((piece) => [piece.path, piece.title] as const))
-    const order = expected ?? folioShown.pieces.map((piece) => piece.path)
-    return { dir: folioShown.dir, pieces: order.map((path) => ({ path, title: titles.get(path) ?? path })) }
-  }, [folioShown])
   const guardBusy = useCallback(async (run: () => Promise<unknown>): Promise<void> => {
+    if (folioBusyRef.current) return
+    folioBusyRef.current = true
     setFolioBusy(true)
-    try { await run() } finally { setFolioBusy(false) }
+    try { await run() } finally {
+      folioBusyRef.current = false
+      setFolioBusy(false)
+    }
   }, [])
   const onMovePiece = useCallback((path: string, beforePath: string | null, expected: string[]) => {
-    const seen = seenFolio(expected)
+    const seen = folioRead?.order(expected)
     if (seen) void guardBusy(() => runningOrder.movePiece(seen, path, beforePath))
-  }, [seenFolio, guardBusy, runningOrder])
+  }, [folioRead, guardBusy, runningOrder])
   const onAddFiles = useCallback((files: Array<{ path: string; title: string }>) => {
-    const seen = seenFolio()
+    const seen = folioRead?.order()
     if (seen) void guardBusy(() => runningOrder.addPieces(seen, files))
-  }, [seenFolio, guardBusy, runningOrder])
+  }, [folioRead, guardBusy, runningOrder])
   const pieceMove = (direction: 'up' | 'down') => (folioShown && !folioShown.orderInPlanOnly && folioFocused?.kind === 'piece'
     ? blockCommandTarget(direction, folioFocused, null, folioShown)
     : { message: 'Focus a piece of the running order to move it.' })
@@ -949,17 +942,24 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
     [rows, effectiveFocus, focusRow, toggleCollapsed, jumpTo, act, selected, shortcutFor, headingRows, anchorFrom, openRowMenu],
   )
 
-  // Land the keyboard on the active row when App opens the outline (focusTick bumps). The row may not
-  // be in the DOM yet — the shared snapshot populates the outline on a debounce — so this re-runs as
-  // the shown rows change and focuses the moment the active (roving-tabindex) row exists, once per bump.
-  const handledFocusTick = useRef(focusTick)
-  useEffect(() => {
-    if (focusTick === handledFocusTick.current) return
+  // The roving tab stop may arrive on the mounting commit or a later read. Consume
+  // the request before focusing, since moving focus can itself schedule a render.
+  useLayoutEffect(() => {
+    if (!focusRequest) return
+    const holder = document.activeElement
+    const moved = holder !== focusRequest.origin &&
+      (focusRequest.origin?.isConnected || (holder !== document.body && holder !== document.documentElement))
+    const modal = [...document.querySelectorAll<HTMLElement>('[aria-modal="true"], dialog[open]')]
+      .some(dialog => dialog.getClientRects().length > 0)
+    if (moved || modal || menu || levelsMenu || confirm) {
+      focusRequest.finish()
+      return
+    }
     const row = listRef.current?.querySelector<HTMLElement>('.ol-item[tabindex="0"], .fo-row[tabindex="0"]')
-    if (!row) return // rows not rendered yet; a later render (the snapshot lands) re-runs this effect
-    handledFocusTick.current = focusTick
-    row.focus()
-  }, [focusTick, rows, folderRows, scope, folioShown])
+    if (!row?.isConnected || row.closest('[inert]') || row.getClientRects().length === 0 ||
+      getComputedStyle(row).visibility !== 'visible') return
+    if (focusRequest.finish() && holder !== row) row.focus()
+  })
 
   // ---- Right-click menu (frame 4) and Levels drop-down (frame 3) ----
   // A row of Actions here at an outline row. The structure commands act on the row (or the picked rows)
@@ -1013,8 +1013,8 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
       <div className="ol-bar" role="toolbar" aria-label="Outline actions">
         {/* A Folio the Outline cannot change shows no Move arrows: they would refuse every time. */}
         {!(folioPart && folioShown?.orderInPlanOnly) && (<>
-        <button type="button" className="ol-btn" data-action="moveUp" disabled={folioPart ? folioBusy || 'message' in pieceMove('up') : barOff} title={folioPart ? 'Move piece up in the running order' : `Move up${chordHint('outline.moveBlockUp')}`} aria-label="Move up" onClick={() => (folioPart ? movePieceFromBar('up') : act('moveUp', actionTargets(), 'outline.moveBlockUp'))}><ArrowUp className="icon sm" aria-hidden="true" /></button>
-        <button type="button" className="ol-btn" data-action="moveDown" disabled={folioPart ? folioBusy || 'message' in pieceMove('down') : barOff} title={folioPart ? 'Move piece down in the running order' : `Move down${chordHint('outline.moveBlockDown')}`} aria-label="Move down" onClick={() => (folioPart ? movePieceFromBar('down') : act('moveDown', actionTargets(), 'outline.moveBlockDown'))}><ArrowDown className="icon sm" aria-hidden="true" /></button>
+        <button type="button" className="ol-btn" data-action="moveUp" disabled={folioPart ? !folioReady || folioBusy || 'message' in pieceMove('up') : barOff} title={folioPart ? 'Move piece up in the running order' : `Move up${chordHint('outline.moveBlockUp')}`} aria-label="Move up" onClick={() => (folioPart ? movePieceFromBar('up') : act('moveUp', actionTargets(), 'outline.moveBlockUp'))}><ArrowUp className="icon sm" aria-hidden="true" /></button>
+        <button type="button" className="ol-btn" data-action="moveDown" disabled={folioPart ? !folioReady || folioBusy || 'message' in pieceMove('down') : barOff} title={folioPart ? 'Move piece down in the running order' : `Move down${chordHint('outline.moveBlockDown')}`} aria-label="Move down" onClick={() => (folioPart ? movePieceFromBar('down') : act('moveDown', actionTargets(), 'outline.moveBlockDown'))}><ArrowDown className="icon sm" aria-hidden="true" /></button>
         </>)}
         <button type="button" className="ol-btn" data-action="promote" disabled={barOff} title={`Promote${chordHint('heading.decrease')}`} aria-label="Promote" onClick={() => act('promote', actionTargets(), 'heading.decrease')}><ArrowLeft className="icon sm" aria-hidden="true" /></button>
         <button type="button" className="ol-btn" data-action="demote" disabled={barOff} title={`Demote${chordHint('heading.increase')}`} aria-label="Demote" onClick={() => act('demote', actionTargets(), 'heading.increase')}><ArrowRight className="icon sm" aria-hidden="true" /></button>
@@ -1058,10 +1058,17 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
         ))}
       </div>
       </div>
+      {folioPart && folioRead?.failed && (
+        <div className="ol-empty">
+          <span role="status">Could not read the Folio Outline.</span>{' '}
+          <button type="button" disabled={folioRead.pending} onClick={folioRead.retry}>Retry outline</button>
+        </div>
+      )}
       {folioPart ? (
-        folioShown ? (
+        folioContents ? (
           <FolioOutlinePart
-            outline={workspaceDir === undefined ? folioShown : { ...folioShown, binder: undefined }}
+            key={folioContents.dir}
+            outline={folioContents}
             openPath={activePath}
             bufferHeadings={headings}
             bufferPath={snapshot ? snapshot.path : null}
@@ -1077,15 +1084,19 @@ export function OutlinePane({ workspaceDir, editorRef, snapshot: sharedSnapshot,
             listRef={listRef}
             onMovePiece={onMovePiece}
             onAdd={onAddFiles}
-            busy={folioBusy}
+            busy={folioBusy || !folioReady}
+            refreshing={folioRead?.pending}
+            revision={folioRead?.revision}
             justAdded={runningOrder.justAdded}
             announcement={runningOrder.announcement}
             touched={runningOrder.touched}
-            onFocusedRow={setFolioFocused}
+            onFocusedRow={reportFolioFocus}
             onOpenPlan={onOpenPlan}
           />
         ) : (
-          <div ref={listRef} className="ol-list" role="tree" aria-label="Folio outline" aria-busy="true" />
+          <div ref={listRef} className="ol-list" role="tree" aria-label="Folio outline" aria-busy={folioRead?.pending || (!folioRead ? true : undefined)}>
+            {folioRead && !folioRead.pending && !folioRead.failed && <p className="ol-empty">No Folio outline is available.</p>}
+          </div>
         )
       ) : (
       <div

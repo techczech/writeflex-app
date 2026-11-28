@@ -30,7 +30,7 @@ window.paneWidthHarness = {
     localStorage.clear()
     for (const [key, value] of Object.entries(saved)) localStorage.setItem(key, value)
     // At 1200px App's take-turns planner closes the left when the right is shown (R3).
-    deps = { initialCollapsed: { left: true, right: false }, viewportWidth: 1200, scratchpadDocked: false, guideShown: false, onLeftTabOpened() {}, onRightTabOpened() {} }
+    deps = { initialCollapsed: { left: true, right: false }, viewportWidth: 1200, scratchpadDocked: false, guideShown: false, onRightTabOpened() {} }
     root = createRoot(host)
     render()
     return snapshot()

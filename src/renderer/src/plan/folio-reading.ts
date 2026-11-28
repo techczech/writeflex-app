@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from 'react'
 import type { ReadingVersion } from '../../../shared/folio-versions-view'
 
 /**
@@ -47,12 +47,60 @@ export const OPEN_VERSION_NUDGE_EVENT = 'writeflex:folio-version-open-nudge'
 /** A version to open read-only, on a part by the label the version recorded for it. */
 export type OpenVersionRequest = { dir: string; versionId: string; path: string }
 
-let waiting: OpenVersionRequest | null = null
-export function setWaitingOpenVersion(request: OpenVersionRequest | null): void { waiting = request }
-/** The request waiting for the Folio at `dir`, taken (a request is acted on once); null when none is for it. */
+let pending: { request: OpenVersionRequest; taken: boolean } | null = null
+function setWaitingOpenVersion(request: OpenVersionRequest): void {
+  pending = { request, taken: false }
+  notify()
+}
+
+/** The room claims the request once. It stays current until the room answers or another navigation retires it. */
 export function takeWaitingOpenVersion(dir: string): OpenVersionRequest | null {
-  if (!waiting || waiting.dir !== dir) return null
-  const request = waiting
-  waiting = null
-  return request
+  if (!pending || pending.taken || pending.request.dir !== dir) return null
+  pending.taken = true
+  return pending.request
+}
+
+export function pendingOpenVersionFor(dir: string): OpenVersionRequest | null {
+  return pending?.request.dir === dir ? pending.request : null
+}
+
+export function retireOpenVersionRequest(request: OpenVersionRequest | null): void {
+  if (!pending || pending.request !== request) return
+  pending = null
+  notify()
+}
+
+const subscribe = (listener: () => void): (() => void) => {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+/** A Scratchpad navigation owns its request across the transition into the room. */
+export function useScratchpadVersionOpen(collectionDir: string | null, openRoom: (dir: string) => void, onNavigate?: () => void) {
+  const owned = useRef<OpenVersionRequest | null>(null)
+  const retire = useCallback(() => {
+    const request = owned.current
+    owned.current = null
+    retireOpenVersionRequest(request)
+  }, [])
+  useLayoutEffect(() => retire, [retire])
+  useLayoutEffect(() => {
+    const onRequest = (event: Event): void => {
+      const detail = (event as CustomEvent<OpenVersionRequest>).detail
+      if (!detail || typeof detail.dir !== 'string' || typeof detail.versionId !== 'string' || typeof detail.path !== 'string') return
+      onNavigate?.()
+      const request = { ...detail }
+      const previous = owned.current
+      // A second card can arrive in the same batch as a switch away from the room still on screen.
+      const redirectQueued = previous !== null && previous.dir !== request.dir && pendingOpenVersionFor(previous.dir) === previous
+      owned.current = request
+      setWaitingOpenVersion(request)
+      if (collectionDir !== request.dir || redirectQueued) openRoom(request.dir)
+      if (collectionDir === request.dir) window.dispatchEvent(new Event(OPEN_VERSION_NUDGE_EVENT))
+    }
+    window.addEventListener(OPEN_VERSION_REQUEST_EVENT, onRequest)
+    return () => window.removeEventListener(OPEN_VERSION_REQUEST_EVENT, onRequest)
+  }, [collectionDir, openRoom, onNavigate])
+  const pendingOpen = useSyncExternalStore(subscribe, () => pending !== null)
+  return { retire, pendingOpen }
 }

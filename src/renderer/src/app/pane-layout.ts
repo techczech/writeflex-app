@@ -314,9 +314,6 @@ function readPaneWidth(key: string, fallback: number): number {
 }
 
 export type PaneLayoutDeps = {
-  /** App-domain side effects of opening a tab (mount its panel, arm its focus tick, …). Held in a ref
-   *  inside the hook, so the open commands keep stable identities across renders. */
-  onLeftTabOpened: (tab: LeftPaneTab) => void
   onRightTabOpened: (tab: RightPaneTab) => void
   /** The person has opened the Guide tab (the title-bar Guide button): it is last in the row. */
   guideShown?: boolean
@@ -353,7 +350,7 @@ export type PaneLayout = {
 /**
  * The tabbed-panes chrome state (CH-1): which tab each pane shows, collapse, and drag-resizable widths
  * (persisted per browser, clamped). Pure UI-layout state — it knows nothing about what the tabs contain;
- * the app supplies that via the onTabOpened callbacks.
+ * the app supplies that for the right-hand tabs via onRightTabOpened.
  */
 export function usePaneLayout(deps: PaneLayoutDeps): PaneLayout {
   const [leftTab, setLeftTab] = useState<LeftPaneTab>(() => normaliseLeftPaneTab('files'))
@@ -381,7 +378,6 @@ export function usePaneLayout(deps: PaneLayoutDeps): PaneLayout {
     const tab = normaliseLeftPaneTab(requested)
     setLeftPaneCollapsed(false)
     setLeftTab(tab)
-    depsRef.current.onLeftTabOpened(tab)
   }, [])
   const openRightTab = useCallback((tab: RightPaneTab) => {
     setRightPaneCollapsed(false)

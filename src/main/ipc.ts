@@ -2176,7 +2176,15 @@ export function registerIpc(
     assertRelativeWorkspacePath(input.path)
     const state = stateForSender(event.sender.id)
     await checkpointCollectionFile(state, input.path)
-    const saved = await addCollectionPieceTags(requireWorkspace(state), collectionDir(input), input.path, input.tags)
+    let saved
+    try {
+      saved = await addCollectionPieceTags(requireWorkspace(state), collectionDir(input), input.path, input.tags)
+    } catch (error) {
+      if (error instanceof DiskChangedUnderBuffer) {
+        throw new Error('This document changed on disk. Review the disk changes, then try adding the tags again.')
+      }
+      throw error
+    }
     notifyCollectionChanged(state, [saved.file.path])
     return saved
   })

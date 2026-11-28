@@ -34,7 +34,33 @@ export type TakeHost = {
   resolveSuggestion?: (change: { id: string; path: string }, action: 'accept' | 'reject') => Promise<{ applied: boolean; message?: string }>
 }
 
-type Loaded<T> = { state: 'loading' } | { state: 'refused'; message: string } | { state: 'unreadable' } | { state: 'ready'; value: T }
+type ReadFailure = { state: 'refused'; message: string } | { state: 'unreadable' }
+type Loaded<T> = { state: 'loading' } | ReadFailure | { state: 'ready'; value: T }
+const COMPARING = { state: 'loading' } as const
+
+type ReadyComparison = { state: 'ready'; value: FolioCompareResult; request: symbol }
+type CompareLoad = typeof COMPARING | ReadFailure | ReadyComparison
+  | { state: 'retained'; comparison: ReadyComparison; pending: boolean; failure?: ReadFailure }
+type CompareRead = { pair: string; load: CompareLoad }
+
+const comparisonOf = (load: CompareLoad): ReadyComparison | null =>
+  load.state === 'ready' ? load : load.state === 'retained' ? load.comparison : null
+
+type CompareTake = TakeHost & {
+  request: symbol
+  blocked: boolean
+  canAuthorTake: () => boolean
+}
+
+function focusWithin(root: HTMLElement | null): Element | null {
+  const active = document.activeElement
+  return active && root?.contains(active) ? active : null
+}
+
+const focusIsOnDocument = (): boolean =>
+  document.activeElement === document.body || document.activeElement === document.documentElement
+
+const lostFocus = (control: Element): boolean => !control.isConnected && focusIsOnDocument()
 
 /** Rows drawn for one opened part before "Show more": a part with a great many changes is drawn in steps, never all at once. */
 export const ROWS_AT_FIRST = 120
@@ -68,71 +94,87 @@ export type FolioVersionCompareProps = {
 }
 
 export function FolioVersionCompare({ dir, versions, choice, choicesUnavailable, onChoice, onClose, take }: FolioVersionCompareProps): JSX.Element {
-  const [load, setLoad] = useState<Loaded<FolioCompareResult>>({ state: 'loading' })
+  const pair = JSON.stringify([dir, choice.from, choice.to])
+  const [read, setRead] = useState<CompareRead>({ pair, load: COMPARING })
+  const load = read.pair === pair ? read.load : COMPARING
+  const comparison = comparisonOf(load)
   const [tick, setTick] = useState(0)
   const root = useRef<HTMLDivElement>(null)
   const fromPicker = useRef<HTMLSelectElement>(null)
-  const currentLoad = useRef(load)
-  const partFocus = useRef<string | null>(null)
+  const currentRead = useRef(read)
+  const activeRequest = useRef<symbol | null>(null)
+  const partFocus = useRef<{ control: Element; key: string | null } | null>(null)
   const involvesWorking = choice.from === COMPARE_WORKING || choice.to === COMPARE_WORKING
 
+  const reread = useCallback((): void => {
+    activeRequest.current = null
+    setTick((value) => value + 1)
+  }, [])
+
   // A save, the agent's save or a restore changes the history; a file change changes the working draft.
-  useEffect(() => window.writeflex.onVersionsChanged(() => setTick((value) => value + 1)), [])
+  useEffect(() => window.writeflex.onVersionsChanged(reread), [reread])
   useEffect(() => {
     if (!involvesWorking) return undefined
     let timer: ReturnType<typeof setTimeout> | null = null
     const soon = (): void => {
       if (timer !== null) clearTimeout(timer)
-      timer = setTimeout(() => { timer = null; setTick((value) => value + 1) }, WORKING_REREAD_MS)
+      timer = setTimeout(() => { timer = null; reread() }, WORKING_REREAD_MS)
     }
     const offCollection = window.writeflex.onCollectionChanged(soon)
     const offFiles = window.writeflex.onFileChangedOnDisk(soon)
     return () => { offCollection(); offFiles(); if (timer !== null) clearTimeout(timer) }
-  }, [involvesWorking])
+  }, [involvesWorking, reread])
 
-  useEffect(() => {
-    let live = true
-    const publish = (next: Loaded<FolioCompareResult>): void => {
-      if (!live) return
-      const active = document.activeElement
-      partFocus.current = active && root.current?.contains(active)
-        ? active.closest<HTMLElement>('[data-testid="compare-line"]')?.dataset.key ?? null
-        : null
-      currentLoad.current = next
-      setLoad(next)
+  // Replace the request on commit so an earlier pair's reply cannot publish to the new pair.
+  useLayoutEffect(() => {
+    const request = Symbol()
+    activeRequest.current = request
+    const publish = (next: CompareLoad): void => {
+      if (activeRequest.current !== request) return
+      if (next.state === 'ready') {
+        const control = focusWithin(root.current)
+        partFocus.current = control && { control, key: control.closest<HTMLElement>('[data-testid="compare-line"]')?.dataset.key ?? null }
+      }
+      currentRead.current = { pair, load: next }
+      setRead(currentRead.current)
     }
-    const previous = currentLoad.current
-    if (previous.state !== 'loading' && (previous.state !== 'ready' || previous.value.from.id !== choice.from || previous.value.to.id !== choice.to)) {
-      currentLoad.current = { state: 'loading' }
-      setLoad(currentLoad.current)
+    const previous = currentRead.current.pair === pair ? currentRead.current.load : null
+    const retained = previous && comparisonOf(previous)
+    if (previous?.state === 'ready') publish({ state: 'retained', comparison: previous, pending: true })
+    else if (previous?.state === 'retained' && !previous.pending) publish({ ...previous, pending: true })
+    else if (!previous || previous.state === 'unreadable' || previous.state === 'refused') publish(COMPARING)
+
+    const unavailable = (failure: ReadFailure): void => {
+      publish(retained ? { state: 'retained', comparison: retained, pending: false, failure } : failure)
     }
     void window.writeflex.folioVersions.compare(dir, choice.from, choice.to).then(
       (value) => {
-        if (value === null) publish({ state: 'unreadable' })
-        else if ('refused' in value) publish({ state: 'refused', message: value.refused })
-        else publish({ state: 'ready', value })
+        if (value === null) unavailable({ state: 'unreadable' })
+        else if ('refused' in value) unavailable({ state: 'refused', message: value.refused })
+        else publish({ state: 'ready', value, request })
       },
-      () => publish({ state: 'unreadable' }),
+      () => unavailable({ state: 'unreadable' }),
     )
-    return () => { live = false }
-  }, [dir, choice.from, choice.to, tick])
+    return () => { if (activeRequest.current === request) activeRequest.current = null }
+  }, [dir, choice.from, choice.to, pair, tick])
 
-  // Rereading can replace the focused row's button with a plain row, or remove the row entirely.
+  // Recover focus when an accepted result removed the control that owned it.
   useLayoutEffect(() => {
-    const key = partFocus.current
+    const prior = partFocus.current
     partFocus.current = null
-    const active = document.activeElement
-    if (key === null || (active !== document.body && active !== document.documentElement)) return
-    const row = root.current?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"] [data-compare-line]`)
-    ;(row ?? fromPicker.current)?.focus()
+    if (!prior || !lostFocus(prior.control)) return
+    const row = prior.key && root.current?.querySelector<HTMLElement>(`[data-key="${CSS.escape(prior.key)}"] [data-compare-line]`)
+    const target = row || fromPicker.current
+    target?.focus()
   }, [load])
 
-  // The keyboard lands on the first line once the comparison is drawn, never on the working draft's editor.
+  // The keyboard lands on the first line once drawn, unless the writer has already moved focus.
   const landed = useRef(false)
   useEffect(() => {
     if (landed.current || load.state !== 'ready') return
     landed.current = true
-    if (document.activeElement?.closest('input, textarea, select, [contenteditable="true"], .cm-editor')) return
+    const active = document.activeElement
+    if ((!focusIsOnDocument() && !focusWithin(root.current)) || active?.closest('input, textarea, select, [contenteditable="true"], .cm-editor')) return
     root.current?.querySelector<HTMLElement>('[data-compare-line]')?.focus()
   }, [load.state])
 
@@ -173,13 +215,29 @@ export function FolioVersionCompare({ dir, versions, choice, choicesUnavailable,
     </div>
   )
 
+  const compareTake: CompareTake | null = take && comparison ? {
+    ...take,
+    request: comparison.request,
+    blocked: load.state !== 'ready',
+    // Only the most recent successful request for this pair can supply a Take basis.
+    canAuthorTake: () => activeRequest.current === comparison.request,
+  } : null
+
   return (
     <div className="fvc" data-testid="folio-compare" ref={root} onKeyDown={onKeyDown}>
       {pickers}
       {load.state === 'loading' && <div className="fvc-status" aria-busy="true" data-testid="compare-loading">Comparing…</div>}
       {load.state === 'unreadable' && <div className="fr-empty" data-testid="compare-unreadable"><b>These versions could not be compared.</b>Close the comparison and choose two versions again.</div>}
       {load.state === 'refused' && <div className="fr-empty" data-testid="compare-refused"><b>These versions could not be compared.</b>{load.message}</div>}
-      {load.state === 'ready' && <CompareBody dir={dir} result={load.value} {...(take ? { take, onReread: () => setTick((value) => value + 1) } : {})} />}
+      {load.state === 'retained' && (load.failure ? (
+        <div className="fvc-status">
+          <span role="status"><b>Could not refresh this comparison.</b>{' '}
+            {load.failure.state === 'refused' && <>{load.failure.message}{' '}</>}Showing the last comparison.</span>{' '}
+          <button type="button" className="fv-btn" aria-disabled={load.pending || undefined}
+            onClick={() => { if (!load.pending && activeRequest.current !== null) reread() }}>Retry comparison</button>
+        </div>
+      ) : <div className="fvc-status" role="status" aria-busy="true">Refreshing comparison…</div>)}
+      {comparison && <CompareBody key={pair} dir={dir} result={comparison.value} {...(compareTake ? { take: compareTake, onReread: reread } : {})} />}
     </div>
   )
 }
@@ -193,7 +251,7 @@ function choiceOptions(versions: readonly FolioVersionRow[], current: string): J
   ]
 }
 
-export function CompareBody({ dir, result, take, onReread }: { dir: string; result: FolioCompareResult; take?: TakeHost; onReread?: () => void }): JSX.Element {
+export function CompareBody({ dir, result, take, onReread }: { dir: string; result: FolioCompareResult; take?: CompareTake; onReread?: () => void }): JSX.Element {
   const { summary } = result
   const none = nothingChanged(result)
   const total = summary.unchanged + summary.changed + summary.onlyFrom + summary.onlyTo + summary.moved
@@ -228,7 +286,7 @@ export function CompareBody({ dir, result, take, onReread }: { dir: string; resu
 /** A line can be opened when it is text and something is there to show: a changed text, or a part on one side only. */
 const opensToText = (entry: FolioCompareEntry): boolean => entry.text && !entry.unreadable && (entry.state === 'changed' || entry.state === 'only-from' || entry.state === 'only-to')
 
-function Line({ dir, result, entry, number, take, onReread }: { dir: string; result: FolioCompareResult; entry: FolioCompareEntry; number: string; take?: TakeHost; onReread?: () => void }): JSX.Element {
+function Line({ dir, result, entry, number, take, onReread }: { dir: string; result: FolioCompareResult; entry: FolioCompareEntry; number: string; take?: CompareTake; onReread?: () => void }): JSX.Element {
   const [open, setOpen] = useState(false)
   const canOpen = opensToText(entry)
   const chip = stateChipText(entry, result)
@@ -272,9 +330,11 @@ type TakeState =
  * it writes no part. Undo takes the proposal back while it waits. Every state is said in words, and focus follows the action so the
  * keyboard never lands on a button that has just gone.
  */
-function TakeActions({ dir, result, entry, take, onReread }: { dir: string; result: FolioCompareResult; entry: FolioCompareEntry; take: TakeHost; onReread?: () => void }): JSX.Element | null {
+function TakeActions({ dir, result, entry, take, onReread }: { dir: string; result: FolioCompareResult; entry: FolioCompareEntry; take: CompareTake; onReread?: () => void }): JSX.Element | null {
   const [state, setState] = useState<TakeState>({ kind: 'idle' })
-  const [menu, setMenu] = useState(false)
+  // A fresh result requires a fresh choice, even if the earlier menu stayed open through a failed read.
+  const [menuFor, setMenuFor] = useState<symbol | null>(null)
+  const menu = menuFor === take.request
   const box = useRef<HTMLDivElement>(null)
   const mounted = useRef(true)
   useEffect(() => () => { mounted.current = false }, [])
@@ -311,7 +371,9 @@ function TakeActions({ dir, result, entry, take, onReread }: { dir: string; resu
   const title = entry.title
 
   const doTake = async (keepMine = false): Promise<void> => {
-    setMenu(false)
+    // The normal button and an already-open Scratchpad confirmation share this write gate.
+    if (!take.canAuthorTake()) return
+    setMenuFor(null)
     if (take.isUnsaved(workingPath)) { setState({ kind: 'refused', message: takeRefusalText('unsaved', title) }); return }
     undoing.current = false
     setState({ kind: 'taking' })
@@ -354,13 +416,14 @@ function TakeActions({ dir, result, entry, take, onReread }: { dir: string; resu
         <>
           <button type="button" className="fv-btn" data-testid="take-keep" onClick={() => setState({ kind: 'kept' })}>Keep current</button>
           <span className="fvc-split">
-            <button type="button" className="fv-btn pri" data-testid="take-take" data-take-focus="" onClick={() => void doTake()}>Take that text</button>
-            <button type="button" className="fv-btn pri fvc-splitmore" data-testid="take-menu" aria-haspopup="menu" aria-expanded={menu} aria-label="More ways to take that text" onClick={() => setMenu((open) => !open)}
-              onKeyDown={(event) => { if (event.key === 'Escape' && menu) { event.preventDefault(); event.stopPropagation(); setMenu(false) } }}><ChevronDown aria-hidden="true" /></button>
+            <button type="button" className="fv-btn pri" data-testid="take-take" data-take-focus="" aria-disabled={take.blocked || undefined} onClick={() => void doTake()}>Take that text</button>
+            <button type="button" className="fv-btn pri fvc-splitmore" data-testid="take-menu" aria-haspopup="menu" aria-expanded={menu} aria-disabled={take.blocked && !menu || undefined}
+              aria-label="More ways to take that text" onClick={() => { if (menu || take.canAuthorTake()) setMenuFor(menu ? null : take.request) }}
+              onKeyDown={(event) => { if (event.key === 'Escape' && menu) { event.preventDefault(); event.stopPropagation(); setMenuFor(null) } }}><ChevronDown aria-hidden="true" /></button>
             {menu && (
               <div className="fvc-menu" role="menu" aria-label="Take that text">
-                <button type="button" role="menuitem" className="fvc-menuitem" data-testid="take-keep-mine" autoFocus onClick={() => void doTake(true)}
-                  onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setMenu(false); box.current?.querySelector<HTMLElement>('[data-testid="take-menu"]')?.focus() } }}>Take that text, keep mine in Scratchpad</button>
+                <button type="button" role="menuitem" className="fvc-menuitem" data-testid="take-keep-mine" aria-disabled={take.blocked || undefined} autoFocus onClick={() => void doTake(true)}
+                  onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setMenuFor(null); box.current?.querySelector<HTMLElement>('[data-testid="take-menu"]')?.focus() } }}>Take that text, keep mine in Scratchpad</button>
               </div>
             )}
           </span>
@@ -391,20 +454,30 @@ function TakeActions({ dir, result, entry, take, onReread }: { dir: string; resu
 function PartDetail({ id, dir, result, entry }: { id: string; dir: string; result: FolioCompareResult; entry: FolioCompareEntry }): JSX.Element {
   const [part, setPart] = useState<Loaded<FolioComparePart>>({ state: 'loading' })
   const [shown, setShown] = useState(ROWS_AT_FIRST)
-  useEffect(() => {
+  const detail = useRef<HTMLDivElement>(null)
+  const detailFocus = useRef<Element | null>(null)
+  // Keep focused detail controls mounted while a new comparison reads the part again.
+  useLayoutEffect(() => {
     let live = true
-    setPart({ state: 'loading' })
-    void window.writeflex.folioVersions.comparePart(dir, result.from.id, result.to.id, entry.key).then(
-      (value) => { if (live) setPart(value ? { state: 'ready', value } : { state: 'unreadable' }) },
-      () => { if (live) setPart({ state: 'unreadable' }) },
-    )
+    const publish = (value: FolioComparePart | null): void => {
+      if (!live) return
+      detailFocus.current = focusWithin(detail.current)
+      setPart(value ? { state: 'ready', value } : { state: 'unreadable' })
+    }
+    void window.writeflex.folioVersions.comparePart(dir, result.from.id, result.to.id, entry.key).then(publish, () => publish(null))
     return () => { live = false }
   }, [dir, result.from.id, result.to.id, entry.key, result.summary])
+  useLayoutEffect(() => {
+    const prior = detailFocus.current
+    detailFocus.current = null
+    if (prior && lostFocus(prior)) {
+      detail.current?.closest('[data-testid="compare-line"]')?.querySelector<HTMLElement>('[data-compare-line]')?.focus()
+    }
+  }, [part])
   const fromName = result.from.working ? 'Working draft' : result.from.name
   const toName = result.to.working ? 'Working draft' : result.to.name
   // Send a copy to the Scratchpad (ticket 10): from either side that is a SAVED version. The working draft is the live text, which the
   // editor sends in the ordinary way; it has no version to name.
-  const detail = useRef<HTMLDivElement>(null)
   const bubble = useVersionSelectionBubble(detail, dir)
   const sendFrom: SideSend | null = result.from.working ? null : { dir, source: { id: result.from.id, path: entry.fromPath ?? entry.path, side: 'version' } }
   const sendTo: SideSend | null = result.to.working ? null : { dir, source: { id: result.to.id, path: entry.toPath ?? entry.path, side: 'version' } }

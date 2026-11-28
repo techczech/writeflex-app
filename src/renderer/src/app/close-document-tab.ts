@@ -4,30 +4,43 @@ import type { DocumentOwner } from './document-owner'
 
 type TabClosePorts = {
   owner: DocumentOwner
-  notice(): ExternalDiskNotice | undefined
-  isCurrentTab(): boolean
+  currentPath?(): string
+  notice(path: string): ExternalDiskNotice | undefined
+  isCurrentTab(path: string): boolean
   checkpoint(path: string): Promise<void>
-  closeForgotten(): void
-  saveRefusalReported(): boolean
+  closeForgotten(path: string): void
+  saveRefusalReported(path: string): boolean
   flash(message: string): void
 }
 
-export async function closeDocumentTab(path: string, ports: TabClosePorts): Promise<void> {
+export async function closeDocumentTab(initialPath: string, ports: TabClosePorts): Promise<void> {
   const { owner, closeForgotten, flash } = ports
-  const fileName = path.split('/').at(-1) ?? path
-  // Flush through the owner and send the close checkpoint (ADR-0013). The owner detaches the
-  // buffer and forgets it only if it is saved and still matches the snapshot the close holds.
-  const flushed = await owner.withFlushed([path], () => {
+  const currentPath = ports.currentPath ?? (() => initialPath)
+  // A Collection relocation can finish while close is waiting for the owner's queue. Ask for
+  // the current path at each flush round and checkpoint only the path still being closed.
+  const flushClose = () => owner.withFlushed(() => [currentPath()], () => {
+    const path = currentPath()
     if (!owner.forgetIfSaved(path)) return false
-    closeForgotten()
+    closeForgotten(path)
     return true
-  }, { detach: true, afterSave: ports.checkpoint })
+  }, {
+    detach: true,
+    afterSave: async (path) => { if (path === currentPath()) await ports.checkpoint(path) },
+  })
+  let attempted = currentPath()
+  let flushed = await flushClose()
+  while (flushed.status !== 'acted' && attempted !== currentPath()) {
+    attempted = currentPath()
+    flushed = await flushClose()
+  }
+  const path = currentPath()
+  const fileName = path.split('/').at(-1) ?? path
   if (flushed.status === 'refused') {
     // Under a removal notice, Keep mine writes the file again and closing can discard the buffer
     // only through explicit confirmation.
-    const notice = ports.notice()
+    const notice = ports.notice(path)
     if (notice?.kind === 'removed') {
-      const discard = owner.prepareRemovedDiscard(path, notice, ports.isCurrentTab)
+      const discard = owner.prepareRemovedDiscard(path, notice, () => path === currentPath() && ports.isCurrentTab(path))
       if (!discard) {
         flash(`Could not close ${fileName}. Its text is still available. Try closing the tab again.`)
         return
@@ -43,11 +56,11 @@ export async function closeDocumentTab(path: string, ports: TabClosePorts): Prom
         flash(`${fileName} changed while the card was open. Nothing was discarded. Please try closing the tab again.`)
         return
       }
-      closeForgotten()
+      closeForgotten(path)
       flash(`Closed ${fileName}; the text that was only in the tab was discarded`)
       return
     }
-    if (!ports.saveRefusalReported()) flash(`Could not save ${fileName} — the tab stays open`)
+    if (!ports.saveRefusalReported(path)) flash(`Could not save ${fileName} — the tab stays open`)
     return
   }
   if (flushed.status === 'still-unsaved' || !flushed.result) {

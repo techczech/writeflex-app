@@ -27,11 +27,12 @@ export function folioOpenTarget(parts: readonly FolioOpenPart[], index = 0): str
 }
 
 /** A Folio's parts read from disk by its folder (the palette command's seam; null when `dir` is not a Folio). */
-export async function readFolioOpenParts(dir: string): Promise<FolioOpenPart[]> {
+export async function readFolioOpenParts(dir: string, { reportReadErrors = false } = {}): Promise<FolioOpenPart[]> {
+  const read = <T,>(result: Promise<T>): Promise<T | null> => reportReadErrors ? result : result.catch(() => null)
   const [folio, plan, pieces] = await Promise.all([
-    window.writeflex.readFolio(dir).catch(() => null),
-    window.writeflex.plan.read(dir).catch(() => null),
-    window.writeflex.readFolioPieces(dir).catch(() => null),
+    read(window.writeflex.readFolio(dir)),
+    read(window.writeflex.plan.read(dir)),
+    read(window.writeflex.readFolioPieces(dir)),
   ])
   return folioOpenParts(folio, plan, pieces?.pieces ?? null)
 }

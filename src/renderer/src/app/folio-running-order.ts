@@ -26,7 +26,11 @@ import type { RoomAuthoringResult } from '../../../shared/folio-room-authoring'
 import type { PlanCardKey } from '../../../shared/folio-running-order'
 
 /** The Folio as the caller was looking at it: its folder and the running order it saw, with titles for the messages. */
-export type FolioSeen = { dir: string; pieces: ReadonlyArray<{ path: string; title: string }> }
+export type FolioSeen = {
+  dir: string
+  pieces: ReadonlyArray<{ path: string; title: string }>
+  outlineRequest?: { isCurrent: () => boolean; ownsScope: () => boolean }
+}
 
 export type FlashAction = { label: string; run: () => void; kind?: 'folio-order' | 'scratchpad' | 'auto-name' }
 
@@ -228,10 +232,16 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
     ) } catch (error) { tell(plainErrorForScreen(error, 'Could not check the Folio’s chapter links.')); return false }
   }, [guarded, write, tell, remember, refresh, undo])
 
+  const writeSeen = useCallback(<T,>(seen: FolioSeen, call: () => Promise<T>) => write(seen.dir, () => {
+    if (seen.outlineRequest?.ownsScope() === false) throw new Error('The Folio Outline changed before the running order could be saved.')
+    return call()
+  }), [write])
+
   const movePiece = useCallback((seen: FolioSeen, path: string, beforePath: string | null): Promise<boolean> => guarded(async () => {
+    if (seen.outlineRequest?.isCurrent() === false) return false
     const expected = seen.pieces.map((piece) => piece.path)
     const scope = folioScope(rootRef.current, seen.dir)
-    const asked = await write(seen.dir, () => window.writeflex.folioRunningOrder.movePiece(seen.dir, path, beforePath, expected))
+    const asked = await writeSeen(seen, () => window.writeflex.folioRunningOrder.movePiece(seen.dir, path, beforePath, expected))
     if (!asked.ok) { tell(`${asked.message} The piece was not moved.`); return false }
     const result = asked.value
     if (!result.ok) { tell(result.message); refresh(); return false }
@@ -245,14 +255,14 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
     setAnnouncement(movedAnnouncement(title, position, result.order.length))
     touch(path, result.order)
     return true
-  }), [guarded, refresh, remember, write, say, tell, touch, undo])
+  }), [guarded, refresh, remember, writeSeen, say, tell, touch, undo])
 
   const addPieces = useCallback((seen: FolioSeen, files: ReadonlyArray<{ path: string; title: string }>): Promise<boolean> => guarded(async () => {
-    if (files.length === 0) return false
+    if (files.length === 0 || seen.outlineRequest?.isCurrent() === false) return false
     const expected = seen.pieces.map((piece) => piece.path)
     const paths = files.map((file) => file.path)
     const scope = folioScope(rootRef.current, seen.dir)
-    const asked = await write(seen.dir, () => window.writeflex.folioRunningOrder.addPieces(seen.dir, paths, expected))
+    const asked = await writeSeen(seen, () => window.writeflex.folioRunningOrder.addPieces(seen.dir, paths, expected))
     if (!asked.ok) { tell(`${asked.message} Nothing was added.`); return false }
     const result = asked.value
     if (!result.ok) { tell(result.message); refresh(); return false }
@@ -269,7 +279,7 @@ export function useFolioRunningOrder({ say, write, refresh, root, openDir, planD
     setAnnouncement(`${addedAnnouncement(titles, result.order.indexOf(addedPaths[0]) + 1, result.order.length)}${result.note ? ` ${result.note}` : ''}`)
     touch(addedPaths[0], result.order)
     return true
-  }), [guarded, refresh, remember, write, say, tell, touch, undo])
+  }), [guarded, refresh, remember, writeSeen, say, tell, touch, undo])
 
   const sortPlan = useCallback((dir: string, parts: readonly PlanPartKey[], frontMatter?: readonly boolean[]): Promise<boolean> => guarded(async () => {
     // Front matter and contents are each sorted in place: the sort never moves a part across the boundary (ADR-0046).

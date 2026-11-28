@@ -42,6 +42,10 @@ describe('a Folio folder rename in the app', () => {
     const renamed = await renameFolder(world.deps, 'papers/alpha', 'beta')
 
     expect(renamed.path).toBe('papers/beta')
+    expect(renamed.indexNote).toEqual({
+      from: 'papers/alpha/_alpha_INDEX.md',
+      to: 'papers/beta/_beta_INDEX.md',
+    })
     expect(await world.exists('papers/beta/_beta_INDEX.md')).toBe(true)
     expect(await world.exists('papers/beta/_alpha_INDEX.md')).toBe(false)
     expect(await world.read('papers/beta/_beta_INDEX.md')).toContain('title: Alpha revised')

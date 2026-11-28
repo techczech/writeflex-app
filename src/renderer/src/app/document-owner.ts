@@ -51,13 +51,13 @@ import { writeBuffer, type WriteAnswer } from './write-buffer'
 /** What the owner says to the rest of the app about one write (App's flash, notices, status chip). */
 export type OwnerReports = {
   slow(path: string, slow: boolean): void
-  refusedByNotice(path: string, message: string): void
-  refusedByMain(path: string, message: string): void
-  diskChanged(path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice): void
+  refusedByNotice(path: string, message: string, announce?: boolean): void
+  refusedByMain(path: string, message: string, announce?: boolean): void
+  diskChanged(path: string, diskText: string | null, buffer: string, answering?: ExternalDiskNotice, announce?: boolean): void
   /** `changed`: the write put other bytes on disk than the version it was based on. */
   saved(path: string, changed: boolean): void
-  outsideAfterWrite(path: string, diskText: string): void
-  unknown(path: string): void
+  outsideAfterWrite(path: string, diskText: string, announce?: boolean): void
+  unknown(path: string, announce?: boolean): void
 }
 
 export type DocumentOwnerPorts = {
@@ -126,6 +126,8 @@ export type WithFlushedOptions = {
   detach?: boolean
   /** How many times new typing may send the flush round again before the route gives up. */
   rounds?: number
+  /** A navigation flush may lose its status line while the save is in flight. The failure still belongs to the document. */
+  mayAnnounceSaveFailure?(): boolean
   /** Run once every path is written (the close checkpoint), before the final check. A rejection is a
    *  refusal for that path, never a throw (Sol r3 S1: a removed file's checkpoint ENOENT). */
   afterSave?(path: string): Promise<void>
@@ -289,7 +291,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
   const isSaved = (path: string): boolean => !ports.registry.busy(path) && savedApartFromRegistryBusy(path)
 
   /** One write of the buffer, run in the queue. True: the buffer's text (as read) is on disk. */
-  const writeNow = async (path: string, answered?: ExternalDiskNotice, mayWrite?: () => Promise<boolean>): Promise<boolean> => {
+  const writeNow = async (path: string, answered?: ExternalDiskNotice, mayWrite?: () => Promise<boolean>, mayAnnounceSaveFailure?: () => boolean): Promise<boolean> => {
     const rec = record(path)
     const epoch = rec.epoch
     if (mayWrite && !(await mayWrite())) {
@@ -342,9 +344,9 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
         },
         setDirtyDot: setDot,
         slow: ports.report.slow,
-        refusedByNotice: (p, message) => { outcome = 'refused-by-notice'; ports.report.refusedByNotice(p, message) },
-        refusedByMain: (p, message) => { outcome = 'refused-by-main'; ports.report.refusedByMain(p, message) },
-        diskChanged: (p, diskText, buffer, answering) => { outcome = 'disk-changed'; ports.report.diskChanged(p, diskText, buffer, answering) },
+        refusedByNotice: (p, message) => { outcome = 'refused-by-notice'; ports.report.refusedByNotice(p, message, mayAnnounceSaveFailure?.()) },
+        refusedByMain: (p, message) => { outcome = 'refused-by-main'; ports.report.refusedByMain(p, message, mayAnnounceSaveFailure?.()) },
+        diskChanged: (p, diskText, buffer, answering) => { outcome = 'disk-changed'; ports.report.diskChanged(p, diskText, buffer, answering, mayAnnounceSaveFailure?.()) },
         saved: (p, changed) => { committed = true; confirmed = true; changedOnDisk = changed; ports.report.saved(p, changed) },
         outsideAfterWrite: (p, diskText) => {
           outcome = 'readback-mismatch'
@@ -352,9 +354,9 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
           // text is not on disk: the disk is unknown for the document until a write is confirmed.
           committed = true
           rec.diskUnknown = true
-          ports.report.outsideAfterWrite(p, diskText)
+          ports.report.outsideAfterWrite(p, diskText, mayAnnounceSaveFailure?.())
         },
-        unknown: (p) => { outcome = 'unknown'; rec.diskUnknown = true; ports.report.unknown(p) },
+        unknown: (p) => { outcome = 'unknown'; rec.diskUnknown = true; ports.report.unknown(p, mayAnnounceSaveFailure?.()) },
       }, path, answered)
       if (confirmed) outcome = 'flushed'
       else if (ok) outcome = noEditor ? 'no-editor' : 'nothing-to-write'
@@ -426,7 +428,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
       for (let round = 0; round < rounds; round += 1) {
         for (const path of paths) {
           while (!savedApartFromRegistryBusy(path)) {
-            if (!(await writeNow(path))) return { status: 'refused', path }
+            if (!(await writeNow(path, undefined, undefined, options.mayAnnounceSaveFailure))) return { status: 'refused', path }
             if (!savedApartFromRegistryBusy(path)) break // typed during the save: another round (bounded)
           }
         }
@@ -547,7 +549,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
           while (!ready(path)) {
             await idle(path)
             if (holdOnly(path) || isSaved(path)) break
-            if (!(await owner.save(path))) return { status: 'refused', path }
+            if (!(await enqueue(path, () => writeNow(path, undefined, undefined, options.mayAnnounceSaveFailure)))) return { status: 'refused', path }
             if (!isSaved(path)) break // typed during the save: another round (bounded)
           }
         }
@@ -667,7 +669,7 @@ export function createDocumentOwner(ports: DocumentOwnerPorts) {
      * Write until every path is saved (the routes that need only the file on disk to be what is on screen:
      * opening the Board or the Plan, a folder's Collection, an export). `withFlushed` with no action.
      */
-    async flush(paths: readonly string[], options: Pick<WithFlushedOptions, 'rounds'> = {}): Promise<{ status: 'saved' } | FlushOutcome> {
+    async flush(paths: readonly string[], options: Pick<WithFlushedOptions, 'rounds' | 'mayAnnounceSaveFailure'> = {}): Promise<{ status: 'saved' } | FlushOutcome> {
       const outcome = await owner.withFlushed(paths, () => undefined, options)
       return outcome.status === 'acted' ? { status: 'saved' } : outcome
     },

@@ -263,6 +263,41 @@ test('a machine stub Index Note is never a main-document candidate', async () =>
   ])
 })
 
+test('a Folder Piece mode change refuses a save made after reading the Index Note', async () => {
+  const folder = 'series/work'
+  const index = folder + '/_work_INDEX.md'
+  const original = '---\npiece: one\n---\n\n# Work\n\nOriginal Index Note prose.\n'
+  const newer = original.replace('Original Index Note prose.', 'Newer prose from a different editor.')
+  await write(index, original)
+
+  const didRead = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const read = ws.readFile.bind(ws)
+  ws.readFile = async (path) => {
+    const result = await read(path)
+    if (path === index) {
+      didRead.resolve()
+      await release.promise
+    }
+    return result
+  }
+
+  const outcome = setCollectionPieceMode(ws, 'series', folder, 'many').then(
+    () => 'mode changed',
+    (error: unknown) => (error as Error).message,
+  )
+  try {
+    await Promise.race([didRead.promise, outcome.then((answer) => { throw new Error(answer) })])
+    await writeFile(join(root, index), newer, 'utf8')
+  } finally {
+    release.resolve()
+    await outcome
+  }
+  expect(await outcome).toMatch(/changed on disk/)
+  expect(await readFile(join(root, index), 'utf8')).toBe(newer)
+  expect((await listCollection(ws, 'series')).rows.find((row) => row.folderPath === folder)?.folderPieceMode).toBe('one')
+})
+
 test('a Folder Piece title falls back to the folder name rather than its main-document filename', async () => {
   await write('series/Long Report/README.md', 'No heading here.\n')
 
@@ -363,6 +398,22 @@ test('the flip creates a missing Index Note through the sanctioned creator', asy
   expect(await readFile(join(root, 'series/blog/_blog_INDEX.md'), 'utf8')).toBe(
     '---\npiece: many\n---\n\n# blog\n\n',
   )
+})
+
+test('the first mode write refuses an Index Note created concurrently', async () => {
+  const index = 'series/blog/_blog_INDEX.md'
+  const outside = '# Blog\n\nThe other editor created this Index Note.\n'
+  await write('series/blog/blog.md', '# Blog\n')
+
+  const create = ws.createFile.bind(ws)
+  ws.createFile = async (path, content) => {
+    await writeFile(join(root, path), outside, { flag: 'wx' })
+    return create(path, content)
+  }
+
+  await expect(setCollectionPieceMode(ws, 'series', 'series/blog', 'many'))
+    .rejects.toThrow('This folder already has its Index Note, _blog_INDEX.md. Nothing was created.')
+  expect(await readFile(join(root, index), 'utf8')).toBe(outside)
 })
 
 test('a Board status write for a Folder Piece changes only its main document', async () => {
